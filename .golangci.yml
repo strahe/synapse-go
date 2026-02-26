@@ -1,0 +1,20 @@
+version: "2"
+
+linters:
+  enable:
+    - gocritic
+    - errorlint
+    - misspell
+    - errname
+  exclusions:
+    paths:
+      - synapse-sdk
+      - go-synapse
+
+formatters:
+  enable:
+    - gofumpt
+  exclusions:
+    paths:
+      - synapse-sdk
+      - go-synapse
