@@ -93,3 +93,12 @@ func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
 func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
 	return bind.NewKeyedTransactorWithChainID(s.ecdsaKey, chainID)
 }
+
+// SignHash signs a pre-computed 32-byte hash using the secp256k1 key.
+// Returns 65-byte R‖S‖V signature.
+func (s *Secp256k1Signer) SignHash(hash []byte) ([]byte, error) {
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("signer.SignHash: hash must be 32 bytes, got %d", len(hash))
+	}
+	return ethcrypto.Sign(hash, s.ecdsaKey)
+}

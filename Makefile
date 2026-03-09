@@ -1,4 +1,4 @@
-.PHONY: build test lint vet generate clean fmt tidy check
+.PHONY: build test lint vet generate generate-contracts clean fmt tidy check
 
 # Default target
 all: check
@@ -41,8 +41,12 @@ tidy:
 	go mod tidy
 
 # Generate code (contract bindings, etc.)
+generate-contracts:
+	go run ./internal/contracts/cmd/syncabi
+	go generate ./internal/contracts/...
+
 generate:
-	go generate ./...
+	$(MAKE) generate-contracts
 
 # Run all checks (build + vet + lint + test)
 check: build vet lint test

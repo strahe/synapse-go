@@ -26,6 +26,11 @@ type EVMSigner interface {
 	// EVMAddress returns the Ethereum address derived from this key.
 	EVMAddress() common.Address
 
+	// SignHash signs a pre-computed 32-byte hash and returns a 65-byte
+	// signature in R‖S‖V format. This is used for EIP-712 typed data
+	// signing and other raw-hash signing operations.
+	SignHash(hash []byte) ([]byte, error)
+
 	// Transactor returns go-ethereum TransactOpts bound to the given chain ID.
 	Transactor(chainID *big.Int) (*bind.TransactOpts, error)
 }
