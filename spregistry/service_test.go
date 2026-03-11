@@ -1,0 +1,345 @@
+package spregistry
+
+import (
+	"context"
+	"errors"
+	"math/big"
+	"testing"
+
+	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
+
+	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
+)
+
+type mockCaller struct {
+	sprABI   abi.ABI
+	replies  map[string][]byte
+	errs     map[string]error
+	argCheck func(string, []any)
+}
+
+func newMockCaller(t *testing.T) *mockCaller {
+	t.Helper()
+	a, err := sprbind.SPRegistryMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &mockCaller{sprABI: *a, replies: map[string][]byte{}, errs: map[string]error{}}
+}
+
+func (m *mockCaller) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([]byte, error) {
+	return []byte{0x01}, nil
+}
+
+func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+	if len(call.Data) < 4 {
+		return nil, errors.New("calldata too short")
+	}
+	selector := [4]byte{call.Data[0], call.Data[1], call.Data[2], call.Data[3]}
+	for name, method := range m.sprABI.Methods {
+		if [4]byte(method.ID) == selector {
+			if m.argCheck != nil {
+				args, err := method.Inputs.Unpack(call.Data[4:])
+				if err != nil {
+					return nil, err
+				}
+				m.argCheck(name, args)
+			}
+			if err, ok := m.errs[name]; ok {
+				return nil, err
+			}
+			return m.replies[name], nil
+		}
+	}
+	return nil, errors.New("no method matches selector")
+}
+
+func (m *mockCaller) set(t *testing.T, method string, values ...any) {
+	t.Helper()
+	mth, ok := m.sprABI.Methods[method]
+	if !ok {
+		t.Fatalf("method %q not found", method)
+	}
+	b, err := mth.Outputs.Pack(values...)
+	if err != nil {
+		t.Fatalf("pack %s: %v", method, err)
+	}
+	m.replies[method] = b
+}
+
+func newTestService(t *testing.T) (*Service, *mockCaller) {
+	t.Helper()
+	mc := newMockCaller(t)
+	s, err := New(Options{Client: mc, Address: common.HexToAddress("0xabcd")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, mc
+}
+
+func TestNew_Validation(t *testing.T) {
+	if _, err := New(Options{Address: common.HexToAddress("0x01")}); err == nil {
+		t.Error("expected nil Client error")
+	}
+	mc := newMockCaller(t)
+	if _, err := New(Options{Client: mc}); err == nil {
+		t.Error("expected zero Address error")
+	}
+}
+
+func TestGetProvider_FoundAndMissing(t *testing.T) {
+	s, mc := newTestService(t)
+
+	mc.set(t, "getProvider", sprbind.ServiceProviderRegistryServiceProviderInfoView{
+		ProviderId: big.NewInt(3),
+		Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+			ServiceProvider: common.HexToAddress("0x11"),
+			Payee:           common.HexToAddress("0x22"),
+			Name:            "alice",
+			Description:     "",
+			IsActive:        true,
+		},
+	})
+	got, err := s.GetProvider(context.Background(), big.NewInt(3))
+	if err != nil || got == nil || got.Name != "alice" || got.ID.Int64() != 3 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+
+	mc.set(t, "getProvider", sprbind.ServiceProviderRegistryServiceProviderInfoView{
+		ProviderId: big.NewInt(0),
+		Info:       sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
+	})
+	got, err = s.GetProvider(context.Background(), big.NewInt(99))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for missing, got %+v", got)
+	}
+
+	if _, err := s.GetProvider(context.Background(), nil); err == nil {
+		t.Error("expected nil providerID error")
+	}
+}
+
+func TestGetProviderIDByAddress(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderIdByAddress", big.NewInt(7))
+	got, err := s.GetProviderIDByAddress(context.Background(), common.HexToAddress("0x55"))
+	if err != nil || got.Int64() != 7 {
+		t.Fatalf("got=%v err=%v", got, err)
+	}
+	if _, err := s.GetProviderIDByAddress(context.Background(), common.Address{}); err == nil {
+		t.Error("expected zero addr error")
+	}
+}
+
+func TestIsProviderActive(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "isProviderActive", true)
+	ok, err := s.IsProviderActive(context.Background(), big.NewInt(1))
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+}
+
+func TestGetProviderCountAndActive(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderCount", big.NewInt(50))
+	mc.set(t, "activeProviderCount", big.NewInt(33))
+	total, _ := s.GetProviderCount(context.Background())
+	active, _ := s.GetActiveProviderCount(context.Background())
+	if total.Int64() != 50 || active.Int64() != 33 {
+		t.Fatalf("total=%d active=%d", total, active)
+	}
+}
+
+func pdpCapsFixture() (keys []string, values [][]byte) {
+	keys = []string{
+		CapServiceURL,
+		CapMinPieceSize,
+		CapMaxPieceSize,
+		CapStoragePrice,
+		CapMinProvingPeriod,
+		CapLocation,
+		CapPaymentToken,
+		CapIPNIPiece,
+		CapIPNIIPFS,
+	}
+	values = [][]byte{
+		[]byte("https://pdp.example.com"),
+		big.NewInt(1024).Bytes(),
+		big.NewInt(1 << 30).Bytes(),
+		big.NewInt(1_000_000).Bytes(),
+		big.NewInt(2880).Bytes(),
+		[]byte("US-EAST"),
+		common.HexToAddress("0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0").Bytes(),
+		{0x01},
+		{0x00}, // NOT enabled (must be 0x01 to count)
+	}
+	return
+}
+
+func TestGetPDPProvider(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	mc.set(t, "getProviderWithProduct", sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+		ProviderId: big.NewInt(4),
+		ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+			ServiceProvider: common.HexToAddress("0x99"),
+			Payee:           common.HexToAddress("0xaa"),
+			Name:            "pdp-sp",
+			IsActive:        true,
+		},
+		Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
+			ProductType:    uint8(ProductTypePDP),
+			CapabilityKeys: keys,
+			IsActive:       true,
+		},
+		ProductCapabilityValues: vals,
+	})
+	p, err := s.GetPDPProvider(context.Background(), big.NewInt(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p == nil || p.Offering.ServiceURL != "https://pdp.example.com" {
+		t.Fatalf("p=%+v", p)
+	}
+	if !p.Offering.IPNIPiece || p.Offering.IPNIIPFS {
+		t.Errorf("flags wrong: piece=%v ipfs=%v", p.Offering.IPNIPiece, p.Offering.IPNIIPFS)
+	}
+	if p.Offering.MinPieceSizeInBytes.Int64() != 1024 {
+		t.Errorf("minPiece=%d", p.Offering.MinPieceSizeInBytes)
+	}
+	if p.Offering.PaymentTokenAddress != common.HexToAddress("0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0") {
+		t.Errorf("token=%s", p.Offering.PaymentTokenAddress)
+	}
+}
+
+func TestGetPDPProvider_MissingReturnsNil(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderWithProduct", sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+		ProviderId:              big.NewInt(0),
+		ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
+		Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: []string{}, IsActive: false},
+		ProductCapabilityValues: [][]byte{},
+	})
+	p, err := s.GetPDPProvider(context.Background(), big.NewInt(77))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != nil {
+		t.Errorf("expected nil, got %+v", p)
+	}
+}
+
+func TestGetPDPProviders(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	mc.argCheck = func(method string, args []any) {
+		if method != "getProvidersByProductType" {
+			return
+		}
+		if got := args[3].(*big.Int); got.Int64() != 50 {
+			t.Fatalf("limit = %s, want 50", got)
+		}
+	}
+	raw := sprbind.ServiceProviderRegistryStoragePaginatedProviders{
+		Providers: []sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+			{
+				ProviderId: big.NewInt(1),
+				ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+					ServiceProvider: common.HexToAddress("0x01"), Name: "a", IsActive: true,
+				},
+				Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
+					ProductType: 0, CapabilityKeys: keys, IsActive: true,
+				},
+				ProductCapabilityValues: vals,
+			},
+		},
+		HasMore: true,
+	}
+	mc.set(t, "getProvidersByProductType", raw)
+	out, err := s.GetPDPProviders(context.Background(), true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.HasMore || len(out.Providers) != 1 {
+		t.Fatalf("out=%+v", out)
+	}
+}
+
+func TestGetProvidersByIDs(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProvidersByIds",
+		[]sprbind.ServiceProviderRegistryServiceProviderInfoView{
+			{ProviderId: big.NewInt(1), Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x01"), Name: "a", IsActive: true}},
+			{ProviderId: big.NewInt(0), Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{}},
+		},
+		[]bool{true, false},
+	)
+	out, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), big.NewInt(999)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 || out[0] == nil || out[1] != nil {
+		t.Fatalf("out=%+v", out)
+	}
+	if out[0].Name != "a" {
+		t.Errorf("name=%s", out[0].Name)
+	}
+}
+
+func TestCapabilitiesListToMap(t *testing.T) {
+	m := CapabilitiesListToMap([]string{"a", "b", "c"}, [][]byte{{0x01}, {0x02}})
+	if len(m) != 2 {
+		t.Fatalf("len=%d", len(m))
+	}
+}
+
+func TestDecodePDPOffering_IPNIPeerID(t *testing.T) {
+	peerBytes := []byte{0xde, 0xad, 0xbe, 0xef}
+	caps := map[string][]byte{
+		CapServiceURL:       []byte("https://x"),
+		CapMinProvingPeriod: big.NewInt(1).Bytes(),
+		CapStoragePrice:     big.NewInt(1).Bytes(),
+		CapIPNIPeerID:       peerBytes,
+		"extraKey":          []byte("extraVal"),
+	}
+	off, err := DecodePDPOffering(caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.IPNIPeerID == "" {
+		t.Error("peerID should be set")
+	}
+	if off.IPNIPeerID[0] != 'z' {
+		t.Fatalf("peerID should keep multibase prefix, got %q", off.IPNIPeerID)
+	}
+	if off.ExtraCapabilities["extraKey"] == nil {
+		t.Error("extra capability should be preserved")
+	}
+	if err := ValidatePDPOffering(off); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidatePDPOffering_Errors(t *testing.T) {
+	if err := ValidatePDPOffering(PDPOffering{}); err == nil {
+		t.Error("expected error on empty")
+	}
+}
+
+func TestGetProvidersByIDs_NilInput(t *testing.T) {
+	s, _ := newTestService(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetProvidersByIDs should return an error, panicked with %v", r)
+		}
+	}()
+	if _, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), nil}); err == nil {
+		t.Fatal("expected error for nil providerID")
+	}
+}

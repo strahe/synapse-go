@@ -27,6 +27,8 @@ func TestSyncWritesMergedABIs(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"type":"error","name":"Boom","inputs":[]}]`))
 		case "/service_contracts/abi/FilecoinWarmStorageService.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"store","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
+		case "/service_contracts/abi/FilecoinWarmStorageServiceStateView.abi.json":
+			_, _ = w.Write([]byte(`[{"type":"function","name":"view","inputs":[],"outputs":[],"stateMutability":"view"}]`))
 		case "/service_contracts/abi/ServiceProviderRegistry.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"register","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
 		case "/service_contracts/abi/FilecoinPayV1.abi.json":
@@ -182,6 +184,8 @@ func TestSyncDoesNotWriteAnyFilesWhenFetchFails(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"type":"error","name":"Boom","inputs":[]}]`))
 		case "/service_contracts/abi/FilecoinWarmStorageService.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"store","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
+		case "/service_contracts/abi/FilecoinWarmStorageServiceStateView.abi.json":
+			_, _ = w.Write([]byte(`[{"type":"function","name":"view","inputs":[],"outputs":[],"stateMutability":"view"}]`))
 		case "/service_contracts/abi/ServiceProviderRegistry.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"register","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
 		case "/service_contracts/abi/FilecoinPayV1.abi.json":

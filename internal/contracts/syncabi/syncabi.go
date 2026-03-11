@@ -36,6 +36,7 @@ const (
 var manifest = []ContractSpec{
 	{PackageName: "pdpverifier", UpstreamABI: "PDPVerifier.abi.json"},
 	{PackageName: "fwss", UpstreamABI: "FilecoinWarmStorageService.abi.json", MergeErrors: true},
+	{PackageName: "fwssview", UpstreamABI: "FilecoinWarmStorageServiceStateView.abi.json", MergeErrors: true},
 	{PackageName: "spregistry", UpstreamABI: "ServiceProviderRegistry.abi.json", MergeErrors: true},
 	{PackageName: "filpay", UpstreamABI: "FilecoinPayV1.abi.json"},
 }
