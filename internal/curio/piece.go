@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/piece"
 )
 
 // UploadPieceResult describes the outcome of POST /pdp/piece.
@@ -32,8 +34,8 @@ type UploadPieceResult struct {
 //
 // Mirrors TS synapse-core sp/upload.ts::uploadPiece.
 func (c *Client) UploadPiece(ctx context.Context, pieceCID cid.Cid) (*UploadPieceResult, error) {
-	if !pieceCID.Defined() {
-		return nil, errors.New("curio.UploadPiece: undefined pieceCID")
+	if err := validatePieceCIDV2("curio.UploadPiece", pieceCID); err != nil {
+		return nil, err
 	}
 	u, err := c.resolve("pdp/piece")
 	if err != nil {
@@ -128,8 +130,8 @@ type FindPieceResult struct {
 // for HTTP 404 and ErrPieceProcessing for HTTP 202 while the SP is still
 // parking the piece.
 func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceResult, error) {
-	if !pieceCID.Defined() {
-		return nil, errors.New("curio.FindPiece: undefined pieceCID")
+	if err := validatePieceCIDV2("curio.FindPiece", pieceCID); err != nil {
+		return nil, err
 	}
 	u, err := c.resolve("pdp/piece")
 	if err != nil {
@@ -165,6 +167,9 @@ func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceRes
 // context is cancelled / timeout is reached. A zero pollInterval defaults
 // to one second.
 func (c *Client) WaitForPieceParked(ctx context.Context, pieceCID cid.Cid, pollInterval time.Duration) error {
+	if err := validatePieceCIDV2("curio.WaitForPieceParked", pieceCID); err != nil {
+		return err
+	}
 	if pollInterval <= 0 {
 		pollInterval = time.Second
 	}
@@ -180,6 +185,16 @@ func (c *Client) WaitForPieceParked(ctx context.Context, pieceCID cid.Cid, pollI
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+func validatePieceCIDV2(op string, pieceCID cid.Cid) error {
+	if !pieceCID.Defined() {
+		return fmt.Errorf("%s: undefined pieceCID", op)
+	}
+	if _, err := piece.ParseV2(pieceCID); err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
 }
 
 // lastPathSegment returns the last non-empty path segment of a URL or

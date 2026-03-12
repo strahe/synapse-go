@@ -10,10 +10,11 @@ import (
 )
 
 func TestPieceCIDRoundTrip(t *testing.T) {
-	c, _, err := piece.CalculateFromBytes([]byte("hello synapse go"))
+	info, err := piece.CalculateFromBytes([]byte("hello synapse go"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := info.CIDv1
 	raw := EncodePieceCID(c)
 	if len(raw.Data) == 0 {
 		t.Fatal("empty encoded data")
@@ -54,8 +55,9 @@ func TestDecodePieceCID_Invalid(t *testing.T) {
 }
 
 func TestPieceCIDsBatch(t *testing.T) {
-	c1, _, _ := piece.CalculateFromBytes([]byte("alpha"))
-	c2, _, _ := piece.CalculateFromBytes([]byte("beta"))
+	info1, _ := piece.CalculateFromBytes([]byte("alpha"))
+	info2, _ := piece.CalculateFromBytes([]byte("beta"))
+	c1, c2 := info1.CIDv1, info2.CIDv1
 	in := []cid.Cid{c1, c2}
 	enc := EncodePieceCIDs(in)
 	if len(enc) != 2 {

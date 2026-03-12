@@ -1,6 +1,7 @@
 package curio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,18 @@ func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Serve
 		t.Fatalf("New: %v", err)
 	}
 	return c, srv
+}
+
+func testPieceInfoV2(t *testing.T) piece.PieceInfo {
+	t.Helper()
+	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0xab}, 512))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	if !info.CIDv2.Defined() {
+		t.Fatal("expected PieceCIDv2 fixture")
+	}
+	return info
 }
 
 func TestNew_Validation(t *testing.T) {
@@ -85,7 +98,7 @@ func TestUploadPiece_AlreadyExists(t *testing.T) {
 		}
 		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	res, err := c.UploadPiece(context.Background(), pc)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +119,7 @@ func TestUploadPiece_Created(t *testing.T) {
 		}
 	}))
 	_ = srv
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	res, err := c.UploadPiece(context.Background(), pc)
 	if err != nil {
 		t.Fatal(err)
@@ -120,10 +133,20 @@ func TestUploadPiece_MissingLocation(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated) // no Location
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	_, err := c.UploadPiece(context.Background(), pc)
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Fatalf("want ErrLocationHeader, got %v", err)
+	}
+}
+
+func TestUploadPiece_RejectsV1(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+	}))
+	pc := testPieceInfoV2(t).CIDv1
+	if _, err := c.UploadPiece(context.Background(), pc); err == nil || !strings.Contains(err.Error(), "PieceCIDv2") {
+		t.Fatalf("want PieceCIDv2 validation error, got %v", err)
 	}
 }
 
@@ -183,8 +206,9 @@ func TestUploadPieceFromBytes_FullFlow(t *testing.T) {
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
-	res, err := c.UploadPieceFromBytes(context.Background(), pc, []byte("hi"))
+	payload := bytes.Repeat([]byte{0xab}, 512)
+	pc := testPieceInfoV2(t).CIDv2
+	res, err := c.UploadPieceFromBytes(context.Background(), pc, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +233,7 @@ func TestFindPiece_FoundAndMissing(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"pieceCid":%q}`, r.URL.Query().Get("pieceCid"))
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	got, err := c.FindPiece(context.Background(), pc)
 	if err != nil {
 		t.Fatal(err)
@@ -227,11 +251,21 @@ func TestFindPiece_FoundAndMissing(t *testing.T) {
 	}
 }
 
+func TestFindPiece_RejectsV1(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+	}))
+	pc := testPieceInfoV2(t).CIDv1
+	if _, err := c.FindPiece(context.Background(), pc); err == nil || !strings.Contains(err.Error(), "PieceCIDv2") {
+		t.Fatalf("want PieceCIDv2 validation error, got %v", err)
+	}
+}
+
 func TestFindPiece_Processing(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusAccepted)
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	if _, err := c.FindPiece(context.Background(), pc); !errors.Is(err, ErrPieceProcessing) {
 		t.Fatalf("want ErrPieceProcessing, got %v", err)
 	}
@@ -248,7 +282,7 @@ func TestWaitForPieceParked(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"pieceCid":%q}`, r.URL.Query().Get("pieceCid"))
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.WaitForPieceParked(ctx, pc, 10*time.Millisecond); err != nil {
@@ -270,7 +304,7 @@ func TestWaitForPieceParked_RetriesProcessing(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"pieceCid":%q}`, r.URL.Query().Get("pieceCid"))
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := testPieceInfoV2(t).CIDv2
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.WaitForPieceParked(ctx, pc, 10*time.Millisecond); err != nil {
@@ -278,6 +312,16 @@ func TestWaitForPieceParked_RetriesProcessing(t *testing.T) {
 	}
 	if calls < 2 {
 		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestWaitForPieceParked_RejectsV1(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+	}))
+	pc := testPieceInfoV2(t).CIDv1
+	if err := c.WaitForPieceParked(context.Background(), pc, time.Millisecond); err == nil || !strings.Contains(err.Error(), "PieceCIDv2") {
+		t.Fatalf("want PieceCIDv2 validation error, got %v", err)
 	}
 }
 
@@ -433,7 +477,8 @@ func TestAddPieces(t *testing.T) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0xdead000000000000000000000000000000000000000000000000000000000000")
 		w.WriteHeader(http.StatusCreated)
 	}))
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := pcInfo.CIDv1
 	res, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatal(err)
@@ -445,7 +490,8 @@ func TestAddPieces(t *testing.T) {
 }
 
 func TestAddPieces_RootRelativeLocationPreservesBaseOrigin(t *testing.T) {
-	pc, _, _ := piece.CalculateFromBytes([]byte("hi"))
+	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
+	pc := pcInfo.CIDv1
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/prefix/pdp/data-sets/5/pieces" {
 			t.Fatalf("bad path: %s", r.URL.Path)
