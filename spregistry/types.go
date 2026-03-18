@@ -70,3 +70,23 @@ type PaginatedPDPProviders struct {
 	Providers []PDPProvider
 	HasMore   bool
 }
+
+// ProviderFilter describes criteria for selecting active PDP providers.
+// A zero-value ProviderFilter accepts all active providers.
+//
+// All non-nil / non-zero fields are applied as AND conditions.
+type ProviderFilter struct {
+	// PieceSizeBytes, when non-nil, retains only providers whose
+	// minPieceSizeInBytes ≤ PieceSizeBytes ≤ maxPieceSizeInBytes.
+	PieceSizeBytes *big.Int
+
+	// PaymentToken, when non-nil, retains only providers that accept
+	// this payment token. The zero address is a valid value here and
+	// means FIL, matching the on-chain/TS semantics.
+	PaymentToken *common.Address
+
+	// ExcludeIDs is a set of provider IDs to skip. This supports the
+	// replacement-with-exclusion-set pattern required for secondary
+	// provider selection during multi-copy upload.
+	ExcludeIDs []*big.Int
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -199,6 +200,96 @@ func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []*big.Int)
 		out[i] = info
 	}
 	return out, nil
+}
+
+// SelectActivePDPProviders fetches all active PDP providers (handling
+// pagination internally), applies f, and returns the survivors sorted
+// deterministically by provider ID (ascending). This is the entry point
+// that storage uses for provider selection; it deliberately avoids exposing
+// raw pagination to the caller.
+//
+// Filter semantics (all conditions are ANDed):
+//   - PieceSizeBytes: provider must satisfy
+//     minPieceSizeInBytes ≤ PieceSizeBytes ≤ maxPieceSizeInBytes.
+//     When maxPieceSizeInBytes is zero the upper bound is skipped.
+//   - PaymentToken: when non-nil, provider must declare exactly this
+//     payment token address. The zero address is a valid value and
+//     means FIL, matching the on-chain/TS semantics.
+//   - ExcludeIDs: providers whose ID appears in this slice are removed.
+//
+// An error is returned if pagination exceeds maxSelectPages to guard against
+// a misbehaving RPC that returns HasMore=true indefinitely.
+func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter) ([]PDPProvider, error) {
+	const (
+		pageSize       = 50
+		maxSelectPages = 200 // safety cap: 200 × 50 = 10 000 providers
+	)
+
+	excludeSet := make(map[string]struct{}, len(f.ExcludeIDs))
+	for _, id := range f.ExcludeIDs {
+		if id != nil {
+			excludeSet[id.String()] = struct{}{}
+		}
+	}
+
+	var all []PDPProvider
+	offset := big.NewInt(0)
+	limit := big.NewInt(pageSize)
+	for page := 0; ; page++ {
+		if page >= maxSelectPages {
+			return nil, fmt.Errorf("spregistry.SelectActivePDPProviders: pagination exceeded %d pages; possible RPC misbehaviour", maxSelectPages)
+		}
+		result, err := s.GetPDPProviders(ctx, true, offset, limit)
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.SelectActivePDPProviders: %w", err)
+		}
+		for _, p := range result.Providers {
+			if p.Info.ID == nil {
+				continue // skip malformed entries with nil ID
+			}
+			if matchesFilter(p, f, excludeSet) {
+				all = append(all, p)
+			}
+		}
+		if !result.HasMore {
+			break
+		}
+		offset = new(big.Int).Add(offset, limit)
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Info.ID.Cmp(all[j].Info.ID) < 0
+	})
+	return all, nil
+}
+
+// matchesFilter returns true when p satisfies all criteria in f.
+// Providers with a nil ID are always rejected.
+func matchesFilter(p PDPProvider, f ProviderFilter, excludeSet map[string]struct{}) bool {
+	if p.Info.ID == nil {
+		return false
+	}
+	if _, excluded := excludeSet[p.Info.ID.String()]; excluded {
+		return false
+	}
+	if f.PieceSizeBytes != nil && f.PieceSizeBytes.Sign() > 0 {
+		if p.Offering.MinPieceSizeInBytes != nil && p.Offering.MinPieceSizeInBytes.Sign() > 0 {
+			if f.PieceSizeBytes.Cmp(p.Offering.MinPieceSizeInBytes) < 0 {
+				return false
+			}
+		}
+		if p.Offering.MaxPieceSizeInBytes != nil && p.Offering.MaxPieceSizeInBytes.Sign() > 0 {
+			if f.PieceSizeBytes.Cmp(p.Offering.MaxPieceSizeInBytes) > 0 {
+				return false
+			}
+		}
+	}
+	if f.PaymentToken != nil {
+		if p.Offering.PaymentTokenAddress != *f.PaymentToken {
+			return false
+		}
+	}
+	return true
 }
 
 // --- helpers ---

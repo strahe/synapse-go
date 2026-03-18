@@ -182,6 +182,16 @@ func pdpCapsFixture() (keys []string, values [][]byte) {
 	return
 }
 
+func pdpCapsFixtureWithToken(token common.Address) (keys []string, values [][]byte) {
+	keys, values = pdpCapsFixture()
+	values[6] = token.Bytes()
+	return
+}
+
+func addrPtr(addr common.Address) *common.Address {
+	return &addr
+}
+
 func TestGetPDPProvider(t *testing.T) {
 	s, mc := newTestService(t)
 	keys, vals := pdpCapsFixture()
@@ -342,4 +352,326 @@ func TestGetProvidersByIDs_NilInput(t *testing.T) {
 	if _, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), nil}); err == nil {
 		t.Fatal("expected error for nil providerID")
 	}
+}
+
+// --- SelectActivePDPProviders tests ---
+
+// buildPaginatedRaw builds a mock getProvidersByProductType response with n providers
+// starting from startID, each using the given keys/values.
+func buildPaginatedRaw(startID int64, n int, keys []string, vals [][]byte, hasMore bool) sprbind.ServiceProviderRegistryStoragePaginatedProviders {
+	providers := make([]sprbind.ServiceProviderRegistryStorageProviderWithProduct, n)
+	for i := 0; i < n; i++ {
+		providers[i] = sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+			ProviderId: big.NewInt(startID + int64(i)),
+			ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+				ServiceProvider: common.HexToAddress("0x01"),
+				Name:            "sp",
+				IsActive:        true,
+			},
+			Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
+				ProductType:    uint8(ProductTypePDP),
+				CapabilityKeys: keys,
+				IsActive:       true,
+			},
+			ProductCapabilityValues: vals,
+		}
+	}
+	return sprbind.ServiceProviderRegistryStoragePaginatedProviders{Providers: providers, HasMore: hasMore}
+}
+
+func TestSelectActivePDPProviders_NoFilter(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(3, 2, keys, vals, false))
+
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(got))
+	}
+	// Results must be sorted by ID ascending.
+	if got[0].Info.ID.Cmp(got[1].Info.ID) >= 0 {
+		t.Errorf("expected ascending ID order, got %v %v", got[0].Info.ID, got[1].Info.ID)
+	}
+}
+
+func TestSelectActivePDPProviders_SortedByID(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	// Build providers with IDs in non-sorted order: 5, 2, 8.
+	raw := sprbind.ServiceProviderRegistryStoragePaginatedProviders{
+		Providers: []sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+			{
+				ProviderId:              big.NewInt(5),
+				ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x05"), IsActive: true},
+				Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: keys, IsActive: true},
+				ProductCapabilityValues: vals,
+			},
+			{
+				ProviderId:              big.NewInt(2),
+				ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x02"), IsActive: true},
+				Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: keys, IsActive: true},
+				ProductCapabilityValues: vals,
+			},
+			{
+				ProviderId:              big.NewInt(8),
+				ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x08"), IsActive: true},
+				Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: keys, IsActive: true},
+				ProductCapabilityValues: vals,
+			},
+		},
+		HasMore: false,
+	}
+	mc.set(t, "getProvidersByProductType", raw)
+
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3, got %d", len(got))
+	}
+	ids := []int64{got[0].Info.ID.Int64(), got[1].Info.ID.Int64(), got[2].Info.ID.Int64()}
+	if ids[0] != 2 || ids[1] != 5 || ids[2] != 8 {
+		t.Errorf("expected [2 5 8], got %v", ids)
+	}
+}
+
+func TestSelectActivePDPProviders_FilterByPieceSize(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	// pdpCapsFixture: minPieceSize=1024, maxPieceSize=1<<30.
+	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 2, keys, vals, false))
+
+	// Request a piece size that fits within the provider range.
+	fit := big.NewInt(4096)
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PieceSizeBytes: fit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 (fit), got %d", len(got))
+	}
+
+	// Request a piece size that is too small (below minPieceSize).
+	tooSmall := big.NewInt(512)
+	got, err = s.SelectActivePDPProviders(context.Background(), ProviderFilter{PieceSizeBytes: tooSmall})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 (too small), got %d", len(got))
+	}
+
+	// Request a piece size that is too large (above maxPieceSize).
+	tooBig := new(big.Int).Add(big.NewInt(1<<30), big.NewInt(1))
+	got, err = s.SelectActivePDPProviders(context.Background(), ProviderFilter{PieceSizeBytes: tooBig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 (too big), got %d", len(got))
+	}
+}
+
+func TestSelectActivePDPProviders_FilterByPaymentToken(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	// pdpCapsFixture uses token 0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0.
+	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 1, keys, vals, false))
+
+	wantToken := common.HexToAddress("0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0")
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(wantToken)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 (matching token), got %d", len(got))
+	}
+
+	otherToken := common.HexToAddress("0xdead")
+	got, err = s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(otherToken)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 (non-matching token), got %d", len(got))
+	}
+}
+
+func TestSelectActivePDPProviders_FilterByFILToken(t *testing.T) {
+	s, mc := newTestService(t)
+	usdfcKeys, usdfcVals := pdpCapsFixture()
+	filKeys, filVals := pdpCapsFixtureWithToken(common.Address{})
+	raw := sprbind.ServiceProviderRegistryStoragePaginatedProviders{
+		Providers: []sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+			{
+				ProviderId:              big.NewInt(1),
+				ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x01"), Name: "fil", IsActive: true},
+				Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: filKeys, IsActive: true},
+				ProductCapabilityValues: filVals,
+			},
+			{
+				ProviderId:              big.NewInt(2),
+				ProviderInfo:            sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x02"), Name: "usdfc", IsActive: true},
+				Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: usdfcKeys, IsActive: true},
+				ProductCapabilityValues: usdfcVals,
+			},
+		},
+		HasMore: false,
+	}
+	mc.set(t, "getProvidersByProductType", raw)
+
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(common.Address{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Info.ID.Int64() != 1 {
+		t.Fatalf("expected only FIL provider, got %+v", got)
+	}
+}
+
+func TestSelectActivePDPProviders_ExcludeIDs(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	// Providers with IDs 1, 2, 3.
+	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 3, keys, vals, false))
+
+	excluded := []*big.Int{big.NewInt(2)}
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{ExcludeIDs: excluded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 after exclusion, got %d", len(got))
+	}
+	for _, p := range got {
+		if p.Info.ID.Int64() == 2 {
+			t.Errorf("excluded provider ID 2 still present")
+		}
+	}
+}
+
+func TestSelectActivePDPProviders_Pagination(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+
+	// The mock always returns the same reply regardless of offset; we simulate
+	// pagination by having page 1 with hasMore=true and page 2 with hasMore=false.
+	// We achieve this by using a custom reply sequence via a counter.
+	callCount := 0
+	mc.argCheck = func(method string, args []any) {
+		if method == "getProvidersByProductType" {
+			callCount++
+		}
+	}
+
+	page1 := buildPaginatedRaw(1, 2, keys, vals, true)
+	page2 := buildPaginatedRaw(3, 2, keys, vals, false)
+
+	// We swap the reply after the first call by hooking into argCheck.
+	// Set page1 first; argCheck will switch to page2 on second call.
+	mc.set(t, "getProvidersByProductType", page1)
+	origArgCheck := mc.argCheck
+	mc.argCheck = func(method string, args []any) {
+		origArgCheck(method, args)
+		if method == "getProvidersByProductType" && callCount >= 2 {
+			mc.set(t, "getProvidersByProductType", page2)
+		}
+	}
+
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should have fetched both pages (4 total), sorted by ID.
+	if len(got) != 4 {
+		t.Fatalf("expected 4 providers across 2 pages, got %d", len(got))
+	}
+}
+
+func TestSelectActivePDPProviders_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getProvidersByProductType"] = errors.New("rpc timeout")
+
+	_, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err == nil {
+		t.Fatal("expected RPC error to propagate")
+	}
+}
+
+func TestSelectActivePDPProviders_EmptyResult(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProvidersByProductType", sprbind.ServiceProviderRegistryStoragePaginatedProviders{
+		Providers: []sprbind.ServiceProviderRegistryStorageProviderWithProduct{},
+		HasMore:   false,
+	})
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty, got %d", len(got))
+	}
+}
+
+func TestSelectActivePDPProviders_PaginationCapExceeded(t *testing.T) {
+	s, mc := newTestService(t)
+	keys, vals := pdpCapsFixture()
+	// Always return hasMore=true so the loop would run forever without the cap.
+	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 1, keys, vals, true))
+
+	_, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{})
+	if err == nil {
+		t.Fatal("expected error when pagination cap is exceeded")
+	}
+	// Verify the error message mentions pagination.
+	if !containsString(err.Error(), "pagination exceeded") {
+		t.Errorf("error should mention pagination cap, got: %v", err)
+	}
+}
+
+func TestSelectActivePDPProviders_NilIDSkipped(t *testing.T) {
+	// matchesFilter is package-internal — test it directly to avoid the
+	// ABI packer panicking on a nil ProviderId in the mock.
+	keys, vals := pdpCapsFixture()
+	caps := CapabilitiesListToMap(keys, vals)
+	off, err := DecodePDPOffering(caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nilIDProvider := PDPProvider{
+		Info:     ProviderInfo{ID: nil},
+		Offering: off,
+	}
+	validProvider := PDPProvider{
+		Info:     ProviderInfo{ID: big.NewInt(7)},
+		Offering: off,
+	}
+
+	f := ProviderFilter{}
+	excludeSet := map[string]struct{}{}
+
+	if matchesFilter(nilIDProvider, f, excludeSet) {
+		t.Error("matchesFilter should return false for nil-ID provider")
+	}
+	if !matchesFilter(validProvider, f, excludeSet) {
+		t.Error("matchesFilter should return true for valid provider")
+	}
+}
+
+// containsString is a simple substring helper to avoid importing strings in test file.
+func containsString(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
 }
