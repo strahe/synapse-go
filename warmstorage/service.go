@@ -173,6 +173,30 @@ func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, o
 	return out, nil
 }
 
+// GetAllDataSetMetadata returns all metadata entries for the given dataset as a
+// key/value map. Metadata keys are unique on-chain; mismatched response lengths
+// are treated as an RPC/ABI error.
+func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID *big.Int) (map[string]string, error) {
+	if dataSetID == nil {
+		return nil, errors.New("warmstorage.GetAllDataSetMetadata: nil dataSetID")
+	}
+	raw, err := s.viewBind.GetAllDataSetMetadata(&bind.CallOpts{Context: ctx}, dataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w", err)
+	}
+	if len(raw.Keys) != len(raw.Values) {
+		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: mismatched keys (%d) and values (%d)", len(raw.Keys), len(raw.Values))
+	}
+	if len(raw.Keys) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(raw.Keys))
+	for i, key := range raw.Keys {
+		out[key] = raw.Values[i]
+	}
+	return out, nil
+}
+
 // GetClientDataSetsLength returns the total number of data sets for a payer.
 func (s *Service) GetClientDataSetsLength(ctx context.Context, payer common.Address) (*big.Int, error) {
 	if (payer == common.Address{}) {

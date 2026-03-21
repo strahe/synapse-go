@@ -1,21 +1,10 @@
-// Package synapse provides the Go SDK for Filecoin Onchain Cloud (FOC).
+// Package synapse is the module root for the Filecoin Onchain Cloud (FOC) Go SDK.
 //
-// The primary entry point is [New], which creates a [*Client] configured
-// with functional options. The Client composes all services (storage,
-// payments, warm storage, SP registry, FilBeam, costs) and provides
-// a simple "golden path" for common operations as well as access to
-// individual services for advanced use cases.
+// The concrete package implementations live in subpackages such as [piece],
+// [payments], [spregistry], [warmstorage], and [storage]. At the current MVP
+// stage the package-level services are implemented, while the convenience root
+// client wiring is still being built out.
 //
-// # Quick Start
-//
-//	client, err := synapse.New(ctx,
-//	    synapse.WithPrivateKey(key),
-//	    synapse.WithRPCURL("https://api.calibration.node.glif.io"),
-//	)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer client.Close()
-//
-// See ARCHITECTURE.md and ROADMAP.md for detailed design documentation.
+// See ARCHITECTURE.md and ROADMAP.md for detailed design documentation and the
+// current package responsibilities.
 package synapse

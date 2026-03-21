@@ -12,22 +12,24 @@ go get github.com/strahe/synapse-go
 
 Requires **Go 1.25+**.
 
-## Quick Start
+## Current package surface
 
-```go
-import "github.com/strahe/synapse-go"
+The implemented MVP surface is currently package-first rather than a single
+root client:
 
-client, err := synapse.New(ctx,
-    synapse.WithPrivateKeyHex("0x..."),
-    synapse.WithChain(chain.Calibration),
-)
-if err != nil {
-    log.Fatal(err)
-}
-defer client.Close()
+| Package | Purpose |
+| --- | --- |
+| `piece` | PieceCIDv2 calculation / validation helpers |
+| `internal/curio` | Curio PDP HTTP client used by provider-local storage flows |
+| `payments` | FilPay / ERC-20 balance and funding helpers |
+| `warmstorage` | FilecoinWarmStorageService read surface |
+| `spregistry` | ServiceProviderRegistry read + PDP provider selection |
+| `storage` | Multi-copy `store -> presign -> pull -> commit` orchestration |
 
-result, err := client.Upload(ctx, data, nil)
-```
+For storage uploads, compose `storage.Manager` with `storage.NewServiceResolver`
+plus a provider-local `storage.Context` factory. The eventual root `synapse.New`
+convenience client is not wired yet, so the old quick-start snippet has been
+removed to avoid advertising an API that does not exist in this branch.
 
 ## Development
 

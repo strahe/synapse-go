@@ -1,0 +1,167 @@
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+
+	commpwriter "github.com/filecoin-project/go-commp-utils/v2/writer"
+	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/piece"
+)
+
+type DownloadContext interface {
+	Download(context.Context, cid.Cid) (io.ReadCloser, error)
+}
+
+type DownloadOptions struct {
+	Context DownloadContext
+	URL     string
+}
+
+// validatePieceCID returns nil if c is a valid PieceCIDv1 or PieceCIDv2, or
+// an error that describes why c is not a piece CID.  Arbitrary non-piece CIDs
+// (e.g. dag-pb, raw sha2-256) are rejected here so callers get a clear error
+// instead of a confusing mismatch at the end of the download stream.
+func validatePieceCID(c cid.Cid) error {
+	if !c.Defined() {
+		return errors.New("undefined pieceCID")
+	}
+	if piece.Validate(c) == nil {
+		return nil // valid PieceCIDv1
+	}
+	if _, err := piece.ParseV2(c); err == nil {
+		return nil // valid PieceCIDv2
+	}
+	return fmt.Errorf("not a piece CID (v1 or v2): %s", c)
+}
+
+// Download retrieves a piece by URL or via a DownloadContext.  When URL is
+// used, the response body is streamed through a validating reader; the
+// terminal read error from io.ReadAll (or any last Read call that returns
+// io.EOF) carries the integrity check result — callers must not discard it.
+func (m *Manager) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
+	if err := validatePieceCID(pieceCID); err != nil {
+		return nil, fmt.Errorf("storage.Manager.Download: %w", err)
+	}
+	if opts == nil {
+		return nil, errors.New("storage.Manager.Download: nil options")
+	}
+	if opts.Context != nil {
+		if opts.URL != "" {
+			return nil, errors.New("storage.Manager.Download: cannot specify both Context and URL")
+		}
+		return opts.Context.Download(ctx, pieceCID)
+	}
+	if opts.URL == "" {
+		return nil, errors.New("storage.Manager.Download: no download source configured")
+	}
+	return m.downloadAndValidate(ctx, opts.URL, pieceCID)
+}
+
+// Download retrieves a piece from the storage provider.  Validation is
+// streaming: the integrity check runs at EOF, so callers must inspect the
+// terminal error returned by the last Read (or io.ReadAll).
+//
+// pieceCID must be a PieceCIDv2.  PieceCIDv1 is not accepted on this path
+// because curio only accepts v2 and the raw size needed to normalise v1→v2 is
+// not available here.  Use Manager.Download with a URL if you only have v1.
+func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+	if _, err := piece.ParseV2(pieceCID); err != nil {
+		return nil, fmt.Errorf("storage.Context.Download: PieceCIDv2 required: %w", err)
+	}
+	body, _, err := c.client.DownloadPiece(ctx, pieceCID)
+	if err != nil {
+		return nil, fmt.Errorf("storage.Context.Download: %w", err)
+	}
+	return newValidatingReadCloser(body, pieceCID), nil
+}
+
+func (m *Manager) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("storage: build download request: %w", err)
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("storage: GET %s: %w", rawURL, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("storage: GET %s: unexpected status %s", rawURL, resp.Status)
+	}
+	return newValidatingReadCloser(resp.Body, pieceCID), nil
+}
+
+type validatingReadCloser struct {
+	reader   io.ReadCloser
+	hasher   *commpwriter.Writer
+	expected cid.Cid
+	finished bool
+	finalErr error
+}
+
+func newValidatingReadCloser(reader io.ReadCloser, expected cid.Cid) io.ReadCloser {
+	return &validatingReadCloser{
+		reader:   reader,
+		hasher:   &commpwriter.Writer{},
+		expected: expected,
+	}
+}
+
+func (r *validatingReadCloser) Read(p []byte) (int, error) {
+	if r.finished {
+		return 0, r.finalErr
+	}
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		if _, writeErr := r.hasher.Write(p[:n]); writeErr != nil {
+			r.finished = true
+			r.finalErr = writeErr
+			return n, writeErr
+		}
+	}
+	switch {
+	case errors.Is(err, io.EOF):
+		r.finished = true
+		r.finalErr = r.validate()
+		if r.finalErr == nil {
+			r.finalErr = io.EOF
+		}
+		if n > 0 {
+			return n, nil
+		}
+		return 0, r.finalErr
+	case err != nil:
+		r.finished = true
+		r.finalErr = err
+	}
+	return n, err
+}
+
+func (r *validatingReadCloser) Close() error {
+	return r.reader.Close()
+}
+
+func (r *validatingReadCloser) validate() error {
+	sum, err := r.hasher.Sum()
+	if err != nil {
+		return fmt.Errorf("storage: validate download piece: %w", err)
+	}
+	info, err := piece.PieceInfoFromV1(sum.PieceCID, uint64(sum.PayloadSize))
+	if err != nil {
+		return fmt.Errorf("storage: validate download piece: %w", err)
+	}
+	// Accept the caller-supplied CID in either v1 or v2 form.
+	if r.expected == info.CIDv1 {
+		return nil
+	}
+	if info.CIDv2.Defined() && r.expected == info.CIDv2 {
+		return nil
+	}
+	return fmt.Errorf("storage: validate download piece: pieceCID mismatch (computed v1=%s v2=%s, want %s)",
+		info.CIDv1, info.CIDv2, r.expected)
+}

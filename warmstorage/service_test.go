@@ -217,6 +217,22 @@ func TestGetClientDataSets(t *testing.T) {
 	}
 }
 
+func TestGetAllDataSetMetadata(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{"source", "withCDN"}, []string{"app", ""})
+
+	got, err := s.GetAllDataSetMetadata(context.Background(), big.NewInt(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["source"] != "app" || got["withCDN"] != "" {
+		t.Fatalf("metadata=%v", got)
+	}
+	if _, err := s.GetAllDataSetMetadata(context.Background(), nil); err == nil {
+		t.Fatal("expected nil dataSetID error")
+	}
+}
+
 func TestGetApprovedProviderIDs(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)})
