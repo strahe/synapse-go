@@ -140,6 +140,7 @@ func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) 
 		LockupCurrent:       copyBig(v.LockupCurrent),
 		LockupRate:          copyBig(v.LockupRate),
 		LockupLastSettledAt: copyBig(v.LockupLastSettledAt),
+		FundedUntilEpoch:    copyBig(settled.FundedUntilEpoch),
 		availableFunds:      copyBig(settled.AvailableFunds),
 	}, nil
 }

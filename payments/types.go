@@ -14,7 +14,11 @@ type AccountState struct {
 	LockupCurrent       *big.Int
 	LockupRate          *big.Int
 	LockupLastSettledAt *big.Int
-	availableFunds      *big.Int
+	// FundedUntilEpoch is the forward-looking epoch at which the account's
+	// available funds will be exhausted at the current lockup rate.
+	// Sourced from getAccountInfoIfSettled(); zero when LockupRate is zero.
+	FundedUntilEpoch *big.Int
+	availableFunds   *big.Int
 }
 
 // AvailableFunds returns Funds - LockupCurrent (never negative). A nil
