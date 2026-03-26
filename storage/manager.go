@@ -38,6 +38,7 @@ type UploadResolver interface {
 type Manager struct {
 	resolver   UploadResolver
 	httpClient *http.Client
+	source     string
 }
 
 type Option func(*Manager)
@@ -54,6 +55,17 @@ func WithUploadResolver(resolver UploadResolver) Option {
 func WithHTTPClient(c *http.Client) Option {
 	return func(m *Manager) {
 		m.httpClient = c
+	}
+}
+
+// WithSource sets the application-level source identifier used for
+// dataset namespace isolation. Datasets created with different source
+// values are treated as distinct namespaces; only datasets whose
+// "source" metadata matches will be reused. This mirrors the TS SDK's
+// Synapse.create({ source }) option.
+func WithSource(s string) Option {
+	return func(m *Manager) {
+		m.source = s
 	}
 }
 
@@ -88,6 +100,12 @@ func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOpti
 	}
 	if m.resolver == nil {
 		return nil, errors.New("storage.Manager.UploadBytes: no upload resolver configured")
+	}
+
+	// Inject manager-level source into dataset metadata if set and not
+	// already overridden by the caller.
+	if m.source != "" {
+		opts = m.withSourceMetadata(opts)
 	}
 
 	// Capture the caller's intent before resolving (the resolver may return
@@ -306,4 +324,24 @@ func requestedCopiesForUpload(opts *UploadOptions) int {
 		return len(dedupeBigInts(opts.ProviderIDs))
 	}
 	return 2
+}
+
+// withSourceMetadata returns a shallow clone of opts with the manager-level
+// "source" key injected into DataSetMetadata, unless the caller already set it.
+func (m *Manager) withSourceMetadata(opts *UploadOptions) *UploadOptions {
+	if opts == nil {
+		return &UploadOptions{
+			DataSetMetadata: map[string]string{"source": m.source},
+		}
+	}
+	if _, ok := opts.DataSetMetadata["source"]; ok {
+		return opts // caller override wins
+	}
+	cloned := *opts
+	cloned.DataSetMetadata = make(map[string]string, len(opts.DataSetMetadata)+1)
+	for k, v := range opts.DataSetMetadata {
+		cloned.DataSetMetadata[k] = v
+	}
+	cloned.DataSetMetadata["source"] = m.source
+	return &cloned
 }

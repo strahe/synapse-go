@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 )
@@ -38,8 +37,8 @@ func TestParseUploadConfig_DefaultsToCalibrationAndTwoCopies(t *testing.T) {
 	if cfg.PrivateKeyHex != "0x1234" {
 		t.Fatalf("PrivateKeyHex=%q", cfg.PrivateKeyHex)
 	}
-	if cfg.Chain != chain.Calibration {
-		t.Fatalf("Chain=%s want calibration", cfg.Chain)
+	if cfg.Chain != nil {
+		t.Fatalf("Chain=%v want nil (auto-detect)", cfg.Chain)
 	}
 	if cfg.Copies != 2 {
 		t.Fatalf("Copies=%d want 2", cfg.Copies)

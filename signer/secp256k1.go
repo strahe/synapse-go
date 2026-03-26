@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -18,6 +19,7 @@ import (
 // It can sign both Filecoin messages (blake2b hash) and Ethereum/FEVM
 // transactions (keccak256 hash) from a single key.
 type Secp256k1Signer struct {
+	mu       sync.RWMutex
 	ecdsaKey *ecdsa.PrivateKey
 	filAddr  address.Address
 	ethAddr  common.Address
@@ -26,12 +28,16 @@ type Secp256k1Signer struct {
 var _ EVMSigner = (*Secp256k1Signer)(nil)
 
 // NewSecp256k1Signer creates a dual-protocol signer from a go-ethereum ECDSA
-// private key.
+// private key. The key is deep-copied so that [Secp256k1Signer.Zero] does not
+// mutate the caller's key material.
 func NewSecp256k1Signer(key *ecdsa.PrivateKey) (*Secp256k1Signer, error) {
 	if key == nil {
 		return nil, fmt.Errorf("signer: nil private key")
 	}
-	return newSecp256k1(key)
+	// Deep-copy: caller retains ownership of the original key.
+	keyCopy := *key
+	keyCopy.D = new(big.Int).Set(key.D)
+	return newSecp256k1(&keyCopy)
 }
 
 // NewSecp256k1SignerFromBytes creates a dual-protocol signer from a raw
@@ -76,6 +82,11 @@ func (s *Secp256k1Signer) EVMAddress() common.Address { return s.ethAddr }
 // The message is hashed with blake2b-256 before signing, and the result
 // is in R|S|V format (65 bytes).
 func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ecdsaKey == nil {
+		return nil, fmt.Errorf("signer.Sign: signer has been zeroed")
+	}
 	hash := blake2b.Sum256(msg)
 	sig, err := ethcrypto.Sign(hash[:], s.ecdsaKey)
 	if err != nil {
@@ -89,9 +100,18 @@ func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
 }
 
 // Transactor returns bind.TransactOpts for signing Ethereum/FEVM transactions
-// on the given chain.
+// on the given chain. The returned opts embed their own key copy so they remain
+// valid even if [Zero] is called after Transactor returns.
 func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
-	return bind.NewKeyedTransactorWithChainID(s.ecdsaKey, chainID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ecdsaKey == nil {
+		return nil, fmt.Errorf("signer.Transactor: signer has been zeroed")
+	}
+	// Copy the key so the returned TransactOpts closure is independent of Zero().
+	keyCopy := *s.ecdsaKey
+	keyCopy.D = new(big.Int).Set(s.ecdsaKey.D)
+	return bind.NewKeyedTransactorWithChainID(&keyCopy, chainID)
 }
 
 // SignHash signs a pre-computed 32-byte hash using the secp256k1 key.
@@ -100,5 +120,27 @@ func (s *Secp256k1Signer) SignHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, fmt.Errorf("signer.SignHash: hash must be 32 bytes, got %d", len(hash))
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ecdsaKey == nil {
+		return nil, fmt.Errorf("signer.SignHash: signer has been zeroed")
+	}
 	return ethcrypto.Sign(hash, s.ecdsaKey)
+}
+
+// Zero clears the private key material from memory.
+// It blocks until any in-progress [Sign], [SignHash], or [Transactor] call
+// completes, then prevents further signing. The signer must not be used after
+// Zero is called.
+func (s *Secp256k1Signer) Zero() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ecdsaKey != nil {
+		// Best-effort overwrite: SetBytes forces a new backing array write
+		// before SetInt64 truncates it. Go's GC does not guarantee the old
+		// array bytes are wiped, but this minimises the exposure window.
+		s.ecdsaKey.D.SetBytes(make([]byte, 32))
+		s.ecdsaKey.D.SetInt64(0)
+		s.ecdsaKey = nil
+	}
 }

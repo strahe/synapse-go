@@ -1,0 +1,444 @@
+package synapse
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
+
+	"github.com/strahe/synapse-go/chain"
+)
+
+// testKey returns a random ECDSA private key for testing.
+func testKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return key
+}
+
+// jsonRPCReq is a minimal JSON-RPC request.
+type jsonRPCReq struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+}
+
+// fakeRPCServer creates an httptest.Server that responds to eth_chainId with
+// the given chain ID hex string (e.g. "0x4cb2f"). Returns the server (caller
+// must Close) and an ethclient connected to it.
+func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclient.Client) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json-rpc", http.StatusBadRequest)
+			return
+		}
+		var result string
+		switch req.Method {
+		case "eth_chainId":
+			result = fmt.Sprintf(`"%s"`, chainIDHex)
+		default:
+			result = "null"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+	}))
+	ec, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		srv.Close()
+		t.Fatalf("dial fake RPC: %v", err)
+	}
+	return srv, ec
+}
+
+func TestNew_WithEthClient_Calibration(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f") // Calibration chain ID = 314159
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Calibration {
+		t.Errorf("chain = %v, want Calibration", client.Chain())
+	}
+	want := ethcrypto.PubkeyToAddress(key.PublicKey)
+	if client.Address() != want {
+		t.Errorf("address = %v, want %v", client.Address(), want)
+	}
+}
+
+func TestNew_WithRPCURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json-rpc", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Calibration
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Calibration {
+		t.Errorf("chain = %v, want Calibration", client.Chain())
+	}
+}
+
+func TestNew_WithChain_SkipsDetection(t *testing.T) {
+	// Provide a chain explicitly — no RPC call for chain ID.
+	srv, ec := fakeRPCServer(t, "0xdeadbeef") // bogus chain ID
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	cal := chain.Calibration
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithChain(cal),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Calibration {
+		t.Errorf("chain = %v, want Calibration", client.Chain())
+	}
+}
+
+func TestNew_WithPrivateKeyHex(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	hexKey := fmt.Sprintf("0x%x", ethcrypto.FromECDSA(key))
+
+	client, err := New(context.Background(),
+		WithPrivateKeyHex(hexKey),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	want := ethcrypto.PubkeyToAddress(key.PublicKey)
+	if client.Address() != want {
+		t.Errorf("address = %v, want %v", client.Address(), want)
+	}
+}
+
+func TestNew_MissingKey(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	_, err := New(context.Background(), WithEthClient(ec))
+	if err == nil {
+		t.Fatal("expected error for missing private key")
+	}
+}
+
+func TestNew_MissingRPC(t *testing.T) {
+	key := testKey(t)
+	_, err := New(context.Background(), WithPrivateKey(key))
+	if err == nil {
+		t.Fatal("expected error for missing RPC source")
+	}
+}
+
+func TestNew_UnsupportedChain(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x1") // Ethereum mainnet — not supported
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for unsupported chain")
+	}
+}
+
+func TestClose_OwnedClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Close should not error for owned client.
+	if err := client.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func TestClose_BorrowedClient(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Close must NOT close the borrowed ethclient.
+	if err := client.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	// ec should still be usable — verify by calling ChainID.
+	_, err = ec.ChainID(context.Background())
+	if err != nil {
+		t.Errorf("borrowed client unusable after Close: %v", err)
+	}
+	ec.Close()
+}
+
+func TestServiceGetters_Exist(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Verify lazy getters don't panic and return non-nil.
+	// These are purely in-memory constructors, no RPC calls.
+	if client.WarmStorage() == nil {
+		t.Error("WarmStorage() returned nil")
+	}
+	if client.SPRegistry() == nil {
+		t.Error("SPRegistry() returned nil")
+	}
+	if client.Payments() == nil {
+		t.Error("Payments() returned nil")
+	}
+	if client.SessionKey() == nil {
+		t.Error("SessionKey() returned nil")
+	}
+	if client.Costs() == nil {
+		t.Error("Costs() returned nil")
+	}
+	if client.FilBeam() == nil {
+		t.Error("FilBeam() returned nil")
+	}
+	if client.Storage() == nil {
+		t.Error("Storage() returned nil")
+	}
+}
+
+func TestServiceGetters_Idempotent(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Calling twice should return the same pointer (sync.Once).
+	ws1 := client.WarmStorage()
+	ws2 := client.WarmStorage()
+	if ws1 != ws2 {
+		t.Error("WarmStorage() not idempotent")
+	}
+
+	fb1 := client.FilBeam()
+	fb2 := client.FilBeam()
+	if fb1 != fb2 {
+		t.Error("FilBeam() not idempotent")
+	}
+
+	st1 := client.Storage()
+	st2 := client.Storage()
+	if st1 != st2 {
+		t.Error("Storage() not idempotent")
+	}
+}
+
+func TestNew_WithLogger(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	logger := newTestLogger()
+
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithLogger(logger),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Logger gets passed to sub-services. Verify Payments gets it.
+	_ = client.Payments() // trigger lazy init, should not panic
+}
+
+func TestNew_WithHTTPClient(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	hc := &http.Client{}
+
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithHTTPClient(hc),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// HTTP client gets passed to sub-services.
+	_ = client.FilBeam() // trigger lazy init
+	_ = client.Storage() // trigger lazy init
+}
+
+func TestNew_Mainnet(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x13a") // Filecoin mainnet = 314
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Mainnet {
+		t.Errorf("chain = %v, want Mainnet", client.Chain())
+	}
+}
+
+// newTestLogger returns a discard logger for tests.
+func newTestLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestLazyGetters_ConcurrentAccess(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Hammer all getters concurrently to exercise sync.Once under race
+	// detector. This also tests cross-getter dependencies (e.g. Costs
+	// triggers WarmStorage + Payments, Storage triggers WarmStorage +
+	// SPRegistry).
+	const goroutines = 20
+	done := make(chan struct{})
+	for i := range goroutines {
+		go func(n int) {
+			defer func() { done <- struct{}{} }()
+			switch n % 7 {
+			case 0:
+				_ = client.WarmStorage()
+			case 1:
+				_ = client.SPRegistry()
+			case 2:
+				_ = client.Payments()
+			case 3:
+				_ = client.SessionKey()
+			case 4:
+				_ = client.Costs()
+			case 5:
+				_ = client.FilBeam()
+			case 6:
+				_ = client.Storage()
+			}
+		}(i)
+	}
+	for range goroutines {
+		<-done
+	}
+
+	// Verify idempotency after concurrent access.
+	ws1, ws2 := client.WarmStorage(), client.WarmStorage()
+	if ws1 != ws2 {
+		t.Error("WarmStorage() returned different instances")
+	}
+	st1, st2 := client.Storage(), client.Storage()
+	if st1 != st2 {
+		t.Error("Storage() returned different instances")
+	}
+}
