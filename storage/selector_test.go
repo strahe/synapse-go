@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -324,5 +325,261 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsRejectsInactive(
 	})
 	if err == nil {
 		t.Fatal("expected error for inactive dataset, got nil")
+	}
+}
+
+func TestMetadataMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		ds        map[string]string
+		requested map[string]string
+		want      bool
+	}{
+		{"both empty", nil, nil, true},
+		{"both empty maps", map[string]string{}, map[string]string{}, true},
+		{"equal", map[string]string{"a": "1"}, map[string]string{"a": "1"}, true},
+		{"different lengths", map[string]string{"a": "1"}, map[string]string{"a": "1", "b": "2"}, false},
+		{"different values", map[string]string{"a": "1"}, map[string]string{"a": "2"}, false},
+		{"dataset has extra", map[string]string{"a": "1", "b": "2"}, map[string]string{"a": "1"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := metadataMatches(tt.ds, tt.requested); got != tt.want {
+				t.Fatalf("metadataMatches()=%v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithCopies(t *testing.T) {
+	// nil opts
+	got := withCopies(nil, 3)
+	if got == nil || got.Copies != 3 {
+		t.Fatalf("nil opts: got=%+v want Copies=3", got)
+	}
+
+	// non-nil opts with all fields
+	orig := &UploadOptions{
+		Copies:             1,
+		PieceMetadata:      map[string]string{"pk": "pv"},
+		DataSetMetadata:    map[string]string{"dk": "dv"},
+		ProviderIDs:        []*big.Int{big.NewInt(1)},
+		DataSetIDs:         []*big.Int{big.NewInt(2)},
+		ExcludeProviderIDs: []*big.Int{big.NewInt(3)},
+	}
+	cloned := withCopies(orig, 5)
+	if cloned.Copies != 5 {
+		t.Fatalf("Copies=%d want 5", cloned.Copies)
+	}
+	// Original must be unmodified
+	if orig.Copies != 1 {
+		t.Fatal("original was mutated")
+	}
+	// Cloned maps must be independent
+	cloned.PieceMetadata["pk"] = "changed"
+	if orig.PieceMetadata["pk"] != "pv" {
+		t.Fatal("PieceMetadata clone mutated original")
+	}
+	// Cloned slices must be independent (deep clone of *big.Int elements)
+	cloned.ProviderIDs[0] = big.NewInt(99)
+	if orig.ProviderIDs[0].Cmp(big.NewInt(1)) != 0 {
+		t.Fatal("ProviderIDs clone mutated original")
+	}
+	cloned.DataSetIDs[0] = big.NewInt(99)
+	if orig.DataSetIDs[0].Cmp(big.NewInt(2)) != 0 {
+		t.Fatal("DataSetIDs clone mutated original")
+	}
+	cloned.ExcludeProviderIDs[0] = big.NewInt(99)
+	if orig.ExcludeProviderIDs[0].Cmp(big.NewInt(3)) != 0 {
+		t.Fatal("ExcludeProviderIDs clone mutated original")
+	}
+}
+
+func TestResolveByDataSetIDs_SameProviderError(t *testing.T) {
+	// Two datasets resolving to the same provider — should yield an error
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+			"20": {DataSetID: big.NewInt(20), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		},
+		dataSetMetadata: map[string]map[string]string{
+			"10": {},
+			"20": {},
+		},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []*big.Int{big.NewInt(10), big.NewInt(20)},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate provider error")
+	}
+}
+
+func TestResolveByDataSetIDs_NilDataSetError(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []*big.Int{big.NewInt(999)},
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent dataset")
+	}
+}
+
+func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(99), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []*big.Int{big.NewInt(10)},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+}
+
+func TestResolveByDataSetIDs_CountMismatchError(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		},
+	})
+
+	// Copies=3 but only 1 dataset ID
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []*big.Int{big.NewInt(10)},
+		Copies:     3,
+	})
+	if err == nil {
+		t.Fatal("expected count mismatch error")
+	}
+}
+
+func TestSelectReplacement_ErrorFromAutoSelect(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []*big.Int{big.NewInt(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(1, "https://sp-1.example.com"),
+		},
+	})
+
+	// Exclude all providers → should fail
+	_, err := resolver.SelectReplacement(context.Background(), map[string]struct{}{
+		"1": {},
+	}, &UploadOptions{})
+	if err == nil {
+		t.Fatal("expected error when all providers excluded")
+	}
+}
+
+func TestNewServiceResolver_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    ServiceResolverOptions
+		wantErr string
+	}{
+		{
+			name:    "zero payer",
+			opts:    ServiceResolverOptions{},
+			wantErr: "zero payer",
+		},
+		{
+			name: "nil SPRegistry",
+			opts: ServiceResolverOptions{
+				Payer: testPayer(),
+			},
+			wantErr: "nil SPRegistry",
+		},
+		{
+			name: "nil WarmStorage",
+			opts: ServiceResolverOptions{
+				Payer:      testPayer(),
+				SPRegistry: &fakePDPProviderSource{},
+			},
+			wantErr: "nil WarmStorage",
+		},
+		{
+			name: "nil NewContext",
+			opts: ServiceResolverOptions{
+				Payer:       testPayer(),
+				SPRegistry:  &fakePDPProviderSource{},
+				WarmStorage: &fakeDataSetCatalog{},
+			},
+			wantErr: "nil NewContext",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewServiceResolver(tt.opts)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err=%q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestResolveByProviderIDs_CountMismatchError(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{
+			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs: []*big.Int{big.NewInt(1)},
+		Copies:      3,
+	})
+	if err == nil {
+		t.Fatal("expected count mismatch error")
+	}
+}
+
+func TestResolveByProviderIDs_ProviderNotFound(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs: []*big.Int{big.NewInt(999)},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+}
+
+func TestDedupeBigInts(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []*big.Int
+		want int
+	}{
+		{"empty", nil, 0},
+		{"with nils", []*big.Int{nil, nil}, 0},
+		{"duplicates", []*big.Int{big.NewInt(1), big.NewInt(1), big.NewInt(2)}, 2},
+		{"all unique", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)}, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupeBigInts(tt.in)
+			if len(got) != tt.want {
+				t.Fatalf("dedupeBigInts len=%d want %d", len(got), tt.want)
+			}
+		})
 	}
 }

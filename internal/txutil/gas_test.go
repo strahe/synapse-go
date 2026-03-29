@@ -108,6 +108,24 @@ func TestSuggestGasTipCapWithMultiplier(t *testing.T) {
 	}
 }
 
+func TestSuggestGasPriceWithMultiplier_Error(t *testing.T) {
+	boom := errors.New("price unavailable")
+	c := &fakeGasClient{priceErr: boom}
+	_, err := SuggestGasPriceWithMultiplier(context.Background(), c, 1.5)
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped boom, got %v", err)
+	}
+}
+
+func TestSuggestGasTipCapWithMultiplier_Error(t *testing.T) {
+	boom := errors.New("tip unavailable")
+	c := &fakeGasClient{tipErr: boom}
+	_, err := SuggestGasTipCapWithMultiplier(context.Background(), c, 1.5)
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped boom, got %v", err)
+	}
+}
+
 func TestSuggestGasPriceWithMultiplier_LargeWeiPrecision(t *testing.T) {
 	v := new(big.Int).Lsh(big.NewInt(1), 200)
 	c := &fakeGasClient{price: v}

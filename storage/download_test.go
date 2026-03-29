@@ -269,3 +269,69 @@ func TestContextDownload_RejectsNonPieceCID(t *testing.T) {
 		t.Fatal("expected error for non-piece CID, got nil")
 	}
 }
+
+func TestDownloadAndValidate_Non2xxStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	data := bytes.Repeat([]byte("xx"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	mgr := NewManager()
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
+	if err == nil {
+		t.Fatal("expected error for non-2xx status")
+	}
+	if !strings.Contains(err.Error(), "unexpected status") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDownloadAndValidate_RequestCreationError(t *testing.T) {
+	data := bytes.Repeat([]byte("rr"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	mgr := NewManager()
+	// A URL with an invalid control character triggers http.NewRequestWithContext failure
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: "http://example.com/\x7f"})
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
+	}
+	if !strings.Contains(err.Error(), "build download request") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestManagerDownload_NilOptions(t *testing.T) {
+	data := bytes.Repeat([]byte("no"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	mgr := NewManager()
+	_, err = mgr.Download(context.Background(), info.CIDv2, nil)
+	if err == nil {
+		t.Fatal("expected error for nil options")
+	}
+}
+
+func TestManagerDownload_NoSource(t *testing.T) {
+	data := bytes.Repeat([]byte("ns"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	mgr := NewManager()
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{})
+	if err == nil {
+		t.Fatal("expected error for no download source")
+	}
+}

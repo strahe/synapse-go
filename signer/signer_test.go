@@ -365,3 +365,154 @@ func TestAsEVM_Secp256k1(t *testing.T) {
 		t.Error("EVMAddress should not be zero")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SignHash tests
+// ---------------------------------------------------------------------------
+
+func TestSignHash_ValidHash(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hash := ethcrypto.Keccak256([]byte("test data"))
+	sig, err := s.SignHash(hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sig) != 65 {
+		t.Errorf("signature length = %d, want 65", len(sig))
+	}
+
+	// Verify recovery matches the signer's address.
+	recovered, err := ethcrypto.SigToPub(hash, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredAddr := ethcrypto.PubkeyToAddress(*recovered)
+	if recoveredAddr != s.EVMAddress() {
+		t.Errorf("recovered %s, want %s", recoveredAddr, s.EVMAddress())
+	}
+}
+
+func TestSignHash_WrongLength(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		hash []byte
+	}{
+		{"31 bytes", make([]byte, 31)},
+		{"33 bytes", make([]byte, 33)},
+		{"empty", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.SignHash(tt.hash)
+			if err == nil {
+				t.Error("expected error for wrong hash length")
+			}
+		})
+	}
+}
+
+func TestSignHash_ZeroedSigner(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Zero()
+
+	hash := make([]byte, 32)
+	_, err = s.SignHash(hash)
+	if err == nil {
+		t.Error("expected error after Zero()")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Zero tests
+// ---------------------------------------------------------------------------
+
+func TestZero_PreventsSign(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.Zero()
+
+	if _, err := s.Sign([]byte("msg")); err == nil {
+		t.Error("Sign should fail after Zero()")
+	}
+}
+
+func TestZero_PreventsTransactor(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.Zero()
+
+	if _, err := s.Transactor(big.NewInt(1)); err == nil {
+		t.Error("Transactor should fail after Zero()")
+	}
+}
+
+func TestZero_DoubleZeroSafe(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.Zero()
+	s.Zero() // must not panic
+}
+
+func TestZero_DoesNotMutateOriginalKey(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origD := new(big.Int).Set(key.D)
+
+	s, err := NewSecp256k1Signer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Zero()
+
+	// Original key's D should be unchanged (deep copy).
+	if key.D.Cmp(origD) != 0 {
+		t.Error("Zero() mutated the original key")
+	}
+}

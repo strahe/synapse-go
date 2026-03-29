@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/ipfs/go-cid"
 
@@ -327,9 +328,13 @@ type fakeResolver struct {
 	explicit         bool
 	replacements     []UploadContext
 	replacementCalls int
+	captureFn        func(*UploadOptions)
 }
 
-func (r *fakeResolver) ResolveUploadContexts(_ context.Context, _ *UploadOptions) ([]UploadContext, bool, error) {
+func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
+	if r.captureFn != nil {
+		r.captureFn(opts)
+	}
 	return r.contexts, r.explicit, nil
 }
 
@@ -528,5 +533,257 @@ func TestManagerUploadBytes_PresignFailureUsesPresignStage(t *testing.T) {
 	}
 	if got.FailedAttempts[0].Stage != CopyStagePresign {
 		t.Fatalf("Stage=%s want %s", got.FailedAttempts[0].Stage, CopyStagePresign)
+	}
+}
+
+func TestManagerUpload_NilReader(t *testing.T) {
+	mgr := NewManager()
+	_, err := mgr.Upload(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil reader")
+	}
+}
+
+func TestManagerUpload_ReadError(t *testing.T) {
+	mgr := NewManager()
+	_, err := mgr.Upload(context.Background(), iotest.ErrReader(errors.New("read boom")), nil)
+	if err == nil {
+		t.Fatal("expected error for failing reader")
+	}
+}
+
+func TestManagerUpload_DelegatesToUploadBytes(t *testing.T) {
+	data := bytes.Repeat([]byte("rd"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, got []byte, _ *StoreOptions) (*StoreResult, error) {
+			if !bytes.Equal(got, data) {
+				t.Fatal("data mismatch")
+			}
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got.PieceCID != info.CIDv2 {
+		t.Fatalf("PieceCID=%s want %s", got.PieceCID, info.CIDv2)
+	}
+}
+
+func TestWithUploadResolver(t *testing.T) {
+	r := &fakeResolver{}
+	mgr := NewManager(WithUploadResolver(r))
+	if mgr.resolver != r {
+		t.Fatal("WithUploadResolver did not set resolver")
+	}
+}
+
+func TestWithSource(t *testing.T) {
+	mgr := NewManager(WithSource("my-app"))
+	if mgr.source != "my-app" {
+		t.Fatalf("source=%q want my-app", mgr.source)
+	}
+}
+
+func TestWithSourceMetadata(t *testing.T) {
+	m := &Manager{source: "app"}
+
+	// nil opts → creates new opts with source
+	got := m.withSourceMetadata(nil)
+	if got == nil || got.DataSetMetadata["source"] != "app" {
+		t.Fatalf("nil opts: got=%+v", got)
+	}
+
+	// existing source key → caller wins
+	existing := &UploadOptions{DataSetMetadata: map[string]string{"source": "override"}}
+	got = m.withSourceMetadata(existing)
+	if got.DataSetMetadata["source"] != "override" {
+		t.Fatalf("caller override: source=%q want override", got.DataSetMetadata["source"])
+	}
+	if got != existing {
+		t.Fatal("should return same pointer when caller overrides")
+	}
+
+	// no source key → injects source
+	noSource := &UploadOptions{DataSetMetadata: map[string]string{"env": "prod"}}
+	got = m.withSourceMetadata(noSource)
+	if got.DataSetMetadata["source"] != "app" {
+		t.Fatalf("inject source: source=%q want app", got.DataSetMetadata["source"])
+	}
+	if got.DataSetMetadata["env"] != "prod" {
+		t.Fatal("existing keys should be preserved")
+	}
+	// original should not be mutated
+	if _, ok := noSource.DataSetMetadata["source"]; ok {
+		t.Fatal("original opts should not be mutated")
+	}
+}
+
+func TestCloneMetadata(t *testing.T) {
+	// nil opts
+	if got := cloneMetadata(nil); got != nil {
+		t.Fatalf("nil opts: got=%v want nil", got)
+	}
+	// empty metadata
+	if got := cloneMetadata(&UploadOptions{}); got != nil {
+		t.Fatalf("empty metadata: got=%v want nil", got)
+	}
+	// non-empty: returns clone
+	orig := &UploadOptions{PieceMetadata: map[string]string{"k": "v"}}
+	cloned := cloneMetadata(orig)
+	if cloned["k"] != "v" {
+		t.Fatalf("cloned[k]=%q want v", cloned["k"])
+	}
+	// mutating clone must not affect original
+	cloned["k"] = "changed"
+	if orig.PieceMetadata["k"] != "v" {
+		t.Fatal("clone mutated original")
+	}
+}
+
+func TestRequestedCopiesForUpload(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *UploadOptions
+		want int
+	}{
+		{"nil opts defaults to 2", nil, 2},
+		{"explicit Copies", &UploadOptions{Copies: 5}, 5},
+		{"DataSetIDs count", &UploadOptions{DataSetIDs: []*big.Int{big.NewInt(1), big.NewInt(2)}}, 2},
+		{"ProviderIDs count", &UploadOptions{ProviderIDs: []*big.Int{big.NewInt(10)}}, 1},
+		{"zero Copies, no IDs defaults to 2", &UploadOptions{}, 2},
+		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []*big.Int{big.NewInt(1), big.NewInt(1)}}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestedCopiesForUpload(tt.opts); got != tt.want {
+				t.Fatalf("requestedCopiesForUpload()=%d want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagerUploadBytes_SourceInjectedIntoMetadata(t *testing.T) {
+	data := bytes.Repeat([]byte("src"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+
+	var capturedOpts *UploadOptions
+	resolver := &fakeResolver{
+		contexts: []UploadContext{primary},
+		captureFn: func(opts *UploadOptions) {
+			capturedOpts = opts
+		},
+	}
+
+	mgr := &Manager{resolver: resolver, source: "test-app"}
+	_, err = mgr.UploadBytes(context.Background(), data, &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("UploadBytes: %v", err)
+	}
+	if capturedOpts == nil {
+		t.Fatal("resolver did not receive opts")
+	}
+	if capturedOpts.DataSetMetadata["source"] != "test-app" {
+		t.Fatalf("source=%q want test-app", capturedOpts.DataSetMetadata["source"])
+	}
+}
+
+// TestManagerUploadBytes_CommitResultMissingIdentifiers proves that a commit
+// result with missing identifiers (nil DataSetID or empty PieceIDs) is treated
+// as a failed attempt.
+func TestManagerUploadBytes_CommitResultMissingIdentifiers(t *testing.T) {
+	data := bytes.Repeat([]byte("mi"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: nil, PieceIDs: nil}, nil
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	_, err = mgr.UploadBytes(context.Background(), data, &UploadOptions{Copies: 1})
+	if err == nil {
+		t.Fatal("expected CommitError when identifiers missing")
+	}
+	var ce *CommitError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want CommitError, got %T", err)
+	}
+}
+
+// TestManagerUploadBytes_PullStatusNotComplete proves that a non-complete pull
+// status with nil error is recorded as a failed pull attempt.
+func TestManagerUploadBytes_PullStatusNotComplete(t *testing.T) {
+	data := bytes.Repeat([]byte("nc"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+	secondary := &fakeUploadContext{
+		id:       big.NewInt(2),
+		endpoint: "https://s.example.com",
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+			return &PullResult{Status: PullStatusFailed}, nil
+		},
+	}
+
+	mgr := &Manager{
+		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true},
+	}
+	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	if err != nil {
+		t.Fatalf("UploadBytes: %v", err)
+	}
+	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0].Stage != CopyStagePull {
+		t.Fatalf("FailedAttempts=%+v, want 1 pull failure", got.FailedAttempts)
 	}
 }

@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/big"
@@ -634,5 +636,530 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 	}
 	if addCalls != n-1 {
 		t.Fatalf("addCalls=%d want %d", addCalls, n-1)
+	}
+}
+
+func TestContextPieceURL(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
+	}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	info := mustPieceInfo(t)
+	got := ctx.PieceURL(info.CIDv2)
+	want := "https://sp.example.com/pdp/piece/" + info.CIDv2.String()
+	if got != want {
+		t.Fatalf("PieceURL()=%q want %q", got, want)
+	}
+}
+
+func TestContextProviderID(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
+	}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	got := ctx.ProviderID()
+	if got.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("ProviderID()=%s want 1", got)
+	}
+	// Must return a copy, not the original
+	got.SetInt64(999)
+	if ctx.provider.ID.Cmp(big.NewInt(1)) != 0 {
+		t.Fatal("ProviderID must return a copy")
+	}
+}
+
+func TestContextServiceURL(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
+	}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	if got := ctx.ServiceURL(); got != "https://sp.example.com" {
+		t.Fatalf("ServiceURL()=%q want https://sp.example.com", got)
+	}
+}
+
+func TestPieceURLFor_InvalidBaseURL(t *testing.T) {
+	ctx := &Context{
+		provider: Provider{
+			ID:         big.NewInt(1),
+			ServiceURL: "://invalid-url",
+		},
+	}
+	info := mustPieceInfo(t)
+	// Invalid URL should fallback to returning the raw ServiceURL
+	got := ctx.pieceURLFor(info.CIDv2)
+	if got != "://invalid-url" {
+		t.Fatalf("pieceURLFor with invalid URL=%q want raw ServiceURL", got)
+	}
+}
+
+func TestContextNewContext_ValidationErrors(t *testing.T) {
+	s := mustTestSigner(t)
+	tests := []struct {
+		name     string
+		provider Provider
+		client   PDPClient
+		wantErr  string
+	}{
+		{
+			name:     "nil provider ID",
+			provider: Provider{ServiceURL: "https://sp.example.com"},
+			client:   &fakeCurioClient{},
+			wantErr:  "nil provider ID",
+		},
+		{
+			name:     "empty service URL",
+			provider: Provider{ID: big.NewInt(1)},
+			client:   &fakeCurioClient{},
+			wantErr:  "empty provider service URL",
+		},
+		{
+			name:     "nil client",
+			provider: Provider{ID: big.NewInt(1), ServiceURL: "https://sp.example.com"},
+			client:   nil,
+			wantErr:  "nil PDP client",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewContext(tt.provider, tt.client, s)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err=%q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestContextStoreBytes_EmptyData(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.StoreBytes(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for empty data")
+	}
+}
+
+func TestContextPresignForCommit_NilSigner(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, nil,
+		WithChainID(big.NewInt(1)),
+		WithRecordKeeper(testRecordKeeper()),
+		WithPayer(testPayer()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	info := mustPieceInfo(t)
+	_, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err == nil {
+		t.Fatal("expected error for nil signer")
+	}
+}
+
+func TestContextPresignForCommit_NilChainID(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithRecordKeeper(testRecordKeeper()),
+		WithPayer(testPayer()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	info := mustPieceInfo(t)
+	_, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err == nil {
+		t.Fatal("expected error for nil chainID")
+	}
+}
+
+func TestContextPresignForCommit_NoPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.PresignForCommit(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for no pieces")
+	}
+}
+
+func TestContextCommit_NoPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{})
+	if err == nil {
+		t.Fatal("expected error for no pieces")
+	}
+}
+
+func TestContextPull_NoPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Pull(context.Background(), PullRequest{})
+	if err == nil {
+		t.Fatal("expected error for no pieces")
+	}
+}
+
+func TestContextPull_NilFrom(t *testing.T) {
+	info := mustPieceInfo(t)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Pull(context.Background(), PullRequest{Pieces: []cid.Cid{info.CIDv2}})
+	if err == nil {
+		t.Fatal("expected error for nil From")
+	}
+}
+
+func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{DataSetID: 0, ConfirmedPieceIDs: []*big.Int{big.NewInt(1)}}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error for zero dataSetID from server")
+	}
+}
+
+func TestContextPresignForCommit_ZeroRecordKeeper(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithChainID(big.NewInt(1)),
+		WithPayer(testPayer()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	info := mustPieceInfo(t)
+	_, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err == nil {
+		t.Fatal("expected error for zero recordKeeper")
+	}
+}
+
+func TestContextPresignForCommit_ZeroPayer(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithChainID(big.NewInt(1)),
+		WithRecordKeeper(testRecordKeeper()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	info := mustPieceInfo(t)
+	_, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err == nil {
+		t.Fatal("expected error for zero payer")
+	}
+}
+
+func TestMetadataEntries_KeyTooLong(t *testing.T) {
+	longKey := strings.Repeat("k", maxMetadataKeyLength+1)
+	_, err := metadataEntries(map[string]string{longKey: "v"}, 10)
+	if err == nil {
+		t.Fatal("expected error for key too long")
+	}
+}
+
+func TestMetadataEntries_ValueTooLong(t *testing.T) {
+	longValue := strings.Repeat("v", maxMetadataValueLength+1)
+	_, err := metadataEntries(map[string]string{"k": longValue}, 10)
+	if err == nil {
+		t.Fatal("expected error for value too long")
+	}
+}
+
+func TestMetadataEntries_TooManyKeys(t *testing.T) {
+	m := make(map[string]string)
+	for i := 0; i < 11; i++ {
+		m[fmt.Sprintf("k%d", i)] = "v"
+	}
+	_, err := metadataEntries(m, 10)
+	if err == nil {
+		t.Fatal("expected error for too many keys")
+	}
+}
+
+func TestContextStoreBytes_UploadError(t *testing.T) {
+	data := bytes.Repeat([]byte("ue"), 128)
+	fake := &fakeCurioClient{
+		uploadFromBytesFn: func(_ context.Context, _ cid.Cid, _ []byte) (*icurio.UploadPieceResult, error) {
+			return nil, errors.New("upload failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.StoreBytes(context.Background(), data, nil)
+	if err == nil {
+		t.Fatal("expected error for upload failure")
+	}
+}
+
+func TestContextStoreBytes_WaitError(t *testing.T) {
+	data := bytes.Repeat([]byte("we"), 128)
+	fake := &fakeCurioClient{
+		uploadFromBytesFn: func(_ context.Context, _ cid.Cid, _ []byte) (*icurio.UploadPieceResult, error) {
+			return &icurio.UploadPieceResult{}, nil
+		},
+		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error {
+			return errors.New("wait failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.StoreBytes(context.Background(), data, nil)
+	if err == nil {
+		t.Fatal("expected error for wait failure")
+	}
+}
+
+func TestContextCommit_DataSetIDExceedsUint64(t *testing.T) {
+	info := mustPieceInfo(t)
+	overflowID := new(big.Int).Lsh(big.NewInt(1), 64)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(overflowID),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error when dataSetID exceeds uint64")
+	}
+}
+
+func TestContextPull_EmptySourceURL(t *testing.T) {
+	info := mustPieceInfo(t)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{info.CIDv2},
+		From:   func(cid.Cid) string { return "" },
+	})
+	if err == nil {
+		t.Fatal("expected error for empty source URL")
+	}
+}
+
+func TestContextPull_UndefinedPieceCID(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{cid.Undef},
+		From:   func(cid.Cid) string { return "https://example.com" },
+	})
+	if err == nil {
+		t.Fatal("expected error for undefined pieceCID")
+	}
+}
+
+func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
+	info := mustPieceInfo(t)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(big.NewInt(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	extra, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+	if len(extra) == 0 {
+		t.Fatal("expected non-empty extraData for existing dataset path")
+	}
+	// ABI-encoded data for add-pieces should be well-formed (at least one 32-byte word).
+	if len(extra) < 32 {
+		t.Fatalf("extraData too short (%d bytes), want ≥32", len(extra))
+	}
+}
+
+func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: cid.Undef}})
+	if err == nil {
+		t.Fatal("expected error for undefined pieceCID")
+	}
+}
+
+func TestContextCommit_AddPiecesError(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return nil, errors.New("add pieces failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(big.NewInt(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error for add pieces failure")
+	}
+}
+
+func TestContextCommit_WaitAddPiecesError(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return nil, errors.New("wait failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(big.NewInt(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error for wait add pieces failure")
+	}
+}
+
+func TestContextCommit_CreateAndAddError(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return nil, errors.New("create failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error for create and add failure")
+	}
+}
+
+func TestContextCommit_WaitCreateAndAddError(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return nil, errors.New("wait create failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+		ExtraData: []byte{0x01},
+	})
+	if err == nil {
+		t.Fatal("expected error for wait create and add failure")
+	}
+}
+
+func TestContextDownload_ClientError(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakeCurioClient{
+		downloadPieceFn: func(_ context.Context, _ cid.Cid) (io.ReadCloser, int64, error) {
+			return nil, 0, errors.New("download failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Download(context.Background(), info.CIDv2)
+	if err == nil {
+		t.Fatal("expected error for download failure")
 	}
 }

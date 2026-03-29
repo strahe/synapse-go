@@ -155,3 +155,60 @@ func TestWaitForConfirmation_OneConfirmationAtCurrentHead(t *testing.T) {
 		t.Fatalf("got block %d", r.BlockNumber.Uint64())
 	}
 }
+
+func TestDefaultReceiptWaitConfig(t *testing.T) {
+	cfg := DefaultReceiptWaitConfig()
+	if cfg.Timeout != 5*time.Minute {
+		t.Errorf("Timeout = %v, want 5m", cfg.Timeout)
+	}
+	if cfg.PollInterval != 2*time.Second {
+		t.Errorf("PollInterval = %v, want 2s", cfg.PollInterval)
+	}
+	if cfg.MaxConsecutiveErrors != 5 {
+		t.Errorf("MaxConsecutiveErrors = %d, want 5", cfg.MaxConsecutiveErrors)
+	}
+}
+
+func TestWaitForReceipt_DelegatesToWaitForReceipt(t *testing.T) {
+	c := &fakeReceiptClient{}
+	c.fn = func(int64) (*types.Receipt, error) {
+		return &types.Receipt{Status: types.ReceiptStatusSuccessful, BlockNumber: big.NewInt(42)}, nil
+	}
+	r, err := WaitForReceipt(context.Background(), c, common.Hash{}, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if r.BlockNumber.Uint64() != 42 {
+		t.Fatalf("got block %d", r.BlockNumber.Uint64())
+	}
+}
+
+func TestWaitForReceipt_ZeroTimeoutSucceeds(t *testing.T) {
+	c := &fakeReceiptClient{}
+	c.fn = func(int64) (*types.Receipt, error) {
+		return &types.Receipt{Status: types.ReceiptStatusSuccessful, BlockNumber: big.NewInt(1)}, nil
+	}
+	// timeout=0 falls back to the internal default; the call succeeds immediately so no actual wait.
+	r, err := WaitForReceipt(context.Background(), c, common.Hash{}, 0)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if r == nil {
+		t.Fatal("expected receipt")
+	}
+}
+
+func TestWaitForConfirmation_Delegates(t *testing.T) {
+	c := &fakeReceiptClient{}
+	c.block.Store(15)
+	c.fn = func(int64) (*types.Receipt, error) {
+		return &types.Receipt{Status: types.ReceiptStatusSuccessful, BlockNumber: big.NewInt(10)}, nil
+	}
+	r, err := WaitForConfirmation(context.Background(), c, common.Hash{}, 3)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if r.BlockNumber.Uint64() != 10 {
+		t.Fatalf("got block %d", r.BlockNumber.Uint64())
+	}
+}

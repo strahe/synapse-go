@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
 	"testing"
 
@@ -271,5 +273,117 @@ func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
 	// Verify at least one is reachable via unwrap chain.
 	if !errors.Is(err, payErr) {
 		t.Errorf("expected wrapped payErr in error chain, got: %v", err)
+	}
+}
+
+// --- NewService validation ---
+
+func TestNewService_NilWS(t *testing.T) {
+	_, err := NewService(chain.Calibration, nil, &mockPay{}, &mockCaller{fee: new(big.Int)})
+	if err == nil {
+		t.Fatal("expected error for nil ws")
+	}
+}
+
+func TestNewService_NilPay(t *testing.T) {
+	_, err := NewService(chain.Calibration, &mockWS{}, nil, &mockCaller{fee: new(big.Int)})
+	if err == nil {
+		t.Fatal("expected error for nil pay")
+	}
+}
+
+func TestNewService_NilCaller(t *testing.T) {
+	_, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, nil)
+	if err == nil {
+		t.Fatal("expected error for nil caller")
+	}
+}
+
+func TestWithLogger_Option(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCaller{fee: new(big.Int)}, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc.logger != logger {
+		t.Error("expected logger to be set")
+	}
+}
+
+// --- readUsdfcSybilFee error paths ---
+
+type mockCallerErr struct{ err error }
+
+func (m *mockCallerErr) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+	return nil, m.err
+}
+
+type mockCallerBadReturn struct{ data []byte }
+
+func (m *mockCallerBadReturn) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+	return m.data, nil
+}
+
+func TestReadUsdfcSybilFee_CallContractError(t *testing.T) {
+	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCallerErr{err: fmt.Errorf("rpc down")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.readUsdfcSybilFee(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestReadUsdfcSybilFee_UnpackError(t *testing.T) {
+	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCallerBadReturn{data: []byte{0x01, 0x02}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.readUsdfcSybilFee(context.Background())
+	if err == nil {
+		t.Fatal("expected unpack error")
+	}
+}
+
+// --- GetAccountSummary error ---
+
+func TestGetAccountSummary_Error(t *testing.T) {
+	payErr := fmt.Errorf("rpc down")
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPayErr{err: payErr},
+		new(big.Int),
+	)
+	_, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	if !errors.Is(err, payErr) {
+		t.Fatalf("want wrapped payErr, got %v", err)
+	}
+}
+
+// --- GetAccountSummary with nil fields ---
+
+func TestGetAccountSummary_NilFields(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPay{
+			account: &payments.AccountState{
+				Funds:         nil,
+				LockupCurrent: nil,
+				LockupRate:    nil,
+			},
+			approval: &payments.OperatorApproval{},
+		},
+		new(big.Int),
+	)
+	summary, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Funds.Sign() != 0 {
+		t.Errorf("Funds should be 0, got %s", summary.Funds)
+	}
+	if summary.Debt.Sign() != 0 {
+		t.Errorf("Debt should be 0, got %s", summary.Debt)
 	}
 }

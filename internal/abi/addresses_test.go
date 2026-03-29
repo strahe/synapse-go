@@ -207,3 +207,51 @@ func TestResolvedAddressesFromChain_Mainnet(t *testing.T) {
 		t.Fatal("FWSS mismatch for mainnet")
 	}
 }
+
+func TestResolveAddresses_BatchCallError(t *testing.T) {
+	caller := &errorCallerAddresses{err: fmt.Errorf("batch fail")}
+	_, err := ResolveAddresses(context.Background(), caller, common.HexToAddress("0x2000000000000000000000000000000000000001"))
+	if err == nil {
+		t.Fatal("expected error from batch call failure")
+	}
+	if !strings.Contains(err.Error(), "batch call") {
+		t.Errorf("expected 'batch call' in error, got: %v", err)
+	}
+}
+
+func TestResolveAddresses_WrongResultCount(t *testing.T) {
+	// Return a valid multicall response with fewer results than expected.
+	type result struct {
+		Success    bool
+		ReturnData []byte
+	}
+	response, err := multicall3ABI.Methods["aggregate3"].Outputs.Pack([]result{
+		{Success: true, ReturnData: []byte{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := &fakeMulticallCaller{
+		t:             t,
+		multicallAddr: chain.Mainnet.Addresses().Multicall3,
+		response:      response,
+	}
+	_, err = ResolveAddresses(context.Background(), caller, common.HexToAddress("0x2000000000000000000000000000000000000001"))
+	if err == nil {
+		t.Fatal("expected error for wrong result count")
+	}
+	if !strings.Contains(err.Error(), "expected") || !strings.Contains(err.Error(), "got 1") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// errorCallerAddresses returns an error from CallContract.
+type errorCallerAddresses struct{ err error }
+
+func (c *errorCallerAddresses) CodeAt(context.Context, common.Address, *big.Int) ([]byte, error) {
+	return nil, nil
+}
+
+func (c *errorCallerAddresses) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+	return nil, c.err
+}

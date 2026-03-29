@@ -675,3 +675,127 @@ func containsString(s, sub string) bool {
 			return false
 		}())
 }
+
+// ---------------------------------------------------------------------------
+// Address getter test
+// ---------------------------------------------------------------------------
+
+func TestAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	want := common.HexToAddress("0xabcd")
+	if got := s.Address(); got != want {
+		t.Errorf("Address() = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProviderByAddress tests
+// ---------------------------------------------------------------------------
+
+func TestGetProviderByAddress_ZeroAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetProviderByAddress(context.Background(), common.Address{})
+	if err == nil {
+		t.Error("expected error for zero address")
+	}
+}
+
+func TestGetProviderByAddress_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getProviderByAddress"] = errors.New("rpc error")
+	_, err := s.GetProviderByAddress(context.Background(), common.HexToAddress("0x11"))
+	if err == nil {
+		t.Error("expected RPC error")
+	}
+}
+
+func TestGetProviderByAddress_EmptyProvider(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderByAddress", sprbind.ServiceProviderRegistryServiceProviderInfoView{
+		ProviderId: big.NewInt(0),
+		Info:       sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
+	})
+	got, err := s.GetProviderByAddress(context.Background(), common.HexToAddress("0x99"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty provider, got %+v", got)
+	}
+}
+
+func TestGetProviderByAddress_ValidProvider(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderByAddress", sprbind.ServiceProviderRegistryServiceProviderInfoView{
+		ProviderId: big.NewInt(5),
+		Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+			ServiceProvider: common.HexToAddress("0x55"),
+			Payee:           common.HexToAddress("0x66"),
+			Name:            "bob",
+			Description:     "test",
+			IsActive:        true,
+		},
+	})
+	got, err := s.GetProviderByAddress(context.Background(), common.HexToAddress("0x55"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name != "bob" || got.ID.Int64() != 5 {
+		t.Errorf("got=%+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsProviderActive edge cases
+// ---------------------------------------------------------------------------
+
+func TestIsProviderActive_NilProviderID(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.IsProviderActive(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error for nil providerID")
+	}
+}
+
+func TestIsProviderActive_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["isProviderActive"] = errors.New("rpc error")
+	_, err := s.IsProviderActive(context.Background(), big.NewInt(1))
+	if err == nil {
+		t.Error("expected RPC error")
+	}
+}
+
+func TestIsProviderActive_ReturnsFalse(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "isProviderActive", false)
+	ok, err := s.IsProviderActive(context.Background(), big.NewInt(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProviderCount / GetActiveProviderCount error paths
+// ---------------------------------------------------------------------------
+
+func TestGetProviderCount_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getProviderCount"] = errors.New("rpc error")
+	_, err := s.GetProviderCount(context.Background())
+	if err == nil {
+		t.Error("expected RPC error")
+	}
+}
+
+func TestGetActiveProviderCount_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["activeProviderCount"] = errors.New("rpc error")
+	_, err := s.GetActiveProviderCount(context.Background())
+	if err == nil {
+		t.Error("expected RPC error")
+	}
+}

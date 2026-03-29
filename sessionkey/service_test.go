@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -1059,5 +1060,311 @@ func TestResolveRevokeOptions_Defaults(t *testing.T) {
 	}
 	if ro.Origin != "synapse" {
 		t.Errorf("origin = %q, want %q", ro.Origin, "synapse")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RegistryAddress getter test
+// ---------------------------------------------------------------------------
+
+func TestRegistryAddress(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	if svc.RegistryAddress() != testRegistryAddr {
+		t.Errorf("RegistryAddress() = %s, want %s", svc.RegistryAddress(), testRegistryAddr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// finalize branch coverage
+// ---------------------------------------------------------------------------
+
+func TestFinalize_NoWait(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	// Login without WithWait → finalize takes the waitTimeout<=0 path.
+	res, err := svc.Login(context.Background(), common.HexToAddress("0xAA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Receipt != nil {
+		t.Error("expected nil receipt without WithWait")
+	}
+}
+
+func TestFinalize_WithWait_Success(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	sessionKey := common.HexToAddress("0xAA")
+	// Pre-set a receipt for any tx hash.
+	mb.receiptFn = func(_ context.Context, h common.Hash) (*types.Receipt, error) {
+		return &types.Receipt{Status: types.ReceiptStatusSuccessful, TxHash: h}, nil
+	}
+
+	res, err := svc.Login(context.Background(), sessionKey, WithWait(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Receipt == nil {
+		t.Error("expected receipt with WithWait")
+	}
+	if res.Receipt.Status != types.ReceiptStatusSuccessful {
+		t.Errorf("receipt status = %d, want successful", res.Receipt.Status)
+	}
+}
+
+func TestFinalize_WithWait_TxFailed(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	sessionKey := common.HexToAddress("0xAA")
+	// Return a failed receipt.
+	mb.receiptFn = func(_ context.Context, h common.Hash) (*types.Receipt, error) {
+		return &types.Receipt{Status: types.ReceiptStatusFailed, TxHash: h}, nil
+	}
+
+	res, err := svc.Login(context.Background(), sessionKey, WithWait(5*time.Second))
+	if err == nil {
+		t.Fatal("expected error for failed tx")
+	}
+	// Receipt should still be attached when ErrTxFailed.
+	if res == nil || res.Receipt == nil {
+		t.Error("expected receipt attached on tx failure")
+	}
+}
+
+func TestFinalize_WithConfirmations(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	sessionKey := common.HexToAddress("0xAA")
+	mb.receiptFn = func(_ context.Context, h common.Hash) (*types.Receipt, error) {
+		return &types.Receipt{
+			Status:      types.ReceiptStatusSuccessful,
+			TxHash:      h,
+			BlockNumber: big.NewInt(90),
+		}, nil
+	}
+	mb.blockFn = func(_ context.Context) (uint64, error) { return 100, nil }
+
+	res, err := svc.Login(context.Background(), sessionKey, WithWait(5*time.Second), WithConfirmations(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Receipt == nil {
+		t.Error("expected receipt with confirmations")
+	}
+}
+
+func TestFinalize_NoncesNil(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc, err := New(Options{
+		Backend:         mb,
+		ChainID:         testChainID,
+		RegistryAddress: testRegistryAddr,
+		Signer:          sig,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// nonces is auto-created by New; nil it explicitly to exercise the nil-nonces path.
+	svc.nonces = nil
+
+	res, err := svc.Login(context.Background(), common.HexToAddress("0xAA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Hash == (common.Hash{}) {
+		t.Error("expected non-zero tx hash")
+	}
+	// When nonces is nil, bind leaves TransactOpts.Nonce unset, so the backend
+	// provides the pending nonce (0 in the mock). Verify the tx used nonce 0.
+	mb.mu.Lock()
+	sentLen := len(mb.sent)
+	var txNonce uint64
+	if sentLen > 0 {
+		txNonce = mb.sent[sentLen-1].Nonce()
+	}
+	mb.mu.Unlock()
+	if sentLen == 0 {
+		t.Fatal("no transaction was sent")
+	}
+	if txNonce != 0 {
+		t.Errorf("expected nonce 0 from backend, got %d", txNonce)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LoginAndFundWithOptions edge cases
+// ---------------------------------------------------------------------------
+
+func TestLoginAndFundWithOptions_ExpiredExpiresAt(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	pastExpiry := uint64(1000) // well in the past
+	_, err := svc.LoginAndFundWithOptions(context.Background(), common.HexToAddress("0xBEEF"), big.NewInt(100), &LoginOptions{
+		ExpiresAt: pastExpiry,
+	})
+	if err == nil {
+		t.Fatal("expected error for expired ExpiresAt")
+	}
+}
+
+func TestLoginAndFundWithOptions_ZeroValue(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	// Zero value should be fine (not nil, not negative).
+	_, err := svc.LoginAndFund(context.Background(), common.HexToAddress("0xBEEF"), big.NewInt(0))
+	if err != nil {
+		t.Fatalf("unexpected error for zero value: %v", err)
+	}
+}
+
+func TestLoginAndFundWithOptions_NilSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:         mb,
+		ChainID:         testChainID,
+		RegistryAddress: testRegistryAddr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.LoginAndFund(context.Background(), common.HexToAddress("0xBEEF"), big.NewInt(100))
+	if err == nil {
+		t.Fatal("expected error for nil signer")
+	}
+}
+
+func TestLoginAndFundWithOptions_ZeroAddress(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	_, err := svc.LoginAndFund(context.Background(), common.Address{}, big.NewInt(100))
+	if err == nil {
+		t.Fatal("expected error for zero address")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RevokeWithOptions edge cases
+// ---------------------------------------------------------------------------
+
+func TestRevokeWithOptions_NilOptions(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	// nil RevokeOptions should use defaults (same as Revoke).
+	_, err := svc.RevokeWithOptions(context.Background(), common.HexToAddress("0xBEEF"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx := mb.lastSent()
+	regABI, _ := sessionkeyregistry.SessionKeyRegistryMetaData.GetAbi()
+	args, _ := regABI.Methods["revoke"].Inputs.Unpack(tx.Data()[4:])
+
+	gotPerms := args[1].([][32]byte)
+	if len(gotPerms) != len(DefaultFWSSPermissions) {
+		t.Errorf("permissions count = %d, want %d", len(gotPerms), len(DefaultFWSSPermissions))
+	}
+	gotOrigin := args[2].(string)
+	if gotOrigin != "synapse" {
+		t.Errorf("origin = %q, want %q", gotOrigin, "synapse")
+	}
+}
+
+func TestRevoke_NilSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:         mb,
+		ChainID:         testChainID,
+		RegistryAddress: testRegistryAddr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.Revoke(context.Background(), common.HexToAddress("0xBEEF"))
+	if err == nil {
+		t.Fatal("expected error for nil signer")
+	}
+}
+
+func TestRevoke_ZeroAddress(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	_, err := svc.Revoke(context.Background(), common.Address{})
+	if err == nil {
+		t.Fatal("expected error for zero address")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// logger nil-path tests
+// ---------------------------------------------------------------------------
+
+func TestLog_NilLogger(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig) // logger is nil by default
+
+	// These should not panic.
+	svc.log("test info message")
+	svc.logWarn("test warn message")
+}
+
+func TestLogWarn_WithLogger(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc, err := New(Options{
+		Backend:         mb,
+		ChainID:         testChainID,
+		RegistryAddress: testRegistryAddr,
+		Signer:          sig,
+		Logger:          slog.Default(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// These should call the logger without panicking.
+	svc.log("test info message", "key", "val")
+	svc.logWarn("test warn message", "key", "val")
+}
+
+// ---------------------------------------------------------------------------
+// SessionKey nil receiver test
+// ---------------------------------------------------------------------------
+
+func TestSessionKey_HasPermissionAt_NilReceiver(t *testing.T) {
+	var sk *SessionKey
+	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission) {
+		t.Error("expected false for nil receiver")
+	}
+}
+
+func TestSessionKey_HasPermissionAt_NilExpirations(t *testing.T) {
+	sk := &SessionKey{}
+	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission) {
+		t.Error("expected false for nil expirations")
 	}
 }

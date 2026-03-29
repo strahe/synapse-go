@@ -386,3 +386,111 @@ func TestIsFWSSMaxApproved_MaxLockPeriodTooShort(t *testing.T) {
 		t.Error("should not be approved when maxLockPeriod < DefaultLockupPeriod")
 	}
 }
+
+// --- CDNFixedLockupValue ---
+
+func TestCDNFixedLockupValue(t *testing.T) {
+	v := CDNFixedLockupValue()
+	want := big.NewInt(1_000_000_000_000_000_000) // 1 USDFC
+	if v.Cmp(want) != 0 {
+		t.Errorf("CDNFixedLockupValue() = %s, want %s", v, want)
+	}
+}
+
+func TestCDNFixedLockupValue_MutationSafety(t *testing.T) {
+	v1 := CDNFixedLockupValue()
+	v1.SetInt64(0) // mutate the returned copy
+	v2 := CDNFixedLockupValue()
+	if v2.Sign() == 0 {
+		t.Fatal("mutation of returned value affected global cdnFixedLockup")
+	}
+}
+
+// --- CalculateDepositNeeded edge cases ---
+
+func TestDepositNeeded_NilInputs(t *testing.T) {
+	deposit := CalculateDepositNeeded(nil, nil, nil, nil, nil, 0, 0, true)
+	if deposit.Sign() != 0 {
+		t.Errorf("expected zero deposit for all-nil inputs, got %s", deposit)
+	}
+}
+
+func TestDepositNeeded_NegativeEpochs(t *testing.T) {
+	deposit := CalculateDepositNeeded(
+		usdfc(10), bi(100), bi(50), bi(0), usdfc(1),
+		-100, -50,
+		false,
+	)
+	// Negative epochs clamped to 0, so runway=0 and buffer=0.
+	// raw = 10e18 + 0 - 1e18 + 0 = 9e18 (clamped to non-negative); buffer = 0
+	// result = 9e18 = usdfc(9)
+	expected := usdfc(9)
+	if deposit.Cmp(expected) != 0 {
+		t.Errorf("deposit = %s, want %s", deposit, expected)
+	}
+}
+
+func TestDepositNeeded_LargeValues(t *testing.T) {
+	huge := new(big.Int).Lsh(big.NewInt(1), 128) // 2^128
+	deposit := CalculateDepositNeeded(
+		huge, huge, huge, huge, new(big.Int),
+		chain.EpochsPerMonth, DefaultBufferEpochs,
+		false,
+	)
+	// combinedRate = huge + huge = 2^129
+	// runway = 2^129 * EpochsPerMonth
+	// raw = huge + runway - 0 + huge = 2^129 * (1 + EpochsPerMonth)
+	// buffer = 2^129 * DefaultBufferEpochs
+	// result = 2^129 * (1 + EpochsPerMonth + DefaultBufferEpochs)
+	combinedRate := new(big.Int).Lsh(big.NewInt(1), 129) // 2^129
+	expected := new(big.Int).Mul(combinedRate,
+		new(big.Int).Add(
+			big.NewInt(1),
+			big.NewInt(chain.EpochsPerMonth+int64(DefaultBufferEpochs)),
+		),
+	)
+	if deposit.Cmp(expected) != 0 {
+		t.Errorf("deposit = %s, want %s", deposit, expected)
+	}
+}
+
+func TestDepositNeeded_ZeroTotalLockup(t *testing.T) {
+	deposit := CalculateDepositNeeded(
+		bi(0), bi(100), bi(50), bi(0), usdfc(100),
+		0, DefaultBufferEpochs,
+		false,
+	)
+	// raw = 0 + 0 - availableFunds (clamped to 0); buffer = combinedRate * bufferEpochs = 150 * 5 = 750
+	expected := new(big.Int).Mul(bi(150), bi(DefaultBufferEpochs))
+	if deposit.Cmp(expected) != 0 {
+		t.Errorf("deposit = %s, want %s", deposit, expected)
+	}
+}
+
+// --- CalculateEffectiveRate edge cases ---
+
+func TestCalculateEffectiveRate_NilInputs(t *testing.T) {
+	rate := CalculateEffectiveRate(bi(chain.TiB), nil, nil, 0)
+	if rate.RatePerEpoch == nil || rate.RatePerMonth == nil {
+		t.Fatal("nil rate fields returned")
+	}
+	// nil price and nil minRate both treated as 0; ratePerEpoch is clamped to bigOne=1
+	if rate.RatePerEpoch.Cmp(big.NewInt(1)) != 0 {
+		t.Errorf("RatePerEpoch = %s, want 1", rate.RatePerEpoch)
+	}
+	if rate.RatePerMonth.Sign() != 0 {
+		t.Errorf("RatePerMonth = %s, want 0", rate.RatePerMonth)
+	}
+}
+
+func TestCalculateEffectiveRate_NegativeEpochsPerMonth(t *testing.T) {
+	rate := CalculateEffectiveRate(bi(chain.TiB), usdfcFrac(25), usdfcFrac(1), -1)
+	// -1 falls back to chain.EpochsPerMonth; result must match the explicit positive call
+	expected := CalculateEffectiveRate(bi(chain.TiB), usdfcFrac(25), usdfcFrac(1), chain.EpochsPerMonth)
+	if rate.RatePerEpoch.Cmp(expected.RatePerEpoch) != 0 {
+		t.Errorf("RatePerEpoch = %s, want %s (fallback to EpochsPerMonth)", rate.RatePerEpoch, expected.RatePerEpoch)
+	}
+	if rate.RatePerMonth.Cmp(expected.RatePerMonth) != 0 {
+		t.Errorf("RatePerMonth = %s, want %s (fallback to EpochsPerMonth)", rate.RatePerMonth, expected.RatePerMonth)
+	}
+}

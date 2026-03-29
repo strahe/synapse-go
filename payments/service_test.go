@@ -44,6 +44,11 @@ type mockBackend struct {
 	blockFn   func(context.Context) (uint64, error)
 
 	nonces map[common.Address]uint64
+
+	// sendErr, when set, makes SendTransaction return this error
+	sendErr error
+	// estimateGasErr, when set, makes EstimateGas return this error
+	estimateGasErr error
 }
 
 func newMockBackend(t *testing.T) *mockBackend {
@@ -127,12 +132,18 @@ func (m *mockBackend) SuggestGasTipCap(_ context.Context) (*big.Int, error) {
 }
 
 func (m *mockBackend) EstimateGas(_ context.Context, _ ethereum.CallMsg) (uint64, error) {
+	if m.estimateGasErr != nil {
+		return 0, m.estimateGasErr
+	}
 	return 100_000, nil
 }
 
 func (m *mockBackend) SendTransaction(_ context.Context, tx *types.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sendErr != nil {
+		return m.sendErr
+	}
 	m.sent = append(m.sent, tx)
 	return nil
 }
@@ -341,8 +352,23 @@ func TestServiceApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ap.IsApproved || ap.RateAllowance.Int64() != 10 || ap.MaxLockupPeriod.Int64() != 1000 {
-		t.Errorf("unexpected approval %+v", ap)
+	if !ap.IsApproved {
+		t.Error("IsApproved = false, want true")
+	}
+	if ap.RateAllowance.Int64() != 10 {
+		t.Errorf("RateAllowance = %s, want 10", ap.RateAllowance)
+	}
+	if ap.LockupAllowance.Int64() != 20 {
+		t.Errorf("LockupAllowance = %s, want 20", ap.LockupAllowance)
+	}
+	if ap.RateUsage.Int64() != 3 {
+		t.Errorf("RateUsage = %s, want 3", ap.RateUsage)
+	}
+	if ap.LockupUsage.Int64() != 4 {
+		t.Errorf("LockupUsage = %s, want 4", ap.LockupUsage)
+	}
+	if ap.MaxLockupPeriod.Int64() != 1000 {
+		t.Errorf("MaxLockupPeriod = %s, want 1000", ap.MaxLockupPeriod)
 	}
 }
 
@@ -644,5 +670,599 @@ func TestFinalize_NoWait_ReleasesNonce(t *testing.T) {
 	}
 	if got := s.nonces.PendingCount(); got != 0 {
 		t.Fatalf("expected nonce reservation released, got pending=%d", got)
+	}
+}
+
+func TestAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	if got := s.Address(); got != filPayAddr {
+		t.Errorf("Address() = %s, want %s", got.Hex(), filPayAddr.Hex())
+	}
+}
+
+func TestChainID(t *testing.T) {
+	s, _ := newTestService(t)
+	got := s.ChainID()
+	if got.Int64() != 314159 {
+		t.Errorf("ChainID() = %s, want 314159", got)
+	}
+	// Ensure it's a copy, not the same pointer.
+	got.SetInt64(0)
+	if s.ChainID().Int64() != 314159 {
+		t.Error("ChainID returned the internal pointer, not a copy")
+	}
+}
+
+func TestWithSkipPrecheck(t *testing.T) {
+	cfg := newWriteConfig([]WriteOption{WithSkipPrecheck()})
+	if !cfg.skipPrecheck {
+		t.Error("WithSkipPrecheck did not set skipPrecheck")
+	}
+}
+
+func TestAvailableFunds_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		a    *AccountState
+		want *big.Int
+	}{
+		{
+			name: "nil receiver",
+			a:    nil,
+			want: nil,
+		},
+		{
+			name: "precomputed availableFunds",
+			a:    &AccountState{availableFunds: big.NewInt(42)},
+			want: big.NewInt(42),
+		},
+		{
+			name: "nil Funds",
+			a:    &AccountState{Funds: nil, LockupCurrent: big.NewInt(1)},
+			want: nil,
+		},
+		{
+			name: "nil LockupCurrent",
+			a:    &AccountState{Funds: big.NewInt(100), LockupCurrent: nil},
+			want: nil,
+		},
+		{
+			name: "negative clamped to zero",
+			a:    &AccountState{Funds: big.NewInt(10), LockupCurrent: big.NewInt(20)},
+			want: big.NewInt(0),
+		},
+		{
+			name: "positive difference",
+			a:    &AccountState{Funds: big.NewInt(100), LockupCurrent: big.NewInt(30)},
+			want: big.NewInt(70),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.a.AvailableFunds()
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("want nil, got %s", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("want %s, got nil", tc.want)
+			}
+			if got.Cmp(tc.want) != 0 {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServiceApproval_ZeroAddresses(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	owner := s.Account()
+
+	if _, err := s.ServiceApproval(ctx, common.Address{}, owner, operatorAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.ServiceApproval(ctx, tokenAddr, common.Address{}, operatorAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero client: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.ServiceApproval(ctx, tokenAddr, owner, common.Address{}); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero operator: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestServiceApproval_RPCError(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.errs[filPayAddr.Hex()+":operatorApprovals"] = errors.New("rpc down")
+	_, err := s.ServiceApproval(context.Background(), tokenAddr, owner, operatorAddr)
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestRevokeService_ZeroAddresses(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.RevokeService(ctx, common.Address{}, operatorAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.RevokeService(ctx, tokenAddr, common.Address{}); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero operator: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestRevokeService_NoSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeService(context.Background(), tokenAddr, operatorAddr); err == nil {
+		t.Error("expected signer required error")
+	}
+}
+
+func TestAllowance_ZeroAddresses(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	owner := s.Account()
+
+	if _, err := s.Allowance(ctx, common.Address{}, owner, filPayAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.Allowance(ctx, tokenAddr, common.Address{}, filPayAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero owner: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.Allowance(ctx, tokenAddr, owner, common.Address{}); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero spender: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestApprove_ZeroAddresses(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.Approve(ctx, common.Address{}, filPayAddr, big.NewInt(1)); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.Approve(ctx, tokenAddr, common.Address{}, big.NewInt(1)); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero spender: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestWithdraw_ZeroToken(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.Withdraw(context.Background(), common.Address{}, big.NewInt(1)); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestWithdraw_ZeroAmount(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(1000), big.NewInt(0), big.NewInt(0), big.NewInt(0))
+	mb.setFilPayReply(t, filPayAddr, "getAccountInfoIfSettled",
+		big.NewInt(0), big.NewInt(1000), big.NewInt(1000), big.NewInt(0))
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(0))
+	if err != nil {
+		t.Fatalf("zero amount withdraw should succeed, got %v", err)
+	}
+}
+
+func TestWithdraw_SkipPrecheck(t *testing.T) {
+	s, _ := newTestService(t)
+	// No mock replies for AccountInfo — precheck would fail. WithSkipPrecheck bypasses it.
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(1), WithSkipPrecheck())
+	if err != nil {
+		t.Fatalf("withdraw with skip precheck should succeed, got %v", err)
+	}
+}
+
+func TestAccountInfo_ZeroOwner(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.AccountInfo(context.Background(), tokenAddr, common.Address{}); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero owner: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestAccountInfo_RPCError(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.errs[filPayAddr.Hex()+":accounts"] = errors.New("rpc down")
+	if _, err := s.AccountInfo(context.Background(), tokenAddr, owner); err == nil {
+		t.Error("expected RPC error")
+	}
+}
+
+func TestAccountInfo_SettledError(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(1000), big.NewInt(200), big.NewInt(5), big.NewInt(42))
+	mb.errs[filPayAddr.Hex()+":getAccountInfoIfSettled"] = errors.New("rpc down")
+	if _, err := s.AccountInfo(context.Background(), tokenAddr, owner); err == nil {
+		t.Error("expected settled RPC error")
+	}
+}
+
+func TestBalance_Error(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.errs[filPayAddr.Hex()+":accounts"] = errors.New("rpc down")
+	if _, err := s.Balance(context.Background(), tokenAddr, owner); err == nil {
+		t.Error("expected error from Balance")
+	}
+}
+
+func TestWalletBalance_ZeroAccount(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.WalletBalance(context.Background(), tokenAddr, common.Address{}); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero account: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestWalletBalance_ERC20Error(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.errs[tokenAddr.Hex()+":balanceOf"] = errors.New("rpc down")
+	if _, err := s.WalletBalance(context.Background(), tokenAddr, owner); err == nil {
+		t.Error("expected error from WalletBalance ERC20 path")
+	}
+}
+
+func TestReleaseNonce_NilGuards(t *testing.T) {
+	s, _ := newTestService(t)
+	// nil nonce — should not panic
+	s.releaseNonce(nil)
+	// nil NonceManager — should not panic
+	orig := s.nonces
+	s.nonces = nil
+	s.releaseNonce(big.NewInt(7))
+	s.nonces = orig
+}
+
+func TestDeposit_SkipPrecheck(t *testing.T) {
+	s, _ := newTestService(t)
+	// No mock replies for balance/allowance — precheck would fail.
+	_, err := s.Deposit(context.Background(), tokenAddr, common.Address{}, big.NewInt(1), WithSkipPrecheck())
+	if err != nil {
+		t.Fatalf("deposit with skip precheck should succeed, got %v", err)
+	}
+}
+
+func TestApproveService_ZeroAddresses(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := s.ApproveService(ctx, common.Address{}, operatorAddr, big.NewInt(0), big.NewInt(0), big.NewInt(0)); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+	if _, err := s.ApproveService(ctx, tokenAddr, common.Address{}, big.NewInt(0), big.NewInt(0), big.NewInt(0)); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero operator: want ErrZeroAddress, got %v", err)
+	}
+}
+
+// ---------- additional coverage ----------
+
+func TestAccount_NilSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Account(); (got != common.Address{}) {
+		t.Errorf("Account() = %s, want zero address", got.Hex())
+	}
+}
+
+func TestNew_Validation(t *testing.T) {
+	mb := newMockBackend(t)
+	tests := []struct {
+		name string
+		opts Options
+	}{
+		{"nil backend", Options{ChainID: big.NewInt(1), FilPayAddress: filPayAddr}},
+		{"nil chainID", Options{Backend: mb, FilPayAddress: filPayAddr}},
+		{"zero chainID", Options{Backend: mb, ChainID: big.NewInt(0), FilPayAddress: filPayAddr}},
+		{"negative chainID", Options{Backend: mb, ChainID: big.NewInt(-1), FilPayAddress: filPayAddr}},
+		{"zero filpay", Options{Backend: mb, ChainID: big.NewInt(1)}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := New(tc.opts); err == nil {
+				t.Error("expected error")
+			}
+		})
+	}
+}
+
+func TestWalletBalance_NativeFIL(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.balances[owner] = big.NewInt(999)
+	bal, err := s.WalletBalance(context.Background(), common.Address{}, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Int64() != 999 {
+		t.Errorf("native FIL balance = %s, want 999", bal)
+	}
+}
+
+func TestAllowance_RPCError(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.errs[tokenAddr.Hex()+":allowance"] = errors.New("rpc down")
+	if _, err := s.Allowance(context.Background(), tokenAddr, owner, filPayAddr); err == nil {
+		t.Error("expected error from Allowance RPC path")
+	}
+}
+
+func TestApprove_NegativeAmount(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(-1))
+	if err == nil {
+		t.Error("expected error for negative amount")
+	}
+}
+
+func TestApprove_NoSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1)); err == nil {
+		t.Error("expected signer required error")
+	}
+}
+
+func TestDeposit_ZeroToken(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.Deposit(context.Background(), common.Address{}, otherAddr, big.NewInt(1), WithSkipPrecheck()); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestDeposit_NegativeAmount(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(-1), WithSkipPrecheck())
+	if err == nil {
+		t.Error("expected error for negative amount")
+	}
+}
+
+func TestDeposit_PrecheckBalanceError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.errs[tokenAddr.Hex()+":balanceOf"] = errors.New("rpc down")
+	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(1))
+	if err == nil {
+		t.Error("expected error from balance precheck")
+	}
+}
+
+func TestDeposit_PrecheckAllowanceError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.setERC20Reply(t, tokenAddr, "balanceOf", big.NewInt(1000))
+	mb.errs[tokenAddr.Hex()+":allowance"] = errors.New("rpc down")
+	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(1))
+	if err == nil {
+		t.Error("expected error from allowance precheck")
+	}
+}
+
+func TestWithdraw_PrecheckInsufficientFunds(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(100), big.NewInt(80), big.NewInt(0), big.NewInt(0))
+	mb.setFilPayReply(t, filPayAddr, "getAccountInfoIfSettled",
+		big.NewInt(0), big.NewInt(20), big.NewInt(20), big.NewInt(0))
+	_ = owner
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(50))
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Errorf("want ErrInsufficientBalance, got %v", err)
+	}
+}
+
+func TestWithdraw_PrecheckError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.errs[filPayAddr.Hex()+":accounts"] = errors.New("rpc down")
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(1))
+	if err == nil {
+		t.Error("expected error from withdraw precheck")
+	}
+}
+
+func TestWithdraw_NegativeAmount(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(-1))
+	if err == nil {
+		t.Error("expected error for negative amount")
+	}
+}
+
+func TestWithdraw_NoSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(1)); err == nil {
+		t.Error("expected signer required error")
+	}
+}
+
+func TestApproveService_NegativeAllowances(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	tests := []struct {
+		name                                         string
+		rateAllowance, lockupAllowance, maxLockupPer *big.Int
+	}{
+		{"negative rate", big.NewInt(-1), big.NewInt(0), big.NewInt(0)},
+		{"negative lockup", big.NewInt(0), big.NewInt(-1), big.NewInt(0)},
+		{"negative maxLockup", big.NewInt(0), big.NewInt(0), big.NewInt(-1)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.ApproveService(ctx, tokenAddr, operatorAddr, tc.rateAllowance, tc.lockupAllowance, tc.maxLockupPer)
+			if err == nil {
+				t.Error("expected error for negative allowance")
+			}
+		})
+	}
+}
+
+func TestApproveService_NoSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.ApproveService(context.Background(), tokenAddr, operatorAddr, big.NewInt(0), big.NewInt(0), big.NewInt(0))
+	if err == nil {
+		t.Error("expected signer required error")
+	}
+}
+
+func TestDeposit_NoSigner(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(1)); err == nil {
+		t.Error("expected signer required error")
+	}
+}
+
+func TestApproveService_NilAllowances(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := s.ApproveService(ctx, tokenAddr, operatorAddr, nil, big.NewInt(0), big.NewInt(0))
+	if err == nil {
+		t.Error("expected error for nil rateAllowance")
+	}
+}
+
+func TestCopyBig_Nil(t *testing.T) {
+	if got := copyBig(nil); got != nil {
+		t.Errorf("copyBig(nil) = %s, want nil", got)
+	}
+}
+
+func TestValidateNonNegative_TableDriven(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     *big.Int
+		wantErr bool
+	}{
+		{"nil", nil, true},
+		{"negative", big.NewInt(-1), true},
+		{"zero", big.NewInt(0), false},
+		{"positive", big.NewInt(42), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateNonNegative("test", tc.val)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validateNonNegative(%v) error = %v, wantErr %v", tc.val, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestAccountInfo_ZeroToken(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.AccountInfo(context.Background(), common.Address{}, otherAddr); !errors.Is(err, ErrZeroAddress) {
+		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	}
+}
+
+func TestWalletBalance_ZeroToken(t *testing.T) {
+	s, _ := newTestService(t)
+	owner := s.Account()
+	// zero token falls through to BalanceAt (native FIL)
+	bal, err := s.WalletBalance(context.Background(), common.Address{}, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal == nil {
+		t.Fatal("expected non-nil balance")
+	}
+}
+
+func TestBalance_Success(t *testing.T) {
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(500), big.NewInt(100), big.NewInt(0), big.NewInt(0))
+	mb.setFilPayReply(t, filPayAddr, "getAccountInfoIfSettled",
+		big.NewInt(0), big.NewInt(400), big.NewInt(400), big.NewInt(0))
+	_ = owner
+	bal, err := s.Balance(context.Background(), tokenAddr, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Int64() != 500 {
+		t.Errorf("Balance() = %s, want 500", bal)
+	}
+}
+
+func TestApprove_SendError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.sendErr = errors.New("send failed")
+	_, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+	if err == nil {
+		t.Error("expected send error")
+	}
+}
+
+func TestDeposit_SendError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.sendErr = errors.New("send failed")
+	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(1), WithSkipPrecheck())
+	if err == nil {
+		t.Error("expected send error")
+	}
+}
+
+func TestWithdraw_SendError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.sendErr = errors.New("send failed")
+	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(1), WithSkipPrecheck())
+	if err == nil {
+		t.Error("expected send error")
+	}
+}
+
+func TestApproveService_SendError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.sendErr = errors.New("send failed")
+	_, err := s.ApproveService(context.Background(), tokenAddr, operatorAddr, big.NewInt(0), big.NewInt(0), big.NewInt(0))
+	if err == nil {
+		t.Error("expected send error")
+	}
+}
+
+func TestRevokeService_SendError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.sendErr = errors.New("send failed")
+	_, err := s.RevokeService(context.Background(), tokenAddr, operatorAddr)
+	if err == nil {
+		t.Error("expected send error")
+	}
+}
+
+func TestApprove_EstimateGasError(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.estimateGasErr = errors.New("execution reverted: insufficient balance")
+	_, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+	if err == nil {
+		t.Error("expected gas estimation error")
 	}
 }

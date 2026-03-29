@@ -268,3 +268,120 @@ func TestGetClientDataSetsLength(t *testing.T) {
 		t.Errorf("n=%d", n.Int64())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Getter tests
+// ---------------------------------------------------------------------------
+
+func TestFWSSAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	want := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	if got := s.FWSSAddress(); got != want {
+		t.Errorf("FWSSAddress() = %s, want %s", got, want)
+	}
+}
+
+func TestViewAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	want := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	if got := s.ViewAddress(); got != want {
+		t.Errorf("ViewAddress() = %s, want %s", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetApprovedProvidersLength tests
+// ---------------------------------------------------------------------------
+
+func TestGetApprovedProvidersLength_Success(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getApprovedProvidersLength", big.NewInt(17))
+	n, err := s.GetApprovedProvidersLength(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Int64() != 17 {
+		t.Errorf("n=%d, want 17", n.Int64())
+	}
+}
+
+func TestGetApprovedProvidersLength_Error(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getApprovedProvidersLength"] = errors.New("rpc error")
+	_, err := s.GetApprovedProvidersLength(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsProviderApproved edge cases
+// ---------------------------------------------------------------------------
+
+func TestIsProviderApproved_NilProviderID(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.IsProviderApproved(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error for nil providerID")
+	}
+}
+
+func TestIsProviderApproved_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["isProviderApproved"] = errors.New("rpc error")
+	_, err := s.IsProviderApproved(context.Background(), big.NewInt(1))
+	if err == nil {
+		t.Error("expected RPC error")
+	}
+}
+
+func TestIsProviderApproved_ReturnsFalse(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "isProviderApproved", false)
+	ok, err := s.IsProviderApproved(context.Background(), big.NewInt(5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RPC error paths for low-coverage methods
+// ---------------------------------------------------------------------------
+
+func TestGetClientDataSetsLength_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getClientDataSetsLength"] = errors.New("rpc error")
+	_, err := s.GetClientDataSetsLength(context.Background(), common.HexToAddress("0xab"))
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetServicePrice_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getServicePrice"] = errors.New("rpc error")
+	_, err := s.GetServicePrice(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetDataSet_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getDataSet"] = errors.New("rpc error")
+	_, err := s.GetDataSet(context.Background(), big.NewInt(1))
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetDataSet_NilDataSetID(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetDataSet(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error for nil dataSetID")
+	}
+}

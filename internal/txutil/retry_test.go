@@ -42,16 +42,21 @@ func TestIsNonceError(t *testing.T) {
 }
 
 func TestIsGasError(t *testing.T) {
-	if !IsGasError(errors.New("gas required exceeds allowance")) {
-		t.Fatal("expected true")
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("gas required exceeds allowance"), true},
+		{errors.New("insufficient funds for gas * price + value"), true},
+		{errors.New("transaction underpriced"), true},
+		{errors.New("max fee cap below base fee"), true},
+		{errors.New("nonce too low"), false},
+		{errors.New("revert"), false},
 	}
-	if !IsGasError(errors.New("insufficient funds for gas * price + value")) {
-		t.Fatal("expected true")
-	}
-	if !IsGasError(errors.New("transaction underpriced")) {
-		t.Fatal("expected true")
-	}
-	if IsGasError(errors.New("nonce too low")) {
-		t.Fatal("expected false")
+	for _, tc := range cases {
+		if got := IsGasError(tc.err); got != tc.want {
+			t.Errorf("IsGasError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }

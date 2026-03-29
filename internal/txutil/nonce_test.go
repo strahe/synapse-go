@@ -295,3 +295,28 @@ func TestNonceManager_GetFetchError(t *testing.T) {
 		t.Fatalf("expected wrapped rpc err, got %v", err)
 	}
 }
+
+func TestNonceManager_CancelInitLocked_NilCh(t *testing.T) {
+	// Exercise cancelInitLocked when initCh is nil — should be a no-op, not panic.
+	client := &fakeNonceClient{nonce: 1}
+	nm := NewNonceManager(client, common.Address{})
+	// Directly call MarkFailed when initCh is nil (no concurrent Get in progress).
+	// MarkFailed calls cancelInitLocked internally.
+	n, err := nm.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// At this point initCh is nil. MarkFailed calls cancelInitLocked.
+	nm.MarkFailed(n)
+	// Verify the manager still works after the nil-initCh cancel.
+	client.mu.Lock()
+	client.nonce = 5
+	client.mu.Unlock()
+	n2, err := nm.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 5 {
+		t.Fatalf("expected 5, got %d", n2)
+	}
+}

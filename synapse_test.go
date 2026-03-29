@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -384,6 +385,278 @@ func TestNew_Mainnet(t *testing.T) {
 // newTestLogger returns a discard logger for tests.
 func newTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestWithSource(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithSource("my-app"),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.source != "my-app" {
+		t.Errorf("source = %q, want %q", client.source, "my-app")
+	}
+	// Storage() triggers lazy init; verify it doesn't panic with source set.
+	_ = client.Storage()
+}
+
+func TestNew_InvalidPrivateKeyHex(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	_, err := New(context.Background(),
+		WithPrivateKeyHex("not-valid-hex"),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid hex key")
+	}
+}
+
+func TestNew_ShortPrivateKeyHex(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	_, err := New(context.Background(),
+		WithPrivateKeyHex("0xabcdef"),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for too-short key")
+	}
+}
+
+func TestNew_RPCDialError(t *testing.T) {
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL("http://127.0.0.1:1"), // refused port
+	)
+	if err == nil {
+		t.Fatal("expected error for RPC dial failure")
+	}
+}
+
+func TestNew_ChainDetectionFailure(t *testing.T) {
+	// Server that returns an error for eth_chainId.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"boom"}}`, req.ID)
+	}))
+	defer srv.Close()
+	ec, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ec.Close()
+
+	key := testKey(t)
+	_, err = New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for chain detection failure")
+	}
+}
+
+func TestNew_ChainIDOverflow(t *testing.T) {
+	// Return a chain ID that doesn't fit in int64.
+	srv, ec := fakeRPCServer(t, "0xffffffffffffffffffffffffffffffff")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for overflowing chain ID")
+	}
+	if !strings.Contains(err.Error(), "exceeds int64") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestNew_ChainIDOverflow_OwnedClient(t *testing.T) {
+	// Same overflow test but with WithRPCURL (ownsClient=true).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0xffffffffffffffffffffffffffffffff"}`, req.ID)
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+	)
+	if err == nil {
+		t.Fatal("expected error for overflowing chain ID")
+	}
+}
+
+func TestNew_UnsupportedChain_OwnedClient(t *testing.T) {
+	// Unsupported chain ID with owned client (WithRPCURL) — tests ownsClient cleanup.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x1"}`, req.ID) // Ethereum mainnet
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+	)
+	if err == nil {
+		t.Fatal("expected error for unsupported chain")
+	}
+}
+
+func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
+	// Exercise the FilBeam logger + httpClient option branches.
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	logger := newTestLogger()
+	hc := &http.Client{}
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithLogger(logger),
+		WithHTTPClient(hc),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Smoke test: verify FilBeam and Storage are non-nil and exercise all option branches.
+	if client.FilBeam() == nil {
+		t.Error("FilBeam() returned nil")
+	}
+	if client.Storage() == nil {
+		t.Error("Storage() returned nil")
+	}
+}
+
+func TestNew_ZeroAddressChain(t *testing.T) {
+	// Provide a chain with zero addresses via WithChain to trigger address validation error.
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	bogus := chain.Chain(255) // out of range → all zero addresses
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithChain(bogus),
+	)
+	if err == nil {
+		t.Fatal("expected error for zero-address chain")
+	}
+	if !strings.Contains(err.Error(), "address") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNew_ZeroAddressChain_OwnedClient(t *testing.T) {
+	// Same as above but with owned client (WithRPCURL) to cover ownsClient cleanup.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	bogus := chain.Chain(255)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+		WithChain(bogus),
+	)
+	if err == nil {
+		t.Fatal("expected error for zero-address chain")
+	}
+}
+
+func TestNew_ChainDetectionFailure_OwnedClient(t *testing.T) {
+	// Chain detection failure when we own the client (WithRPCURL).
+	// The client should be closed automatically.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"boom"}}`, req.ID)
+	}))
+	defer srv.Close()
+
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithRPCURL(srv.URL),
+	)
+	if err == nil {
+		t.Fatal("expected error for chain detection failure")
+	}
+}
+
+func TestParsePrivateKeyHex_Empty(t *testing.T) {
+	_, err := parsePrivateKeyHex("")
+	if err == nil {
+		t.Fatal("expected error for empty string")
+	}
+}
+
+func TestParsePrivateKeyHex_InvalidHex(t *testing.T) {
+	_, err := parsePrivateKeyHex("0xzzzz")
+	if err == nil {
+		t.Fatal("expected error for invalid hex")
+	}
+}
+
+func TestParsePrivateKeyHex_TooShort(t *testing.T) {
+	_, err := parsePrivateKeyHex("0xabcdef")
+	if err == nil {
+		t.Fatal("expected error for too-short key bytes")
+	}
+}
+
+func TestParsePrivateKeyHex_Valid(t *testing.T) {
+	key := testKey(t)
+	hexStr := fmt.Sprintf("0x%x", ethcrypto.FromECDSA(key))
+	got, err := parsePrivateKeyHex(hexStr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ethcrypto.PubkeyToAddress(got.PublicKey) != ethcrypto.PubkeyToAddress(key.PublicKey) {
+		t.Error("parsed key address mismatch")
+	}
 }
 
 func TestLazyGetters_ConcurrentAccess(t *testing.T) {

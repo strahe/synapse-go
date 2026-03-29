@@ -18,6 +18,55 @@ func TestExtractEvent_NoReceipt(t *testing.T) {
 	}
 }
 
+func TestExtractEvent_NilABI(t *testing.T) {
+	receipt := &types.Receipt{Logs: []*types.Log{}}
+	err := ExtractEvent(receipt, nil, "Foo", common.Address{}, nil)
+	if err == nil {
+		t.Fatal("expected error for nil abi")
+	}
+}
+
+func TestExtractEvent_ReceiptWithNilLog(t *testing.T) {
+	parsed, err := fwss.FWSSMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Receipt has a nil log entry and an empty-topics log — neither should match.
+	receipt := &types.Receipt{
+		Logs: []*types.Log{nil, {Topics: []common.Hash{}}},
+	}
+	err = ExtractEvent(receipt, parsed, "DataSetCreated", common.Address{}, nil)
+	if !errors.Is(err, ErrEventNotFound) {
+		t.Fatalf("want ErrEventNotFound, got %v", err)
+	}
+}
+
+func TestExtractEvent_UnpackError(t *testing.T) {
+	parsed, err := fwss.FWSSMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := parsed.Events["DataSetCreated"]
+	if !ok {
+		t.Skip("DataSetCreated event not in ABI")
+	}
+	emitter := common.HexToAddress("0xcccccccccccccccccccccccccccccccccccccccc")
+	// Craft a log with matching topic but garbage data so unpack fails.
+	log := &types.Log{
+		Address: emitter,
+		Topics:  []common.Hash{ev.ID},
+		Data:    []byte{0x01, 0x02, 0x03}, // invalid ABI-encoded data
+	}
+	receipt := &types.Receipt{Logs: []*types.Log{log}}
+
+	type dummy struct{ X *big.Int }
+	var d dummy
+	err = ExtractEvent(receipt, parsed, "DataSetCreated", emitter, &d)
+	if err == nil {
+		t.Fatal("expected unpack error")
+	}
+}
+
 func TestExtractEvent_Found(t *testing.T) {
 	parsed, err := fwss.FWSSMetaData.GetAbi()
 	if err != nil {
