@@ -10,7 +10,7 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// DownloadPiece calls GET /pdp/piece/{pieceCid} and returns a streaming
+// DownloadPiece calls GET /piece/{pieceCid} and returns a streaming
 // io.ReadCloser plus the Content-Length (-1 when unknown). The caller must
 // close the reader when done.
 //
@@ -18,13 +18,13 @@ import (
 // are not cut off; callers can enforce a deadline via the context.
 //
 // Mirrors go-synapse/pdp/server.go::DownloadPiece and the pdptool
-// GET /pdp/piece/{cid} call pattern.
+// GET /piece/{cid} call pattern.
 func (c *Client) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
 	if err := validatePieceCIDV2("curio.DownloadPiece", pieceCID); err != nil {
 		return nil, 0, err
 	}
 
-	u, err := c.resolve(path.Join("pdp/piece", pieceCID.String()))
+	u, err := c.resolve(path.Join("piece", pieceCID.String()))
 	if err != nil {
 		return nil, 0, fmt.Errorf("curio.DownloadPiece: resolve: %w", err)
 	}

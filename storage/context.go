@@ -398,7 +398,7 @@ func (c *Context) pieceURLFor(pieceCID cid.Cid) string {
 	if err != nil {
 		return c.provider.ServiceURL
 	}
-	base.Path = path.Join(base.Path, "pdp/piece", pieceCID.String())
+	base.Path = path.Join(base.Path, "piece", pieceCID.String())
 	return base.String()
 }
 

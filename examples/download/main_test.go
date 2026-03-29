@@ -18,7 +18,7 @@ func TestParseDownloadConfig_UsesExplicitOutputPath(t *testing.T) {
 
 	cfg, err := parseDownloadConfig([]string{
 		info.CIDv2.String(),
-		"https://sp.example.com/pdp/piece/" + info.CIDv2.String(),
+		"https://sp.example.com/piece/" + info.CIDv2.String(),
 		"./out.bin",
 	})
 	if err != nil {
@@ -27,7 +27,7 @@ func TestParseDownloadConfig_UsesExplicitOutputPath(t *testing.T) {
 	if cfg.PieceCID != info.CIDv2 {
 		t.Fatalf("PieceCID=%s want %s", cfg.PieceCID, info.CIDv2)
 	}
-	if cfg.PieceURL != "https://sp.example.com/pdp/piece/"+info.CIDv2.String() {
+	if cfg.PieceURL != "https://sp.example.com/piece/"+info.CIDv2.String() {
 		t.Fatalf("PieceURL=%q", cfg.PieceURL)
 	}
 	if cfg.OutputPath != "./out.bin" {
@@ -58,7 +58,7 @@ func TestRunDownload_WritesPieceToOutputFile(t *testing.T) {
 
 	if err := runDownload(context.Background(), downloadConfig{
 		PieceCID:   info.CIDv2,
-		PieceURL:   "https://sp.example.com/pdp/piece/" + info.CIDv2.String(),
+		PieceURL:   "https://sp.example.com/piece/" + info.CIDv2.String(),
 		OutputPath: outputPath,
 	}, fake); err != nil {
 		t.Fatalf("runDownload: %v", err)

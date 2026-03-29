@@ -158,6 +158,37 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, expect 
 	return c.do(req, expect...)
 }
 
+// longClient returns a clone of c.httpClient with Timeout=0 so that
+// the request lifetime is controlled solely by the context. Use this
+// for operations that may wait for blockchain confirmation.
+func (c *Client) longClient() *http.Client {
+	if c.httpClient != nil {
+		cloned := *c.httpClient
+		cloned.Timeout = 0
+		return &cloned
+	}
+	return &http.Client{Timeout: 0}
+}
+
+// postJSONLong is like postJSON but uses a no-timeout HTTP client.
+// Suitable for endpoints that block until a blockchain transaction confirms.
+func (c *Client) postJSONLong(ctx context.Context, pth string, payload any, expect ...int) (*http.Response, []byte, error) {
+	u, err := c.resolve(pth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("curio: resolve %s: %w", pth, err)
+	}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("curio: marshal %s: %w", pth, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
+	if err != nil {
+		return nil, nil, fmt.Errorf("curio: build POST %s: %w", pth, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return c.doWithClient(c.longClient(), req, expect...)
+}
+
 // getJSON performs GET and decodes the JSON response into dst (may be nil
 // to ignore the body).
 func (c *Client) getJSON(ctx context.Context, path string, dst any) error {

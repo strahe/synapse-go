@@ -8,6 +8,7 @@
 //
 // Endpoints covered:
 //
+//   - GET    /piece/{pieceCid}                              (download bytes)
 //   - GET    /pdp/ping
 //   - POST   /pdp/piece                                    (pre-register)
 //   - PUT    /pdp/piece/upload/{uploadUUID}                (upload bytes)

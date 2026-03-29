@@ -32,7 +32,7 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
-		pieceURL: "https://primary.example.com/pdp/piece/" + info.CIDv2.String(),
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, got []byte, _ *StoreOptions) (*StoreResult, error) {
 			appendCall("primary.store")
 			if !bytes.Equal(got, data) {
@@ -58,7 +58,7 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 	secondary := &fakeUploadContext{
 		id:       big.NewInt(202),
 		endpoint: "https://secondary.example.com",
-		pieceURL: "https://secondary.example.com/pdp/piece/" + info.CIDv2.String(),
+		pieceURL: "https://secondary.example.com/piece/" + info.CIDv2.String(),
 		presignFn: func(_ context.Context, pieces []PieceInput) ([]byte, error) {
 			appendCall("secondary.presign")
 			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
@@ -161,7 +161,7 @@ func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) 
 	primary := &fakeUploadContext{
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
-		pieceURL: "https://primary.example.com/pdp/piece/" + info.CIDv2.String(),
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
@@ -212,7 +212,7 @@ func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
-		pieceURL: "https://primary.example.com/pdp/piece/" + info.CIDv2.String(),
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
@@ -264,7 +264,7 @@ func TestManagerUploadBytes_ImplicitSecondaryReplacement(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
-		pieceURL: "https://primary.example.com/pdp/piece/" + info.CIDv2.String(),
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},

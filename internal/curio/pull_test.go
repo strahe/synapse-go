@@ -66,7 +66,7 @@ func TestPullPieces_CreateNew(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
 	rk := common.HexToAddress("0xabc")
 	extraData := []byte{0xde, 0xad}
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(body pullPiecesBody, _ int) (int, pullResponse) {
 		// Validate request shape.
@@ -123,7 +123,7 @@ func TestPullPieces_ExistingDataSet(t *testing.T) {
 	rk := common.HexToAddress("0xabc")
 	extraData := []byte{0xca, 0xfe}
 	dataSetID := uint64(42)
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(body pullPiecesBody, _ int) (int, pullResponse) {
 		if body.DataSetID == nil || *body.DataSetID != dataSetID {
@@ -163,7 +163,7 @@ func TestPullPieces_ExistingDataSetRequiresRecordKeeper(t *testing.T) {
 		DataSetID: 42,
 		Pieces: []PullPieceInput{{
 			PieceCID:  pc,
-			SourceURL: fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String()),
+			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
 		}},
 	})
 	if err == nil {
@@ -185,7 +185,7 @@ func TestPullPieces_EmptyInputs(t *testing.T) {
 
 	if _, err := c.PullPieces(context.Background(), PullRequest{
 		ExtraData: nil,
-		Pieces:    []PullPieceInput{{PieceCID: emptyCID(), SourceURL: "https://x.com/pdp/piece/x"}},
+		Pieces:    []PullPieceInput{{PieceCID: emptyCID(), SourceURL: "https://x.com/piece/x"}},
 	}); err == nil {
 		t.Error("expected error for empty extraData")
 	}
@@ -200,7 +200,7 @@ func TestPullPieces_ServerError(t *testing.T) {
 	_, err := c.PullPieces(context.Background(), PullRequest{
 		RecordKeeper: common.HexToAddress("0xabc"),
 		ExtraData:    []byte{0x01},
-		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())}},
+		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())}},
 	})
 	if err == nil {
 		t.Fatal("expected error for server 500")
@@ -216,7 +216,7 @@ func TestPullPieces_ServerError(t *testing.T) {
 
 func TestWaitForPullComplete_CompletesImmediately(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(_ pullPiecesBody, _ int) (int, pullResponse) {
 		return http.StatusOK, pullResponse{
@@ -240,7 +240,7 @@ func TestWaitForPullComplete_CompletesImmediately(t *testing.T) {
 
 func TestWaitForPullComplete_EventuallyComplete(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	// First two calls return pending; third returns complete.
 	c, _ := pullTestServer(t, func(_ pullPiecesBody, callCount int) (int, pullResponse) {
@@ -275,7 +275,7 @@ func TestWaitForPullComplete_EventuallyComplete(t *testing.T) {
 
 func TestWaitForPullComplete_Failed(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(_ pullPiecesBody, _ int) (int, pullResponse) {
 		return http.StatusOK, pullResponse{
@@ -302,7 +302,7 @@ func TestWaitForPullComplete_Failed(t *testing.T) {
 
 func TestWaitForPullComplete_ContextCancelled(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(_ pullPiecesBody, _ int) (int, pullResponse) {
 		return http.StatusOK, pullResponse{
@@ -328,7 +328,7 @@ func TestWaitForPullComplete_ContextCancelled(t *testing.T) {
 // Issue 1: PullPieces must reject DataSetID==0 + zero RecordKeeper locally.
 func TestPullPieces_ZeroDataSetIDRequiresRecordKeeper(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("should not reach server when local validation fails")
@@ -352,7 +352,7 @@ func TestPullPieces_ZeroDataSetIDRequiresRecordKeeper(t *testing.T) {
 // Issue 3: PullPieces must accept HTTP 201 and 202 in addition to 200.
 func TestPullPieces_Accepts201And202(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	sourceURL := fmt.Sprintf("https://sp.example.com/pdp/piece/%s", pc.String())
+	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	for _, code := range []int{http.StatusCreated, http.StatusAccepted} {
 		code := code
@@ -387,7 +387,7 @@ func TestPullPieces_RejectsV1(t *testing.T) {
 	_, err := c.PullPieces(context.Background(), PullRequest{
 		RecordKeeper: common.HexToAddress("0xabc"),
 		ExtraData:    []byte{0x01},
-		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: "https://sp.example.com/pdp/piece/ignored"}},
+		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: "https://sp.example.com/piece/ignored"}},
 	})
 	if err == nil {
 		t.Fatal("expected PieceCIDv2 validation error")

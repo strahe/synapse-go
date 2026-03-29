@@ -76,8 +76,8 @@ func TestRunUpload_ReadsFileAndPrintsSummary(t *testing.T) {
 				RequestedCopies: 2,
 				Complete:        true,
 				Copies: []storage.CopyResult{
-					{ProviderID: big.NewInt(101), RetrievalURL: "https://sp.example.com/pdp/piece/" + info.CIDv2.String()},
-					{ProviderID: big.NewInt(202), RetrievalURL: "https://sp2.example.com/pdp/piece/" + info.CIDv2.String()},
+					{ProviderID: big.NewInt(101), RetrievalURL: "https://sp.example.com/piece/" + info.CIDv2.String()},
+					{ProviderID: big.NewInt(202), RetrievalURL: "https://sp2.example.com/piece/" + info.CIDv2.String()},
 				},
 			}, nil
 		},

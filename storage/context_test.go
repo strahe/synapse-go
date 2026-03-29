@@ -72,7 +72,7 @@ func TestContextStoreBytes_UploadsAndWaits(t *testing.T) {
 func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
 	recordKeeper := testRecordKeeper()
-	primaryURL := "https://primary.example.com/pdp/piece/" + info.CIDv2.String()
+	primaryURL := "https://primary.example.com/piece/" + info.CIDv2.String()
 
 	fake := &fakeCurioClient{
 		pullPiecesFn: func(_ context.Context, req icurio.PullRequest) (*icurio.PullResult, error) {
@@ -649,7 +649,7 @@ func TestContextPieceURL(t *testing.T) {
 
 	info := mustPieceInfo(t)
 	got := ctx.PieceURL(info.CIDv2)
-	want := "https://sp.example.com/pdp/piece/" + info.CIDv2.String()
+	want := "https://sp.example.com/piece/" + info.CIDv2.String()
 	if got != want {
 		t.Fatalf("PieceURL()=%q want %q", got, want)
 	}

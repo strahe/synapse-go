@@ -17,7 +17,7 @@ func TestDownloadPiece_OK(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("unexpected method %s", r.Method)
 		}
-		wantPath := "/pdp/piece/" + pc.String()
+		wantPath := "/piece/" + pc.String()
 		if r.URL.Path != wantPath {
 			t.Errorf("path=%q want %q", r.URL.Path, wantPath)
 		}
