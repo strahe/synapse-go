@@ -22,7 +22,7 @@ test-cover:
 
 # Run integration tests (requires env vars)
 test-integration:
-	go test -tags=integration -v ./...
+	go test -tags=integration -count=1 -v -timeout 20m ./tests/integration
 
 # Run linter
 lint:
