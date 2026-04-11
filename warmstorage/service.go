@@ -81,8 +81,8 @@ type ServicePrice struct {
 	PricePerTiBPerMonthNoCDN   *big.Int
 	PricePerTiBCdnEgress       *big.Int
 	PricePerTiBCacheMissEgress *big.Int
-	TokenAddress               common.Address
-	EpochsPerMonth             *big.Int
+	TokenAddress               common.Address // EVM address of the payment token
+	EpochsPerMonth             *big.Int       // Filecoin epochs per billing month
 	MinimumPricePerMonth       *big.Int
 }
 
@@ -105,16 +105,16 @@ func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
 // DataSetInfo mirrors FilecoinWarmStorageServiceDataSetInfoView.
 type DataSetInfo struct {
 	DataSetID       *big.Int
-	PDPRailID       *big.Int
-	CacheMissRailID *big.Int
-	CDNRailID       *big.Int
+	PDPRailID       *big.Int // payment rail for PDP proofs
+	CacheMissRailID *big.Int // payment rail for cache-miss egress
+	CDNRailID       *big.Int // payment rail for CDN egress
 	Payer           common.Address
 	Payee           common.Address
 	ServiceProvider common.Address
-	CommissionBps   *big.Int
-	ClientDataSetID *big.Int
-	PDPEndEpoch     *big.Int
-	ProviderID      *big.Int
+	CommissionBps   *big.Int // commission rate in basis points (out of 10 000)
+	ClientDataSetID *big.Int // caller-assigned ID used in EIP-712 payloads
+	PDPEndEpoch     *big.Int // epoch at which PDP service expires; 0 = indefinite
+	ProviderID      *big.Int // numeric storage provider ID
 }
 
 func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) *DataSetInfo {

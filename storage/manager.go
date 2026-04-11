@@ -20,6 +20,8 @@ const maxSecondaryAttempts = 5
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
+// UploadContext abstracts a single provider's upload operations.
+// Implementations are returned by UploadResolver and are safe for concurrent use.
 type UploadContext interface {
 	ProviderID() *big.Int
 	ServiceURL() string
@@ -30,19 +32,25 @@ type UploadContext interface {
 	Commit(context.Context, CommitRequest) (*CommitResult, error)
 }
 
+// UploadResolver selects the set of providers for an upload and provides
+// replacement candidates when a secondary provider fails.
 type UploadResolver interface {
 	ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
 	SelectReplacement(context.Context, map[string]struct{}, *UploadOptions) (UploadContext, error)
 }
 
+// Manager orchestrates multi-copy uploads and downloads.
+// Create with NewManager; configure via Option functions.
 type Manager struct {
 	resolver   UploadResolver
 	httpClient *http.Client
 	source     string
 }
 
+// Option configures a Manager.
 type Option func(*Manager)
 
+// WithUploadResolver sets the resolver used to select providers for each upload.
 func WithUploadResolver(resolver UploadResolver) Option {
 	return func(m *Manager) {
 		m.resolver = resolver
@@ -58,17 +66,17 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
-// WithSource sets the application-level source identifier used for
-// dataset namespace isolation. Datasets created with different source
-// values are treated as distinct namespaces; only datasets whose
-// "source" metadata matches will be reused. This mirrors the TS SDK's
-// Synapse.create({ source }) option.
+// WithSource sets the application source identifier for dataset namespace
+// isolation. Datasets with different source values are treated as separate
+// namespaces; reuse only occurs within the same source.
 func WithSource(s string) Option {
 	return func(m *Manager) {
 		m.source = s
 	}
 }
 
+// NewManager creates a Manager with the given options.
+// A default HTTP client with a 24-hour timeout is used unless overridden by WithHTTPClient.
 func NewManager(opts ...Option) *Manager {
 	m := &Manager{
 		httpClient: &http.Client{Timeout: defaultDownloadTimeout},
@@ -94,6 +102,9 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	return m.UploadBytes(ctx, data, opts)
 }
 
+// UploadBytes runs the multi-copy upload pipeline for data.
+// opts may be nil (defaults apply). Returns UploadResult whose Complete field
+// indicates whether all requested copies were committed on-chain.
 func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOptions) (*UploadResult, error) {
 	if len(data) == 0 {
 		return nil, errors.New("storage.Manager.UploadBytes: empty data")

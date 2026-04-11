@@ -5,6 +5,7 @@ import (
 	"math/big"
 )
 
+// StoreError is returned when the primary store operation fails.
 type StoreError struct {
 	ProviderID *big.Int
 	Endpoint   string
@@ -23,6 +24,8 @@ func (e *StoreError) Error() string {
 
 func (e *StoreError) Unwrap() error { return e.Cause }
 
+// CommitError is returned when all on-chain commit attempts fail and no copies
+// are stored. Individual per-provider failures are reported in UploadResult.FailedAttempts.
 type CommitError struct {
 	ProviderID *big.Int
 	Endpoint   string

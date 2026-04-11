@@ -13,13 +13,15 @@ import (
 	"github.com/strahe/synapse-go/piece"
 )
 
+// DownloadContext provides piece retrieval from a known storage provider.
 type DownloadContext interface {
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
+// DownloadOptions configures a Manager.Download call.
 type DownloadOptions struct {
-	Context DownloadContext
-	URL     string
+	Context DownloadContext // when set, delegates to DownloadContext.Download; mutually exclusive with URL
+	URL     string          // direct HTTPS URL; validated against pieceCID on read completion
 }
 
 // validatePieceCID returns nil if c is a valid PieceCIDv1 or PieceCIDv2, or

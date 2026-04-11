@@ -38,6 +38,8 @@ const (
 	maxPieceMetadataKeys   = 5
 )
 
+// PDPClient is the curio HTTP API surface required by Context.
+// Satisfied by *internal/curio.Client; injectable for testing.
 type PDPClient interface {
 	UploadPieceFromBytes(context.Context, cid.Cid, []byte) (*icurio.UploadPieceResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
@@ -49,15 +51,20 @@ type PDPClient interface {
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 }
 
+// Provider holds the on-chain identity of a storage provider.
 type Provider struct {
-	ID              *big.Int
-	ServiceURL      string
-	ServiceProvider common.Address
-	Payee           common.Address
+	ID              *big.Int       // numeric provider ID from SPRegistry
+	ServiceURL      string         // base URL of the provider's curio HTTP API
+	ServiceProvider common.Address // provider's EVM address
+	Payee           common.Address // address that receives payments
 }
 
+// ContextOption configures a Context.
 type ContextOption func(*Context)
 
+// Context represents a specific provider + data-set pair and handles
+// storage operations (store, pull, and/or commit) for one upload copy.
+// It is safe for concurrent use.
 type Context struct {
 	// commitMu serialises Commit calls so the create-vs-add path decision
 	// made in PresignForCommit and the subsequent curio API call are
@@ -78,6 +85,8 @@ type Context struct {
 	dataSetMetadata map[string]string
 }
 
+// NewContext creates a Context for the given provider and PDP client.
+// All required fields (provider.ID, provider.ServiceURL, client, evmSigner) must be non-nil/non-empty.
 func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
 	if provider.ID == nil {
 		return nil, errors.New("storage.NewContext: nil provider ID")
@@ -106,10 +115,12 @@ func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner,
 	return c, nil
 }
 
+// WithPayer sets the EVM address that pays for storage.
 func WithPayer(payer common.Address) ContextOption {
 	return func(c *Context) { c.payer = payer }
 }
 
+// WithChainID sets the EIP-155 chain ID used for EIP-712 domain separation.
 func WithChainID(chainID *big.Int) ContextOption {
 	return func(c *Context) {
 		if chainID != nil {
@@ -118,10 +129,14 @@ func WithChainID(chainID *big.Int) ContextOption {
 	}
 }
 
+// WithRecordKeeper sets the FWSS contract address (record-keeper) used for
+// EIP-712 signing and passed to Curio for Pull and CreateDataSet operations.
 func WithRecordKeeper(addr common.Address) ContextOption {
 	return func(c *Context) { c.recordKeeper = addr }
 }
 
+// WithDataSetID pins the context to an existing on-chain data set.
+// When set, Commit issues an AddPieces call instead of CreateDataSet+AddPieces.
 func WithDataSetID(id *big.Int) ContextOption {
 	return func(c *Context) {
 		if id != nil {
@@ -130,6 +145,9 @@ func WithDataSetID(id *big.Int) ContextOption {
 	}
 }
 
+// WithClientDataSetID sets a caller-chosen data-set identifier included in
+// EIP-712 messages. If not provided, a random value is generated on the
+// first PresignForCommit call and reused for the lifetime of this Context.
 func WithClientDataSetID(id *big.Int) ContextOption {
 	return func(c *Context) {
 		if id != nil {
@@ -138,14 +156,20 @@ func WithClientDataSetID(id *big.Int) ContextOption {
 	}
 }
 
+// WithDataSetMetadata sets the key-value metadata stored with the data set on creation.
 func WithDataSetMetadata(metadata map[string]string) ContextOption {
 	return func(c *Context) { c.dataSetMetadata = cloneStringMap(metadata) }
 }
 
+// WithCDN enables CDN services for the data set. When true, a "withCDN"
+// metadata marker is added to the EIP-712 dataset-creation message;
+// the contract activates CDN and applies its configured lockup upon seeing it.
 func WithCDN(enabled bool) ContextOption {
 	return func(c *Context) { c.withCDN = enabled }
 }
 
+// StoreBytes uploads data to the provider and waits for it to be parked.
+// Returns a StoreResult with PieceCIDv2 and raw byte size.
 func (c *Context) StoreBytes(ctx context.Context, data []byte, opts *StoreOptions) (*StoreResult, error) {
 	if len(data) == 0 {
 		return nil, errors.New("storage.Context.StoreBytes: empty data")
@@ -167,6 +191,9 @@ func (c *Context) StoreBytes(ctx context.Context, data []byte, opts *StoreOption
 	return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 }
 
+// PresignForCommit produces the EIP-712–signed extraData payload for Commit.
+// For a new data set it signs both CreateDataSet and AddPieces; for an existing
+// data set it signs only AddPieces. The returned bytes are opaque to callers.
 func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]byte, error) {
 	if len(pieces) == 0 {
 		return nil, errors.New("storage.Context.PresignForCommit: no pieces provided")
@@ -241,6 +268,8 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	return encodeCreateAndAddExtraData(createPayload, addPayload)
 }
 
+// Pull asks this provider to fetch pieces from another provider (SP-to-SP transfer).
+// req.ExtraData must be the payload returned by PresignForCommit on this context.
 func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	if len(req.Pieces) == 0 {
 		return nil, errors.New("storage.Context.Pull: no pieces provided")
@@ -297,6 +326,9 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	return out, nil
 }
 
+// Commit calls the provider's AddPieces or CreateDataSet+AddPieces API and
+// waits for on-chain confirmation. When req.ExtraData is empty, PresignForCommit
+// is called internally to produce the signed payload.
 func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
 	if len(req.Pieces) == 0 {
 		return nil, errors.New("storage.Context.Commit: no pieces provided")
@@ -381,14 +413,17 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	return result, nil
 }
 
+// PieceURL returns the HTTPS retrieval URL for the given piece CID on this provider.
 func (c *Context) PieceURL(pieceCID cid.Cid) string {
 	return c.pieceURLFor(pieceCID)
 }
 
+// ProviderID returns a copy of the provider's numeric ID.
 func (c *Context) ProviderID() *big.Int {
 	return copyBigInt(c.provider.ID)
 }
 
+// ServiceURL returns the base URL of the provider's curio HTTP API.
 func (c *Context) ServiceURL() string {
 	return c.provider.ServiceURL
 }

@@ -43,11 +43,11 @@ func (a *AccountState) AvailableFunds() *big.Int {
 // OperatorApproval mirrors FilPay.operatorApprovals(token, client, operator).
 type OperatorApproval struct {
 	IsApproved      bool
-	RateAllowance   *big.Int
-	LockupAllowance *big.Int
-	RateUsage       *big.Int
-	LockupUsage     *big.Int
-	MaxLockupPeriod *big.Int
+	RateAllowance   *big.Int // maximum per-epoch rate the operator may charge
+	LockupAllowance *big.Int // maximum lockup the operator may hold
+	RateUsage       *big.Int // current per-epoch rate in use by the operator
+	LockupUsage     *big.Int // current lockup held by the operator
+	MaxLockupPeriod *big.Int // maximum lockup period allowed (in epochs)
 }
 
 // WriteResult is returned by every state-changing call.
