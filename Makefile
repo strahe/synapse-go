@@ -1,4 +1,4 @@
-.PHONY: build test lint vet generate generate-contracts clean fmt tidy check
+.PHONY: build test bench lint vet generate generate-contracts clean fmt tidy check
 
 # Default target
 all: check
@@ -10,6 +10,10 @@ build:
 # Run all tests
 test:
 	go test ./...
+
+# Run benchmarks — auto-discovers packages containing *_bench_test.go files
+bench:
+	go test -bench=. -benchmem $(shell find . -name '*_bench_test.go' | sed 's|/[^/]*$$||' | sort -u)
 
 # Run tests with race detector
 test-race:
