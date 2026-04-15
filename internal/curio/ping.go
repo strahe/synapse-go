@@ -11,10 +11,8 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	_, _, err = c.do(req)
+	_, _, err = c.doRetryable(ctx, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	})
 	return err
 }

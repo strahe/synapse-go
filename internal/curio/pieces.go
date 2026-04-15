@@ -119,12 +119,14 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	if statusURL == "" {
 		return nil, errors.New("curio.GetAddPiecesStatus: empty statusURL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	_, body, err := c.do(req, http.StatusOK)
+	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		return req, nil
+	}, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}

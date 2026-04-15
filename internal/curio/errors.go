@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // HTTPError wraps a non-success response from the Curio API.
@@ -13,15 +15,42 @@ type HTTPError struct {
 	URL        string
 	StatusCode int
 	Body       string
+	// RetryAfter is the server-requested wait duration from the Retry-After
+	// header. Non-zero on HTTP 429 (Too Many Requests) and 503 (Service
+	// Unavailable) responses when the server provides the header.
+	RetryAfter time.Duration
 }
 
 func newHTTPError(req *http.Request, resp *http.Response, body []byte) *HTTPError {
-	return &HTTPError{
+	e := &HTTPError{
 		Method:     req.Method,
 		URL:        req.URL.String(),
 		StatusCode: resp.StatusCode,
 		Body:       strings.TrimSpace(string(body)),
 	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+		e.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	}
+	return e
+}
+
+// parseRetryAfter parses a Retry-After header value. It accepts both
+// delay-seconds (e.g. "30") and HTTP-date formats.
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	// Numeric: delay in seconds.
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	// HTTP-date format.
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // Error implements the error interface.

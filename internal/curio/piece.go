@@ -141,12 +141,14 @@ func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceRes
 	q.Set("pieceCid", pieceCID.String())
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, body, err := c.do(req, http.StatusOK, http.StatusNotFound, http.StatusAccepted)
+	resp, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		return req, nil
+	}, http.StatusOK, http.StatusNotFound, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
