@@ -93,9 +93,7 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
 	if err != nil {
@@ -180,9 +178,7 @@ func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) 
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
 	if err != nil {
@@ -237,9 +233,7 @@ func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
 	_, err = mgr.UploadBytes(context.Background(), data, nil)
 	if err == nil {
@@ -303,7 +297,7 @@ func TestManagerUploadBytes_ImplicitSecondaryReplacement(t *testing.T) {
 		contexts:     []UploadContext{primary, failedSecondary},
 		replacements: []UploadContext{replacement},
 	}
-	mgr := &Manager{resolver: resolver}
+	mgr := NewManager(WithUploadResolver(resolver))
 
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
 	if err != nil {
@@ -476,9 +470,7 @@ func TestManagerUploadBytes_NilPullResultNoNilDeref(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
 
 	// Should not panic; primary copy should still succeed.
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
@@ -520,9 +512,7 @@ func TestManagerUploadBytes_PresignFailureUsesPresignStage(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
 
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
 	if err != nil {
@@ -776,14 +766,38 @@ func TestManagerUploadBytes_PullStatusNotComplete(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{
-		resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true},
-	}
+	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
 	got, err := mgr.UploadBytes(context.Background(), data, nil)
 	if err != nil {
 		t.Fatalf("UploadBytes: %v", err)
 	}
 	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0].Stage != CopyStagePull {
 		t.Fatalf("FailedAttempts=%+v, want 1 pull failure", got.FailedAttempts)
+	}
+}
+
+func TestWithMaxSecondaryAttempts(t *testing.T) {
+	// Positive value is applied.
+	mgr := NewManager(WithMaxSecondaryAttempts(3))
+	if mgr.maxSecondaryAttempts != 3 {
+		t.Fatalf("maxSecondaryAttempts = %d, want 3", mgr.maxSecondaryAttempts)
+	}
+
+	// Zero is ignored; default of 5 is preserved.
+	mgr = NewManager(WithMaxSecondaryAttempts(0))
+	if mgr.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
+		t.Fatalf("maxSecondaryAttempts = %d after n=0, want default %d", mgr.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
+	}
+
+	// Negative value is ignored; default is preserved.
+	mgr = NewManager(WithMaxSecondaryAttempts(-1))
+	if mgr.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
+		t.Fatalf("maxSecondaryAttempts = %d after n=-1, want default %d", mgr.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
+	}
+
+	// Boundary: n=1 is accepted.
+	mgr = NewManager(WithMaxSecondaryAttempts(1))
+	if mgr.maxSecondaryAttempts != 1 {
+		t.Fatalf("maxSecondaryAttempts = %d after n=1, want 1", mgr.maxSecondaryAttempts)
 	}
 }

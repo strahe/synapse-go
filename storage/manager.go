@@ -13,7 +13,7 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-const maxSecondaryAttempts = 5
+const maxSecondaryAttemptsDefault = 5
 
 // defaultDownloadTimeout is applied to the Manager's HTTP client for
 // URL-based downloads.  It is long enough for multi-GiB files transferred
@@ -42,9 +42,10 @@ type UploadResolver interface {
 // Manager orchestrates multi-copy uploads and downloads.
 // Create with NewManager; configure via Option functions.
 type Manager struct {
-	resolver   UploadResolver
-	httpClient *http.Client
-	source     string
+	resolver             UploadResolver
+	httpClient           *http.Client
+	source               string
+	maxSecondaryAttempts int
 }
 
 // Option configures a Manager.
@@ -75,11 +76,23 @@ func WithSource(s string) Option {
 	}
 }
 
+// WithMaxSecondaryAttempts sets the maximum number of provider candidates tried
+// for each secondary copy slot before giving up. Values <= 0 are ignored and
+// the default of 5 is used.
+func WithMaxSecondaryAttempts(n int) Option {
+	return func(m *Manager) {
+		if n > 0 {
+			m.maxSecondaryAttempts = n
+		}
+	}
+}
+
 // NewManager creates a Manager with the given options.
 // A default HTTP client with a 24-hour timeout is used unless overridden by WithHTTPClient.
 func NewManager(opts ...Option) *Manager {
 	m := &Manager{
-		httpClient: &http.Client{Timeout: defaultDownloadTimeout},
+		httpClient:           &http.Client{Timeout: defaultDownloadTimeout},
+		maxSecondaryAttempts: maxSecondaryAttemptsDefault,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -165,7 +178,8 @@ func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOpti
 
 	for _, secondary := range secondaries {
 		current := secondary
-		for attempt := 0; attempt < maxSecondaryAttempts; attempt++ {
+		maxAttempts := m.maxSecondaryAttempts
+		for attempt := 0; attempt < maxAttempts; attempt++ {
 			extraData, presignErr := current.PresignForCommit(ctx, pieceInputs)
 			if presignErr == nil {
 				pullResult, pullErr := current.Pull(ctx, PullRequest{
@@ -204,7 +218,7 @@ func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOpti
 				})
 			}
 
-			if explicitProviders || attempt == maxSecondaryAttempts-1 {
+			if explicitProviders || attempt == maxAttempts-1 {
 				break
 			}
 			replacement, replErr := m.resolver.SelectReplacement(ctx, usedProviders, opts)

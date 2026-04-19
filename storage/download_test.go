@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,8 +74,22 @@ func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 	}
 	defer func() { _ = reader.Close() }()
 
-	if _, err := io.ReadAll(reader); err == nil {
+	_, readErr := io.ReadAll(reader)
+	if readErr == nil {
 		t.Fatal("expected validation error")
+	}
+	var cidMismatch *CIDMismatchError
+	if !errors.As(readErr, &cidMismatch) {
+		t.Fatalf("want *CIDMismatchError, got %T: %v", readErr, readErr)
+	}
+	if cidMismatch.Expected != info.CIDv2 {
+		t.Errorf("Expected CID = %s, want %s", cidMismatch.Expected, info.CIDv2)
+	}
+	if cidMismatch.ComputedV1 == (cid.Cid{}) {
+		t.Error("ComputedV1 should not be zero")
+	}
+	if cidMismatch.ComputedV2 == (cid.Cid{}) {
+		t.Error("ComputedV2 should not be zero")
 	}
 }
 
@@ -287,8 +302,15 @@ func TestDownloadAndValidate_Non2xxStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-2xx status")
 	}
-	if !strings.Contains(err.Error(), "unexpected status") {
-		t.Fatalf("unexpected error: %v", err)
+	var dlErr *DownloadError
+	if !errors.As(err, &dlErr) {
+		t.Fatalf("want *DownloadError, got %T: %v", err, err)
+	}
+	if dlErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, want %d", dlErr.StatusCode, http.StatusInternalServerError)
+	}
+	if dlErr.URL != server.URL {
+		t.Errorf("URL = %q, want %q", dlErr.URL, server.URL)
 	}
 }
 
@@ -305,8 +327,16 @@ func TestDownloadAndValidate_RequestCreationError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
-	if !strings.Contains(err.Error(), "build download request") {
-		t.Fatalf("unexpected error: %v", err)
+	var dlErr *DownloadError
+	if !errors.As(err, &dlErr) {
+		t.Fatalf("want *DownloadError, got %T: %v", err, err)
+	}
+	if dlErr.Cause == nil {
+		t.Error("expected non-nil Cause")
+	}
+	const wantURL = "http://example.com/\x7f"
+	if dlErr.URL != wantURL {
+		t.Errorf("URL = %q, want %q", dlErr.URL, wantURL)
 	}
 }
 

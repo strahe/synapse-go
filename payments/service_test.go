@@ -298,8 +298,8 @@ func TestAccountInfoAndBalance(t *testing.T) {
 		t.Errorf("Balance = %s, want 1000", bal)
 	}
 
-	if _, err := s.AccountInfo(context.Background(), common.Address{}, owner); !errors.Is(err, ErrZeroAddress) {
-		t.Errorf("expected ErrZeroAddress, got %v", err)
+	if _, err := s.AccountInfo(context.Background(), common.Address{}, owner); err != nil {
+		t.Errorf("zero token (FIL path): unexpected error: %v", err)
 	}
 }
 
@@ -1177,9 +1177,22 @@ func TestValidateNonNegative_TableDriven(t *testing.T) {
 }
 
 func TestAccountInfo_ZeroToken(t *testing.T) {
-	s, _ := newTestService(t)
-	if _, err := s.AccountInfo(context.Background(), common.Address{}, otherAddr); !errors.Is(err, ErrZeroAddress) {
-		t.Errorf("zero token: want ErrZeroAddress, got %v", err)
+	s, mb := newTestService(t)
+	owner := s.Account()
+	mb.balances[owner] = big.NewInt(999)
+	info, err := s.AccountInfo(context.Background(), common.Address{}, owner)
+	if err != nil {
+		t.Fatalf("zero token (FIL path): unexpected error: %v", err)
+	}
+	if info.Funds.Int64() != 999 {
+		t.Errorf("Funds = %s, want 999", info.Funds)
+	}
+	if info.LockupCurrent.Sign() != 0 || info.LockupRate.Sign() != 0 ||
+		info.LockupLastSettledAt.Sign() != 0 || info.FundedUntilEpoch.Sign() != 0 {
+		t.Errorf("expected all lockup fields zero, got %+v", info)
+	}
+	if avail := info.AvailableFunds(); avail.Int64() != 999 {
+		t.Errorf("AvailableFunds = %s, want 999", avail)
 	}
 }
 

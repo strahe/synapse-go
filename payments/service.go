@@ -120,12 +120,30 @@ func (s *Service) Account() common.Address {
 // ---------- reads ----------
 
 // AccountInfo returns the on-chain account record for (token, owner).
+//
+// When token is ZeroAddress, native FIL is queried via BalanceAt and returned
+// as AccountState.Funds. All lockup fields are zero because native FIL is not
+// tracked by the FilPay contract.
 func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) (*AccountState, error) {
-	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.AccountInfo: %w (token)", ErrZeroAddress)
-	}
 	if (owner == common.Address{}) {
 		return nil, fmt.Errorf("payments.AccountInfo: %w (owner)", ErrZeroAddress)
+	}
+	if (token == common.Address{}) {
+		bal, err := s.backend.BalanceAt(ctx, owner, nil)
+		if err != nil {
+			return nil, fmt.Errorf("payments.AccountInfo (FIL): %w", err)
+		}
+		if bal == nil {
+			bal = new(big.Int)
+		}
+		return &AccountState{
+			Funds:               copyBig(bal),
+			LockupCurrent:       big.NewInt(0),
+			LockupRate:          big.NewInt(0),
+			LockupLastSettledAt: big.NewInt(0),
+			FundedUntilEpoch:    big.NewInt(0),
+			availableFunds:      copyBig(bal),
+		}, nil
 	}
 	v, err := s.filPayCall.Accounts(&bind.CallOpts{Context: ctx}, token, owner)
 	if err != nil {

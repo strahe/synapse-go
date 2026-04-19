@@ -104,15 +104,47 @@ type FailedAttempt struct {
 }
 
 // UploadResult is returned by a successful Upload or UploadBytes call.
-// A non-empty FailedAttempts slice does not indicate overall failure;
-// check Complete or compare len(Copies) against RequestedCopies instead.
+//
+// Use Complete to determine overall success: it is true when every requested
+// copy was committed on-chain (equivalent to len(Copies) >= RequestedCopies).
+// A non-empty FailedAttempts slice does NOT indicate overall failure — failed
+// attempts may have been resolved by successful retries on other providers.
+//
+// Example:
+//
+//	result, err := m.Upload(ctx, r, opts)
+//	if err != nil { ... }
+//	if !result.Complete {
+//	    log.Printf("partial upload: %d/%d copies", result.SuccessCount(), result.RequestedCopies)
+//	}
 type UploadResult struct {
 	PieceCID        cid.Cid
 	Size            int64 // raw (unpadded) byte count
 	RequestedCopies int
-	Complete        bool // true when all requested copies were committed on-chain
+	// Complete is true when all RequestedCopies were committed on-chain.
+	// Equivalent to len(Copies) >= RequestedCopies.
+	Complete        bool
 	Copies          []CopyResult
 	FailedAttempts  []FailedAttempt
+}
+
+// SuccessCount returns the number of copies that were successfully committed
+// on-chain. Equivalent to len(Copies).
+func (r *UploadResult) SuccessCount() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Copies)
+}
+
+// PartialSuccess reports whether at least one copy was committed on-chain but
+// fewer than the requested number were obtained. Returns false when Complete is
+// true or when no copies succeeded at all.
+func (r *UploadResult) PartialSuccess() bool {
+	if r == nil {
+		return false
+	}
+	return !r.Complete && len(r.Copies) > 0
 }
 
 // UploadOptions configures an Upload or UploadBytes call.

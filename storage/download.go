@@ -85,15 +85,15 @@ func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser
 func (m *Manager) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("storage: build download request: %w", err)
+		return nil, &DownloadError{URL: rawURL, Cause: err}
 	}
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("storage: GET %s: %w", rawURL, err)
+		return nil, &DownloadError{URL: rawURL, Cause: err}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("storage: GET %s: unexpected status %s", rawURL, resp.Status)
+		return nil, &DownloadError{URL: rawURL, StatusCode: resp.StatusCode}
 	}
 	return newValidatingReadCloser(resp.Body, pieceCID), nil
 }
@@ -164,6 +164,9 @@ func (r *validatingReadCloser) validate() error {
 	if info.CIDv2.Defined() && r.expected == info.CIDv2 {
 		return nil
 	}
-	return fmt.Errorf("storage: validate download piece: pieceCID mismatch (computed v1=%s v2=%s, want %s)",
-		info.CIDv1, info.CIDv2, r.expected)
+	return &CIDMismatchError{
+		Expected:   r.expected,
+		ComputedV1: info.CIDv1,
+		ComputedV2: info.CIDv2,
+	}
 }
