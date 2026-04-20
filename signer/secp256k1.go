@@ -48,6 +48,11 @@ func NewSecp256k1SignerFromBytes(raw []byte) (*Secp256k1Signer, error) {
 		return nil, fmt.Errorf("signer: invalid key length %d", len(raw))
 	}
 	var padded [32]byte
+	defer func() {
+		for i := range padded {
+			padded[i] = 0
+		}
+	}()
 	copy(padded[32-len(raw):], raw)
 
 	key, err := ethcrypto.ToECDSA(padded[:])

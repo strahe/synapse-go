@@ -29,8 +29,8 @@ import (
 )
 
 // Client is the root entry point for the Filecoin Onchain Cloud SDK.
-// It composes all sub-services and provides lazy-initialized access to
-// each one. Create with [New]; release resources with [Close].
+// It composes all sub-services, all of which are initialised eagerly by [New].
+// Create with [New]; release resources with [Close].
 //
 // All methods are safe for concurrent use.
 type Client struct {
@@ -46,25 +46,12 @@ type Client struct {
 
 	closeOnce sync.Once
 
-	warmStorageOnce sync.Once
-	warmStorage     *warmstorage.Service
-
-	spRegistryOnce sync.Once
-	spRegistry     *spregistry.Service
-
-	paymentsOnce sync.Once
-	payments     *payments.Service
-
-	sessionKeyOnce sync.Once
-	sessionKey     *sessionkey.Service
-
-	costsOnce sync.Once
-	costs     *costs.Service
-
-	filbeamOnce sync.Once
+	warmStorage *warmstorage.Service
+	spRegistry  *spregistry.Service
+	payments    *payments.Service
+	sessionKey  *sessionkey.Service
+	costs       *costs.Service
 	filbeam     *filbeam.Service
-
-	storageOnce sync.Once
 	storage     *storage.Manager
 }
 
@@ -86,6 +73,17 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 			return nil, fmt.Errorf("synapse.New: %w", err)
 		}
 		cfg.privateKey = key
+		// Zero the intermediate key's D scalar when New returns; the signer
+		// deep-copies D, so this does not affect the created signer.
+		// SetBytes overwrites the backing []Word array with zeros; SetInt64
+		// then truncates the slice length. Both steps are required — SetInt64
+		// alone only truncates without writing, leaving key bits in the heap.
+		defer func() {
+			if cfg.privateKey != nil && cfg.privateKey.D != nil {
+				cfg.privateKey.D.SetBytes(make([]byte, 32))
+				cfg.privateKey.D.SetInt64(0)
+			}
+		}()
 	}
 	if cfg.privateKey == nil {
 		return nil, errors.New("synapse.New: missing private key (use WithPrivateKey or WithPrivateKeyHex)")
@@ -168,7 +166,7 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	}
 	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
 
-	return &Client{
+	c := &Client{
 		ethClient:     ec,
 		ownsClient:    ownsClient,
 		evmSigner:     evmSigner,
@@ -178,7 +176,15 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		logger:        cfg.logger,
 		httpClient:    cfg.httpClient,
 		source:        cfg.source,
-	}, nil
+	}
+	if err := c.initServices(); err != nil {
+		if ownsClient {
+			ec.Close()
+		}
+		evmSigner.Zero()
+		return nil, fmt.Errorf("synapse.New: %w", err)
+	}
+	return c, nil
 }
 
 // Close releases resources held by the Client. If the ethclient was
@@ -190,8 +196,8 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 // not be used.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
-		if s, ok := c.evmSigner.(*signer.Secp256k1Signer); ok {
-			s.Zero()
+		if z, ok := c.evmSigner.(interface{ Zero() }); ok {
+			z.Zero()
 		}
 		if c.ownsClient && c.ethClient != nil {
 			c.ethClient.Close()
@@ -213,6 +219,11 @@ func (c *Client) Address() common.Address {
 func parsePrivateKeyHex(raw string) (*ecdsa.PrivateKey, error) {
 	hexStr := strings.TrimPrefix(strings.TrimSpace(raw), "0x")
 	decoded, err := hex.DecodeString(hexStr)
+	defer func() {
+		for i := range decoded {
+			decoded[i] = 0
+		}
+	}()
 	if err != nil {
 		return nil, fmt.Errorf("decode private key hex: %w", err)
 	}

@@ -257,7 +257,7 @@ func TestServiceGetters_Exist(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Verify lazy getters don't panic and return non-nil.
+	// Verify getters return non-nil.
 	// These are purely in-memory constructors, no RPC calls.
 	if client.WarmStorage() == nil {
 		t.Error("WarmStorage() returned nil")
@@ -297,7 +297,7 @@ func TestServiceGetters_Idempotent(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Calling twice should return the same pointer (sync.Once).
+	// Calling twice should return the same pointer (plain field read, idempotent by construction).
 	ws1 := client.WarmStorage()
 	ws2 := client.WarmStorage()
 	if ws1 != ws2 {
@@ -336,7 +336,7 @@ func TestNew_WithLogger(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// Logger gets passed to sub-services. Verify Payments gets it.
-	_ = client.Payments() // trigger lazy init, should not panic
+	_ = client.Payments()
 }
 
 func TestNew_WithHTTPClient(t *testing.T) {
@@ -358,8 +358,8 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// HTTP client gets passed to sub-services.
-	_ = client.FilBeam() // trigger lazy init
-	_ = client.Storage() // trigger lazy init
+	_ = client.FilBeam()
+	_ = client.Storage()
 }
 
 func TestNew_Mainnet(t *testing.T) {
@@ -406,7 +406,7 @@ func TestWithSource(t *testing.T) {
 	if client.source != "my-app" {
 		t.Errorf("source = %q, want %q", client.source, "my-app")
 	}
-	// Storage() triggers lazy init; verify it doesn't panic with source set.
+	// Storage() returns the manager; verify it works with source set.
 	_ = client.Storage()
 }
 
@@ -659,7 +659,7 @@ func TestParsePrivateKeyHex_Valid(t *testing.T) {
 	}
 }
 
-func TestLazyGetters_ConcurrentAccess(t *testing.T) {
+func TestGetters_ConcurrentAccess(t *testing.T) {
 	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
 	defer ec.Close()
@@ -674,10 +674,9 @@ func TestLazyGetters_ConcurrentAccess(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Hammer all getters concurrently to exercise sync.Once under race
-	// detector. This also tests cross-getter dependencies (e.g. Costs
-	// triggers WarmStorage + Payments, Storage triggers WarmStorage +
-	// SPRegistry).
+	// Hammer all getters concurrently under the race detector.
+	// Getters are plain field reads; this verifies no accidental data race
+	// is introduced by future changes.
 	const goroutines = 20
 	done := make(chan struct{})
 	for i := range goroutines {
