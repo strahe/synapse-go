@@ -63,22 +63,23 @@ func (c *Client) initServices() error {
 	}
 	c.sessionKey = sk
 
-	var fbOpts []filbeam.Option
-	if c.httpClient != nil {
-		fbOpts = append(fbOpts, filbeam.WithHTTPClient(c.httpClient))
+	fb, err := filbeam.New(filbeam.Options{
+		Chain:      c.selectedChain,
+		HTTPClient: c.httpClient,
+		Logger:     c.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("create filbeam service: %w", err)
 	}
-	if c.logger != nil {
-		fbOpts = append(fbOpts, filbeam.WithLogger(c.logger))
-	}
-	c.filbeam = filbeam.NewService(c.selectedChain, fbOpts...)
+	c.filbeam = fb
 
-	costsvc, err := costs.NewService(
-		c.selectedChain,
-		ws,
-		pay,
-		c.ethClient,
-		costs.WithLogger(c.logger),
-	)
+	costsvc, err := costs.New(costs.Options{
+		Chain:       c.selectedChain,
+		WarmStorage: ws,
+		Payments:    pay,
+		Caller:      c.ethClient,
+		Logger:      c.logger,
+	})
 	if err != nil {
 		return fmt.Errorf("create costs service: %w", err)
 	}

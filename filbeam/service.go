@@ -15,44 +15,57 @@ import (
 // Service is a client for the FilBeam stats API.
 // It is safe for concurrent use.
 type Service struct {
-	c          chain.Chain
+	baseURL    string
 	httpClient *http.Client
 	logger     *slog.Logger
 }
 
-// Option customises a Service.
-type Option func(*Service)
+// Options configures a [Service].
+type Options struct {
+	// Chain selects the FilBeam environment. Only [chain.Mainnet] and
+	// [chain.Calibration] are supported; any other value causes [New] to
+	// return an error wrapping [chain.ErrUnknownChain].
+	// Zero value is [chain.Mainnet].
+	Chain chain.Chain
 
-// WithHTTPClient sets a custom HTTP client.
-func WithHTTPClient(c *http.Client) Option {
-	return func(s *Service) { s.httpClient = c }
+	// HTTPClient is the HTTP client used for API requests.
+	// If nil, [http.DefaultClient] is used.
+	HTTPClient *http.Client
+
+	// Logger is the structured logger. If nil, logging is silent.
+	Logger *slog.Logger
 }
 
-// WithLogger sets the structured logger. If nil, logging is silent.
-func WithLogger(l *slog.Logger) Option {
-	return func(s *Service) { s.logger = l }
+// New creates a [Service] for the given chain.
+// Returns an error wrapping [chain.ErrUnknownChain] if opts.Chain is not a
+// supported FilBeam network.
+func New(opts Options) (*Service, error) {
+	baseURL, ok := filbeamBaseURL(opts.Chain)
+	if !ok {
+		return nil, fmt.Errorf("filbeam.New: %w: %v", chain.ErrUnknownChain, opts.Chain)
+	}
+	httpClient := opts.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &Service{
+		baseURL:    baseURL,
+		httpClient: httpClient,
+		logger:     opts.Logger,
+	}, nil
 }
 
-// NewService creates a Service for the given chain.
-func NewService(c chain.Chain, opts ...Option) *Service {
-	s := &Service{
-		c:          c,
-		httpClient: http.DefaultClient,
+// filbeamBaseURL returns the stats API base URL for the given chain.
+// The second return value reports whether the chain is supported.
+func filbeamBaseURL(c chain.Chain) (string, bool) {
+	switch c {
+	case chain.Mainnet:
+		return "https://stats.filbeam.com", true
+	case chain.Calibration:
+		return "https://calibration.stats.filbeam.com", true
+	default:
+		return "", false
 	}
-	for _, o := range opts {
-		o(s)
-	}
-	return s
-}
-
-// baseURL returns the stats API base URL for the configured chain.
-// Only chain.Calibration and chain.Mainnet are supported; any unrecognized
-// chain falls back to the mainnet endpoint.
-func (s *Service) baseURL() string {
-	if s.c == chain.Calibration {
-		return "https://calibration.stats.filbeam.com"
-	}
-	return "https://stats.filbeam.com"
 }
 
 // statsResponse mirrors the JSON returned by the FilBeam stats API.
@@ -69,7 +82,7 @@ func (s *Service) GetDataSetStats(ctx context.Context, dataSetID *big.Int) (*Dat
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: nil dataSetID")
 	}
 
-	url := fmt.Sprintf("%s/data-set/%s", s.baseURL(), dataSetID.String())
+	url := fmt.Sprintf("%s/data-set/%s", s.baseURL, dataSetID.String())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

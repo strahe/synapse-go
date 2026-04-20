@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,16 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 )
+
+// newTestService builds a filbeam Service for tests. It panics on error.
+func newTestService(t *testing.T, c chain.Chain) *Service {
+	t.Helper()
+	svc, err := New(Options{Chain: c})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return svc
+}
 
 // serveStats starts an httptest server that responds with the given quota strings.
 func serveStats(t *testing.T, cdn, cacheMiss string) (*httptest.Server, *Service) {
@@ -26,9 +38,14 @@ func serveStats(t *testing.T, cdn, cacheMiss string) (*httptest.Server, *Service
 	}))
 	t.Cleanup(srv.Close)
 
-	svc := NewService(chain.Calibration, WithHTTPClient(srv.Client()))
-	// Override baseURL by creating a small wrapper we can inject via httpClient transport.
-	// We use a custom RoundTripper to rewrite the host.
+	svc, err := New(Options{
+		Chain:      chain.Calibration,
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Override httpClient to rewrite requests to the test server.
 	svc.httpClient = &http.Client{
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
@@ -88,7 +105,7 @@ func TestGetDataSetStats_404(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(chain.Calibration)
+	svc := newTestService(t, chain.Calibration)
 	svc.httpClient = &http.Client{
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
@@ -105,7 +122,7 @@ func TestGetDataSetStats_500(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(chain.Calibration)
+	svc := newTestService(t, chain.Calibration)
 	svc.httpClient = &http.Client{
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
@@ -122,7 +139,7 @@ func TestGetDataSetStats_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(chain.Calibration)
+	svc := newTestService(t, chain.Calibration)
 	svc.httpClient = &http.Client{
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
@@ -143,7 +160,7 @@ func TestGetDataSetStats_InvalidBigIntField(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(chain.Calibration)
+	svc := newTestService(t, chain.Calibration)
 	svc.httpClient = &http.Client{
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
@@ -155,7 +172,7 @@ func TestGetDataSetStats_InvalidBigIntField(t *testing.T) {
 }
 
 func TestGetDataSetStats_NilDataSetID(t *testing.T) {
-	svc := NewService(chain.Calibration)
+	svc := newTestService(t, chain.Calibration)
 	_, err := svc.GetDataSetStats(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil dataSetID")
@@ -163,15 +180,60 @@ func TestGetDataSetStats_NilDataSetID(t *testing.T) {
 }
 
 func TestBaseURL_Mainnet(t *testing.T) {
-	svc := NewService(chain.Mainnet)
-	if svc.baseURL() != "https://stats.filbeam.com" {
-		t.Errorf("unexpected mainnet baseURL: %s", svc.baseURL())
+	svc := newTestService(t, chain.Mainnet)
+	if svc.baseURL != "https://stats.filbeam.com" {
+		t.Errorf("unexpected mainnet baseURL: %s", svc.baseURL)
 	}
 }
 
 func TestBaseURL_Calibration(t *testing.T) {
-	svc := NewService(chain.Calibration)
-	if svc.baseURL() != "https://calibration.stats.filbeam.com" {
-		t.Errorf("unexpected calibration baseURL: %s", svc.baseURL())
+	svc := newTestService(t, chain.Calibration)
+	if svc.baseURL != "https://calibration.stats.filbeam.com" {
+		t.Errorf("unexpected calibration baseURL: %s", svc.baseURL)
+	}
+}
+
+func TestNew_UnsupportedChain(t *testing.T) {
+	_, err := New(Options{Chain: chain.Chain(255)})
+	if err == nil {
+		t.Fatal("expected error for unsupported chain")
+	}
+	if !errors.Is(err, chain.ErrUnknownChain) {
+		t.Errorf("expected wrapped chain.ErrUnknownChain, got %v", err)
+	}
+}
+
+func TestNew_HTTPClientNilDefaults(t *testing.T) {
+	svc, err := New(Options{Chain: chain.Calibration})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.httpClient != http.DefaultClient {
+		t.Errorf("expected httpClient to default to http.DefaultClient, got %v", svc.httpClient)
+	}
+}
+
+func TestNew_LoggerViaOptions(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc, err := New(Options{Chain: chain.Calibration, Logger: logger})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.logger != logger {
+		t.Error("expected logger to be set")
+	}
+}
+
+// TestNew_ChainZeroValueIsMainnet guards the documented contract that an
+// omitted Options.Chain (zero value) is equivalent to chain.Mainnet. A
+// future refactor that starts treating zero as "unset/invalid" would break
+// this and should be caught here.
+func TestNew_ChainZeroValueIsMainnet(t *testing.T) {
+	svc, err := New(Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.baseURL != "https://stats.filbeam.com" {
+		t.Errorf("expected mainnet baseURL for zero-value Chain, got %s", svc.baseURL)
 	}
 }

@@ -355,7 +355,7 @@ func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 // (i.e. the server deduplicates requests with identical parameters), because
 // a transient network failure after the server has processed the request may
 // cause it to be retried and re-submitted.
-func (c *Client) deleteJSON(ctx context.Context, path string, payload any, dst any) error {
+func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) error {
 	u, err := c.resolve(path)
 	if err != nil {
 		return fmt.Errorf("curio: resolve %s: %w", path, err)

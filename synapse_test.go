@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,12 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 type jsonRPCReq struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 // fakeRPCServer creates an httptest.Server that responds to eth_chainId with
@@ -534,14 +541,26 @@ func TestNew_UnsupportedChain_OwnedClient(t *testing.T) {
 }
 
 func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
-	// Exercise the FilBeam logger + httpClient option branches.
+	// Exercise the FilBeam logger + httpClient option branches and verify
+	// FilBeam requests go through the injected HTTP client.
 	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
 	defer ec.Close()
 
 	key := testKey(t)
 	logger := newTestLogger()
-	hc := &http.Client{}
+	var gotURL string
+	hc := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			gotURL = req.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"cdnEgressQuota":"1","cacheMissEgressQuota":"2"}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
 	client, err := New(context.Background(),
 		WithPrivateKey(key),
 		WithEthClient(ec),
@@ -553,9 +572,15 @@ func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Smoke test: verify FilBeam and Storage are non-nil and exercise all option branches.
-	if client.FilBeam() == nil {
-		t.Error("FilBeam() returned nil")
+	stats, err := client.FilBeam().GetDataSetStats(context.Background(), big.NewInt(123))
+	if err != nil {
+		t.Fatalf("GetDataSetStats: %v", err)
+	}
+	if gotURL != "https://calibration.stats.filbeam.com/data-set/123" {
+		t.Fatalf("expected injected client to see filbeam request, got %q", gotURL)
+	}
+	if stats.CDNEgressQuota.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("unexpected CDN quota: got %s, want 1", stats.CDNEgressQuota)
 	}
 	if client.Storage() == nil {
 		t.Error("Storage() returned nil")

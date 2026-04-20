@@ -6,6 +6,9 @@
 //
 // Usage:
 //
-//	svc := filbeam.NewService(chain.Calibration)
+//	svc, err := filbeam.New(filbeam.Options{Chain: chain.Calibration})
+//	if err != nil {
+//		// handle error (e.g. unsupported chain)
+//	}
 //	stats, err := svc.GetDataSetStats(ctx, big.NewInt(12345))
 package filbeam

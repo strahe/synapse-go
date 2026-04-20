@@ -38,7 +38,7 @@ vet:
 
 # Format code
 fmt:
-	gofumpt -w .
+	gofumpt -extra -w .
 
 # Tidy modules
 tidy:

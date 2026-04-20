@@ -75,9 +75,14 @@ func maxApproval() *payments.OperatorApproval {
 
 func buildSvc(t *testing.T, ws WarmStorageReader, pay PaymentsReader, fee *big.Int) *Service {
 	t.Helper()
-	svc, err := NewService(chain.Calibration, ws, pay, &mockCaller{fee: fee})
+	svc, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: ws,
+		Payments:    pay,
+		Caller:      &mockCaller{fee: fee},
+	})
 	if err != nil {
-		t.Fatalf("NewService: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	return svc
 }
@@ -276,37 +281,89 @@ func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
 	}
 }
 
-// --- NewService validation ---
+// --- New validation ---
 
-func TestNewService_NilWS(t *testing.T) {
-	_, err := NewService(chain.Calibration, nil, &mockPay{}, &mockCaller{fee: new(big.Int)})
+func TestNew_NilWarmStorage(t *testing.T) {
+	_, err := New(Options{
+		Chain:    chain.Calibration,
+		Payments: &mockPay{},
+		Caller:   &mockCaller{fee: new(big.Int)},
+	})
 	if err == nil {
-		t.Fatal("expected error for nil ws")
+		t.Fatal("expected error for nil WarmStorage")
 	}
 }
 
-func TestNewService_NilPay(t *testing.T) {
-	_, err := NewService(chain.Calibration, &mockWS{}, nil, &mockCaller{fee: new(big.Int)})
+func TestNew_NilPayments(t *testing.T) {
+	_, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: &mockWS{},
+		Caller:      &mockCaller{fee: new(big.Int)},
+	})
 	if err == nil {
-		t.Fatal("expected error for nil pay")
+		t.Fatal("expected error for nil Payments")
 	}
 }
 
-func TestNewService_NilCaller(t *testing.T) {
-	_, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, nil)
+func TestNew_NilCaller(t *testing.T) {
+	_, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+	})
 	if err == nil {
-		t.Fatal("expected error for nil caller")
+		t.Fatal("expected error for nil Caller")
 	}
 }
 
-func TestWithLogger_Option(t *testing.T) {
+func TestNew_LoggerViaOptions(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCaller{fee: new(big.Int)}, WithLogger(logger))
+	svc, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+		Caller:      &mockCaller{fee: new(big.Int)},
+		Logger:      logger,
+	})
 	if err != nil {
-		t.Fatalf("NewService: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	if svc.logger != logger {
 		t.Error("expected logger to be set")
+	}
+}
+
+// TestNew_ChainZeroValueIsMainnet guards the documented contract that an
+// omitted Options.Chain (zero value) is equivalent to chain.Mainnet. A
+// future refactor that starts treating zero as "unset/invalid" would break
+// this and should be caught here.
+func TestNew_ChainZeroValueIsMainnet(t *testing.T) {
+	svc, err := New(Options{
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+		Caller:      &mockCaller{fee: new(big.Int)},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mainnetAddrs := chain.Mainnet.Addresses()
+	if svc.fwss != mainnetAddrs.FWSS {
+		t.Errorf("expected mainnet FWSS address for zero-value Chain, got %s", svc.fwss)
+	}
+}
+
+func TestNew_UnsupportedChain(t *testing.T) {
+	_, err := New(Options{
+		Chain:       chain.Chain(255),
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+		Caller:      &mockCaller{fee: new(big.Int)},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported chain")
+	}
+	if !errors.Is(err, chain.ErrUnknownChain) {
+		t.Fatalf("expected wrapped ErrUnknownChain, got %v", err)
 	}
 }
 
@@ -325,7 +382,12 @@ func (m *mockCallerBadReturn) CallContract(_ context.Context, _ ethereum.CallMsg
 }
 
 func TestReadUsdfcSybilFee_CallContractError(t *testing.T) {
-	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCallerErr{err: fmt.Errorf("rpc down")})
+	svc, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+		Caller:      &mockCallerErr{err: fmt.Errorf("rpc down")},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +398,12 @@ func TestReadUsdfcSybilFee_CallContractError(t *testing.T) {
 }
 
 func TestReadUsdfcSybilFee_UnpackError(t *testing.T) {
-	svc, err := NewService(chain.Calibration, &mockWS{}, &mockPay{}, &mockCallerBadReturn{data: []byte{0x01, 0x02}})
+	svc, err := New(Options{
+		Chain:       chain.Calibration,
+		WarmStorage: &mockWS{},
+		Payments:    &mockPay{},
+		Caller:      &mockCallerBadReturn{data: []byte{0x01, 0x02}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

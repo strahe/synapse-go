@@ -46,55 +46,58 @@ type Service struct {
 	logger      *slog.Logger
 }
 
-// NewService constructs a Service using addresses from c.Addresses().
-func NewService(
-	c chain.Chain,
-	ws WarmStorageReader,
-	pay PaymentsReader,
-	caller ContractCaller,
-	opts ...Option,
-) (*Service, error) {
-	if ws == nil {
-		return nil, fmt.Errorf("costs.NewService: ws is nil")
+// Options configures a [Service].
+type Options struct {
+	// Chain selects the network whose contract addresses are used.
+	// Zero value is [chain.Mainnet].
+	Chain chain.Chain
+
+	// WarmStorage reads on-chain service pricing. Required.
+	WarmStorage WarmStorageReader
+
+	// Payments reads account and allowance state. Required.
+	Payments PaymentsReader
+
+	// Caller issues eth_call against the configured chain. Required.
+	Caller ContractCaller
+
+	// Logger is the structured logger. If nil, logging is silent.
+	Logger *slog.Logger
+}
+
+// New constructs a [Service] using addresses from opts.Chain.Addresses().
+// WarmStorage, Payments and Caller must be non-nil.
+func New(opts Options) (*Service, error) {
+	if opts.WarmStorage == nil {
+		return nil, fmt.Errorf("costs.New: WarmStorage is nil")
 	}
-	if pay == nil {
-		return nil, fmt.Errorf("costs.NewService: pay is nil")
+	if opts.Payments == nil {
+		return nil, fmt.Errorf("costs.New: Payments is nil")
 	}
-	if caller == nil {
-		return nil, fmt.Errorf("costs.NewService: caller is nil")
+	if opts.Caller == nil {
+		return nil, fmt.Errorf("costs.New: Caller is nil")
 	}
-	addrs := c.Addresses()
+	addrs := opts.Chain.Addresses()
 	if addrs.FWSS == (common.Address{}) {
-		return nil, fmt.Errorf("costs.NewService: unsupported chain %v", c)
+		return nil, fmt.Errorf("costs.New: %w: %v", chain.ErrUnknownChain, opts.Chain)
 	}
 	if addrs.USDFC == (common.Address{}) {
-		return nil, fmt.Errorf("costs.NewService: unsupported chain %v: missing USDFC address", c)
+		return nil, fmt.Errorf("costs.New: %w: %v: missing USDFC address", chain.ErrUnknownChain, opts.Chain)
 	}
 	if addrs.PDPVerifier == (common.Address{}) {
-		return nil, fmt.Errorf("costs.NewService: unsupported chain %v: missing PDPVerifier address", c)
+		return nil, fmt.Errorf("costs.New: %w: %v: missing PDPVerifier address", chain.ErrUnknownChain, opts.Chain)
 	}
 
-	svc := &Service{
-		c:           c,
-		ws:          ws,
-		pay:         pay,
-		caller:      caller,
+	return &Service{
+		c:           opts.Chain,
+		ws:          opts.WarmStorage,
+		pay:         opts.Payments,
+		caller:      opts.Caller,
 		pdpVerifier: addrs.PDPVerifier,
 		usdfc:       addrs.USDFC,
 		fwss:        addrs.FWSS,
-	}
-	for _, o := range opts {
-		o(svc)
-	}
-	return svc, nil
-}
-
-// Option customises a Service.
-type Option func(*Service)
-
-// WithLogger sets the structured logger. If nil, logging is silent.
-func WithLogger(l *slog.Logger) Option {
-	return func(s *Service) { s.logger = l }
+		logger:      opts.Logger,
+	}, nil
 }
 
 // computeDebt returns max(0, LockupCurrent - Funds) for the given account state.
