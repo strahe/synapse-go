@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/piece"
 )
 
@@ -96,133 +98,283 @@ func TestPing_Error(t *testing.T) {
 	}
 }
 
-func TestUploadPiece_AlreadyExists(t *testing.T) {
+// streamingUploadHandler is a reusable httptest handler implementing Curio's
+// CommP-last 3-step streaming upload protocol for client-side unit tests.
+//
+// The three endpoints are:
+//
+//	POST /pdp/piece/uploads         — returns 201 + Location: /pdp/piece/uploads/{uuid}
+//	PUT  /pdp/piece/uploads/{uuid}  — stores the body; returns 204
+//	POST /pdp/piece/uploads/{uuid}  — reads {"pieceCid": "..."} finalize; returns 200
+type streamingUploadHandler struct {
+	t *testing.T
+	// uuid is the identifier minted on the create request.
+	uuid string
+	// receivedBody is populated on the PUT.
+	receivedBody []byte
+	// contentLength is the value of Content-Length on the PUT (-1 if absent).
+	contentLength int64
+	// transferEncoding is the value of Transfer-Encoding on the PUT.
+	transferEncoding string
+	// finalizePieceCID is the pieceCid value posted in the finalize body.
+	finalizePieceCID string
+	// putStatus and finalizeStatus let tests override per-step responses.
+	putStatus      int
+	finalizeStatus int
+}
+
+func (h *streamingUploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
+		if h.uuid == "" {
+			h.uuid = "upload-uuid-1"
+		}
+		w.Header().Set("Location", "/pdp/piece/uploads/"+h.uuid)
+		w.WriteHeader(http.StatusCreated)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/pdp/piece/uploads/"):
+		if r.Header.Get("Content-Type") != "application/octet-stream" {
+			h.t.Errorf("PUT Content-Type=%q", r.Header.Get("Content-Type"))
+		}
+		h.contentLength = r.ContentLength
+		if te := r.TransferEncoding; len(te) > 0 {
+			h.transferEncoding = te[0]
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			h.t.Fatalf("read PUT body: %v", err)
+		}
+		h.receivedBody = body
+		status := h.putStatus
+		if status == 0 {
+			status = http.StatusNoContent
+		}
+		w.WriteHeader(status)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/pdp/piece/uploads/"):
+		var body struct {
+			PieceCID string `json:"pieceCid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.t.Fatalf("decode finalize body: %v", err)
+		}
+		h.finalizePieceCID = body.PieceCID
+		status := h.finalizeStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+	default:
+		h.t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+	}
+}
+
+func TestUploadPieceStreaming_ComputesPieceCID(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xab}, 512)
+	want := testPieceInfoV2(t).CIDv2
+
+	h := &streamingUploadHandler{t: t}
+	c, _ := newTestClient(t, h)
+	res, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{
+		Size: int64(len(payload)),
+	})
+	if err != nil {
+		t.Fatalf("UploadPieceStreaming: %v", err)
+	}
+	if res.PieceCID != want {
+		t.Errorf("PieceCID=%s want %s", res.PieceCID, want)
+	}
+	if res.Size != int64(len(payload)) {
+		t.Errorf("Size=%d want %d", res.Size, len(payload))
+	}
+	if h.contentLength != int64(len(payload)) {
+		t.Errorf("Content-Length=%d want %d", h.contentLength, len(payload))
+	}
+	if !bytes.Equal(h.receivedBody, payload) {
+		t.Error("body mismatch")
+	}
+	if h.finalizePieceCID != want.String() {
+		t.Errorf("finalize pieceCid=%q want %s", h.finalizePieceCID, want)
+	}
+}
+
+func TestUploadPieceStreaming_UnknownSizeUsesChunked(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xcd}, 512)
+	// Wrap reader so *bytes.Reader length hint isn't used by net/http.
+	wrapped := struct{ io.Reader }{bytes.NewReader(payload)}
+
+	h := &streamingUploadHandler{t: t}
+	c, _ := newTestClient(t, h)
+	if _, err := c.UploadPieceStreaming(context.Background(), wrapped, UploadPieceStreamingOptions{}); err != nil {
+		t.Fatalf("UploadPieceStreaming: %v", err)
+	}
+	if h.contentLength > 0 {
+		t.Errorf("expected chunked transfer, got Content-Length=%d", h.contentLength)
+	}
+	if h.transferEncoding != "chunked" {
+		t.Errorf("Transfer-Encoding=%q want chunked", h.transferEncoding)
+	}
+	if !bytes.Equal(h.receivedBody, payload) {
+		t.Error("body mismatch")
+	}
+}
+
+func TestUploadPieceStreaming_PrefilledPieceCIDSkipsTee(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xab}, 512)
+	want := testPieceInfoV2(t).CIDv2
+
+	h := &streamingUploadHandler{t: t}
+	c, _ := newTestClient(t, h)
+	res, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{
+		Size:     int64(len(payload)),
+		PieceCID: want,
+	})
+	if err != nil {
+		t.Fatalf("UploadPieceStreaming: %v", err)
+	}
+	if res.PieceCID != want {
+		t.Errorf("PieceCID=%s want %s", res.PieceCID, want)
+	}
+	if !bytes.Equal(h.receivedBody, payload) {
+		t.Error("body mismatch (tee branch corruption?)")
+	}
+	if h.finalizePieceCID != want.String() {
+		t.Errorf("finalize pieceCid=%q want %s", h.finalizePieceCID, want)
+	}
+}
+
+func TestUploadPieceStreaming_OnProgressMonotonic(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x11}, 4096)
+	h := &streamingUploadHandler{t: t}
+	c, _ := newTestClient(t, h)
+
+	var seen []int64
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{
+		Size: int64(len(payload)),
+		OnProgress: func(n int64) {
+			seen = append(seen, n)
+		},
+	})
+	if err != nil {
+		t.Fatalf("UploadPieceStreaming: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("OnProgress never called")
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] < seen[i-1] {
+			t.Fatalf("OnProgress not monotonic: %v", seen)
+		}
+	}
+	if seen[len(seen)-1] != int64(len(payload)) {
+		t.Errorf("final progress=%d want %d", seen[len(seen)-1], len(payload))
+	}
+}
+
+func TestUploadPieceStreaming_PutFailure(t *testing.T) {
+	h := &streamingUploadHandler{t: t, putStatus: http.StatusInternalServerError}
+	c, _ := newTestClient(t, h)
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("data")), UploadPieceStreamingOptions{
+		Size: 4,
+	})
+	if err == nil || !strings.Contains(err.Error(), "PUT") {
+		t.Fatalf("want PUT error, got %v", err)
+	}
+}
+
+func TestUploadPieceStreaming_FinalizeFailure(t *testing.T) {
+	h := &streamingUploadHandler{t: t, finalizeStatus: http.StatusBadRequest}
+	c, _ := newTestClient(t, h)
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(bytes.Repeat([]byte{0xab}, 512)), UploadPieceStreamingOptions{
+		Size: 512,
+	})
+	if err == nil || !strings.Contains(err.Error(), "finalize") {
+		t.Fatalf("want finalize error, got %v", err)
+	}
+}
+
+func TestUploadPieceStreaming_CreateMissingLocation(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/pdp/piece" && r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads" {
+			w.WriteHeader(http.StatusCreated)
 			return
 		}
-		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 	}))
-	pc := testPieceInfoV2(t).CIDv2
-	res, err := c.UploadPiece(context.Background(), pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.AlreadyExists {
-		t.Fatal("expected AlreadyExists")
-	}
-}
-
-func TestUploadPiece_Created(t *testing.T) {
-	c, srv := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece":
-			w.Header().Set("Location", "/pdp/piece/upload/abc-123")
-			w.WriteHeader(http.StatusCreated)
-		default:
-			t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	_ = srv
-	pc := testPieceInfoV2(t).CIDv2
-	res, err := c.UploadPiece(context.Background(), pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.UploadUUID != "abc-123" {
-		t.Fatalf("uuid=%q", res.UploadUUID)
-	}
-}
-
-func TestUploadPiece_MissingLocation(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated) // no Location
-	}))
-	pc := testPieceInfoV2(t).CIDv2
-	_, err := c.UploadPiece(context.Background(), pc)
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("x")), UploadPieceStreamingOptions{})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Fatalf("want ErrLocationHeader, got %v", err)
 	}
 }
 
-func TestUploadPiece_RejectsV1(t *testing.T) {
+func TestUploadPieceStreaming_NilReader(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 	}))
-	pc := testPieceInfoV2(t).CIDv1
-	if _, err := c.UploadPiece(context.Background(), pc); err == nil || !strings.Contains(err.Error(), "PieceCIDv2") {
+	_, err := c.UploadPieceStreaming(context.Background(), nil, UploadPieceStreamingOptions{})
+	if err == nil || !strings.Contains(err.Error(), "nil data reader") {
+		t.Fatalf("want nil reader error, got %v", err)
+	}
+}
+
+func TestUploadPieceStreaming_SizeExceedsMax(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("x")), UploadPieceStreamingOptions{
+		Size: chain.MaxUploadSize + 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Fatalf("want size-exceeded error, got %v", err)
+	}
+}
+
+func TestUploadPieceStreaming_RejectsPieceCIDv1(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	v1 := testPieceInfoV2(t).CIDv1
+	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("x")), UploadPieceStreamingOptions{
+		PieceCID: v1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "PieceCIDv2") {
 		t.Fatalf("want PieceCIDv2 validation error, got %v", err)
 	}
 }
 
-func TestUploadPieceBytes_OK(t *testing.T) {
-	payload := []byte("the-bytes")
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || !strings.HasPrefix(r.URL.Path, "/pdp/piece/upload/") {
-			t.Fatalf("bad req: %s %s", r.Method, r.URL.Path)
-		}
-		if r.Header.Get("Content-Type") != "application/octet-stream" {
-			t.Errorf("content-type: %s", r.Header.Get("Content-Type"))
-		}
-		body, _ := io.ReadAll(r.Body)
-		if string(body) != string(payload) {
-			t.Errorf("body=%q", body)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	if err := c.UploadPieceBytes(context.Background(), "abc-123", strings.NewReader(string(payload)), int64(len(payload))); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestUploadPieceBytes_DoesNotUseDefaultClientTimeout(t *testing.T) {
-	c, err := New("https://example.com", WithHTTPClient(&http.Client{
-		Timeout: DefaultHTTPTimeout,
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			if _, ok := r.Context().Deadline(); ok {
-				t.Fatal("upload request inherited client timeout deadline")
-			}
-			return &http.Response{
-				StatusCode: http.StatusNoContent,
-				Body:       io.NopCloser(strings.NewReader("")),
-				Header:     make(http.Header),
-			}, nil
-		}),
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.UploadPieceBytes(context.Background(), "upload-1", strings.NewReader("payload"), int64(len("payload"))); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestUploadPieceFromBytes_FullFlow(t *testing.T) {
-	var putCalled bool
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestUploadPieceStreaming_DoesNotUseDefaultClientTimeout(t *testing.T) {
+	var putDeadlineOK bool
+	var createDone, putDone bool
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece":
-			w.Header().Set("Location", "/pdp/piece/upload/uuid-xyz")
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == http.MethodPut && r.URL.Path == "/pdp/piece/upload/uuid-xyz":
-			putCalled = true
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
+			createDone = true
+			h := make(http.Header)
+			h.Set("Location", "/pdp/piece/uploads/u1")
+			return &http.Response{StatusCode: http.StatusCreated, Header: h, Body: io.NopCloser(strings.NewReader(""))}, nil
+		case r.Method == http.MethodPut && r.URL.Path == "/pdp/piece/uploads/u1":
+			_, hasDeadline := r.Context().Deadline()
+			putDeadlineOK = !hasDeadline
+			putDone = true
+			_, _ = io.Copy(io.Discard, r.Body)
+			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads/u1":
+			_, _ = io.Copy(io.Discard, r.Body)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
 		}
-	}))
-	payload := bytes.Repeat([]byte{0xab}, 512)
-	pc := testPieceInfoV2(t).CIDv2
-	res, err := c.UploadPieceFromBytes(context.Background(), pc, payload)
+		return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	})
+	c, err := New("https://example.com", WithHTTPClient(&http.Client{Timeout: DefaultHTTPTimeout, Transport: rt}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.AlreadyExists {
-		t.Fatal("expected new upload")
+	payload := bytes.Repeat([]byte{0xab}, 512)
+	if _, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{Size: int64(len(payload))}); err != nil {
+		t.Fatalf("UploadPieceStreaming: %v", err)
 	}
-	if !putCalled {
-		t.Fatal("PUT not called")
+	if !createDone || !putDone {
+		t.Fatalf("createDone=%v putDone=%v", createDone, putDone)
+	}
+	if !putDeadlineOK {
+		t.Error("PUT request inherited client timeout deadline")
 	}
 }
 

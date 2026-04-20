@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 
-	"github.com/filecoin-project/go-commp-utils/v2/writer"
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multicodec"
@@ -78,51 +77,19 @@ const minPayloadSizeForV2 = 127
 // The returned PieceInfo carries both CIDv1 (for on-chain use / smart contracts)
 // and CIDv2 (for the storage API boundary), plus the exact raw byte count.
 func Calculate(r io.Reader) (PieceInfo, error) {
-	// Read the first byte to ensure the reader is non-empty.
-	var first [1]byte
-	n, err := r.Read(first[:])
-	firstReadErr := err
-	if n == 0 {
-		if err == nil || errors.Is(err, io.EOF) {
+	w := NewWriter()
+	if _, err := io.Copy(w, r); err != nil {
+		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", err)
+	}
+	info, err := w.Sum()
+	if err != nil {
+		// Preserve the historical piece.Calculate error prefix.
+		if errors.Is(err, ErrEmptyInput) {
 			return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", ErrEmptyInput)
 		}
 		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", err)
 	}
-
-	w := &writer.Writer{}
-	if _, err := w.Write(first[:n]); err != nil {
-		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", err)
-	}
-	if firstReadErr != nil && !errors.Is(firstReadErr, io.EOF) {
-		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", firstReadErr)
-	}
-
-	if _, err := io.Copy(w, r); err != nil {
-		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", err)
-	}
-
-	result, err := w.Sum()
-	if err != nil {
-		return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", err)
-	}
-
-	v1 := result.PieceCID
-	rawSize := uint64(result.PayloadSize)
-
-	var v2 cid.Cid
-	if rawSize >= minPayloadSizeForV2 {
-		var err error
-		v2, err = commcid.PieceCidV2FromV1(v1, rawSize)
-		if err != nil {
-			return PieceInfo{}, fmt.Errorf("piece.Calculate: build v2: %w", err)
-		}
-	}
-
-	return PieceInfo{
-		CIDv1:   v1,
-		CIDv2:   v2,
-		RawSize: rawSize,
-	}, nil
+	return info, nil
 }
 
 // CalculateFromBytes is a convenience wrapper around Calculate for byte slices.

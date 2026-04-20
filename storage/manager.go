@@ -26,7 +26,7 @@ type UploadContext interface {
 	ProviderID() *big.Int
 	ServiceURL() string
 	PieceURL(cid.Cid) string
-	StoreBytes(context.Context, []byte, *StoreOptions) (*StoreResult, error)
+	Store(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
 	PresignForCommit(context.Context, []PieceInput) ([]byte, error)
 	Pull(context.Context, PullRequest) (*PullResult, error)
 	Commit(context.Context, CommitRequest) (*CommitResult, error)
@@ -102,28 +102,20 @@ func NewManager(opts ...Option) *Manager {
 	return m
 }
 
-// Upload reads r entirely into memory before uploading.  For large payloads,
-// use UploadBytes after pre-reading the data yourself so you control buffering.
+// Upload runs the multi-copy upload pipeline streaming from r in a single
+// pass. opts may be nil (defaults apply). Returns UploadResult whose
+// Complete field indicates whether all requested copies were committed
+// on-chain.
+//
+// The reader is consumed once by the primary provider; secondary copies
+// are populated via server-to-server Pulls. On success the reader is
+// fully drained; on error it may be only partially consumed.
 func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
 	if r == nil {
 		return nil, errors.New("storage.Manager.Upload: nil reader")
 	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("storage.Manager.Upload: read input: %w", err)
-	}
-	return m.UploadBytes(ctx, data, opts)
-}
-
-// UploadBytes runs the multi-copy upload pipeline for data.
-// opts may be nil (defaults apply). Returns UploadResult whose Complete field
-// indicates whether all requested copies were committed on-chain.
-func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOptions) (*UploadResult, error) {
-	if len(data) == 0 {
-		return nil, errors.New("storage.Manager.UploadBytes: empty data")
-	}
 	if m.resolver == nil {
-		return nil, errors.New("storage.Manager.UploadBytes: no upload resolver configured")
+		return nil, errors.New("storage.Manager.Upload: no upload resolver configured")
 	}
 
 	// Inject manager-level source into dataset metadata if set and not
@@ -138,16 +130,21 @@ func (m *Manager) UploadBytes(ctx context.Context, data []byte, opts *UploadOpti
 
 	contexts, explicitProviders, err := m.resolver.ResolveUploadContexts(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Manager.UploadBytes: resolve contexts: %w", err)
+		return nil, fmt.Errorf("storage.Manager.Upload: resolve contexts: %w", err)
 	}
 	if len(contexts) == 0 {
-		return nil, errors.New("storage.Manager.UploadBytes: no upload contexts available")
+		return nil, errors.New("storage.Manager.Upload: no upload contexts available")
 	}
 
 	primary := contexts[0]
 	secondaries := contexts[1:]
 
-	storeResult, err := primary.StoreBytes(ctx, data, &StoreOptions{})
+	storeOpts := &StoreOptions{}
+	if opts != nil {
+		storeOpts.PieceCID = opts.PieceCID
+		storeOpts.OnProgress = opts.OnProgress
+	}
+	storeResult, err := primary.Store(ctx, r, storeOpts)
 	if err != nil {
 		return nil, &StoreError{
 			ProviderID: primary.ProviderID(),

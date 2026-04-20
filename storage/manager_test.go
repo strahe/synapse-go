@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"sync"
 	"testing"
@@ -15,7 +16,7 @@ import (
 	"github.com/strahe/synapse-go/piece"
 )
 
-func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
+func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 	data := bytes.Repeat([]byte("ab"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -33,8 +34,12 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
-		storeFn: func(_ context.Context, got []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			appendCall("primary.store")
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
 			if !bytes.Equal(got, data) {
 				t.Fatalf("store data mismatch")
 			}
@@ -95,9 +100,9 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if got.RequestedCopies != 2 {
 		t.Fatalf("requestedCopies=%d want 2", got.RequestedCopies)
@@ -119,12 +124,12 @@ func TestManagerUploadBytes_DefaultCopiesAndPresignReuse(t *testing.T) {
 	}
 }
 
-func TestManagerUploadBytes_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
+func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	want := errors.New("store failed")
 	primary := &fakeUploadContext{
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return nil, want
 		},
 	}
@@ -133,7 +138,7 @@ func TestManagerUploadBytes_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 		resolver: &fakeResolver{contexts: []UploadContext{primary}},
 	}
 
-	_, err := mgr.UploadBytes(context.Background(), bytes.Repeat([]byte("ab"), 128), nil)
+	_, err := mgr.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), nil)
 	if err == nil {
 		t.Fatal("expected StoreError")
 	}
@@ -149,7 +154,7 @@ func TestManagerUploadBytes_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	}
 }
 
-func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) {
+func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 	data := bytes.Repeat([]byte("cd"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -160,7 +165,7 @@ func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) 
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -180,9 +185,9 @@ func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) 
 
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if got.Complete {
 		t.Fatal("complete=true want false")
@@ -198,7 +203,7 @@ func TestManagerUploadBytes_PartialSuccessReturnsIncompleteResult(t *testing.T) 
 	}
 }
 
-func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
+func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	data := bytes.Repeat([]byte("ef"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -209,7 +214,7 @@ func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -235,7 +240,7 @@ func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
 
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
 
-	_, err = mgr.UploadBytes(context.Background(), data, nil)
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err == nil {
 		t.Fatal("expected CommitError")
 	}
@@ -248,7 +253,7 @@ func TestManagerUploadBytes_AllCommitsFailReturnsCommitError(t *testing.T) {
 	}
 }
 
-func TestManagerUploadBytes_ImplicitSecondaryReplacement(t *testing.T) {
+func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	data := bytes.Repeat([]byte("gh"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -259,7 +264,7 @@ func TestManagerUploadBytes_ImplicitSecondaryReplacement(t *testing.T) {
 		id:       big.NewInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -299,9 +304,9 @@ func TestManagerUploadBytes_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 	mgr := NewManager(WithUploadResolver(resolver))
 
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if !got.Complete {
 		t.Fatal("complete=false want true")
@@ -349,7 +354,7 @@ type fakeUploadContext struct {
 	dataSetID       *big.Int
 	clientDataSetID *big.Int
 	dataSetMetadata map[string]string
-	storeFn         func(context.Context, []byte, *StoreOptions) (*StoreResult, error)
+	storeFn         func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
 	presignFn       func(context.Context, []PieceInput) ([]byte, error)
 	pullFn          func(context.Context, PullRequest) (*PullResult, error)
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
@@ -359,11 +364,11 @@ func (c *fakeUploadContext) ProviderID() *big.Int      { return new(big.Int).Set
 func (c *fakeUploadContext) ServiceURL() string        { return c.endpoint }
 func (c *fakeUploadContext) PieceURL(_ cid.Cid) string { return c.pieceURL }
 
-func (c *fakeUploadContext) StoreBytes(ctx context.Context, data []byte, opts *StoreOptions) (*StoreResult, error) {
+func (c *fakeUploadContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if c.storeFn == nil {
-		return nil, fmt.Errorf("unexpected storeBytes")
+		return nil, fmt.Errorf("unexpected store")
 	}
-	return c.storeFn(ctx, data, opts)
+	return c.storeFn(ctx, r, opts)
 }
 
 func (c *fakeUploadContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
@@ -396,11 +401,11 @@ func containsCall(calls []string, want string) bool {
 	return false
 }
 
-// TestManagerUploadBytes_RequestedCopiesIsCallerRequested proves that
+// TestManagerUpload_RequestedCopiesIsCallerRequested proves that
 // UploadResult.RequestedCopies reflects the caller's intent (opts.Copies,
 // default 2), not the number of contexts the resolver happened to return.
 // When fewer contexts are available the result must have Complete=false.
-func TestManagerUploadBytes_RequestedCopiesIsCallerRequested(t *testing.T) {
+func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	data := bytes.Repeat([]byte("rc"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -410,7 +415,7 @@ func TestManagerUploadBytes_RequestedCopiesIsCallerRequested(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -424,9 +429,9 @@ func TestManagerUploadBytes_RequestedCopiesIsCallerRequested(t *testing.T) {
 		httpClient: nil,
 	}
 
-	got, err := mgr.UploadBytes(context.Background(), data, &UploadOptions{Copies: 3})
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 3})
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if got.RequestedCopies != 3 {
 		t.Fatalf("RequestedCopies=%d want 3", got.RequestedCopies)
@@ -439,9 +444,9 @@ func TestManagerUploadBytes_RequestedCopiesIsCallerRequested(t *testing.T) {
 	}
 }
 
-// TestManagerUploadBytes_NilPullResultNoNilDeref proves that a nil PullResult
+// TestManagerUpload_NilPullResultNoNilDeref proves that a nil PullResult
 // returned alongside a nil error is handled gracefully (no panic).
-func TestManagerUploadBytes_NilPullResultNoNilDeref(t *testing.T) {
+func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 	data := bytes.Repeat([]byte("np"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -451,7 +456,7 @@ func TestManagerUploadBytes_NilPullResultNoNilDeref(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -473,9 +478,9 @@ func TestManagerUploadBytes_NilPullResultNoNilDeref(t *testing.T) {
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
 
 	// Should not panic; primary copy should still succeed.
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if len(got.Copies) != 1 || got.Copies[0].Role != CopyRolePrimary {
 		t.Fatalf("expected only primary copy, got %+v", got.Copies)
@@ -485,9 +490,9 @@ func TestManagerUploadBytes_NilPullResultNoNilDeref(t *testing.T) {
 	}
 }
 
-// TestManagerUploadBytes_PresignFailureUsesPresignStage proves that a presign
+// TestManagerUpload_PresignFailureUsesPresignStage proves that a presign
 // error is recorded with CopyStagePresign, not CopyStageCommit.
-func TestManagerUploadBytes_PresignFailureUsesPresignStage(t *testing.T) {
+func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	data := bytes.Repeat([]byte("ps"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -497,7 +502,7 @@ func TestManagerUploadBytes_PresignFailureUsesPresignStage(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -514,9 +519,9 @@ func TestManagerUploadBytes_PresignFailureUsesPresignStage(t *testing.T) {
 
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
 
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if len(got.FailedAttempts) != 1 {
 		t.Fatalf("FailedAttempts=%d want 1", len(got.FailedAttempts))
@@ -535,14 +540,29 @@ func TestManagerUpload_NilReader(t *testing.T) {
 }
 
 func TestManagerUpload_ReadError(t *testing.T) {
-	mgr := NewManager()
-	_, err := mgr.Upload(context.Background(), iotest.ErrReader(errors.New("read boom")), nil)
+	readErr := errors.New("read boom")
+	ctx := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			_, err := io.ReadAll(r)
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("unexpected: reader should have errored")
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
+	_, err := mgr.Upload(context.Background(), iotest.ErrReader(readErr), nil)
 	if err == nil {
 		t.Fatal("expected error for failing reader")
 	}
+	if !errors.Is(err, readErr) {
+		t.Fatalf("expected error wrapping %q, got %q", readErr, err)
+	}
 }
 
-func TestManagerUpload_DelegatesToUploadBytes(t *testing.T) {
+func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 	data := bytes.Repeat([]byte("rd"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -552,7 +572,11 @@ func TestManagerUpload_DelegatesToUploadBytes(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, got []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
 			if !bytes.Equal(got, data) {
 				t.Fatal("data mismatch")
 			}
@@ -571,6 +595,121 @@ func TestManagerUpload_DelegatesToUploadBytes(t *testing.T) {
 	if got.PieceCID != info.CIDv2 {
 		t.Fatalf("PieceCID=%s want %s", got.PieceCID, info.CIDv2)
 	}
+}
+
+// TestManagerUpload_LargeReader verifies that a large, non-Seekable reader
+// is streamed to the primary Store without being buffered in memory by
+// the Manager itself. We use a 32 MiB io.LimitReader wrapped in an
+// anonymous struct to hide any Seek/Len method set.
+func TestManagerUpload_LargeReader(t *testing.T) {
+	const size = 32 << 20
+	src := struct{ io.Reader }{io.LimitReader(zeroReader{}, size)}
+
+	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0}, 256))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var read int64
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			n, err := io.Copy(io.Discard, r)
+			if err != nil {
+				t.Fatalf("copy: %v", err)
+			}
+			read = n
+			return &StoreResult{PieceCID: info.CIDv2, Size: n}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+
+	if _, err := mgr.Upload(context.Background(), src, &UploadOptions{Copies: 1}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if read != size {
+		t.Fatalf("read=%d want %d", read, size)
+	}
+}
+
+// TestManagerUpload_WithPieceCIDPrefill verifies opts.PieceCID flows
+// through to StoreOptions.
+func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
+	data := bytes.Repeat([]byte("pf"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	var gotPC cid.Cid
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			if opts != nil {
+				gotPC = opts.PieceCID
+			}
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
+		&UploadOptions{Copies: 1, PieceCID: info.CIDv2})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if gotPC != info.CIDv2 {
+		t.Fatalf("StoreOptions.PieceCID=%s want %s", gotPC, info.CIDv2)
+	}
+}
+
+// TestManagerUpload_OnProgress verifies opts.OnProgress flows through.
+func TestManagerUpload_OnProgress(t *testing.T) {
+	data := bytes.Repeat([]byte("op"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	var cbSeen bool
+	primary := &fakeUploadContext{
+		id:       big.NewInt(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			if opts != nil && opts.OnProgress != nil {
+				cbSeen = true
+			}
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+		},
+	}
+	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
+		&UploadOptions{Copies: 1, OnProgress: func(int64) {}})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if !cbSeen {
+		t.Fatal("expected StoreOptions.OnProgress forwarded")
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 func TestWithUploadResolver(t *testing.T) {
@@ -666,7 +805,7 @@ func TestRequestedCopiesForUpload(t *testing.T) {
 	}
 }
 
-func TestManagerUploadBytes_SourceInjectedIntoMetadata(t *testing.T) {
+func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 	data := bytes.Repeat([]byte("src"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -676,7 +815,7 @@ func TestManagerUploadBytes_SourceInjectedIntoMetadata(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -693,9 +832,9 @@ func TestManagerUploadBytes_SourceInjectedIntoMetadata(t *testing.T) {
 	}
 
 	mgr := &Manager{resolver: resolver, source: "test-app"}
-	_, err = mgr.UploadBytes(context.Background(), data, &UploadOptions{Copies: 1})
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if capturedOpts == nil {
 		t.Fatal("resolver did not receive opts")
@@ -705,10 +844,10 @@ func TestManagerUploadBytes_SourceInjectedIntoMetadata(t *testing.T) {
 	}
 }
 
-// TestManagerUploadBytes_CommitResultMissingIdentifiers proves that a commit
+// TestManagerUpload_CommitResultMissingIdentifiers proves that a commit
 // result with missing identifiers (nil DataSetID or empty PieceIDs) is treated
 // as a failed attempt.
-func TestManagerUploadBytes_CommitResultMissingIdentifiers(t *testing.T) {
+func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 	data := bytes.Repeat([]byte("mi"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -718,7 +857,7 @@ func TestManagerUploadBytes_CommitResultMissingIdentifiers(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -726,7 +865,7 @@ func TestManagerUploadBytes_CommitResultMissingIdentifiers(t *testing.T) {
 		},
 	}
 	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
-	_, err = mgr.UploadBytes(context.Background(), data, &UploadOptions{Copies: 1})
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when identifiers missing")
 	}
@@ -736,9 +875,9 @@ func TestManagerUploadBytes_CommitResultMissingIdentifiers(t *testing.T) {
 	}
 }
 
-// TestManagerUploadBytes_PullStatusNotComplete proves that a non-complete pull
+// TestManagerUpload_PullStatusNotComplete proves that a non-complete pull
 // status with nil error is recorded as a failed pull attempt.
-func TestManagerUploadBytes_PullStatusNotComplete(t *testing.T) {
+func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 	data := bytes.Repeat([]byte("nc"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -748,7 +887,7 @@ func TestManagerUploadBytes_PullStatusNotComplete(t *testing.T) {
 	primary := &fakeUploadContext{
 		id:       big.NewInt(1),
 		endpoint: "https://p.example.com",
-		storeFn: func(_ context.Context, _ []byte, _ *StoreOptions) (*StoreResult, error) {
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
@@ -767,9 +906,9 @@ func TestManagerUploadBytes_PullStatusNotComplete(t *testing.T) {
 	}
 
 	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
-	got, err := mgr.UploadBytes(context.Background(), data, nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("UploadBytes: %v", err)
+		t.Fatalf("Upload: %v", err)
 	}
 	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0].Stage != CopyStagePull {
 		t.Fatalf("FailedAttempts=%+v, want 1 pull failure", got.FailedAttempts)

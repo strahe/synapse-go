@@ -36,10 +36,18 @@ const (
 	PullStatusFailed     PullStatus = "failed"
 )
 
-// StoreOptions configures a single StoreBytes call. Reserved for future use.
-type StoreOptions struct{}
+// StoreOptions configures a single Context.Store call.
+type StoreOptions struct {
+	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
+	// When set, the client skips inline commP calculation; the server still
+	// verifies the uploaded bytes match this value.
+	PieceCID cid.Cid
+	// OnProgress is invoked after each non-empty Read from the reader, with
+	// the cumulative bytes sent so far. It may be nil.
+	OnProgress func(bytesUploaded int64)
+}
 
-// StoreResult is returned by a successful StoreBytes call.
+// StoreResult is returned by a successful Store call.
 type StoreResult struct {
 	PieceCID cid.Cid // PieceCIDv2 of the stored data
 	Size     int64   // raw (unpadded) byte count
@@ -103,7 +111,7 @@ type FailedAttempt struct {
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
 }
 
-// UploadResult is returned by a successful Upload or UploadBytes call.
+// UploadResult is returned by a successful Upload call.
 //
 // Use Complete to determine overall success: it is true when every requested
 // copy was committed on-chain (equivalent to len(Copies) >= RequestedCopies).
@@ -123,9 +131,9 @@ type UploadResult struct {
 	RequestedCopies int
 	// Complete is true when all RequestedCopies were committed on-chain.
 	// Equivalent to len(Copies) >= RequestedCopies.
-	Complete        bool
-	Copies          []CopyResult
-	FailedAttempts  []FailedAttempt
+	Complete       bool
+	Copies         []CopyResult
+	FailedAttempts []FailedAttempt
 }
 
 // SuccessCount returns the number of copies that were successfully committed
@@ -147,7 +155,7 @@ func (r *UploadResult) PartialSuccess() bool {
 	return !r.Complete && len(r.Copies) > 0
 }
 
-// UploadOptions configures an Upload or UploadBytes call.
+// UploadOptions configures an Upload call.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. Zero means the resolver
 	// default: len(DataSetIDs) or len(ProviderIDs) when those are set, otherwise 2.
@@ -164,4 +172,12 @@ type UploadOptions struct {
 	ExcludeProviderIDs []*big.Int
 	// WithCDN enables CDN services for this upload.
 	WithCDN bool
+	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
+	// When set, the primary provider client skips inline commP calculation;
+	// the server still verifies the uploaded bytes match this value.
+	PieceCID cid.Cid
+	// OnProgress is invoked after each non-empty Read from the upload
+	// reader, with the cumulative bytes sent to the primary provider so
+	// far. It may be nil.
+	OnProgress func(bytesUploaded int64)
 }

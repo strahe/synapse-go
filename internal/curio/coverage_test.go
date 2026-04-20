@@ -1,6 +1,7 @@
 package curio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -259,95 +260,6 @@ func TestAddPieces_ZeroTxHash(t *testing.T) {
 	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Errorf("want ErrLocationHeader for zero hash, got %v", err)
-	}
-}
-
-// ---------- UploadPieceFromBytes error paths ----------
-
-func TestUploadPieceFromBytes_UploadError(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "upload failed", http.StatusInternalServerError)
-	}))
-	pc := testPieceInfoV2(t).CIDv2
-	_, err := c.UploadPieceFromBytes(context.Background(), pc, []byte("data"))
-	if err == nil {
-		t.Error("expected error from UploadPiece failure")
-	}
-}
-
-func TestUploadPieceFromBytes_PutError(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			w.Header().Set("Location", "/pdp/piece/upload/uuid-xyz")
-			w.WriteHeader(http.StatusCreated)
-		case http.MethodPut:
-			http.Error(w, "put failed", http.StatusInternalServerError)
-		}
-	}))
-	pc := testPieceInfoV2(t).CIDv2
-	_, err := c.UploadPieceFromBytes(context.Background(), pc, []byte("data"))
-	if err == nil {
-		t.Error("expected error from UploadPieceBytes failure")
-	}
-}
-
-func TestUploadPieceFromBytes_AlreadyExists(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	pc := testPieceInfoV2(t).CIDv2
-	res, err := c.UploadPieceFromBytes(context.Background(), pc, []byte("data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.AlreadyExists {
-		t.Error("expected AlreadyExists")
-	}
-	if res.UploadUUID != "" {
-		t.Errorf("UploadUUID should be empty when AlreadyExists, got %q", res.UploadUUID)
-	}
-}
-
-// ---------- UploadPieceBytes validation ----------
-
-func TestUploadPieceBytes_EmptyUUID(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not be called")
-	}))
-	err := c.UploadPieceBytes(context.Background(), "", strings.NewReader("data"), 4)
-	if err == nil || !strings.Contains(err.Error(), "empty uploadUUID") {
-		t.Errorf("want empty uploadUUID error, got %v", err)
-	}
-}
-
-func TestUploadPieceBytes_NilReader(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not be called")
-	}))
-	err := c.UploadPieceBytes(context.Background(), "uuid", nil, 4)
-	if err == nil || !strings.Contains(err.Error(), "nil data") {
-		t.Errorf("want nil data error, got %v", err)
-	}
-}
-
-func TestUploadPieceBytes_ZeroContentLength(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not be called")
-	}))
-	err := c.UploadPieceBytes(context.Background(), "uuid", strings.NewReader("data"), 0)
-	if err == nil || !strings.Contains(err.Error(), "invalid contentLength") {
-		t.Errorf("want invalid contentLength error, got %v", err)
-	}
-}
-
-func TestUploadPieceBytes_ServerError(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "err", http.StatusInternalServerError)
-	}))
-	err := c.UploadPieceBytes(context.Background(), "uuid-1", strings.NewReader("data"), 4)
-	if err == nil {
-		t.Error("expected error from server")
 	}
 }
 
@@ -772,18 +684,6 @@ func TestAddPieces_ServerError(t *testing.T) {
 	}
 }
 
-// ---------- UploadPiece undefined CID ----------
-
-func TestUploadPiece_UndefinedCID(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not be called")
-	}))
-	_, err := c.UploadPiece(context.Background(), emptyCID())
-	if err == nil || !strings.Contains(err.Error(), "undefined") {
-		t.Errorf("want undefined pieceCID error, got %v", err)
-	}
-}
-
 // ---------- FindPiece server error ----------
 
 func TestFindPiece_ServerError(t *testing.T) {
@@ -918,19 +818,6 @@ func TestWaitForPiecesAdded_ZeroPollIntervalUsesDefault(t *testing.T) {
 	}
 }
 
-// ---------- UploadPiece server error ----------
-
-func TestUploadPiece_ServerError(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	pc := testPieceInfoV2(t).CIDv2
-	_, err := c.UploadPiece(context.Background(), pc)
-	if err == nil {
-		t.Error("expected server error")
-	}
-}
-
 // ---------- GetAddPiecesStatus non-uint64 DataSetID ----------
 
 func TestGetAddPiecesStatus_NonUint64DataSetID(t *testing.T) {
@@ -945,25 +832,32 @@ func TestGetAddPiecesStatus_NonUint64DataSetID(t *testing.T) {
 	}
 }
 
-// ---------- UploadPieceBytes with non-default client timeout ----------
+// ---------- UploadPieceStreaming with non-default client timeout ----------
 
-func TestUploadPieceBytes_NonDefaultClientTimeout(t *testing.T) {
+func TestUploadPieceStreaming_NonDefaultClientTimeout(t *testing.T) {
 	var gotUA string
-	c, err := New("https://example.com", WithHTTPClient(&http.Client{
-		Timeout: 5 * time.Minute, // not DefaultHTTPTimeout
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			gotUA = r.Header.Get("User-Agent")
-			return &http.Response{
-				StatusCode: http.StatusNoContent,
-				Body:       io.NopCloser(strings.NewReader("")),
-				Header:     make(http.Header),
-			}, nil
-		}),
-	}))
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		gotUA = r.Header.Get("User-Agent")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
+			h := make(http.Header)
+			h.Set("Location", "/pdp/piece/uploads/u1")
+			return &http.Response{StatusCode: http.StatusCreated, Header: h, Body: io.NopCloser(strings.NewReader(""))}, nil
+		case r.Method == http.MethodPut:
+			_, _ = io.Copy(io.Discard, r.Body)
+			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+		case r.Method == http.MethodPost:
+			_, _ = io.Copy(io.Discard, r.Body)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	})
+	c, err := New("https://example.com", WithHTTPClient(&http.Client{Timeout: 5 * time.Minute, Transport: rt}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.UploadPieceBytes(context.Background(), "uuid-1", strings.NewReader("data"), 4); err != nil {
+	payload := bytes.Repeat([]byte{0xab}, 512)
+	if _, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{Size: int64(len(payload))}); err != nil {
 		t.Fatal(err)
 	}
 	if gotUA != DefaultUserAgent {

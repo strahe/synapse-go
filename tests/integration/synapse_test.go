@@ -267,11 +267,11 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("generate test data: %v", err)
 		}
 
-		result, err := client.Storage().UploadBytes(cctx, testData, &storage.UploadOptions{
+		result, err := client.Storage().Upload(cctx, bytes.NewReader(testData), &storage.UploadOptions{
 			Copies: 1,
 		})
 		if err != nil {
-			t.Fatalf("UploadBytes: %v", err)
+			t.Fatalf("Upload: %v", err)
 		}
 
 		// Verify PieceCID is a valid piece CID.
@@ -426,12 +426,12 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("generate multicopy data: %v", err)
 		}
 
-		result, err := client.Storage().UploadBytes(cctx, multiData, &storage.UploadOptions{
+		result, err := client.Storage().Upload(cctx, bytes.NewReader(multiData), &storage.UploadOptions{
 			Copies:  2,
 			WithCDN: true,
 		})
 		if err != nil {
-			t.Fatalf("UploadBytes (multicopy) failed: %v", err)
+			t.Fatalf("Upload (multicopy) failed: %v", err)
 		}
 
 		if !result.PieceCID.Defined() {

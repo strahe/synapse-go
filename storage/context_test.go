@@ -23,7 +23,7 @@ import (
 	"github.com/strahe/synapse-go/signer"
 )
 
-func TestContextStoreBytes_UploadsAndWaits(t *testing.T) {
+func TestContextStore_UploadsAndWaits(t *testing.T) {
 	data := bytes.Repeat([]byte("st"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -31,14 +31,18 @@ func TestContextStoreBytes_UploadsAndWaits(t *testing.T) {
 	}
 
 	fake := &fakeCurioClient{
-		uploadFromBytesFn: func(_ context.Context, pieceCID cid.Cid, got []byte) (*icurio.UploadPieceResult, error) {
-			if pieceCID != info.CIDv2 {
-				t.Fatalf("pieceCID=%s want %s", pieceCID, info.CIDv2)
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("read: %v", err)
 			}
 			if !bytes.Equal(got, data) {
 				t.Fatal("uploaded bytes mismatch")
 			}
-			return &icurio.UploadPieceResult{AlreadyExists: false, UploadUUID: "upload-1"}, nil
+			if opts.Size != int64(len(data)) {
+				t.Fatalf("size=%d want %d", opts.Size, len(data))
+			}
+			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(got))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, pieceCID cid.Cid, _ time.Duration) error {
 			if pieceCID != info.CIDv2 {
@@ -57,9 +61,9 @@ func TestContextStoreBytes_UploadsAndWaits(t *testing.T) {
 		t.Fatalf("NewContext: %v", err)
 	}
 
-	got, err := ctx.StoreBytes(context.Background(), data, nil)
+	got, err := ctx.Store(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
-		t.Fatalf("StoreBytes: %v", err)
+		t.Fatalf("Store: %v", err)
 	}
 	if got.PieceCID != info.CIDv2 {
 		t.Fatalf("pieceCID=%s want %s", got.PieceCID, info.CIDv2)
@@ -351,7 +355,7 @@ func testRecordKeeper() common.Address {
 }
 
 type fakeCurioClient struct {
-	uploadFromBytesFn     func(context.Context, cid.Cid, []byte) (*icurio.UploadPieceResult, error)
+	uploadStreamingFn     func(context.Context, io.Reader, icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error)
 	downloadPieceFn       func(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	waitForPieceFn        func(context.Context, cid.Cid, time.Duration) error
 	pullPiecesFn          func(context.Context, icurio.PullRequest) (*icurio.PullResult, error)
@@ -361,8 +365,8 @@ type fakeCurioClient struct {
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 }
 
-func (f *fakeCurioClient) UploadPieceFromBytes(ctx context.Context, pieceCID cid.Cid, data []byte) (*icurio.UploadPieceResult, error) {
-	return f.uploadFromBytesFn(ctx, pieceCID, data)
+func (f *fakeCurioClient) UploadPieceStreaming(ctx context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	return f.uploadStreamingFn(ctx, r, opts)
 }
 
 func (f *fakeCurioClient) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
@@ -742,14 +746,14 @@ func TestContextNewContext_ValidationErrors(t *testing.T) {
 	}
 }
 
-func TestContextStoreBytes_EmptyData(t *testing.T) {
+func TestContextStore_NilReader(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	_, err = ctx.StoreBytes(context.Background(), nil, nil)
+	_, err = ctx.Store(context.Background(), nil, nil)
 	if err == nil {
-		t.Fatal("expected error for empty data")
+		t.Fatal("expected error for nil reader")
 	}
 }
 
@@ -913,10 +917,14 @@ func TestMetadataEntries_TooManyKeys(t *testing.T) {
 	}
 }
 
-func TestContextStoreBytes_UploadError(t *testing.T) {
+func TestContextStore_UploadError(t *testing.T) {
 	data := bytes.Repeat([]byte("ue"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
 	fake := &fakeCurioClient{
-		uploadFromBytesFn: func(_ context.Context, _ cid.Cid, _ []byte) (*icurio.UploadPieceResult, error) {
+		uploadStreamingFn: func(_ context.Context, _ io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
 			return nil, errors.New("upload failed")
 		},
 	}
@@ -924,17 +932,22 @@ func TestContextStoreBytes_UploadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	_, err = ctx.StoreBytes(context.Background(), data, nil)
+	_, err = ctx.Store(context.Background(), bytes.NewReader(data), &StoreOptions{PieceCID: info.CIDv2})
 	if err == nil {
 		t.Fatal("expected error for upload failure")
 	}
 }
 
-func TestContextStoreBytes_WaitError(t *testing.T) {
+func TestContextStore_WaitError(t *testing.T) {
 	data := bytes.Repeat([]byte("we"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
 	fake := &fakeCurioClient{
-		uploadFromBytesFn: func(_ context.Context, _ cid.Cid, _ []byte) (*icurio.UploadPieceResult, error) {
-			return &icurio.UploadPieceResult{}, nil
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error {
 			return errors.New("wait failed")
@@ -944,7 +957,7 @@ func TestContextStoreBytes_WaitError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	_, err = ctx.StoreBytes(context.Background(), data, nil)
+	_, err = ctx.Store(context.Background(), bytes.NewReader(data), nil)
 	if err == nil {
 		t.Fatal("expected error for wait failure")
 	}

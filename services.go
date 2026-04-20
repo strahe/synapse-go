@@ -167,4 +167,3 @@ func (c *Client) FilBeam() *filbeam.Service {
 func (c *Client) Storage() *storage.Manager {
 	return c.storage
 }
-

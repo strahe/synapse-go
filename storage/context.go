@@ -1,15 +1,19 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/url"
+	"os"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +45,7 @@ const (
 // PDPClient is the curio HTTP API surface required by Context.
 // Satisfied by *internal/curio.Client; injectable for testing.
 type PDPClient interface {
-	UploadPieceFromBytes(context.Context, cid.Cid, []byte) (*icurio.UploadPieceResult, error)
+	UploadPieceStreaming(context.Context, io.Reader, icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	WaitForPieceParked(context.Context, cid.Cid, time.Duration) error
 	WaitForPullComplete(context.Context, icurio.PullRequest, time.Duration, func(*icurio.PullResult)) (*icurio.PullResult, error)
@@ -168,27 +172,78 @@ func WithCDN(enabled bool) ContextOption {
 	return func(c *Context) { c.withCDN = enabled }
 }
 
-// StoreBytes uploads data to the provider and waits for it to be parked.
-// Returns a StoreResult with PieceCIDv2 and raw byte size.
-func (c *Context) StoreBytes(ctx context.Context, data []byte, opts *StoreOptions) (*StoreResult, error) {
-	if len(data) == 0 {
-		return nil, errors.New("storage.Context.StoreBytes: empty data")
+// Store streams data to the provider and waits for it to be parked.
+// The reader is consumed in a single pass. If opts.PieceCID is defined,
+// the client skips inline commP calculation; otherwise commP is computed
+// during the upload via TeeReader. opts may be nil.
+func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+	if r == nil {
+		return nil, errors.New("storage.Context.Store: nil reader")
 	}
-	info, err := piece.CalculateFromBytes(data)
+	if opts == nil {
+		opts = &StoreOptions{}
+	}
+	if opts.PieceCID.Defined() {
+		if _, err := piece.ParseV2(opts.PieceCID); err != nil {
+			return nil, fmt.Errorf("storage.Context.Store: invalid PieceCID: %w", err)
+		}
+	}
+	size := detectSize(r, opts.PieceCID)
+	res, err := c.client.UploadPieceStreaming(ctx, r, icurio.UploadPieceStreamingOptions{
+		Size:       size,
+		PieceCID:   opts.PieceCID,
+		OnProgress: opts.OnProgress,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.StoreBytes: calculate piece: %w", err)
+		return nil, fmt.Errorf("storage.Context.Store: upload: %w", err)
 	}
-	if !info.CIDv2.Defined() {
-		return nil, errors.New("storage.Context.StoreBytes: undefined PieceCIDv2")
+	if !res.PieceCID.Defined() {
+		return nil, errors.New("storage.Context.Store: upload returned undefined PieceCIDv2")
 	}
-	if _, err := c.client.UploadPieceFromBytes(ctx, info.CIDv2, data); err != nil {
-		return nil, fmt.Errorf("storage.Context.StoreBytes: upload: %w", err)
+	if err := c.client.WaitForPieceParked(ctx, res.PieceCID, 0); err != nil {
+		return nil, fmt.Errorf("storage.Context.Store: wait for parked: %w", err)
 	}
-	if err := c.client.WaitForPieceParked(ctx, info.CIDv2, 0); err != nil {
-		return nil, fmt.Errorf("storage.Context.StoreBytes: wait for parked: %w", err)
+	return &StoreResult{PieceCID: res.PieceCID, Size: res.Size}, nil
+}
+
+// detectSize reports the payload size without consuming the reader when
+// possible. A return value of 0 means "unknown" — callers should fall
+// back to chunked transfer-encoding.
+//
+// Detection, in order of preference:
+//  1. pc is defined → decode RawSize from the PieceCIDv2 (most accurate).
+//  2. Reader type is a well-known in-memory buffer (bytes.Reader,
+//     bytes.Buffer, strings.Reader) → use Len().
+//  3. Reader is an *os.File referring to a regular file → Stat().Size()
+//     minus the current seek position (remaining bytes).
+//
+// This function is intentionally side-effect free except for the
+// *os.File case, which uses Seek(0, io.SeekCurrent) — a no-movement
+// seek that returns the current position without advancing it.
+func detectSize(r io.Reader, pc cid.Cid) int64 {
+	if pc.Defined() {
+		if info, err := piece.ParseV2(pc); err == nil && info.RawSize > 0 {
+			if info.RawSize <= math.MaxInt64 {
+				return int64(info.RawSize)
+			}
+		}
 	}
-	_ = opts
-	return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+	switch v := r.(type) {
+	case *bytes.Reader:
+		return int64(v.Len())
+	case *bytes.Buffer:
+		return int64(v.Len())
+	case *strings.Reader:
+		return int64(v.Len())
+	case *os.File:
+		if fi, err := v.Stat(); err == nil && fi.Mode().IsRegular() {
+			cur, err := v.Seek(0, io.SeekCurrent)
+			if err == nil && cur >= 0 && cur <= fi.Size() {
+				return fi.Size() - cur
+			}
+		}
+	}
+	return 0
 }
 
 // PresignForCommit produces the EIP-712–signed extraData payload for Commit.
