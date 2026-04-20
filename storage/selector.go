@@ -150,10 +150,10 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 	for _, dataSetID := range ids {
 		dataSet, err := r.warmStorage.GetDataSet(ctx, dataSetID)
 		if err != nil {
+			if errors.Is(err, warmstorage.ErrNotFound) {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s does not exist", dataSetID)
+			}
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set %s: %w", dataSetID, err)
-		}
-		if dataSet == nil {
-			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s does not exist", dataSetID)
 		}
 		if dataSet.Payer != r.payer {
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s is not owned by %s", dataSetID, r.payer.Hex())
@@ -163,10 +163,10 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 		}
 		provider, err := r.spRegistry.GetPDPProvider(ctx, dataSet.ProviderID)
 		if err != nil {
+			if errors.Is(err, spregistry.ErrNotFound) {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s for data set %s not found", dataSet.ProviderID, dataSetID)
+			}
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get provider %s: %w", dataSet.ProviderID, err)
-		}
-		if provider == nil {
-			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s for data set %s not found", dataSet.ProviderID, dataSetID)
 		}
 		if _, ok := seenProviders[provider.Info.ID.String()]; ok {
 			return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: dataSetIDs resolve to duplicate providers")
@@ -200,10 +200,10 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 	for _, providerID := range ids {
 		provider, err := r.spRegistry.GetPDPProvider(ctx, providerID)
 		if err != nil {
+			if errors.Is(err, spregistry.ErrNotFound) {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s not found", providerID)
+			}
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get provider %s: %w", providerID, err)
-		}
-		if provider == nil {
-			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s not found", providerID)
 		}
 		dataSetID, clientDataSetID, metadata, err := r.selectMatchingDataSet(ctx, providerID, dataSets, requestedMetadata)
 		if err != nil {

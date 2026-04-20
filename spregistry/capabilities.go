@@ -1,7 +1,6 @@
 package spregistry
 
 import (
-	"errors"
 	"fmt"
 	"math/big"
 
@@ -136,13 +135,13 @@ func DecodePDPOffering(caps map[string][]byte) (PDPOffering, error) {
 // are left to higher-level caller policy.
 func ValidatePDPOffering(o PDPOffering) error {
 	if o.ServiceURL == "" {
-		return errors.New("spregistry: PDPOffering missing serviceURL")
+		return fmt.Errorf("%w: missing serviceURL", ErrInvalidOffering)
 	}
 	if o.StoragePricePerTiBPerDay == nil || o.StoragePricePerTiBPerDay.Sign() < 0 {
-		return errors.New("spregistry: PDPOffering invalid storagePricePerTibPerDay")
+		return fmt.Errorf("%w: invalid storagePricePerTibPerDay", ErrInvalidOffering)
 	}
 	if o.MinProvingPeriodInEpochs == nil || o.MinProvingPeriodInEpochs.Sign() <= 0 {
-		return errors.New("spregistry: PDPOffering invalid minProvingPeriodInEpochs")
+		return fmt.Errorf("%w: invalid minProvingPeriodInEpochs", ErrInvalidOffering)
 	}
 	return nil
 }

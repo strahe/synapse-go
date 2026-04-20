@@ -2,7 +2,6 @@ package warmstorage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 
@@ -44,13 +43,13 @@ type Options struct {
 // use internal/abi.ResolveAddresses to obtain them from chain data.
 func New(opts Options) (*Service, error) {
 	if opts.Client == nil {
-		return nil, errors.New("warmstorage.New: nil Client")
+		return nil, fmt.Errorf("warmstorage.New: %w: nil Client", ErrInvalidArgument)
 	}
 	if (opts.FWSS == common.Address{}) {
-		return nil, errors.New("warmstorage.New: zero FWSS address")
+		return nil, fmt.Errorf("warmstorage.New: %w: zero FWSS address", ErrInvalidArgument)
 	}
 	if (opts.ViewContract == common.Address{}) {
-		return nil, errors.New("warmstorage.New: zero ViewContract address")
+		return nil, fmt.Errorf("warmstorage.New: %w: zero ViewContract address", ErrInvalidArgument)
 	}
 	fb, err := fwss.NewFWSSCaller(opts.FWSS, opts.Client)
 	if err != nil {
@@ -133,18 +132,20 @@ func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) *DataSe
 	}
 }
 
-// GetDataSet returns the data set record, or nil if no such data set exists
-// (the contract convention is pdpRailId==0 for "not found").
+// GetDataSet returns the data set record for dataSetID. Returns an error
+// wrapping ErrNotFound when no such data set exists (the contract convention
+// is pdpRailId == 0 for "not found"). RPC or ABI errors are wrapped and
+// propagated as-is.
 func (s *Service) GetDataSet(ctx context.Context, dataSetID *big.Int) (*DataSetInfo, error) {
 	if dataSetID == nil {
-		return nil, errors.New("warmstorage.GetDataSet: nil dataSetID")
+		return nil, fmt.Errorf("warmstorage.GetDataSet: %w: nil dataSetID", ErrInvalidArgument)
 	}
 	v, err := s.viewBind.GetDataSet(&bind.CallOpts{Context: ctx}, dataSetID)
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", err)
 	}
 	if v.PdpRailId == nil || v.PdpRailId.Sign() == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", ErrNotFound)
 	}
 	return toDataSetInfo(v), nil
 }
@@ -154,7 +155,7 @@ func (s *Service) GetDataSet(ctx context.Context, dataSetID *big.Int) (*DataSetI
 // "all remaining").
 func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, offset, limit *big.Int) ([]*DataSetInfo, error) {
 	if (payer == common.Address{}) {
-		return nil, errors.New("warmstorage.GetClientDataSets: zero payer")
+		return nil, fmt.Errorf("warmstorage.GetClientDataSets: %w: zero payer", ErrInvalidArgument)
 	}
 	if offset == nil {
 		offset = big.NewInt(0)
@@ -174,11 +175,13 @@ func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, o
 }
 
 // GetAllDataSetMetadata returns all metadata entries for the given dataset as a
-// key/value map. Metadata keys are unique on-chain; mismatched response lengths
-// are treated as an RPC/ABI error.
+// key/value map. The returned map is non-nil; an empty map signals "no metadata
+// entries" (which the contract also returns when the dataset itself does not
+// exist — the two cases are indistinguishable at this layer). Mismatched
+// response lengths are treated as an RPC/ABI error.
 func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID *big.Int) (map[string]string, error) {
 	if dataSetID == nil {
-		return nil, errors.New("warmstorage.GetAllDataSetMetadata: nil dataSetID")
+		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w: nil dataSetID", ErrInvalidArgument)
 	}
 	raw, err := s.viewBind.GetAllDataSetMetadata(&bind.CallOpts{Context: ctx}, dataSetID)
 	if err != nil {
@@ -186,9 +189,6 @@ func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID *big.Int)
 	}
 	if len(raw.Keys) != len(raw.Values) {
 		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: mismatched keys (%d) and values (%d)", len(raw.Keys), len(raw.Values))
-	}
-	if len(raw.Keys) == 0 {
-		return nil, nil
 	}
 	out := make(map[string]string, len(raw.Keys))
 	for i, key := range raw.Keys {
@@ -200,7 +200,7 @@ func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID *big.Int)
 // GetClientDataSetsLength returns the total number of data sets for a payer.
 func (s *Service) GetClientDataSetsLength(ctx context.Context, payer common.Address) (*big.Int, error) {
 	if (payer == common.Address{}) {
-		return nil, errors.New("warmstorage.GetClientDataSetsLength: zero payer")
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsLength: %w: zero payer", ErrInvalidArgument)
 	}
 	n, err := s.viewBind.GetClientDataSetsLength(&bind.CallOpts{Context: ctx}, payer)
 	if err != nil {
@@ -237,7 +237,7 @@ func (s *Service) GetApprovedProvidersLength(ctx context.Context) (*big.Int, err
 // IsProviderApproved returns true if providerID is on the approved list.
 func (s *Service) IsProviderApproved(ctx context.Context, providerID *big.Int) (bool, error) {
 	if providerID == nil {
-		return false, errors.New("warmstorage.IsProviderApproved: nil providerID")
+		return false, fmt.Errorf("warmstorage.IsProviderApproved: %w: nil providerID", ErrInvalidArgument)
 	}
 	ok, err := s.viewBind.IsProviderApproved(&bind.CallOpts{Context: ctx}, providerID)
 	if err != nil {

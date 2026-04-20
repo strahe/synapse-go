@@ -80,12 +80,14 @@ func newTestService(t *testing.T) (*Service, *mockCaller) {
 }
 
 func TestNew_Validation(t *testing.T) {
-	if _, err := New(Options{Address: common.HexToAddress("0x01")}); err == nil {
-		t.Error("expected nil Client error")
+	_, err := New(Options{Address: common.HexToAddress("0x01")})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil Client, got %v", err)
 	}
 	mc := newMockCaller(t)
-	if _, err := New(Options{Client: mc}); err == nil {
-		t.Error("expected zero Address error")
+	_, err = New(Options{Client: mc})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero Address, got %v", err)
 	}
 }
 
@@ -112,15 +114,16 @@ func TestGetProvider_FoundAndMissing(t *testing.T) {
 		Info:       sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
 	})
 	got, err = s.GetProvider(context.Background(), big.NewInt(99))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
 	if got != nil {
-		t.Errorf("expected nil for missing, got %+v", got)
+		t.Errorf("expected nil result with ErrNotFound, got %+v", got)
 	}
 
-	if _, err := s.GetProvider(context.Background(), nil); err == nil {
-		t.Error("expected nil providerID error")
+	_, err = s.GetProvider(context.Background(), nil)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil providerID, got %v", err)
 	}
 }
 
@@ -131,8 +134,24 @@ func TestGetProviderIDByAddress(t *testing.T) {
 	if err != nil || got.Int64() != 7 {
 		t.Fatalf("got=%v err=%v", got, err)
 	}
-	if _, err := s.GetProviderIDByAddress(context.Background(), common.Address{}); err == nil {
-		t.Error("expected zero addr error")
+	if _, err := s.GetProviderIDByAddress(context.Background(), common.Address{}); err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero addr, got %v", err)
+	}
+}
+
+// Unknown addresses return (zero *big.Int, nil) from the contract; this
+// asymmetric behaviour (vs. GetProviderByAddress returning ErrNotFound) is
+// intentional and documented in spregistry/doc.go. Callers must check
+// id.Sign() == 0.
+func TestGetProviderIDByAddress_UnknownReturnsZero(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderIdByAddress", big.NewInt(0))
+	got, err := s.GetProviderIDByAddress(context.Background(), common.HexToAddress("0xdeadbeef"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.Sign() != 0 {
+		t.Fatalf("expected zero *big.Int for unknown addr, got %v", got)
 	}
 }
 
@@ -228,7 +247,7 @@ func TestGetPDPProvider(t *testing.T) {
 	}
 }
 
-func TestGetPDPProvider_MissingReturnsNil(t *testing.T) {
+func TestGetPDPProvider_MissingReturnsNotFound(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProviderWithProduct", sprbind.ServiceProviderRegistryStorageProviderWithProduct{
 		ProviderId:              big.NewInt(0),
@@ -237,11 +256,23 @@ func TestGetPDPProvider_MissingReturnsNil(t *testing.T) {
 		ProductCapabilityValues: [][]byte{},
 	})
 	p, err := s.GetPDPProvider(context.Background(), big.NewInt(77))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, p)
 	}
 	if p != nil {
-		t.Errorf("expected nil, got %+v", p)
+		t.Errorf("expected nil result with ErrNotFound, got %+v", p)
+	}
+}
+
+func TestGetPDPProvider_NilID(t *testing.T) {
+	s, _ := newTestService(t)
+
+	p, err := s.GetPDPProvider(context.Background(), nil)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got err=%v result=%+v", err, p)
+	}
+	if p != nil {
+		t.Errorf("expected nil result with ErrInvalidArgument, got %+v", p)
 	}
 }
 
@@ -337,8 +368,9 @@ func TestDecodePDPOffering_IPNIPeerID(t *testing.T) {
 }
 
 func TestValidatePDPOffering_Errors(t *testing.T) {
-	if err := ValidatePDPOffering(PDPOffering{}); err == nil {
-		t.Error("expected error on empty")
+	err := ValidatePDPOffering(PDPOffering{})
+	if err == nil || !errors.Is(err, ErrInvalidOffering) {
+		t.Errorf("expected ErrInvalidOffering on empty, got %v", err)
 	}
 }
 
@@ -349,8 +381,37 @@ func TestGetProvidersByIDs_NilInput(t *testing.T) {
 			t.Fatalf("GetProvidersByIDs should return an error, panicked with %v", r)
 		}
 	}()
-	if _, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), nil}); err == nil {
-		t.Fatal("expected error for nil providerID")
+	if _, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), nil}); err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for nil providerID, got %v", err)
+	}
+}
+
+func TestGetProvidersByIDs_EmptyInput(t *testing.T) {
+	s, _ := newTestService(t)
+	out, err := s.GetProvidersByIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil || len(out) != 0 {
+		t.Fatalf("expected empty non-nil slice, got %v (nil=%v)", out, out == nil)
+	}
+}
+
+func TestGetProvidersByIDs_MalformedResponse(t *testing.T) {
+	s, mc := newTestService(t)
+	// Contract is supposed to return arrays of equal length to the request,
+	// but we simulate a truncated response (len(ValidIds)=1 for 2 requested
+	// ids) to verify the service rejects it instead of silently dropping
+	// entries.
+	mc.set(t, "getProvidersByIds",
+		[]sprbind.ServiceProviderRegistryServiceProviderInfoView{
+			{ProviderId: big.NewInt(1), Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{ServiceProvider: common.HexToAddress("0x01"), Name: "a", IsActive: true}},
+		},
+		[]bool{true},
+	)
+	_, err := s.GetProvidersByIDs(context.Background(), []*big.Int{big.NewInt(1), big.NewInt(2)})
+	if err == nil {
+		t.Fatal("expected error for malformed response, got nil")
 	}
 }
 
@@ -695,8 +756,8 @@ func TestAddress(t *testing.T) {
 func TestGetProviderByAddress_ZeroAddress(t *testing.T) {
 	s, _ := newTestService(t)
 	_, err := s.GetProviderByAddress(context.Background(), common.Address{})
-	if err == nil {
-		t.Error("expected error for zero address")
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero address, got %v", err)
 	}
 }
 
@@ -709,18 +770,18 @@ func TestGetProviderByAddress_RPCError(t *testing.T) {
 	}
 }
 
-func TestGetProviderByAddress_EmptyProvider(t *testing.T) {
+func TestGetProviderByAddress_EmptyReturnsNotFound(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProviderByAddress", sprbind.ServiceProviderRegistryServiceProviderInfoView{
 		ProviderId: big.NewInt(0),
 		Info:       sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
 	})
 	got, err := s.GetProviderByAddress(context.Background(), common.HexToAddress("0x99"))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
 	if got != nil {
-		t.Errorf("expected nil for empty provider, got %+v", got)
+		t.Errorf("expected nil result with ErrNotFound, got %+v", got)
 	}
 }
 
@@ -752,8 +813,8 @@ func TestGetProviderByAddress_ValidProvider(t *testing.T) {
 func TestIsProviderActive_NilProviderID(t *testing.T) {
 	s, _ := newTestService(t)
 	_, err := s.IsProviderActive(context.Background(), nil)
-	if err == nil {
-		t.Error("expected error for nil providerID")
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil providerID, got %v", err)
 	}
 }
 

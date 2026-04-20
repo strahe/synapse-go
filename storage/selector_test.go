@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -175,17 +174,20 @@ type fakePDPProviderSource struct {
 
 func (f *fakePDPProviderSource) GetPDPProvider(_ context.Context, providerID *big.Int) (*spregistry.PDPProvider, error) {
 	if providerID == nil {
-		return nil, errors.New("nil providerID")
+		return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w: nil providerID", spregistry.ErrInvalidArgument)
 	}
 	if f.fixture.providersByID != nil {
-		return f.fixture.providersByID[providerID.String()], nil
+		if p, ok := f.fixture.providersByID[providerID.String()]; ok && p != nil {
+			return p, nil
+		}
+		return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w", spregistry.ErrNotFound)
 	}
 	for _, provider := range f.fixture.activeProviders {
 		if provider.Info.ID.Cmp(providerID) == 0 {
 			return ptrPDPProvider(provider), nil
 		}
 	}
-	return nil, nil
+	return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w", spregistry.ErrNotFound)
 }
 
 func (f *fakePDPProviderSource) SelectActivePDPProviders(_ context.Context, filter spregistry.ProviderFilter) ([]spregistry.PDPProvider, error) {
@@ -218,11 +220,11 @@ func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Addre
 
 func (f *fakeDataSetCatalog) GetDataSet(_ context.Context, dataSetID *big.Int) (*warmstorage.DataSetInfo, error) {
 	if f.fixture.dataSetsByID == nil {
-		return nil, nil
+		return nil, fmt.Errorf("fakeDataSetCatalog.GetDataSet: %w", warmstorage.ErrNotFound)
 	}
 	dataSet := f.fixture.dataSetsByID[dataSetID.String()]
 	if dataSet == nil {
-		return nil, nil
+		return nil, fmt.Errorf("fakeDataSetCatalog.GetDataSet: %w", warmstorage.ErrNotFound)
 	}
 	cloned := *dataSet
 	return &cloned, nil
@@ -230,7 +232,7 @@ func (f *fakeDataSetCatalog) GetDataSet(_ context.Context, dataSetID *big.Int) (
 
 func (f *fakeDataSetCatalog) GetAllDataSetMetadata(_ context.Context, dataSetID *big.Int) (map[string]string, error) {
 	if f.fixture.dataSetMetadata == nil {
-		return nil, nil
+		return map[string]string{}, nil
 	}
 	return cloneStringMap(f.fixture.dataSetMetadata[dataSetID.String()]), nil
 }
@@ -430,6 +432,9 @@ func TestResolveByDataSetIDs_NilDataSetError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent dataset")
 	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected %q translation of warmstorage.ErrNotFound, got %v", "does not exist", err)
+	}
 }
 
 func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
@@ -445,6 +450,9 @@ func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for missing provider")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected spregistry.ErrNotFound translation, got %v", err)
 	}
 }
 

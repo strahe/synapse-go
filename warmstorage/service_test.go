@@ -118,14 +118,17 @@ func newTestService(t *testing.T) (*Service, *mockCaller) {
 
 func TestNew_Validation(t *testing.T) {
 	mc := newMockCaller(t)
-	if _, err := New(Options{FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")}); err == nil {
-		t.Error("expected nil client error")
+	_, err := New(Options{FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil client, got %v", err)
 	}
-	if _, err := New(Options{Client: mc, ViewContract: common.HexToAddress("0x02")}); err == nil {
-		t.Error("expected zero FWSS error")
+	_, err = New(Options{Client: mc, ViewContract: common.HexToAddress("0x02")})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero FWSS, got %v", err)
 	}
-	if _, err := New(Options{Client: mc, FWSS: common.HexToAddress("0x01")}); err == nil {
-		t.Error("expected zero View error")
+	_, err = New(Options{Client: mc, FWSS: common.HexToAddress("0x01")})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero View, got %v", err)
 	}
 }
 
@@ -171,7 +174,7 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		t.Fatalf("got=%+v", got)
 	}
 
-	// not found: pdpRailId=0
+	// not found: pdpRailId=0 → ErrNotFound
 	mc.setViewReply(t, "getDataSet", fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
 		PdpRailId:       big.NewInt(0),
 		CacheMissRailId: big.NewInt(0),
@@ -183,11 +186,11 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		DataSetId:       big.NewInt(0),
 	})
 	got, err = s.GetDataSet(context.Background(), big.NewInt(99))
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
 	if got != nil {
-		t.Errorf("expected nil for missing, got %+v", got)
+		t.Errorf("expected nil result with ErrNotFound, got %+v", got)
 	}
 }
 
@@ -212,8 +215,8 @@ func TestGetClientDataSets(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("len=%d", len(list))
 	}
-	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, nil, nil); err == nil {
-		t.Error("expected zero payer error")
+	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, nil, nil); err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for zero payer, got %v", err)
 	}
 }
 
@@ -228,8 +231,23 @@ func TestGetAllDataSetMetadata(t *testing.T) {
 	if got["source"] != "app" || got["withCDN"] != "" {
 		t.Fatalf("metadata=%v", got)
 	}
-	if _, err := s.GetAllDataSetMetadata(context.Background(), nil); err == nil {
-		t.Fatal("expected nil dataSetID error")
+	if _, err := s.GetAllDataSetMetadata(context.Background(), nil); err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for nil dataSetID, got %v", err)
+	}
+}
+
+func TestGetAllDataSetMetadata_EmptyReturnsEmptyMap(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
+	got, err := s.GetAllDataSetMetadata(context.Background(), big.NewInt(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil map, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %v", got)
 	}
 }
 
@@ -321,8 +339,8 @@ func TestGetApprovedProvidersLength_Error(t *testing.T) {
 func TestIsProviderApproved_NilProviderID(t *testing.T) {
 	s, _ := newTestService(t)
 	_, err := s.IsProviderApproved(context.Background(), nil)
-	if err == nil {
-		t.Error("expected error for nil providerID")
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil providerID, got %v", err)
 	}
 }
 
@@ -381,7 +399,7 @@ func TestGetDataSet_RPCError(t *testing.T) {
 func TestGetDataSet_NilDataSetID(t *testing.T) {
 	s, _ := newTestService(t)
 	_, err := s.GetDataSet(context.Background(), nil)
-	if err == nil {
-		t.Error("expected error for nil dataSetID")
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for nil dataSetID, got %v", err)
 	}
 }

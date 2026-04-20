@@ -634,7 +634,7 @@ func TestFinalize_RevertedTx_ReleasesNonce(t *testing.T) {
 	}
 
 	res, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1), WithWait(3*time.Second))
-	if !errors.Is(err, txutil.ErrTxFailed) {
+	if !errors.Is(err, ErrTxFailed) {
 		t.Fatalf("expected ErrTxFailed, got %v", err)
 	}
 	if res == nil || res.Receipt == nil || res.Receipt.Status != types.ReceiptStatusFailed {

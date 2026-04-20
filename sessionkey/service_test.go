@@ -1134,6 +1134,9 @@ func TestFinalize_WithWait_TxFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failed tx")
 	}
+	if !errors.Is(err, ErrTxFailed) {
+		t.Fatalf("expected ErrTxFailed, got %v", err)
+	}
 	// Receipt should still be attached when ErrTxFailed.
 	if res == nil || res.Receipt == nil {
 		t.Error("expected receipt attached on tx failure")

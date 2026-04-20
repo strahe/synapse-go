@@ -2,7 +2,6 @@ package spregistry
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -38,10 +37,10 @@ type Options struct {
 // New creates a Service bound to the given registry address.
 func New(opts Options) (*Service, error) {
 	if opts.Client == nil {
-		return nil, errors.New("spregistry.New: nil Client")
+		return nil, fmt.Errorf("spregistry.New: %w: nil Client", ErrInvalidArgument)
 	}
 	if (opts.Address == common.Address{}) {
-		return nil, errors.New("spregistry.New: zero Address")
+		return nil, fmt.Errorf("spregistry.New: %w: zero Address", ErrInvalidArgument)
 	}
 	c, err := spr.NewSPRegistryCaller(opts.Address, opts.Client)
 	if err != nil {
@@ -53,43 +52,47 @@ func New(opts Options) (*Service, error) {
 // Address returns the configured registry contract address.
 func (s *Service) Address() common.Address { return s.addr }
 
-// GetProvider returns the provider by id, or nil when the call yields the
-// on-chain "zero" record (zero ServiceProvider address). RPC errors,
-// including explicit contract reverts, are returned to the caller.
+// GetProvider returns the provider by id. Returns an error wrapping
+// ErrNotFound when no such provider exists (contract convention: a zero
+// ServiceProvider address in the returned record). RPC or ABI errors are
+// wrapped and propagated as-is.
 func (s *Service) GetProvider(ctx context.Context, providerID *big.Int) (*ProviderInfo, error) {
 	if providerID == nil {
-		return nil, errors.New("spregistry.GetProvider: nil providerID")
+		return nil, fmt.Errorf("spregistry.GetProvider: %w: nil providerID", ErrInvalidArgument)
 	}
 	v, err := s.contract.GetProvider(&bind.CallOpts{Context: ctx}, providerID)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProvider: %w", err)
 	}
 	if (v.Info.ServiceProvider == common.Address{}) {
-		return nil, nil
+		return nil, fmt.Errorf("spregistry.GetProvider: %w", ErrNotFound)
 	}
 	return fromRawView(v), nil
 }
 
 // GetProviderByAddress returns the provider record whose serviceProvider
-// matches addr, or nil if no provider is registered for that address.
+// matches addr. Returns an error wrapping ErrNotFound when no provider is
+// registered for that address.
 func (s *Service) GetProviderByAddress(ctx context.Context, addr common.Address) (*ProviderInfo, error) {
 	if (addr == common.Address{}) {
-		return nil, errors.New("spregistry.GetProviderByAddress: zero address")
+		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w: zero address", ErrInvalidArgument)
 	}
 	v, err := s.contract.GetProviderByAddress(&bind.CallOpts{Context: ctx}, addr)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w", err)
 	}
 	if (v.Info.ServiceProvider == common.Address{}) {
-		return nil, nil
+		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w", ErrNotFound)
 	}
 	return fromRawView(v), nil
 }
 
-// GetProviderIDByAddress returns 0 if the address is not registered.
+// GetProviderIDByAddress returns the provider ID for addr. Returns 0 if the
+// address is not registered (contract convention). Callers that prefer a
+// typed error can check id.Sign() == 0 instead of a sentinel.
 func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Address) (*big.Int, error) {
 	if (addr == common.Address{}) {
-		return nil, errors.New("spregistry.GetProviderIDByAddress: zero address")
+		return nil, fmt.Errorf("spregistry.GetProviderIDByAddress: %w: zero address", ErrInvalidArgument)
 	}
 	id, err := s.contract.GetProviderIdByAddress(&bind.CallOpts{Context: ctx}, addr)
 	if err != nil {
@@ -101,7 +104,7 @@ func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Addres
 // IsProviderActive returns true if the provider id is registered AND active.
 func (s *Service) IsProviderActive(ctx context.Context, providerID *big.Int) (bool, error) {
 	if providerID == nil {
-		return false, errors.New("spregistry.IsProviderActive: nil providerID")
+		return false, fmt.Errorf("spregistry.IsProviderActive: %w: nil providerID", ErrInvalidArgument)
 	}
 	ok, err := s.contract.IsProviderActive(&bind.CallOpts{Context: ctx}, providerID)
 	if err != nil {
@@ -130,18 +133,19 @@ func (s *Service) GetActiveProviderCount(ctx context.Context) (*big.Int, error) 
 	return n, nil
 }
 
-// GetPDPProvider returns the provider + decoded PDP offering for providerID,
-// or nil if the provider has no PDP product registered.
+// GetPDPProvider returns the provider + decoded PDP offering for providerID.
+// Returns an error wrapping ErrNotFound when the provider has no PDP product
+// registered.
 func (s *Service) GetPDPProvider(ctx context.Context, providerID *big.Int) (*PDPProvider, error) {
 	if providerID == nil {
-		return nil, errors.New("spregistry.GetPDPProvider: nil providerID")
+		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w: nil providerID", ErrInvalidArgument)
 	}
 	v, err := s.contract.GetProviderWithProduct(&bind.CallOpts{Context: ctx}, providerID, uint8(ProductTypePDP))
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", err)
 	}
 	if (v.ProviderInfo.ServiceProvider == common.Address{}) {
-		return nil, nil
+		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", ErrNotFound)
 	}
 	return decodeProviderWithProduct(v)
 }
@@ -175,25 +179,26 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, offset, 
 
 // GetProvidersByIDs returns the provider records for the given ids, in the
 // same order. Entries whose validIds flag was false come back as nil.
+// An empty input slice returns an empty (non-nil) result slice.
 func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []*big.Int) ([]*ProviderInfo, error) {
 	if len(providerIDs) == 0 {
-		return nil, nil
+		return []*ProviderInfo{}, nil
 	}
 	for i, id := range providerIDs {
 		if id == nil {
-			return nil, fmt.Errorf("spregistry.GetProvidersByIDs: providerIDs[%d] is nil", i)
+			return nil, fmt.Errorf("spregistry.GetProvidersByIDs: %w: providerIDs[%d] is nil", ErrInvalidArgument, i)
 		}
 	}
 	raw, err := s.contract.GetProvidersByIds(&bind.CallOpts{Context: ctx}, providerIDs)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProvidersByIDs: %w", err)
 	}
+	if len(raw.ValidIds) != len(providerIDs) || len(raw.ProviderInfos) != len(providerIDs) {
+		return nil, fmt.Errorf("spregistry.GetProvidersByIDs: malformed response: got %d valid_ids and %d provider_infos for %d requested ids", len(raw.ValidIds), len(raw.ProviderInfos), len(providerIDs))
+	}
 	out := make([]*ProviderInfo, len(providerIDs))
 	for i := range providerIDs {
-		if i >= len(raw.ValidIds) || !raw.ValidIds[i] {
-			continue
-		}
-		if i >= len(raw.ProviderInfos) {
+		if !raw.ValidIds[i] {
 			continue
 		}
 		info := fromRawView(raw.ProviderInfos[i])
