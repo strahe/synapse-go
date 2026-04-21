@@ -137,6 +137,9 @@ func TestManagerDownload_ContextAndURLConflict(t *testing.T) {
 	if !errors.Is(err, ErrInvalidDownloadOptions) {
 		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
+	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutually-exclusive message, got: %v", err)
 	}
@@ -357,6 +360,9 @@ func TestManagerDownload_NilOptions(t *testing.T) {
 	if !errors.Is(err, ErrInvalidDownloadOptions) {
 		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
 	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
+	}
 }
 
 func TestManagerDownload_NoSource(t *testing.T) {
@@ -372,5 +378,8 @@ func TestManagerDownload_NoSource(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidDownloadOptions) {
 		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
 	}
 }

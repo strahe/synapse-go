@@ -16,6 +16,8 @@ import (
 
 const maxSecondaryAttemptsDefault = 5
 
+const commitConcurrencyDefault = 4
+
 // defaultDownloadTimeout is applied to the Service's HTTP client for
 // URL-based downloads.  It is long enough for multi-GiB files transferred
 // over a typical storage network while preventing indefinite hangs.
@@ -47,6 +49,7 @@ type Service struct {
 	httpClient           *http.Client
 	source               string
 	maxSecondaryAttempts int
+	commitConcurrency    int
 }
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
@@ -71,6 +74,11 @@ type Options struct {
 	// each secondary copy slot before giving up. Values <= 0 select the
 	// default of 5.
 	MaxSecondaryAttempts int
+
+	// CommitConcurrency caps the number of concurrent on-chain Commit RPCs
+	// issued across primary + secondary copies. Values <= 0 select the
+	// default of 4. The cap only matters when RequestedCopies exceeds it.
+	CommitConcurrency int
 }
 
 // New creates a Service from the given Options.
@@ -83,11 +91,15 @@ func New(opts Options) (*Service, error) {
 	if opts.MaxSecondaryAttempts <= 0 {
 		opts.MaxSecondaryAttempts = maxSecondaryAttemptsDefault
 	}
+	if opts.CommitConcurrency <= 0 {
+		opts.CommitConcurrency = commitConcurrencyDefault
+	}
 	return &Service{
 		resolver:             opts.Resolver,
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
+		commitConcurrency:    opts.CommitConcurrency,
 	}, nil
 }
 
@@ -99,9 +111,18 @@ func New(opts Options) (*Service, error) {
 // The reader is consumed once by the primary provider; secondary copies
 // are populated via server-to-server Pulls. On success the reader is
 // fully drained; on error it may be only partially consumed.
+//
+// Timeouts and cancellation: Upload honours ctx for every step —
+// presign, store, pull and on-chain commit wait. To bound the total
+// upload time (including the blockchain confirmation that populates the
+// returned [UploadResult.Copies]), wrap ctx with [context.WithTimeout]; the
+// Service itself does not impose an internal wait deadline. The built-in
+// 24h HTTP timeout on Service only affects URL-based downloads; Upload,
+// Pull, and Commit use the UploadContext implementation's own HTTP client
+// configuration.
 func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
 	if r == nil {
-		return nil, errors.New("storage.Service.Upload: nil reader")
+		return nil, fmt.Errorf("storage.Service.Upload: %w: nil reader", ErrInvalidArgument)
 	}
 	if s.resolver == nil {
 		return nil, errors.New("storage.Service.Upload: no upload resolver configured")
@@ -237,11 +258,27 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 
 	outcomes := make([]commitOutcome, len(targets))
+	concurrency := s.commitConcurrency
+	if concurrency <= 0 {
+		concurrency = commitConcurrencyDefault
+	}
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for i := range targets {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				outcomes[idx].err = ctx.Err()
+				return
+			}
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				outcomes[idx].err = err
+				return
+			}
 			outcomes[idx].result, outcomes[idx].err = targets[idx].ctx.Commit(ctx, CommitRequest{
 				Pieces:    pieceInputs,
 				ExtraData: targets[idx].extraData,

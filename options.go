@@ -66,9 +66,17 @@ func WithLogger(l *slog.Logger) ClientOption {
 	return func(cfg *clientConfig) { cfg.logger = l }
 }
 
-// WithHTTPClient sets the HTTP client for services that make HTTP calls
-// (curio, filbeam, storage downloads). If nil, each service uses its
-// own default.
+// WithHTTPClient sets the HTTP client used by every service that makes HTTP
+// calls:
+//
+//   - filbeam.Service (stats API)
+//   - storage.Service (URL-based downloads via Service.HTTPClient)
+//   - internal/curio.Client (piece uploads, pull / RPC, constructed per
+//     UploadContext inside the storage resolver)
+//
+// Services communicating over Ethereum JSON-RPC (payments, sessionkey,
+// warmstorage, spregistry, costs) reuse the chain client instead and are not
+// affected by this option. If nil, each HTTP service uses its own default.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.httpClient = c }
 }

@@ -455,6 +455,95 @@ func TestContextPresignForCommit_NewDataSetCombinedEncoding(t *testing.T) {
 	}
 }
 
+func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) {
+	info := mustPieceInfo(t)
+	signer := mustTestSigner(t)
+
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, signer,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(42)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	extraData, err := ctx.PresignForCommit(context.Background(), []PieceInput{{
+		PieceCID:      info.CIDv2,
+		PieceMetadata: map[string]string{"k": "v"},
+	}})
+	if err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+
+	bytesType, _ := abi.NewType("bytes", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	stringArray2DType, _ := abi.NewType("string[][]", "", nil)
+	addArgs := abi.Arguments{
+		{Type: uint256Type},
+		{Type: stringArray2DType},
+		{Type: stringArray2DType},
+		{Type: bytesType},
+	}
+	vals, err := addArgs.Unpack(extraData)
+	if err != nil {
+		t.Fatalf("unpack add pieces: %v", err)
+	}
+	nonce := vals[0].(*big.Int)
+	if nonce == nil || nonce.Sign() == 0 {
+		t.Fatal("nonce must be non-zero")
+	}
+	sig := vals[3].([]byte)
+	if len(sig) != 65 {
+		t.Fatalf("sig length=%d want 65", len(sig))
+	}
+	pieceKeys := vals[1].([][]string)
+	pieceValues := vals[2].([][]string)
+	if len(pieceKeys) != 1 || len(pieceValues) != 1 {
+		t.Fatalf("metadata array lengths=%d/%d want 1/1", len(pieceKeys), len(pieceValues))
+	}
+	if pieceKeys[0][0] != "k" || pieceValues[0][0] != "v" {
+		t.Fatalf("metadata=%v/%v want [k]/[v]", pieceKeys[0], pieceValues[0])
+	}
+}
+
+func TestContextPresignForCommit_CtxCancelled(t *testing.T) {
+	info := mustPieceInfo(t)
+	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(1)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := sctx.PresignForCommit(cancelled, []PieceInput{{PieceCID: info.CIDv2}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+}
+
+func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.T) {
+	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(1)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = sctx.PresignForCommit(cancelled, nil)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
+	}
+}
+
 func mustPieceInfo(t *testing.T) piece.PieceInfo {
 	t.Helper()
 	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte("pi"), 128))
@@ -1132,6 +1221,26 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 	}
 }
 
+func TestContextPresignForCommit_ExistingDataSet_DoesNotTrackPayload(t *testing.T) {
+	info := mustPieceInfo(t)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+	if got := len(ctx.presignedKinds); got != 0 {
+		t.Fatalf("tracked presigns=%d want 0 for existing dataset path", got)
+	}
+}
+
 func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
@@ -1170,6 +1279,93 @@ func TestContextCommit_AddPiecesError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for add pieces failure")
+	}
+}
+
+func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
+	info1 := mustPieceInfo(t)
+	info2, err := piece.CalculateFromBytes(bytes.Repeat([]byte("p2"), 128))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var staleExtra []byte
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.CreateDataSetResult, error) {
+			if len(pieces) != 1 || pieces[0].PieceCID != info1.CIDv2 {
+				t.Fatalf("unexpected create pieces: %+v", pieces)
+			}
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/create"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				TxHash:            common.HexToHash("0x01"),
+				DataSetID:         55,
+				PieceCount:        1,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+			}, nil
+		},
+		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+			if gotDataSetID != 55 {
+				t.Fatalf("dataSetID=%d want 55", gotDataSetID)
+			}
+			if len(pieces) != 1 || pieces[0].PieceCID != info2.CIDv2 {
+				t.Fatalf("unexpected add pieces: %+v", pieces)
+			}
+			if bytes.Equal(extraData, staleExtra) {
+				return nil, errors.New("stale extraData used")
+			}
+			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/add"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				TxHash:            common.HexToHash("0x02"),
+				DataSetID:         55,
+				PieceCount:        1,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(9)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	firstExtra, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info1.CIDv2}})
+	if err != nil {
+		t.Fatalf("PresignForCommit first: %v", err)
+	}
+	staleExtra, err = ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info2.CIDv2}})
+	if err != nil {
+		t.Fatalf("PresignForCommit second: %v", err)
+	}
+
+	if _, err := ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info1.CIDv2}},
+		ExtraData: firstExtra,
+	}); err != nil {
+		t.Fatalf("Commit first: %v", err)
+	}
+	if got := len(ctx.presignedKinds); got != 1 {
+		t.Fatalf("tracked presigns after create=%d want 1 outstanding stale payload", got)
+	}
+
+	if _, err := ctx.Commit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: info2.CIDv2}},
+		ExtraData: staleExtra,
+	}); err != nil {
+		t.Fatalf("Commit second with stale extraData: %v", err)
+	}
+	if got := len(ctx.presignedKinds); got != 0 {
+		t.Fatalf("tracked presigns after stale refresh=%d want 0", got)
 	}
 }
 

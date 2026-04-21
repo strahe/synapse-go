@@ -214,3 +214,85 @@ func pow(base float64, exp int) float64 {
 	}
 	return result
 }
+
+func TestDo_MaxRetriesZero_NoRetries(t *testing.T) {
+	var attempts int
+	_, err := Do(context.Background(), func(_ context.Context) (string, error) {
+		attempts++
+		return "", errors.New("fail")
+	}, WithMaxRetries(0), WithInitialDelay(time.Millisecond))
+	if attempts != 1 {
+		t.Fatalf("attempts=%d want 1 (no retries)", attempts)
+	}
+	if !errors.Is(err, ErrMaxRetries) {
+		t.Fatalf("err=%v want wrapped ErrMaxRetries", err)
+	}
+}
+
+func TestDo_PreCancelledContext_FirstCheckShortCircuits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var attempts int32
+	_, err := Do(ctx, func(_ context.Context) (string, error) {
+		atomic.AddInt32(&attempts, 1)
+		return "ok", nil
+	}, WithMaxRetries(3), WithInitialDelay(time.Millisecond))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+	if n := atomic.LoadInt32(&attempts); n != 0 {
+		t.Fatalf("attempts=%d want 0 (should not invoke fn)", n)
+	}
+}
+
+func TestDo_ContextCancelledDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int32
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		cancel()
+		close(done)
+	}()
+	_, err := Do(ctx, func(_ context.Context) (string, error) {
+		atomic.AddInt32(&attempts, 1)
+		return "", errors.New("fail")
+	}, WithMaxRetries(10), WithInitialDelay(100*time.Millisecond))
+	<-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+	if n := atomic.LoadInt32(&attempts); n > 2 {
+		t.Fatalf("attempts=%d want <=2 (cancel should interrupt backoff)", n)
+	}
+}
+
+func TestDo_BackoffCappedByMaxDelay(t *testing.T) {
+	const maxD = 50 * time.Millisecond
+	for attempt := 0; attempt < 20; attempt++ {
+		got := jitteredBackoff(time.Millisecond, maxD, attempt, 4.0)
+		if got > maxD {
+			t.Fatalf("attempt=%d backoff=%v exceeds max=%v", attempt, got, maxD)
+		}
+	}
+}
+
+func TestDo_RetryIfFalseReturnsImmediately(t *testing.T) {
+	permanent := errors.New("do-not-retry")
+	var attempts int
+	_, err := Do(context.Background(), func(_ context.Context) (string, error) {
+		attempts++
+		return "", permanent
+	}, WithMaxRetries(5), WithInitialDelay(time.Millisecond),
+		WithRetryIf(func(e error) bool { return !errors.Is(e, permanent) }),
+	)
+	if attempts != 1 {
+		t.Fatalf("attempts=%d want 1 (RetryIf false → no retry)", attempts)
+	}
+	if !errors.Is(err, permanent) {
+		t.Fatalf("err=%v want permanent", err)
+	}
+	if errors.Is(err, ErrMaxRetries) {
+		t.Fatal("err should not be ErrMaxRetries when RetryIf returns false")
+	}
+}

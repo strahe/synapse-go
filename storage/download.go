@@ -19,16 +19,21 @@ type DownloadContext interface {
 }
 
 // DownloadOptions configures a Service.Download call. Exactly one of Context
-// or URL must be set; supplying both, or neither, returns an error wrapping
-// [ErrInvalidDownloadOptions].
+// or URL must be set; supplying both, or neither, returns an error matching
+// both [ErrInvalidDownloadOptions] and [ErrInvalidArgument].
 type DownloadOptions struct {
 	Context DownloadContext // when set, delegates to DownloadContext.Download; mutually exclusive with URL
 	URL     string          // direct HTTPS URL; validated against pieceCID on read completion
 }
 
 // ErrInvalidDownloadOptions is returned when [DownloadOptions] is nil, empty,
-// or specifies more than one download source. Wrap with errors.Is to detect.
+// or specifies more than one download source. Service.Download wraps it
+// together with [ErrInvalidArgument], so callers may match either.
 var ErrInvalidDownloadOptions = errors.New("storage: invalid download options")
+
+func invalidDownloadOptionsError(msg string) error {
+	return fmt.Errorf("storage.Service.Download: %w: %w: %s", ErrInvalidArgument, ErrInvalidDownloadOptions, msg)
+}
 
 // validatePieceCID returns nil if c is a valid PieceCIDv1 or PieceCIDv2, or
 // an error that describes why c is not a piece CID.  Arbitrary non-piece CIDs
@@ -53,19 +58,19 @@ func validatePieceCID(c cid.Cid) error {
 // io.EOF) carries the integrity check result — callers must not discard it.
 func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
 	if err := validatePieceCID(pieceCID); err != nil {
-		return nil, fmt.Errorf("storage.Service.Download: %w", err)
+		return nil, fmt.Errorf("storage.Service.Download: %w: %w", ErrInvalidArgument, err)
 	}
 	if opts == nil {
-		return nil, fmt.Errorf("storage.Service.Download: %w: options must not be nil", ErrInvalidDownloadOptions)
+		return nil, invalidDownloadOptionsError("options must not be nil")
 	}
 	if opts.Context != nil && opts.URL != "" {
-		return nil, fmt.Errorf("storage.Service.Download: %w: Context and URL are mutually exclusive", ErrInvalidDownloadOptions)
+		return nil, invalidDownloadOptionsError("Context and URL are mutually exclusive")
 	}
 	if opts.Context != nil {
 		return opts.Context.Download(ctx, pieceCID)
 	}
 	if opts.URL == "" {
-		return nil, fmt.Errorf("storage.Service.Download: %w: either Context or URL must be set", ErrInvalidDownloadOptions)
+		return nil, invalidDownloadOptionsError("either Context or URL must be set")
 	}
 	return s.downloadAndValidate(ctx, opts.URL, pieceCID)
 }

@@ -14,7 +14,10 @@ var ErrInsufficientBalance = errors.New("payments: insufficient balance")
 var ErrInsufficientAllowance = errors.New("payments: insufficient allowance")
 
 // ErrZeroAddress is returned when a caller passes common.Address{} for an
-// argument that must be a real token or account address.
+// argument that must be a real token or account address. Public service
+// methods wrap it together with ErrInvalidArgument so callers can match
+// either the specific zero-address sentinel or the generic invalid-argument
+// sentinel.
 var ErrZeroAddress = errors.New("payments: zero address")
 
 // WriteOption tunes the behaviour of a single state-changing call.

@@ -64,16 +64,16 @@ var (
 // NewServiceResolver constructs a ServiceResolver. All fields in opts are required.
 func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.Payer == (common.Address{}) {
-		return nil, errors.New("storage.NewServiceResolver: zero payer")
+		return nil, fmt.Errorf("storage.NewServiceResolver: %w: zero payer", ErrInvalidArgument)
 	}
 	if opts.SPRegistry == nil {
-		return nil, errors.New("storage.NewServiceResolver: nil SPRegistry")
+		return nil, fmt.Errorf("storage.NewServiceResolver: %w: nil SPRegistry", ErrInvalidArgument)
 	}
 	if opts.WarmStorage == nil {
-		return nil, errors.New("storage.NewServiceResolver: nil WarmStorage")
+		return nil, fmt.Errorf("storage.NewServiceResolver: %w: nil WarmStorage", ErrInvalidArgument)
 	}
 	if opts.NewContext == nil {
-		return nil, errors.New("storage.NewServiceResolver: nil NewContext")
+		return nil, fmt.Errorf("storage.NewServiceResolver: %w: nil NewContext", ErrInvalidArgument)
 	}
 	return &ServiceResolver{
 		payer:       opts.Payer,

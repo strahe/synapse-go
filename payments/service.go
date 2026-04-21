@@ -71,13 +71,13 @@ type Options struct {
 // New constructs a Service.
 func New(opts Options) (*Service, error) {
 	if opts.Backend == nil {
-		return nil, errors.New("payments.New: nil Backend")
+		return nil, fmt.Errorf("payments.New: %w: nil Backend", ErrInvalidArgument)
 	}
 	if opts.ChainID == nil || opts.ChainID.Sign() <= 0 {
-		return nil, errors.New("payments.New: invalid ChainID")
+		return nil, fmt.Errorf("payments.New: %w: invalid ChainID", ErrInvalidArgument)
 	}
 	if (opts.FilPayAddress == common.Address{}) {
-		return nil, errors.New("payments.New: zero FilPayAddress")
+		return nil, fmt.Errorf("payments.New: %w: zero FilPayAddress", ErrInvalidArgument)
 	}
 	caller, err := filpay.NewFilPayCaller(opts.FilPayAddress, opts.Backend)
 	if err != nil {
@@ -104,6 +104,10 @@ func New(opts Options) (*Service, error) {
 	return s, nil
 }
 
+func invalidZeroAddressError(op, arg string) error {
+	return fmt.Errorf("%s: %w: %w (%s)", op, ErrInvalidArgument, ErrZeroAddress, arg)
+}
+
 // Address returns the FilPay contract address.
 func (s *Service) Address() common.Address { return s.filPayAddr }
 
@@ -128,7 +132,7 @@ func (s *Service) Account() common.Address {
 // tracked by the FilPay contract.
 func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) (*AccountState, error) {
 	if (owner == common.Address{}) {
-		return nil, fmt.Errorf("payments.AccountInfo: %w (owner)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.AccountInfo", "owner")
 	}
 	if (token == common.Address{}) {
 		bal, err := s.backend.BalanceAt(ctx, owner, nil)
@@ -179,7 +183,7 @@ func (s *Service) Balance(ctx context.Context, token, owner common.Address) (*bi
 // ERC20 balanceOf(account) is queried.
 func (s *Service) WalletBalance(ctx context.Context, token, account common.Address) (*big.Int, error) {
 	if (account == common.Address{}) {
-		return nil, fmt.Errorf("payments.WalletBalance: %w (account)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.WalletBalance", "account")
 	}
 	if (token == common.Address{}) {
 		bal, err := s.backend.BalanceAt(ctx, account, nil)
@@ -202,13 +206,13 @@ func (s *Service) WalletBalance(ctx context.Context, token, account common.Addre
 // Allowance returns the ERC20 allowance of owner towards spender for token.
 func (s *Service) Allowance(ctx context.Context, token, owner, spender common.Address) (*big.Int, error) {
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.Allowance: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Allowance", "token")
 	}
 	if (owner == common.Address{}) {
-		return nil, fmt.Errorf("payments.Allowance: %w (owner)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Allowance", "owner")
 	}
 	if (spender == common.Address{}) {
-		return nil, fmt.Errorf("payments.Allowance: %w (spender)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Allowance", "spender")
 	}
 	c, err := erc20.NewERC20Caller(token, s.backend)
 	if err != nil {
@@ -225,13 +229,13 @@ func (s *Service) Allowance(ctx context.Context, token, owner, spender common.Ad
 // (token, client, operator).
 func (s *Service) ServiceApproval(ctx context.Context, token, client, operator common.Address) (*OperatorApproval, error) {
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.ServiceApproval: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.ServiceApproval", "token")
 	}
 	if (client == common.Address{}) {
-		return nil, fmt.Errorf("payments.ServiceApproval: %w (client)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.ServiceApproval", "client")
 	}
 	if (operator == common.Address{}) {
-		return nil, fmt.Errorf("payments.ServiceApproval: %w (operator)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.ServiceApproval", "operator")
 	}
 	v, err := s.filPayCall.OperatorApprovals(&bind.CallOpts{Context: ctx}, token, client, operator)
 	if err != nil {
@@ -258,10 +262,10 @@ func (s *Service) Approve(ctx context.Context, token, spender common.Address, am
 		return nil, err
 	}
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.Approve: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Approve", "token")
 	}
 	if (spender == common.Address{}) {
-		return nil, fmt.Errorf("payments.Approve: %w (spender)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Approve", "spender")
 	}
 	if err := validateNonNegative("payments.Approve amount", amount); err != nil {
 		return nil, err
@@ -290,7 +294,7 @@ func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount 
 		return nil, err
 	}
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.Deposit: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Deposit", "token")
 	}
 	if err := validateNonNegative("payments.Deposit amount", amount); err != nil {
 		return nil, err
@@ -339,7 +343,7 @@ func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *bi
 		return nil, err
 	}
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.Withdraw: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.Withdraw", "token")
 	}
 	if err := validateNonNegative("payments.Withdraw amount", amount); err != nil {
 		return nil, err
@@ -376,10 +380,10 @@ func (s *Service) ApproveService(ctx context.Context, token, operator common.Add
 		return nil, err
 	}
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.ApproveService: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.ApproveService", "token")
 	}
 	if (operator == common.Address{}) {
-		return nil, fmt.Errorf("payments.ApproveService: %w (operator)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.ApproveService", "operator")
 	}
 	for name, v := range map[string]*big.Int{
 		"rateAllowance":   rateAllowance,
@@ -410,10 +414,10 @@ func (s *Service) RevokeService(ctx context.Context, token, operator common.Addr
 		return nil, err
 	}
 	if (token == common.Address{}) {
-		return nil, fmt.Errorf("payments.RevokeService: %w (token)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.RevokeService", "token")
 	}
 	if (operator == common.Address{}) {
-		return nil, fmt.Errorf("payments.RevokeService: %w (operator)", ErrZeroAddress)
+		return nil, invalidZeroAddressError("payments.RevokeService", "operator")
 	}
 	zero := big.NewInt(0)
 	txOpts, err := s.newTransactOpts(ctx)

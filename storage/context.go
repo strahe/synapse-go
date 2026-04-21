@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -91,19 +92,28 @@ type Context struct {
 	dataSetID       *types.DataSetID
 	clientDataSetID types.ClientDataSetID
 	dataSetMetadata map[string]string
+	presignedKinds  map[[32]byte]commitExtraDataKind
 }
+
+type commitExtraDataKind uint8
+
+const (
+	commitExtraDataUnknown commitExtraDataKind = iota
+	commitExtraDataAddOnly
+	commitExtraDataCreateAndAdd
+)
 
 // NewContext creates a Context for the given provider and PDP client.
 // All required fields (provider.ID, provider.ServiceURL, client, evmSigner) must be non-nil/non-empty.
 func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
 	if provider.ID == 0 {
-		return nil, errors.New("storage.NewContext: zero provider ID")
+		return nil, fmt.Errorf("storage.NewContext: %w: zero provider ID", ErrInvalidArgument)
 	}
 	if provider.ServiceURL == "" {
-		return nil, errors.New("storage.NewContext: empty provider service URL")
+		return nil, fmt.Errorf("storage.NewContext: %w: empty provider service URL", ErrInvalidArgument)
 	}
 	if client == nil {
-		return nil, errors.New("storage.NewContext: nil PDP client")
+		return nil, fmt.Errorf("storage.NewContext: %w: nil PDP client", ErrInvalidArgument)
 	}
 	c := &Context{
 		provider: Provider{
@@ -121,7 +131,7 @@ func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner,
 		}
 	}
 	if c.dataSetID != nil && *c.dataSetID == 0 {
-		return nil, errors.New("storage.NewContext: zero dataSetID")
+		return nil, fmt.Errorf("storage.NewContext: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	return c, nil
 }
@@ -186,7 +196,7 @@ func WithCDN(enabled bool) ContextOption {
 // during the upload via TeeReader. opts may be nil.
 func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if r == nil {
-		return nil, errors.New("storage.Context.Store: nil reader")
+		return nil, fmt.Errorf("storage.Context.Store: %w: nil reader", ErrInvalidArgument)
 	}
 	if opts == nil {
 		opts = &StoreOptions{}
@@ -257,28 +267,31 @@ func detectSize(r io.Reader, pc cid.Cid) int64 {
 // PresignForCommit produces the EIP-712–signed extraData payload for Commit.
 // For a new data set it signs both CreateDataSet and AddPieces; for an existing
 // data set it signs only AddPieces. The returned bytes are opaque to callers.
-func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]byte, error) {
+//
+// The operation is CPU/crypto-bound and performs no I/O, but ctx is honoured
+// before each signing step so callers can cancel long batches.
+func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
 	if len(pieces) == 0 {
-		return nil, errors.New("storage.Context.PresignForCommit: no pieces provided")
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: no pieces provided", ErrInvalidArgument)
 	}
 	if c.signer == nil {
-		return nil, errors.New("storage.Context.PresignForCommit: nil signer")
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil signer", ErrInvalidArgument)
 	}
 	if c.chainID == nil {
-		return nil, errors.New("storage.Context.PresignForCommit: nil chainID")
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil chainID", ErrInvalidArgument)
 	}
 	if c.recordKeeper == (common.Address{}) {
-		return nil, errors.New("storage.Context.PresignForCommit: zero recordKeeper")
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: zero recordKeeper", ErrInvalidArgument)
 	}
 	if c.payer == (common.Address{}) {
-		return nil, errors.New("storage.Context.PresignForCommit: zero payer")
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: zero payer", ErrInvalidArgument)
 	}
 
 	pieceCIDs := make([]cid.Cid, 0, len(pieces))
 	pieceMetadata := make([][]ityped.MetadataEntry, 0, len(pieces))
 	for _, p := range pieces {
 		if !p.PieceCID.Defined() {
-			return nil, errors.New("storage.Context.PresignForCommit: undefined pieceCID")
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: undefined pieceCID", ErrInvalidArgument)
 		}
 		pieceCIDs = append(pieceCIDs, p.PieceCID)
 		meta, err := pieceMetadataEntries(p.PieceMetadata)
@@ -286,6 +299,9 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 		}
 		pieceMetadata = append(pieceMetadata, meta)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
 
 	domain := ityped.NewDomain(c.chainID, c.recordKeeper)
@@ -302,6 +318,9 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	}
 	clientDataSetID := new(big.Int).Set(c.clientDataSetID)
 	if c.dataSetID != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		}
 		nonce, err := randomUint256()
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
@@ -310,11 +329,18 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
 		}
-		return encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
+		payload, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
+		if err != nil {
+			return nil, err
+		}
+		return payload, nil
 	}
 
 	dataSetMetadata, err := dataSetMetadataEntries(c.dataSetMetadata, c.withCDN)
 	if err != nil {
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
 	createSig, err := ityped.SignCreateDataSet(c.signer.SignHash, domain, clientDataSetID, c.provider.Payee, dataSetMetadata)
@@ -323,6 +349,9 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	}
 	nonce, err := randomUint256()
 	if err != nil {
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
 	addSig, err := ityped.SignAddPieces(c.signer.SignHash, domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
@@ -337,17 +366,22 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	if err != nil {
 		return nil, err
 	}
-	return encodeCreateAndAddExtraData(createPayload, addPayload)
+	payload, err := encodeCreateAndAddExtraData(createPayload, addPayload)
+	if err != nil {
+		return nil, err
+	}
+	c.rememberPresignedExtraDataLocked(payload, commitExtraDataCreateAndAdd)
+	return payload, nil
 }
 
 // Pull asks this provider to fetch pieces from another provider (SP-to-SP transfer).
 // req.ExtraData must be the payload returned by PresignForCommit on this context.
 func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	if len(req.Pieces) == 0 {
-		return nil, errors.New("storage.Context.Pull: no pieces provided")
+		return nil, fmt.Errorf("storage.Context.Pull: %w: no pieces provided", ErrInvalidArgument)
 	}
 	if req.From == nil {
-		return nil, errors.New("storage.Context.Pull: nil source resolver")
+		return nil, fmt.Errorf("storage.Context.Pull: %w: nil source resolver", ErrInvalidArgument)
 	}
 	curioReq := icurio.PullRequest{
 		ExtraData: append([]byte(nil), req.ExtraData...),
@@ -367,11 +401,11 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
 	for _, pieceCID := range req.Pieces {
 		if !pieceCID.Defined() {
-			return nil, errors.New("storage.Context.Pull: undefined pieceCID")
+			return nil, fmt.Errorf("storage.Context.Pull: %w: undefined pieceCID", ErrInvalidArgument)
 		}
 		sourceURL := req.From(pieceCID)
 		if sourceURL == "" {
-			return nil, errors.New("storage.Context.Pull: empty source URL")
+			return nil, fmt.Errorf("storage.Context.Pull: %w: empty source URL", ErrInvalidArgument)
 		}
 		curioReq.Pieces = append(curioReq.Pieces, icurio.PullPieceInput{
 			PieceCID:  pieceCID,
@@ -400,7 +434,7 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 // is called internally to produce the signed payload.
 func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
 	if len(req.Pieces) == 0 {
-		return nil, errors.New("storage.Context.Commit: no pieces provided")
+		return nil, fmt.Errorf("storage.Context.Commit: %w: no pieces provided", ErrInvalidArgument)
 	}
 
 	// Serialise all Commit calls to prevent a TOCTOU race: the create-vs-add
@@ -411,23 +445,25 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	c.commitMu.Lock()
 	defer c.commitMu.Unlock()
 
-	// Snapshot create-vs-add decision under the data lock BEFORE signing.
-	c.mu.RLock()
-	dataSetID := c.dataSetID
-	recordKeeper := c.recordKeeper
-	c.mu.RUnlock()
-
 	extraData := append([]byte(nil), req.ExtraData...)
 	var err error
+	if c.presignedExtraDataIsStale(extraData) {
+		c.forgetPresignedExtraData(extraData)
+		extraData = nil
+	}
 	if len(extraData) == 0 {
 		extraData, err = c.PresignForCommit(ctx, req.Pieces)
 		if err != nil {
 			return nil, err
 		}
-		// PresignForCommit also reads c.dataSetID under c.mu. Because commitMu
-		// prevents concurrent Commits, the snapshot above matches what
-		// PresignForCommit saw, so create-vs-add is consistent.
 	}
+
+	// Snapshot create-vs-add decision under the data lock after any required
+	// re-signing so the chosen curio API matches the payload we are sending.
+	c.mu.RLock()
+	dataSetID := c.dataSetID
+	recordKeeper := c.recordKeeper
+	c.mu.RUnlock()
 
 	pieces := make([]icurio.AddPieceInput, 0, len(req.Pieces))
 	for _, p := range req.Pieces {
@@ -487,6 +523,7 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		PieceIDs:      pieceIDs,
 		IsNewDataSet:  true,
 	}
+	c.forgetPresignedExtraData(extraData)
 	newID := result.DataSetID
 	c.mu.Lock()
 	c.dataSetID = &newID
@@ -645,4 +682,47 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func (c *Context) rememberPresignedExtraDataLocked(extraData []byte, kind commitExtraDataKind) {
+	if len(extraData) == 0 || kind != commitExtraDataCreateAndAdd {
+		return
+	}
+	if c.presignedKinds == nil {
+		c.presignedKinds = make(map[[32]byte]commitExtraDataKind)
+	}
+	c.presignedKinds[presignedExtraDataKey(extraData)] = kind
+}
+
+func (c *Context) presignedExtraDataIsStale(extraData []byte) bool {
+	if len(extraData) == 0 {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	kind, ok := c.presignedKinds[presignedExtraDataKey(extraData)]
+	if !ok {
+		return false
+	}
+	if c.dataSetID == nil {
+		return kind != commitExtraDataCreateAndAdd
+	}
+	return kind != commitExtraDataAddOnly
+}
+
+func (c *Context) forgetPresignedExtraData(extraData []byte) {
+	if len(extraData) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.presignedKinds, presignedExtraDataKey(extraData))
+	if len(c.presignedKinds) == 0 {
+		c.presignedKinds = nil
+	}
+}
+
+func presignedExtraDataKey(extraData []byte) [32]byte {
+	return sha256.Sum256(extraData)
 }

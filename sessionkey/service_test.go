@@ -874,15 +874,21 @@ func TestGetExpirations_Batch_PartialFailure(t *testing.T) {
 		common.HexToAddress("0xBBBB"),
 		perms,
 	)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected partial-failure error, got nil")
+	}
+	if !errors.Is(err, errBatchPartial) {
+		t.Fatalf("errors.Is(err, errBatchPartial)=false; err=%v", err)
+	}
+	if !strings.Contains(err.Error(), AddPiecesPermission.String()) {
+		t.Fatalf("partial-failure error missing permission name; err=%v", err)
 	}
 
 	// First permission should have the expiry from the successful sub-call.
 	if expirations[CreateDataSetPermission] != 2000000000 {
 		t.Errorf("CreateDataSet: got %d, want 2000000000", expirations[CreateDataSetPermission])
 	}
-	// Second permission should retain zero (failed sub-call with AllowFailure).
+	// Second permission should retain zero and be surfaced in the joined error.
 	if expirations[AddPiecesPermission] != 0 {
 		t.Errorf("AddPieces: got %d, want 0 (failed sub-call)", expirations[AddPiecesPermission])
 	}
@@ -1369,5 +1375,106 @@ func TestSessionKey_HasPermissionAt_NilExpirations(t *testing.T) {
 	sk := &SessionKey{}
 	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission) {
 		t.Error("expected false for nil expirations")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetExpirations partial-failure tests (BREAKING: errors.Join surfacing)
+// ---------------------------------------------------------------------------
+
+// TestGetExpirations_Batch_UnpackFailure_ReturnsPartialError verifies that a
+// decode error on one sub-call returns (partial Expirations, errors.Join(...))
+// without falling back to sequential.
+func TestGetExpirations_Batch_UnpackFailure_ReturnsPartialError(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	uint256Type, err := abi.NewType("uint256", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodData, err := abi.Arguments{{Type: uint256Type}}.Pack(new(big.Int).SetUint64(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mb.multicallFn = func(data []byte) ([]byte, error) {
+		vals, err := mb.multicallABI.Methods["aggregate3"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		rawCalls := vals[0].([]struct {
+			Target       common.Address `json:"target"`
+			AllowFailure bool           `json:"allowFailure"`
+			CallData     []byte         `json:"callData"`
+		})
+		type result3 struct {
+			Success    bool
+			ReturnData []byte
+		}
+		results := make([]result3, len(rawCalls))
+		for i := range rawCalls {
+			if i == 0 {
+				results[i] = result3{Success: true, ReturnData: goodData}
+			} else {
+				// Non-empty but malformed return data → unpack fails.
+				results[i] = result3{Success: true, ReturnData: []byte{0x01, 0x02, 0x03}}
+			}
+		}
+		return mb.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
+	}
+
+	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	exps, err := svc.GetExpirations(context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		perms,
+	)
+	if err == nil {
+		t.Fatal("expected partial-failure error, got nil")
+	}
+	if !errors.Is(err, errBatchPartial) {
+		t.Fatalf("errors.Is(err, errBatchPartial)=false; err=%v", err)
+	}
+	if exps[CreateDataSetPermission] != 42 {
+		t.Errorf("CreateDataSet: got %d, want 42 (partial success)", exps[CreateDataSetPermission])
+	}
+	if exps[AddPiecesPermission] != 0 {
+		t.Errorf("AddPieces: got %d, want 0 (decode failed)", exps[AddPiecesPermission])
+	}
+}
+
+// TestGetExpirations_Sequential_PartialFailure_Joins verifies that when the
+// batch call fails and sequential reads also have per-permission errors,
+// the resulting error is errors.Join of the per-permission errors and the
+// partial Expirations is still returned.
+func TestGetExpirations_Sequential_PartialFailure_Joins(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	mb.multicallErr = errors.New("multicall not deployed")
+
+	// Make the registry call error every time → every sequential call fails.
+	mb.errs[testRegistryAddr.Hex()+":authorizationExpiry"] = errors.New("boom: registry unavailable")
+
+	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	exps, err := svc.GetExpirations(context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		perms,
+	)
+	if err == nil {
+		t.Fatal("expected aggregate error, got nil")
+	}
+	// The aggregated error must mention both permissions.
+	if !strings.Contains(err.Error(), CreateDataSetPermission.String()) ||
+		!strings.Contains(err.Error(), AddPiecesPermission.String()) {
+		t.Fatalf("aggregated error missing permission names; err=%v", err)
+	}
+	// Partial result should still be a non-nil map with zero values.
+	if exps == nil {
+		t.Fatal("expected non-nil partial Expirations")
 	}
 }

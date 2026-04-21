@@ -1027,6 +1027,45 @@ func TestDeposit_ZeroToken(t *testing.T) {
 	}
 }
 
+func TestZeroAddressErrorsAlsoMatchErrInvalidArgument(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	owner := s.Account()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"AccountInfo", func() error { _, err := s.AccountInfo(ctx, tokenAddr, common.Address{}); return err }},
+		{"WalletBalance", func() error { _, err := s.WalletBalance(ctx, tokenAddr, common.Address{}); return err }},
+		{"Allowance", func() error { _, err := s.Allowance(ctx, common.Address{}, owner, filPayAddr); return err }},
+		{"ServiceApproval", func() error { _, err := s.ServiceApproval(ctx, common.Address{}, owner, operatorAddr); return err }},
+		{"Approve", func() error { _, err := s.Approve(ctx, common.Address{}, filPayAddr, big.NewInt(1)); return err }},
+		{"Deposit", func() error {
+			_, err := s.Deposit(ctx, common.Address{}, otherAddr, big.NewInt(1), WithSkipPrecheck())
+			return err
+		}},
+		{"Withdraw", func() error { _, err := s.Withdraw(ctx, common.Address{}, big.NewInt(1)); return err }},
+		{"ApproveService", func() error {
+			_, err := s.ApproveService(ctx, common.Address{}, operatorAddr, big.NewInt(0), big.NewInt(0), big.NewInt(0))
+			return err
+		}},
+		{"RevokeService", func() error { _, err := s.RevokeService(ctx, common.Address{}, operatorAddr); return err }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if !errors.Is(err, ErrZeroAddress) {
+				t.Fatalf("err=%v want ErrZeroAddress", err)
+			}
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("err=%v want ErrInvalidArgument", err)
+			}
+		})
+	}
+}
+
 func TestDeposit_NegativeAmount(t *testing.T) {
 	s, _ := newTestService(t)
 	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(-1), WithSkipPrecheck())

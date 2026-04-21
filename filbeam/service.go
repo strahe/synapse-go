@@ -3,6 +3,7 @@ package filbeam
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -78,12 +80,34 @@ type statsResponse struct {
 
 // GetDataSetStats fetches remaining egress quotas for a FWSS data set.
 // Returns ErrDataSetNotFound when the data set does not exist on FilBeam.
+//
+// Transient failures (most transport errors and HTTP 5xx) are retried with
+// jittered exponential backoff via internal/retry. Errors matching
+// [context.Canceled] or [context.DeadlineExceeded] are returned immediately;
+// non-transient statuses (4xx other than 404) and decode errors are also
+// returned without retry.
 func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.DataSetID) (*DataSetStats, error) {
 	if dataSetID == 0 {
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w", ErrInvalidArgument)
 	}
 	url := fmt.Sprintf("%s/data-set/%d", s.baseURL, uint64(dataSetID))
 
+	stats, err := retry.Do(ctx, func(ctx context.Context) (*DataSetStats, error) {
+		return s.fetchStats(ctx, url, dataSetID)
+	}, retry.WithRetryIf(isTransientFilbeamErr))
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// errTransientFilbeam marks fetchStats errors that should be retried. It is
+// never returned to callers.
+var errTransientFilbeam = errors.New("filbeam: transient")
+
+func isTransientFilbeamErr(err error) bool { return errors.Is(err, errTransientFilbeam) }
+
+func (s *Service) fetchStats(ctx context.Context, url string, dataSetID types.DataSetID) (*DataSetStats, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: build request: %w", err)
@@ -92,13 +116,17 @@ func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.DataSetID
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("filbeam.GetDataSetStats: http: %w", err)
+		return nil, fmt.Errorf("filbeam.GetDataSetStats: http: %w: %w", errTransientFilbeam, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w: id=%d", ErrDataSetNotFound, uint64(dataSetID))
+	}
+	if resp.StatusCode >= 500 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("filbeam.GetDataSetStats: HTTP %d: %s: %w", resp.StatusCode, string(body), errTransientFilbeam)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

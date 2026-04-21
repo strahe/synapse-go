@@ -1,12 +1,24 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/types"
 )
+
+// ErrInvalidArgument is returned, wrapped via fmt.Errorf with %w, when a
+// caller passes an argument that violates a precondition (nil pointer,
+// zero ID, empty required URL, undefined pieceCID, etc.). Match with
+// errors.Is(err, storage.ErrInvalidArgument).
+//
+// Business / server-invariant errors (no approved providers, duplicate
+// dataset IDs, server returned zero dataSetID, etc.) are intentionally
+// left as plain errors so that errors.Is against ErrInvalidArgument
+// only matches genuine caller-supplied validation failures.
+var ErrInvalidArgument = errors.New("storage: invalid argument")
 
 // StoreError is returned when the primary store operation fails.
 type StoreError struct {

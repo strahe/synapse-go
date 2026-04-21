@@ -105,3 +105,36 @@ func TestCommitError_Unwrap(t *testing.T) {
 		t.Fatalf("Unwrap()=%v want %v", err.Unwrap(), cause)
 	}
 }
+
+// TestErrInvalidArgument_Detection verifies validation wraps return
+// errors matching ErrInvalidArgument via errors.Is.
+func TestErrInvalidArgument_Detection(t *testing.T) {
+	t.Run("NewServiceResolver: zero payer", func(t *testing.T) {
+		_, err := NewServiceResolver(ServiceResolverOptions{})
+		requireInvalidArgument(t, err)
+	})
+	// The remaining NewServiceResolver guards (nil SPRegistry/WarmStorage/
+	// NewContext) also wrap ErrInvalidArgument; a representative case
+	// above is enough — all paths share the same wrap convention.
+}
+
+// TestErrInvalidArgument_NegativeMatch verifies ErrInvalidArgument does
+// not accidentally match unrelated errors.
+func TestErrInvalidArgument_NegativeMatch(t *testing.T) {
+	if errors.Is(ErrInvalidDownloadOptions, ErrInvalidArgument) {
+		t.Fatal("ErrInvalidDownloadOptions must not match ErrInvalidArgument")
+	}
+	if errors.Is(errors.New("unrelated"), ErrInvalidArgument) {
+		t.Fatal("unrelated error must not match ErrInvalidArgument")
+	}
+}
+
+func requireInvalidArgument(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("errors.Is(err, ErrInvalidArgument)=false; err=%v", err)
+	}
+}

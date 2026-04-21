@@ -714,6 +714,89 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 	}
 }
 
+func TestManagerUpload_CtxCancelSkipsQueuedCommits(t *testing.T) {
+	data := bytes.Repeat([]byte("cq"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	started := make(chan struct{})
+	var (
+		mu          sync.Mutex
+		commitCalls []string
+	)
+	recordCommit := func(name string) {
+		mu.Lock()
+		first := len(commitCalls) == 0
+		commitCalls = append(commitCalls, name)
+		mu.Unlock()
+		if first {
+			close(started)
+		}
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.ProviderID(1),
+		endpoint: "https://p.example.com",
+		pieceURL: "https://p.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(ctx context.Context, _ CommitRequest) (*CommitResult, error) {
+			recordCommit("primary")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	newSecondary := func(id types.ProviderID, name string) *fakeUploadContext {
+		return &fakeUploadContext{
+			id:       id,
+			endpoint: "https://s.example.com",
+			presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+				return []byte{0x01}, nil
+			},
+			pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+				return &PullResult{
+					Status: PullStatusComplete,
+					Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+				}, nil
+			},
+			commitFn: func(ctx context.Context, _ CommitRequest) (*CommitResult, error) {
+				recordCommit(name)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+	}
+
+	mgr := mustNewService(t, Options{
+		Resolver:          &fakeResolver{contexts: []UploadContext{primary, newSecondary(2, "secondary-1"), newSecondary(3, "secondary-2")}},
+		CommitConcurrency: 1,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Upload(ctx, bytes.NewReader(data), &UploadOptions{Copies: 3})
+		done <- err
+	}()
+
+	<-started
+	cancel()
+
+	err = <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v want context.Canceled", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commitCalls) != 1 {
+		t.Fatalf("queued commits should not start after cancel; calls=%v", commitCalls)
+	}
+}
+
 type zeroReader struct{}
 
 func (zeroReader) Read(p []byte) (int, error) {

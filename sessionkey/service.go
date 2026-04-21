@@ -68,13 +68,13 @@ type Options struct {
 // New constructs a Service.
 func New(opts Options) (*Service, error) {
 	if opts.Backend == nil {
-		return nil, errors.New("sessionkey.New: nil Backend")
+		return nil, fmt.Errorf("sessionkey.New: %w: nil Backend", ErrInvalidArgument)
 	}
 	if opts.ChainID == nil || opts.ChainID.Sign() <= 0 {
-		return nil, errors.New("sessionkey.New: invalid ChainID")
+		return nil, fmt.Errorf("sessionkey.New: %w: invalid ChainID", ErrInvalidArgument)
 	}
 	if (opts.RegistryAddress == common.Address{}) {
-		return nil, errors.New("sessionkey.New: zero RegistryAddress")
+		return nil, fmt.Errorf("sessionkey.New: %w: zero RegistryAddress", ErrInvalidArgument)
 	}
 
 	caller, err := sessionkeyregistry.NewSessionKeyRegistryCaller(opts.RegistryAddress, opts.Backend)
@@ -118,15 +118,15 @@ func (s *Service) Login(ctx context.Context, sessionKeyAddr common.Address, opts
 // login options.
 func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Address, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
-		return nil, errors.New("sessionkey.Login: nil signer")
+		return nil, fmt.Errorf("sessionkey.Login: %w: nil signer", ErrInvalidArgument)
 	}
 	if (sessionKeyAddr == common.Address{}) {
-		return nil, errors.New("sessionkey.Login: zero session key address")
+		return nil, fmt.Errorf("sessionkey.Login: %w: zero session key address", ErrInvalidArgument)
 	}
 
 	lo := resolveLoginOptions(loginOpts)
 	if lo.ExpiresAt <= uint64(time.Now().Unix()) {
-		return nil, errors.New("sessionkey.Login: ExpiresAt must be in the future")
+		return nil, fmt.Errorf("sessionkey.Login: %w: ExpiresAt must be in the future", ErrInvalidArgument)
 	}
 	perms := dedup(lo.Permissions)
 
@@ -155,18 +155,18 @@ func (s *Service) LoginAndFund(ctx context.Context, sessionKeyAddr common.Addres
 // LoginAndFundWithOptions is the full-option variant of LoginAndFund.
 func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
-		return nil, errors.New("sessionkey.LoginAndFund: nil signer")
+		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w: nil signer", ErrInvalidArgument)
 	}
 	if (sessionKeyAddr == common.Address{}) {
-		return nil, errors.New("sessionkey.LoginAndFund: zero session key address")
+		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w: zero session key address", ErrInvalidArgument)
 	}
 	if value == nil || value.Sign() < 0 {
-		return nil, errors.New("sessionkey.LoginAndFund: nil or negative value")
+		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w: nil or negative value", ErrInvalidArgument)
 	}
 
 	lo := resolveLoginOptions(loginOpts)
 	if lo.ExpiresAt <= uint64(time.Now().Unix()) {
-		return nil, errors.New("sessionkey.LoginAndFund: ExpiresAt must be in the future")
+		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w: ExpiresAt must be in the future", ErrInvalidArgument)
 	}
 	perms := dedup(lo.Permissions)
 
@@ -194,10 +194,10 @@ func (s *Service) Revoke(ctx context.Context, sessionKeyAddr common.Address, opt
 // RevokeWithOptions revokes specific permissions from a session key.
 func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.Address, revokeOpts *RevokeOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
-		return nil, errors.New("sessionkey.Revoke: nil signer")
+		return nil, fmt.Errorf("sessionkey.Revoke: %w: nil signer", ErrInvalidArgument)
 	}
 	if (sessionKeyAddr == common.Address{}) {
-		return nil, errors.New("sessionkey.Revoke: zero session key address")
+		return nil, fmt.Errorf("sessionkey.Revoke: %w: zero session key address", ErrInvalidArgument)
 	}
 
 	ro := resolveRevokeOptions(revokeOpts)
@@ -245,8 +245,21 @@ func (s *Service) IsExpired(ctx context.Context, rootAddr, sessionKeyAddr common
 }
 
 // GetExpirations queries the on-chain authorization expiry for each of the
-// given permissions in a single Multicall3 batch. Falls back to sequential
-// reads if the batch call fails.
+// given permissions. It attempts a single Multicall3 batch first and falls
+// back to per-permission sequential reads if the transport-level batch call
+// fails.
+//
+// BREAKING (pre-v1): prior versions silently swallowed per-permission
+// lookup errors. GetExpirations now returns the best-effort partial
+// [Expirations] together with [errors.Join] of every per-permission error.
+// Expiry values of 0 mean "not authorized" or "revoked" — these are valid
+// state, not errors, and are not reflected in the returned error.
+//
+// Callers should therefore check both the map and err:
+//
+//	exps, err := svc.GetExpirations(ctx, root, key, nil)
+//	// exps may be partially populated even when err != nil.
+//	if err != nil { /* log / surface partial failure */ }
 func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permissions []Permission) (Expirations, error) {
 	if len(permissions) == 0 {
 		permissions = DefaultFWSSPermissions
@@ -261,9 +274,20 @@ func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr c
 	if err == nil {
 		return batchResult, nil
 	}
+	// Partial-failure errors (per-permission aggregate) must NOT fall back
+	// to sequential — fallback is only for transport-level batch failure.
+	if errors.Is(err, errBatchPartial) {
+		return batchResult, err
+	}
 	s.logWarn("multicall batch failed, falling back to sequential", "err", err)
 	return s.getExpirationsSequential(ctx, rootAddr, sessionKeyAddr, permissions, result)
 }
+
+// errBatchPartial marks a GetExpirations batch result where the Multicall3
+// transport call succeeded but one or more per-permission sub-calls failed
+// to decode. It is wrapped together with the per-call errors so callers can
+// distinguish partial-failure from transport failure via errors.Is.
+var errBatchPartial = errors.New("sessionkey.GetExpirations: partial batch failure")
 
 func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permissions []Permission, result Expirations) (Expirations, error) {
 	regABI, err := sessionkeyregistry.SessionKeyRegistryMetaData.GetAbi()
@@ -294,31 +318,47 @@ func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyA
 		return nil, fmt.Errorf("sessionkey.GetExpirations: build uint256 type: %w", err)
 	}
 	args := abi.Arguments{{Type: uint256Type}}
+	var perCallErrs []error
 	for i, r := range results {
-		if !r.Success || len(r.ReturnData) == 0 {
+		if !r.Success {
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: sub-call failed", permissions[i]))
+			continue
+		}
+		if len(r.ReturnData) == 0 {
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: empty return data", permissions[i]))
 			continue
 		}
 		vals, err := args.Unpack(r.ReturnData)
 		if err != nil {
-			return nil, fmt.Errorf("sessionkey.GetExpirations: unpack sub-call %d: %w", i, err)
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: unpack: %w", permissions[i], err))
+			continue
 		}
 		raw, ok := vals[0].(*big.Int)
 		if !ok || !raw.IsUint64() {
-			return nil, fmt.Errorf("sessionkey.GetExpirations: sub-call %d: value out of uint64 range", i)
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: value out of uint64 range", permissions[i]))
+			continue
 		}
 		result[permissions[i]] = raw.Uint64()
+	}
+	if len(perCallErrs) > 0 {
+		return result, errors.Join(append([]error{errBatchPartial}, perCallErrs...)...)
 	}
 	return result, nil
 }
 
 func (s *Service) getExpirationsSequential(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permissions []Permission, result Expirations) (Expirations, error) {
+	var errs []error
 	for _, p := range permissions {
 		exp, err := s.AuthorizationExpiry(ctx, rootAddr, sessionKeyAddr, p)
 		if err != nil {
 			s.logWarn("sequential expiry lookup failed", "permission", p, "err", err)
+			errs = append(errs, fmt.Errorf("permission %s: %w", p, err))
 			continue
 		}
 		result[p] = exp
+	}
+	if len(errs) > 0 {
+		return result, errors.Join(errs...)
 	}
 	return result, nil
 }
