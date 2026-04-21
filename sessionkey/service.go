@@ -130,16 +130,15 @@ func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Ad
 	}
 	perms := dedup(lo.Permissions)
 
-	txOpts, err := s.txOpts(ctx, nil)
+	txOpts, release, err := s.txOpts(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.Login: %w", err)
 	}
+	defer release()
 
 	tx, err := s.registryTx.Login(txOpts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	release()
 	if err != nil {
-		if s.nonces != nil {
-			s.nonces.MarkFailed(txOpts.Nonce.Uint64())
-		}
 		return nil, fmt.Errorf("sessionkey.Login: %w", err)
 	}
 	s.log("login tx broadcast", "hash", tx.Hash().Hex(), "sessionKey", sessionKeyAddr.Hex())
@@ -170,16 +169,15 @@ func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr co
 	}
 	perms := dedup(lo.Permissions)
 
-	txOpts, err := s.txOpts(ctx, value)
+	txOpts, release, err := s.txOpts(ctx, value)
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w", err)
 	}
+	defer release()
 
 	tx, err := s.registryTx.LoginAndFund(txOpts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	release()
 	if err != nil {
-		if s.nonces != nil {
-			s.nonces.MarkFailed(txOpts.Nonce.Uint64())
-		}
 		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w", err)
 	}
 	s.log("loginAndFund tx broadcast", "hash", tx.Hash().Hex(), "sessionKey", sessionKeyAddr.Hex(), "value", value.String())
@@ -203,16 +201,15 @@ func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.A
 	ro := resolveRevokeOptions(revokeOpts)
 	perms := dedup(ro.Permissions)
 
-	txOpts, err := s.txOpts(ctx, nil)
+	txOpts, release, err := s.txOpts(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.Revoke: %w", err)
 	}
+	defer release()
 
 	tx, err := s.registryTx.Revoke(txOpts, sessionKeyAddr, perms, ro.Origin)
+	release()
 	if err != nil {
-		if s.nonces != nil {
-			s.nonces.MarkFailed(txOpts.Nonce.Uint64())
-		}
 		return nil, fmt.Errorf("sessionkey.Revoke: %w", err)
 	}
 	s.log("revoke tx broadcast", "hash", tx.Hash().Hex(), "sessionKey", sessionKeyAddr.Hex())
@@ -365,23 +362,24 @@ func (s *Service) getExpirationsSequential(ctx context.Context, rootAddr, sessio
 
 // ---------- internal helpers ----------
 
-func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpts, error) {
+func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpts, func(), error) {
 	txOpts, err := s.signer.Transactor(s.chainID)
 	if err != nil {
-		return nil, fmt.Errorf("transactor: %w", err)
+		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
 	txOpts.Context = ctx
 	if value != nil {
 		txOpts.Value = value
 	}
-	if s.nonces != nil {
-		nonce, nErr := s.nonces.Get(ctx)
-		if nErr != nil {
-			return nil, fmt.Errorf("nonce: %w", nErr)
-		}
-		txOpts.Nonce = new(big.Int).SetUint64(nonce)
+	if s.nonces == nil {
+		return txOpts, func() {}, nil
 	}
-	return txOpts, nil
+	nonce, release, nErr := s.nonces.Acquire(ctx)
+	if nErr != nil {
+		return nil, nil, fmt.Errorf("nonce: %w", nErr)
+	}
+	txOpts.Nonce = new(big.Int).SetUint64(nonce)
+	return txOpts, release, nil
 }
 
 func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
@@ -389,9 +387,6 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
 
 	if cfg.waitTimeout <= 0 {
-		if s.nonces != nil {
-			s.nonces.MarkConfirmed(tx.Nonce())
-		}
 		return res, nil
 	}
 
@@ -410,16 +405,10 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)
 	}
 	if err != nil {
-		if s.nonces != nil {
-			s.nonces.MarkConfirmed(tx.Nonce())
-		}
 		if errors.Is(err, txutil.ErrTxFailed) {
 			res.Receipt = receipt
 		}
 		return res, fmt.Errorf("sessionkey: wait receipt: %w", err)
-	}
-	if s.nonces != nil {
-		s.nonces.MarkConfirmed(tx.Nonce())
 	}
 	res.Receipt = receipt
 	return res, nil

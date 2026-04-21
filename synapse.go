@@ -181,7 +181,6 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		if ownsClient {
 			ec.Close()
 		}
-		evmSigner.Zero()
 		return nil, fmt.Errorf("synapse.New: %w", err)
 	}
 	return c, nil
@@ -196,9 +195,6 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 // not be used.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
-		if z, ok := c.evmSigner.(interface{ Zero() }); ok {
-			z.Zero()
-		}
 		if c.ownsClient && c.ethClient != nil {
 			c.ethClient.Close()
 		}

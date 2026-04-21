@@ -627,7 +627,7 @@ func TestFinalize_WithConfirmations_UsesWaitTimeout(t *testing.T) {
 	}
 }
 
-func TestFinalize_RevertedTx_ReleasesNonce(t *testing.T) {
+func TestFinalize_RevertedTx_ReturnsReceipt(t *testing.T) {
 	s, mb := newTestService(t)
 	mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
 		return &types.Receipt{Status: types.ReceiptStatusFailed, BlockNumber: big.NewInt(5)}, nil
@@ -640,26 +640,11 @@ func TestFinalize_RevertedTx_ReleasesNonce(t *testing.T) {
 	if res == nil || res.Receipt == nil || res.Receipt.Status != types.ReceiptStatusFailed {
 		t.Fatalf("expected failed receipt in result, got %+v", res)
 	}
-	if got := s.nonces.PendingCount(); got != 0 {
-		t.Fatalf("expected nonce reservation released, got pending=%d", got)
-	}
 }
 
-func TestFinalize_NoWait_ReleasesNonce(t *testing.T) {
-	s, mb := newTestService(t)
+func TestFinalize_NoWait_ReturnsHashOnly(t *testing.T) {
+	s, _ := newTestService(t)
 	tx := types.NewTx(&types.LegacyTx{Nonce: 7, To: &filPayAddr})
-	mb.nonces[s.Account()] = 7
-	s.nonces = txutil.NewNonceManager(mb, s.Account())
-	n, err := s.nonces.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 7 {
-		t.Fatalf("expected reserved nonce 7, got %d", n)
-	}
-	if got := s.nonces.PendingCount(); got != 1 {
-		t.Fatalf("expected 1 pending before finalize, got %d", got)
-	}
 
 	res, err := s.finalize(context.Background(), tx, nil)
 	if err != nil {
@@ -668,8 +653,8 @@ func TestFinalize_NoWait_ReleasesNonce(t *testing.T) {
 	if res.Hash != tx.Hash() {
 		t.Fatalf("hash = %s, want %s", res.Hash, tx.Hash())
 	}
-	if got := s.nonces.PendingCount(); got != 0 {
-		t.Fatalf("expected nonce reservation released, got pending=%d", got)
+	if res.Receipt != nil {
+		t.Fatalf("expected nil receipt when not waiting, got %+v", res.Receipt)
 	}
 }
 
@@ -911,17 +896,6 @@ func TestWalletBalance_ERC20Error(t *testing.T) {
 	if _, err := s.WalletBalance(context.Background(), tokenAddr, owner); err == nil {
 		t.Error("expected error from WalletBalance ERC20 path")
 	}
-}
-
-func TestReleaseNonce_NilGuards(t *testing.T) {
-	s, _ := newTestService(t)
-	// nil nonce — should not panic
-	s.releaseNonce(nil)
-	// nil NonceManager — should not panic
-	orig := s.nonces
-	s.nonces = nil
-	s.releaseNonce(big.NewInt(7))
-	s.nonces = orig
 }
 
 func TestDeposit_SkipPrecheck(t *testing.T) {

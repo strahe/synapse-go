@@ -544,6 +544,48 @@ func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.
 	}
 }
 
+func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
+	info := mustPieceInfo(t)
+	// Wrap the signer in a no-op type that only implements EVMSigner via embedding, not hashSigner
+	type wrappedSigner struct{ signer.EVMSigner }
+	ws := &wrappedSigner{mustTestSigner(t)}
+
+	// Existing-dataset path
+	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(1)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = sctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if !errors.Is(err, signer.ErrUnsupportedSigner) {
+		t.Fatalf("err=%v want ErrUnsupportedSigner (existing-dataset)", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wrapped/decorated EVMSigner values are unsupported") {
+		t.Fatalf("error message must mention unsupported wrapped/decorated EVMSigner policy (existing-dataset), got: %v", err)
+	}
+
+	// New-dataset path
+	sctx2, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext (new-dataset): %v", err)
+	}
+	_, err = sctx2.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if !errors.Is(err, signer.ErrUnsupportedSigner) {
+		t.Fatalf("err=%v want ErrUnsupportedSigner (new-dataset)", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wrapped/decorated EVMSigner values are unsupported") {
+		t.Fatalf("error message must mention unsupported wrapped/decorated EVMSigner policy (new-dataset), got: %v", err)
+	}
+}
+
 func mustPieceInfo(t *testing.T) piece.PieceInfo {
 	t.Helper()
 	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte("pi"), 128))

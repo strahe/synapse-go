@@ -274,13 +274,14 @@ func (s *Service) Approve(ctx context.Context, token, spender common.Address, am
 	if err != nil {
 		return nil, fmt.Errorf("payments.Approve: bind token: %w", err)
 	}
-	txOpts, err := s.newTransactOpts(ctx)
+	txOpts, release, err := s.newTransactOpts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payments.Approve: %w", err)
 	}
+	defer release()
 	tx, err := tw.Approve(txOpts, spender, amount)
+	release()
 	if err != nil {
-		s.releaseNonce(txOpts.Nonce)
 		return nil, fmt.Errorf("payments.Approve: %w", err)
 	}
 	return s.finalize(ctx, tx, opts)
@@ -323,13 +324,14 @@ func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount 
 		}
 	}
 
-	txOpts, err := s.newTransactOpts(ctx)
+	txOpts, release, err := s.newTransactOpts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payments.Deposit: %w", err)
 	}
+	defer release()
 	tx, err := s.filPayWrite.Deposit(txOpts, token, recipient, amount)
+	release()
 	if err != nil {
-		s.releaseNonce(txOpts.Nonce)
 		return nil, fmt.Errorf("payments.Deposit: %w", err)
 	}
 	return s.finalize(ctx, tx, opts)
@@ -360,13 +362,14 @@ func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *bi
 		}
 	}
 
-	txOpts, err := s.newTransactOpts(ctx)
+	txOpts, release, err := s.newTransactOpts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payments.Withdraw: %w", err)
 	}
+	defer release()
 	tx, err := s.filPayWrite.Withdraw(txOpts, token, amount)
+	release()
 	if err != nil {
-		s.releaseNonce(txOpts.Nonce)
 		return nil, fmt.Errorf("payments.Withdraw: %w", err)
 	}
 	return s.finalize(ctx, tx, opts)
@@ -395,13 +398,14 @@ func (s *Service) ApproveService(ctx context.Context, token, operator common.Add
 		}
 	}
 
-	txOpts, err := s.newTransactOpts(ctx)
+	txOpts, release, err := s.newTransactOpts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payments.ApproveService: %w", err)
 	}
+	defer release()
 	tx, err := s.filPayWrite.SetOperatorApproval(txOpts, token, operator, true, rateAllowance, lockupAllowance, maxLockupPeriod)
+	release()
 	if err != nil {
-		s.releaseNonce(txOpts.Nonce)
 		return nil, fmt.Errorf("payments.ApproveService: %w", err)
 	}
 	return s.finalize(ctx, tx, opts)
@@ -420,13 +424,14 @@ func (s *Service) RevokeService(ctx context.Context, token, operator common.Addr
 		return nil, invalidZeroAddressError("payments.RevokeService", "operator")
 	}
 	zero := big.NewInt(0)
-	txOpts, err := s.newTransactOpts(ctx)
+	txOpts, release, err := s.newTransactOpts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payments.RevokeService: %w", err)
 	}
+	defer release()
 	tx, err := s.filPayWrite.SetOperatorApproval(txOpts, token, operator, false, zero, zero, zero)
+	release()
 	if err != nil {
-		s.releaseNonce(txOpts.Nonce)
 		return nil, fmt.Errorf("payments.RevokeService: %w", err)
 	}
 	return s.finalize(ctx, tx, opts)
@@ -441,37 +446,29 @@ func (s *Service) requireSigner(method string) error {
 	return nil
 }
 
-// newTransactOpts builds a bind.TransactOpts with a nonce reserved from
-// the NonceManager. Gas estimation and pricing are left to the backend;
-// this helper does not override gas fields.
-func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, error) {
+// newTransactOpts builds a bind.TransactOpts with a freshly-fetched pending
+// nonce and returns a release function. The caller MUST invoke release
+// exactly once after either broadcasting the transaction or abandoning it
+// (e.g. on bind.Transactor.* failure). Until release is called all other
+// nonce acquisitions on this service are blocked.
+func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func(), error) {
 	opts, err := s.signer.Transactor(s.chainID)
 	if err != nil {
-		return nil, fmt.Errorf("transactor: %w", err)
+		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
 	opts.Context = ctx
-	nonce, err := s.nonces.Get(ctx)
+	nonce, release, err := s.nonces.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("nonce: %w", err)
+		return nil, nil, fmt.Errorf("nonce: %w", err)
 	}
 	opts.Nonce = new(big.Int).SetUint64(nonce)
-	return opts, nil
-}
-
-func (s *Service) releaseNonce(nonce *big.Int) {
-	if nonce == nil || s.nonces == nil {
-		return
-	}
-	s.nonces.MarkFailed(nonce.Uint64())
+	return opts, release, nil
 }
 
 func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
 	if cfg.waitTimeout <= 0 {
-		if s.nonces != nil {
-			s.nonces.MarkConfirmed(tx.Nonce())
-		}
 		return res, nil
 	}
 	var (
@@ -492,17 +489,9 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	}
 	if err != nil {
 		if errors.Is(err, txutil.ErrTxFailed) {
-			if s.nonces != nil {
-				s.nonces.MarkConfirmed(tx.Nonce())
-			}
 			res.Receipt = receipt
 		}
 		return res, fmt.Errorf("wait receipt: %w", err)
-	}
-	// Whether the tx reverted or succeeded, the nonce is consumed on-chain,
-	// so mark it confirmed to release the reservation.
-	if s.nonces != nil {
-		s.nonces.MarkConfirmed(tx.Nonce())
 	}
 	res.Receipt = receipt
 	return res, nil

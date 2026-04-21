@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/secp256k1"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ipfs/go-cid"
 )
@@ -16,8 +17,13 @@ var (
 	ErrInvalidRecoveryID      = errors.New("signature recovery id must be one of 0, 1, 27, 28")
 )
 
+// secp256k1HalfN is N/2 of the secp256k1 curve order. ECDSA signatures whose
+// s component lies above this threshold are considered non-canonical
+// (high-S) and may be rejected by EIP-2 / EIP-712 verifiers as malleable.
+var secp256k1HalfN = new(big.Int).Rsh(secp256k1.S256().Params().N, 1)
+
 // Sign signs an EIP-712 typed data message using the provided hash-signing
-// function (typically signer.EVMSigner.SignHash).
+// function (typically obtained via signer.SignHash).
 func Sign(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain, primaryType string, message apitypes.TypedDataMessage) (*Signature, error) {
 	typedData := apitypes.TypedData{
 		Types:       Types,
@@ -62,6 +68,25 @@ func Sign(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain
 	var r, s [32]byte
 	copy(r[:], sig[:32])
 	copy(s[:], sig[32:64])
+
+	// Enforce low-S form (EIP-2). Some signers may return a signature whose
+	// s value is above secp256k1n/2; verifiers conformant with EIP-2 reject
+	// such signatures as malleable. Substitute s' = n - s and flip the
+	// recovery bit so the resulting signature still recovers the same
+	// public key but is in canonical form.
+	sBig := new(big.Int).SetBytes(s[:])
+	if sBig.Cmp(secp256k1HalfN) > 0 {
+		sBig.Sub(secp256k1.S256().Params().N, sBig)
+		sBytes := sBig.Bytes()
+		// Re-pad to 32 bytes; SetBytes drops leading zeros.
+		s = [32]byte{}
+		copy(s[32-len(sBytes):], sBytes)
+		if v == 27 {
+			v = 28
+		} else {
+			v = 27
+		}
+	}
 
 	return &Signature{
 		V: v,

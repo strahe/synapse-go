@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"math/big"
-	"sync"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -18,8 +17,12 @@ import (
 // Secp256k1Signer implements [EVMSigner] backed by a secp256k1 private key.
 // It can sign both Filecoin messages (blake2b hash) and Ethereum/FEVM
 // transactions (keccak256 hash) from a single key.
+//
+// Private-key lifecycle is the caller's responsibility: the SDK does not
+// provide an in-place wipe primitive (matching the TS SDK). To bound the
+// in-memory exposure of the key, hold the signer for as short a lifetime
+// as the workload allows and let it be garbage-collected.
 type Secp256k1Signer struct {
-	mu       sync.RWMutex
 	ecdsaKey *ecdsa.PrivateKey
 	filAddr  address.Address
 	ethAddr  common.Address
@@ -28,8 +31,8 @@ type Secp256k1Signer struct {
 var _ EVMSigner = (*Secp256k1Signer)(nil)
 
 // NewSecp256k1Signer creates a dual-protocol signer from a go-ethereum ECDSA
-// private key. The key is deep-copied so that [Secp256k1Signer.Zero] does not
-// mutate the caller's key material.
+// private key. The key is deep-copied so the signer owns an independent
+// copy; the caller may safely zero or mutate the original.
 func NewSecp256k1Signer(key *ecdsa.PrivateKey) (*Secp256k1Signer, error) {
 	if key == nil {
 		return nil, fmt.Errorf("signer: nil private key")
@@ -87,11 +90,6 @@ func (s *Secp256k1Signer) EVMAddress() common.Address { return s.ethAddr }
 // The message is hashed with blake2b-256 before signing, and the result
 // is in R|S|V format (65 bytes).
 func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.ecdsaKey == nil {
-		return nil, fmt.Errorf("signer.Sign: signer has been zeroed")
-	}
 	hash := blake2b.Sum256(msg)
 	sig, err := ethcrypto.Sign(hash[:], s.ecdsaKey)
 	if err != nil {
@@ -105,15 +103,10 @@ func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
 }
 
 // Transactor returns bind.TransactOpts for signing Ethereum/FEVM transactions
-// on the given chain. The returned opts embed their own key copy so they remain
-// valid even if [Zero] is called after Transactor returns.
+// on the given chain. The returned opts embed their own key copy so they
+// remain valid for the lifetime of the opts independent of the signer.
 func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.ecdsaKey == nil {
-		return nil, fmt.Errorf("signer.Transactor: signer has been zeroed")
-	}
-	// Copy the key so the returned TransactOpts closure is independent of Zero().
+	// Copy the key so the returned TransactOpts closure is independent of the signer.
 	keyCopy := *s.ecdsaKey
 	keyCopy.D = new(big.Int).Set(s.ecdsaKey.D)
 	return bind.NewKeyedTransactorWithChainID(&keyCopy, chainID)
@@ -121,31 +114,15 @@ func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, erro
 
 // SignHash signs a pre-computed 32-byte hash using the secp256k1 key.
 // Returns 65-byte R‖S‖V signature.
+//
+// This method is intentionally not part of the [EVMSigner] interface: raw
+// hash signing bypasses domain separation and is reserved for internal SDK
+// use. Callers outside of internal packages should use the helper
+// [SignHash] (which performs an interface-assertion) or one of the
+// higher-level signing APIs.
 func (s *Secp256k1Signer) SignHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, fmt.Errorf("signer.SignHash: hash must be 32 bytes, got %d", len(hash))
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.ecdsaKey == nil {
-		return nil, fmt.Errorf("signer.SignHash: signer has been zeroed")
-	}
 	return ethcrypto.Sign(hash, s.ecdsaKey)
-}
-
-// Zero clears the private key material from memory.
-// It blocks until any in-progress [Sign], [SignHash], or [Transactor] call
-// completes, then prevents further signing. The signer must not be used after
-// Zero is called.
-func (s *Secp256k1Signer) Zero() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ecdsaKey != nil {
-		// Best-effort overwrite: SetBytes forces a new backing array write
-		// before SetInt64 truncates it. Go's GC does not guarantee the old
-		// array bytes are wiped, but this minimises the exposure window.
-		s.ecdsaKey.D.SetBytes(make([]byte, 32))
-		s.ecdsaKey.D.SetInt64(0)
-		s.ecdsaKey = nil
-	}
 }

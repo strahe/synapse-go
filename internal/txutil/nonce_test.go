@@ -11,76 +11,123 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// fakeNonceClient simulates an RPC node. The pending counter advances every
+// time Acquire is called and the caller signals "broadcast" by invoking
+// MarkBroadcast — this matches the real-world contract that PendingNonceAt
+// returns count = (last-known broadcast nonce + 1).
 type fakeNonceClient struct {
-	mu      sync.Mutex
-	nonce   uint64
-	calls   atomic.Int64
-	err     error
-	errOnce bool
-	waitCh  chan struct{}
-	contCh  chan struct{}
+	mu        sync.Mutex
+	pending   uint64
+	calls     atomic.Int64
+	err       error
+	errOnce   bool
+	panicVal  any
+	waitOn    chan struct{} // closed when PendingNonceAt is entered
+	releaseOn chan struct{} // PendingNonceAt blocks until this is closed
 }
 
 func (f *fakeNonceClient) PendingNonceAt(ctx context.Context, _ common.Address) (uint64, error) {
 	f.calls.Add(1)
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	wait, release := f.waitOn, f.releaseOn
+	if wait != nil {
+		f.waitOn = nil
+		f.releaseOn = nil
+	}
 	if f.err != nil {
 		e := f.err
 		if f.errOnce {
 			f.err = nil
 		}
+		f.mu.Unlock()
 		return 0, e
 	}
-	if f.waitCh != nil {
-		close(f.waitCh)
-		<-f.contCh
-		f.waitCh = nil
-		f.contCh = nil
+	if f.panicVal != nil {
+		p := f.panicVal
+		f.mu.Unlock()
+		panic(p)
 	}
-	return f.nonce, nil
+	n := f.pending
+	f.mu.Unlock()
+	if wait != nil {
+		close(wait)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return n, nil
 }
 
-func TestNonceManager_SequentialGet(t *testing.T) {
-	client := &fakeNonceClient{nonce: 42}
+// markBroadcast simulates a successful tx broadcast that bumps the pending
+// counter on the node.
+func (f *fakeNonceClient) markBroadcast() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pending++
+}
+
+func TestNonceManager_AcquireReturnsPendingNonce(t *testing.T) {
+	client := &fakeNonceClient{pending: 42}
+	nm := NewNonceManager(client, common.Address{})
+
+	got, release, err := nm.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if got != 42 {
+		t.Fatalf("got %d want 42", got)
+	}
+	if c := client.calls.Load(); c != 1 {
+		t.Fatalf("expected 1 RPC call, got %d", c)
+	}
+}
+
+func TestNonceManager_SequentialAcquireRefetchesEachTime(t *testing.T) {
+	client := &fakeNonceClient{pending: 100}
 	nm := NewNonceManager(client, common.Address{})
 	ctx := context.Background()
 
-	for i, want := range []uint64{42, 43, 44} {
-		got, err := nm.Get(ctx)
+	for i, want := range []uint64{100, 101, 102} {
+		got, release, err := nm.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
 		if got != want {
 			t.Fatalf("iter %d: got %d want %d", i, got, want)
 		}
+		// Simulate broadcast: node-side pending advances.
+		client.markBroadcast()
+		release()
 	}
-	if n := client.calls.Load(); n != 1 {
-		t.Fatalf("expected 1 network call, got %d", n)
-	}
-	if nm.PendingCount() != 3 {
-		t.Fatalf("expected 3 pending, got %d", nm.PendingCount())
+	if c := client.calls.Load(); c != 3 {
+		t.Fatalf("expected 3 RPC calls (one per Acquire), got %d", c)
 	}
 }
 
-func TestNonceManager_ConcurrentGetUnique(t *testing.T) {
-	client := &fakeNonceClient{nonce: 1000}
+func TestNonceManager_ConcurrentAcquireSerializesAndProducesUniqueNonces(t *testing.T) {
+	client := &fakeNonceClient{pending: 1000}
 	nm := NewNonceManager(client, common.Address{})
 	ctx := context.Background()
 
-	const N = 200
+	const N = 50
 	var wg sync.WaitGroup
 	out := make(chan uint64, N)
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := nm.Get(ctx)
+			n, release, err := nm.Acquire(ctx)
 			if err != nil {
-				t.Errorf("get: %v", err)
+				t.Errorf("acquire: %v", err)
 				return
 			}
+			// Simulate broadcast inside the critical section.
+			client.markBroadcast()
 			out <- n
+			release()
 		}()
 	}
 	wg.Wait()
@@ -96,227 +143,130 @@ func TestNonceManager_ConcurrentGetUnique(t *testing.T) {
 	if len(seen) != N {
 		t.Fatalf("expected %d unique nonces, got %d", N, len(seen))
 	}
-}
-
-func TestNonceManager_MarkFailedRefreshes(t *testing.T) {
-	client := &fakeNonceClient{nonce: 10}
-	nm := NewNonceManager(client, common.Address{})
-	ctx := context.Background()
-
-	n1, err := nm.Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n1 != 10 {
-		t.Fatalf("got %d", n1)
-	}
-	// Simulate local failure; network nonce moved independently.
-	client.mu.Lock()
-	client.nonce = 20
-	client.mu.Unlock()
-	nm.MarkFailed(n1)
-
-	n2, err := nm.Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n2 != 20 {
-		t.Fatalf("expected refresh to 20, got %d", n2)
-	}
-	if client.calls.Load() != 2 {
-		t.Fatalf("expected 2 fetches, got %d", client.calls.Load())
-	}
-	if nm.PendingCount() != 1 {
-		t.Fatalf("expected 1 pending after mark-failed+get, got %d", nm.PendingCount())
+	if c := client.calls.Load(); c != N {
+		t.Fatalf("expected %d RPC calls, got %d", N, c)
 	}
 }
 
-func TestNonceManager_MarkFailedDoesNotReuseLowerNonce(t *testing.T) {
-	client := &fakeNonceClient{nonce: 10}
+func TestNonceManager_ReleaseIsIdempotent(t *testing.T) {
+	client := &fakeNonceClient{pending: 5}
 	nm := NewNonceManager(client, common.Address{})
-	ctx := context.Background()
-
-	n1, err := nm.Get(ctx)
+	_, release, err := nm.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	n2, err := nm.Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n1 != 10 || n2 != 11 {
-		t.Fatalf("got %d,%d", n1, n2)
-	}
-
-	client.mu.Lock()
-	client.nonce = 10
-	client.mu.Unlock()
-	nm.MarkFailed(n1)
-
-	n3, err := nm.Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n3 != 12 {
-		t.Fatalf("expected next nonce 12, got %d", n3)
-	}
+	release()
+	release() // must not panic / re-unlock.
 }
 
-func TestNonceManager_MarkConfirmed(t *testing.T) {
-	client := &fakeNonceClient{nonce: 5}
+func TestNonceManager_AcquireRPCErrorReleasesLock(t *testing.T) {
+	boom := errors.New("rpc down")
+	client := &fakeNonceClient{err: boom}
 	nm := NewNonceManager(client, common.Address{})
-	ctx := context.Background()
-	n, _ := nm.Get(ctx)
-	nm.MarkConfirmed(n)
-	if nm.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending, got %d", nm.PendingCount())
+
+	_, release, err := nm.Acquire(context.Background())
+	if err == nil || !errors.Is(err, boom) {
+		t.Fatalf("expected wrapped rpc err, got %v", err)
 	}
-	// Double-confirm is a no-op.
-	nm.MarkConfirmed(n)
-}
-
-func TestNonceManager_MarkConfirmedDoesNotBlockDuringInitialFetch(t *testing.T) {
-	client := &fakeNonceClient{nonce: 5, waitCh: make(chan struct{}), contCh: make(chan struct{})}
-	nm := NewNonceManager(client, common.Address{})
-
-	getErrCh := make(chan error, 1)
-	go func() {
-		_, err := nm.Get(context.Background())
-		getErrCh <- err
-	}()
-
-	<-client.waitCh
+	release() // error-path release must remain callable.
+	// Lock must be released even though Acquire failed.
 	done := make(chan struct{})
 	go func() {
-		nm.MarkConfirmed(999)
+		client.mu.Lock()
+		client.err = nil
+		client.pending = 1
+		client.mu.Unlock()
+		_, release, err := nm.Acquire(context.Background())
+		if err != nil {
+			t.Errorf("second Acquire failed: %v", err)
+			return
+		}
+		release()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Acquire after RPC error blocked — lock not released")
+	}
+}
+
+func TestNonceManager_AcquirePanicReleasesLock(t *testing.T) {
+	boom := errors.New("rpc panic")
+	client := &fakeNonceClient{panicVal: boom}
+	nm := NewNonceManager(client, common.Address{})
+
+	func() {
+		defer func() {
+			gotErr, ok := recover().(error)
+			if !ok || !errors.Is(gotErr, boom) {
+				t.Fatalf("expected panic %v, got %v", boom, gotErr)
+			}
+		}()
+		_, _, _ = nm.Acquire(context.Background())
+		t.Fatal("expected panic from PendingNonceAt")
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		client.mu.Lock()
+		client.panicVal = nil
+		client.pending = 1
+		client.mu.Unlock()
+		_, release, err := nm.Acquire(context.Background())
+		if err != nil {
+			t.Errorf("second Acquire failed: %v", err)
+			return
+		}
+		release()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-	case <-time.After(20 * time.Millisecond):
-		t.Fatal("MarkConfirmed blocked on initial PendingNonceAt fetch")
-	}
-
-	close(client.contCh)
-	if err := <-getErrCh; err != nil {
-		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("Acquire after panic blocked — lock not released")
 	}
 }
 
-func TestNonceManager_Reset(t *testing.T) {
-	client := &fakeNonceClient{nonce: 100}
-	nm := NewNonceManager(client, common.Address{})
-	ctx := context.Background()
-	_, _ = nm.Get(ctx)
-	_, _ = nm.Get(ctx)
-	client.mu.Lock()
-	client.nonce = 500
-	client.mu.Unlock()
-	if err := nm.Reset(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if nm.PendingCount() != 0 {
-		t.Fatalf("pending not cleared: %d", nm.PendingCount())
-	}
-	n, _ := nm.Get(ctx)
-	if n != 500 {
-		t.Fatalf("expected 500, got %d", n)
-	}
-}
-
-func TestNonceManager_ResetBlocksConcurrentGetUntilRefreshCompletes(t *testing.T) {
-	client := &fakeNonceClient{nonce: 100}
+func TestNonceManager_AcquireBlocksWhileAnotherHoldsLock(t *testing.T) {
+	client := &fakeNonceClient{pending: 7}
 	nm := NewNonceManager(client, common.Address{})
 	ctx := context.Background()
 
-	n0, err := nm.Get(ctx)
+	_, release1, err := nm.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n0 != 100 {
-		t.Fatalf("expected 100, got %d", n0)
-	}
 
-	client.mu.Lock()
-	client.nonce = 101
-	client.waitCh = make(chan struct{})
-	client.contCh = make(chan struct{})
-	client.mu.Unlock()
-
-	errCh := make(chan error, 1)
+	got2 := make(chan uint64, 1)
 	go func() {
-		errCh <- nm.Reset(ctx)
-	}()
-
-	<-client.waitCh
-	getCh := make(chan uint64, 1)
-	getErrCh := make(chan error, 1)
-	go func() {
-		n, err := nm.Get(ctx)
+		n, release, err := nm.Acquire(ctx)
 		if err != nil {
-			getErrCh <- err
+			t.Errorf("acquire: %v", err)
 			return
 		}
-		getCh <- n
+		got2 <- n
+		release()
 	}()
 
 	select {
-	case n := <-getCh:
-		t.Fatalf("Get returned %d before Reset completed", n)
-	case err := <-getErrCh:
-		t.Fatalf("Get failed before Reset completed: %v", err)
+	case n := <-got2:
+		t.Fatalf("second Acquire returned %d before first released", n)
 	case <-time.After(20 * time.Millisecond):
 	}
 
-	close(client.contCh)
-	if err := <-errCh; err != nil {
-		t.Fatal(err)
-	}
+	client.mu.Lock()
+	client.pending = 8
+	client.mu.Unlock()
+	release1()
 
 	select {
-	case err := <-getErrCh:
-		t.Fatal(err)
-	case n := <-getCh:
-		if n != 101 {
-			t.Fatalf("expected nonce 101 after Reset, got %d", n)
+	case n := <-got2:
+		if n != 8 {
+			t.Fatalf("expected nonce 8 after release, got %d", n)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Get did not return after Reset completed")
-	}
-}
-
-func TestNonceManager_GetFetchError(t *testing.T) {
-	boom := errors.New("rpc down")
-	client := &fakeNonceClient{err: boom}
-	nm := NewNonceManager(client, common.Address{})
-	_, err := nm.Get(context.Background())
-	if err == nil || !errors.Is(err, boom) {
-		t.Fatalf("expected wrapped rpc err, got %v", err)
-	}
-}
-
-func TestNonceManager_CancelInitLocked_NilCh(t *testing.T) {
-	// Exercise cancelInitLocked when initCh is nil — should be a no-op, not panic.
-	client := &fakeNonceClient{nonce: 1}
-	nm := NewNonceManager(client, common.Address{})
-	// Directly call MarkFailed when initCh is nil (no concurrent Get in progress).
-	// MarkFailed calls cancelInitLocked internally.
-	n, err := nm.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// At this point initCh is nil. MarkFailed calls cancelInitLocked.
-	nm.MarkFailed(n)
-	// Verify the manager still works after the nil-initCh cancel.
-	client.mu.Lock()
-	client.nonce = 5
-	client.mu.Unlock()
-	n2, err := nm.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n2 != 5 {
-		t.Fatalf("expected 5, got %d", n2)
+		t.Fatal("second Acquire did not unblock after release")
 	}
 }

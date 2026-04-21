@@ -104,7 +104,10 @@ const (
 )
 
 // NewContext creates a Context for the given provider and PDP client.
-// All required fields (provider.ID, provider.ServiceURL, client, evmSigner) must be non-nil/non-empty.
+// provider.ID, provider.ServiceURL, and client are validated here. Signing
+// prerequisites (such as a non-nil signer plus chain/payer/record-keeper
+// options) are validated by the write paths that need them, e.g.
+// PresignForCommit.
 func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
 	if provider.ID == 0 {
 		return nil, fmt.Errorf("storage.NewContext: %w: zero provider ID", ErrInvalidArgument)
@@ -325,8 +328,11 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 		}
-		sig, err := ityped.SignAddPieces(c.signer.SignHash, domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
+		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
+			if errors.Is(err, signer.ErrUnsupportedSigner) {
+				return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+			}
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
 		}
 		payload, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
@@ -343,8 +349,11 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
-	createSig, err := ityped.SignCreateDataSet(c.signer.SignHash, domain, clientDataSetID, c.provider.Payee, dataSetMetadata)
+	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID, c.provider.Payee, dataSetMetadata)
 	if err != nil {
+		if errors.Is(err, signer.ErrUnsupportedSigner) {
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+		}
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign create dataset: %w", err)
 	}
 	nonce, err := randomUint256()
@@ -354,8 +363,11 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
-	addSig, err := ityped.SignAddPieces(c.signer.SignHash, domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
+	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
+		if errors.Is(err, signer.ErrUnsupportedSigner) {
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+		}
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
 	}
 	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID, dataSetMetadata, signatureBytes(createSig))
@@ -553,6 +565,16 @@ func (c *Context) pieceURLFor(pieceCID cid.Cid) string {
 	}
 	base.Path = path.Join(base.Path, "piece", pieceCID.String())
 	return base.String()
+}
+
+// signHashFunc returns a closure that signs a 32-byte hash using c.signer.
+// The closure indirects through [signer.SignHash] so the EVMSigner contract
+// remains free of the dangerous SignHash method while internal SDK code can
+// still produce EIP-712 signatures.
+func (c *Context) signHashFunc() func([]byte) ([]byte, error) {
+	return func(hash []byte) ([]byte, error) {
+		return signer.SignHash(c.signer, hash)
+	}
 }
 
 func dataSetMetadataEntries(metadata map[string]string, withCDN bool) ([]ityped.MetadataEntry, error) {

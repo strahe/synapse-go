@@ -428,77 +428,11 @@ func TestSignHash_WrongLength(t *testing.T) {
 	}
 }
 
-func TestSignHash_ZeroedSigner(t *testing.T) {
-	key, err := ethcrypto.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSecp256k1Signer(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Zero()
-
-	hash := make([]byte, 32)
-	_, err = s.SignHash(hash)
-	if err == nil {
-		t.Error("expected error after Zero()")
-	}
-}
-
 // ---------------------------------------------------------------------------
-// Zero tests
+// Key-lifecycle is now the caller's responsibility; SDK no longer offers Zero.
 // ---------------------------------------------------------------------------
 
-func TestZero_PreventsSign(t *testing.T) {
-	key, err := ethcrypto.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSecp256k1Signer(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	s.Zero()
-
-	if _, err := s.Sign([]byte("msg")); err == nil {
-		t.Error("Sign should fail after Zero()")
-	}
-}
-
-func TestZero_PreventsTransactor(t *testing.T) {
-	key, err := ethcrypto.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSecp256k1Signer(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	s.Zero()
-
-	if _, err := s.Transactor(big.NewInt(1)); err == nil {
-		t.Error("Transactor should fail after Zero()")
-	}
-}
-
-func TestZero_DoubleZeroSafe(t *testing.T) {
-	key, err := ethcrypto.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSecp256k1Signer(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	s.Zero()
-	s.Zero() // must not panic
-}
-
-func TestZero_DoesNotMutateOriginalKey(t *testing.T) {
+func TestNewSecp256k1Signer_DeepCopiesKey(t *testing.T) {
 	key, err := ethcrypto.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -509,10 +443,12 @@ func TestZero_DoesNotMutateOriginalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Zero()
+	// Mutate the caller-owned key; the signer must remain functional.
+	key.D.SetInt64(0)
 
-	// Original key's D should be unchanged (deep copy).
-	if key.D.Cmp(origD) != 0 {
-		t.Error("Zero() mutated the original key")
+	if _, err := s.Sign([]byte("msg")); err != nil {
+		t.Errorf("Sign should still work after caller mutates original key: %v", err)
 	}
+	// Original key restored for clarity (no longer required by the signer).
+	key.D.Set(origD)
 }
