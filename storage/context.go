@@ -22,9 +22,11 @@ import (
 	"github.com/ipfs/go-cid"
 
 	icurio "github.com/strahe/synapse-go/internal/curio"
+	"github.com/strahe/synapse-go/internal/idconv"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/types"
 )
 
 var (
@@ -34,6 +36,8 @@ var (
 	contextStringArray2DType, _ = abi.NewType("string[][]", "", nil)
 	contextBytesType, _         = abi.NewType("bytes", "", nil)
 )
+
+var randReader io.Reader = rand.Reader
 
 const (
 	maxMetadataKeyLength   = 32
@@ -57,10 +61,10 @@ type PDPClient interface {
 
 // Provider holds the on-chain identity of a storage provider.
 type Provider struct {
-	ID              *big.Int       // numeric provider ID from SPRegistry
-	ServiceURL      string         // base URL of the provider's curio HTTP API
-	ServiceProvider common.Address // provider's EVM address
-	Payee           common.Address // address that receives payments
+	ID              types.ProviderID // numeric provider ID from SPRegistry
+	ServiceURL      string           // base URL of the provider's curio HTTP API
+	ServiceProvider common.Address   // provider's EVM address
+	Payee           common.Address   // address that receives payments
 }
 
 // ContextOption configures a Context.
@@ -84,16 +88,16 @@ type Context struct {
 	recordKeeper common.Address
 	withCDN      bool
 
-	dataSetID       *big.Int
-	clientDataSetID *big.Int
+	dataSetID       *types.DataSetID
+	clientDataSetID types.ClientDataSetID
 	dataSetMetadata map[string]string
 }
 
 // NewContext creates a Context for the given provider and PDP client.
 // All required fields (provider.ID, provider.ServiceURL, client, evmSigner) must be non-nil/non-empty.
 func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
-	if provider.ID == nil {
-		return nil, errors.New("storage.NewContext: nil provider ID")
+	if provider.ID == 0 {
+		return nil, errors.New("storage.NewContext: zero provider ID")
 	}
 	if provider.ServiceURL == "" {
 		return nil, errors.New("storage.NewContext: empty provider service URL")
@@ -103,7 +107,7 @@ func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner,
 	}
 	c := &Context{
 		provider: Provider{
-			ID:              new(big.Int).Set(provider.ID),
+			ID:              provider.ID,
 			ServiceURL:      provider.ServiceURL,
 			ServiceProvider: provider.ServiceProvider,
 			Payee:           provider.Payee,
@@ -115,6 +119,9 @@ func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner,
 		if opt != nil {
 			opt(c)
 		}
+	}
+	if c.dataSetID != nil && *c.dataSetID == 0 {
+		return nil, errors.New("storage.NewContext: zero dataSetID")
 	}
 	return c, nil
 }
@@ -141,22 +148,23 @@ func WithRecordKeeper(addr common.Address) ContextOption {
 
 // WithDataSetID pins the context to an existing on-chain data set.
 // When set, Commit issues an AddPieces call instead of CreateDataSet+AddPieces.
-func WithDataSetID(id *big.Int) ContextOption {
+func WithDataSetID(id types.DataSetID) ContextOption {
 	return func(c *Context) {
-		if id != nil {
-			c.dataSetID = new(big.Int).Set(id)
-		}
+		v := id
+		c.dataSetID = &v
 	}
 }
 
 // WithClientDataSetID sets a caller-chosen data-set identifier included in
 // EIP-712 messages. If not provided, a random value is generated on the
 // first PresignForCommit call and reused for the lifetime of this Context.
-func WithClientDataSetID(id *big.Int) ContextOption {
+func WithClientDataSetID(id types.ClientDataSetID) ContextOption {
 	return func(c *Context) {
-		if id != nil {
-			c.clientDataSetID = new(big.Int).Set(id)
+		if id == nil {
+			c.clientDataSetID = nil
+			return
 		}
+		c.clientDataSetID = new(big.Int).Set(id)
 	}
 }
 
@@ -285,13 +293,19 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	clientDataSetID := c.clientDataSetID
-	if clientDataSetID == nil {
-		clientDataSetID = randomUint256()
-		c.clientDataSetID = new(big.Int).Set(clientDataSetID)
+	if c.clientDataSetID == nil {
+		v, err := randomClientDataSetID()
+		if err != nil {
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		}
+		c.clientDataSetID = v
 	}
+	clientDataSetID := new(big.Int).Set(c.clientDataSetID)
 	if c.dataSetID != nil {
-		nonce := randomUint256()
+		nonce, err := randomUint256()
+		if err != nil {
+			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		}
 		sig, err := ityped.SignAddPieces(c.signer.SignHash, domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
@@ -307,7 +321,10 @@ func (c *Context) PresignForCommit(_ context.Context, pieces []PieceInput) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign create dataset: %w", err)
 	}
-	nonce := randomUint256()
+	nonce, err := randomUint256()
+	if err != nil {
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+	}
 	addSig, err := ityped.SignAddPieces(c.signer.SignHash, domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
@@ -337,17 +354,14 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	}
 
 	c.mu.RLock()
-	dataSetID := copyBigInt(c.dataSetID)
+	dataSetID := c.dataSetID
 	recordKeeper := c.recordKeeper
 	c.mu.RUnlock()
 
 	// RecordKeeper is required by curio for both new and existing datasets.
 	curioReq.RecordKeeper = recordKeeper
 	if dataSetID != nil {
-		if !dataSetID.IsUint64() {
-			return nil, errors.New("storage.Context.Pull: dataSetID exceeds uint64")
-		}
-		curioReq.DataSetID = dataSetID.Uint64()
+		curioReq.DataSetID = uint64(*dataSetID)
 	}
 
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
@@ -399,7 +413,7 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 
 	// Snapshot create-vs-add decision under the data lock BEFORE signing.
 	c.mu.RLock()
-	dataSetID := copyBigInt(c.dataSetID)
+	dataSetID := c.dataSetID
 	recordKeeper := c.recordKeeper
 	c.mu.RUnlock()
 
@@ -421,10 +435,7 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	}
 
 	if dataSetID != nil {
-		if !dataSetID.IsUint64() {
-			return nil, errors.New("storage.Context.Commit: dataSetID exceeds uint64")
-		}
-		added, err := c.client.AddPieces(ctx, dataSetID.Uint64(), pieces, extraData)
+		added, err := c.client.AddPieces(ctx, uint64(*dataSetID), pieces, extraData)
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: add pieces: %w", err)
 		}
@@ -432,10 +443,20 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: wait add pieces: %w", err)
 		}
+		if status.DataSetID == 0 {
+			return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
+		}
+		if got := types.DataSetID(status.DataSetID); got != *dataSetID {
+			return nil, fmt.Errorf("storage.Context.Commit: server returned mismatched dataSetID: got %d want %d", got, *dataSetID)
+		}
+		pieceIDs, err := idconv.SafeSlice[types.PieceID]("pieceID", status.ConfirmedPieceIDs)
+		if err != nil {
+			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+		}
 		return &CommitResult{
 			TransactionID: status.TxHash.Hex(),
-			DataSetID:     new(big.Int).SetUint64(status.DataSetID),
-			PieceIDs:      cloneBigInts(status.ConfirmedPieceIDs),
+			DataSetID:     types.DataSetID(status.DataSetID),
+			PieceIDs:      pieceIDs,
 			IsNewDataSet:  false,
 		}, nil
 	}
@@ -456,14 +477,19 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	if status.DataSetID == 0 {
 		return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
 	}
+	pieceIDs, err := idconv.SafeSlice[types.PieceID]("pieceID", status.ConfirmedPieceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+	}
 	result := &CommitResult{
 		TransactionID: status.TxHash.Hex(),
-		DataSetID:     new(big.Int).SetUint64(status.DataSetID),
-		PieceIDs:      cloneBigInts(status.ConfirmedPieceIDs),
+		DataSetID:     types.DataSetID(status.DataSetID),
+		PieceIDs:      pieceIDs,
 		IsNewDataSet:  true,
 	}
+	newID := result.DataSetID
 	c.mu.Lock()
-	c.dataSetID = copyBigInt(result.DataSetID)
+	c.dataSetID = &newID
 	c.mu.Unlock()
 	return result, nil
 }
@@ -473,9 +499,9 @@ func (c *Context) PieceURL(pieceCID cid.Cid) string {
 	return c.pieceURLFor(pieceCID)
 }
 
-// ProviderID returns a copy of the provider's numeric ID.
-func (c *Context) ProviderID() *big.Int {
-	return copyBigInt(c.provider.ID)
+// ProviderID returns the provider's numeric ID.
+func (c *Context) ProviderID() types.ProviderID {
+	return c.provider.ID
 }
 
 // ServiceURL returns the base URL of the provider's curio HTTP API.
@@ -594,25 +620,20 @@ func signatureBytes(sig *ityped.Signature) []byte {
 	return out
 }
 
-func randomUint256() *big.Int {
+func randomUint256() (*big.Int, error) {
 	var buf [32]byte
-	_, _ = rand.Read(buf[:])
-	return new(big.Int).SetBytes(buf[:])
+	if _, err := io.ReadFull(randReader, buf[:]); err != nil {
+		return nil, fmt.Errorf("read random uint256: %w", err)
+	}
+	return new(big.Int).SetBytes(buf[:]), nil
 }
 
-func cloneBigInts(in []*big.Int) []*big.Int {
-	out := make([]*big.Int, 0, len(in))
-	for _, v := range in {
-		out = append(out, copyBigInt(v))
+func randomClientDataSetID() (types.ClientDataSetID, error) {
+	v, err := randomUint256()
+	if err != nil {
+		return nil, fmt.Errorf("read random clientDataSetID: %w", err)
 	}
-	return out
-}
-
-func copyBigInt(v *big.Int) *big.Int {
-	if v == nil {
-		return nil
-	}
-	return new(big.Int).Set(v)
+	return v, nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

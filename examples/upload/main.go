@@ -134,7 +134,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, mgr uploader, stdout io.Wr
 		return err
 	}
 	for _, copy := range result.Copies {
-		if _, err := fmt.Fprintf(stdout, "providerID=%s retrievalURL=%s\n", copy.ProviderID, copy.RetrievalURL); err != nil {
+		if _, err := fmt.Fprintf(stdout, "providerID=%d retrievalURL=%s\n", copy.ProviderID, copy.RetrievalURL); err != nil {
 			return err
 		}
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestParseConfig_Valid(t *testing.T) {
@@ -113,9 +113,9 @@ func TestRunMulticopy_ThreeCopies(t *testing.T) {
 				RequestedCopies: 3,
 				Complete:        true,
 				Copies: []storage.CopyResult{
-					{ProviderID: big.NewInt(1), Role: storage.CopyRolePrimary, RetrievalURL: "https://sp1.example.com/piece/abc"},
-					{ProviderID: big.NewInt(2), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp2.example.com/piece/abc"},
-					{ProviderID: big.NewInt(3), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp3.example.com/piece/abc"},
+					{ProviderID: types.ProviderID(1), Role: storage.CopyRolePrimary, RetrievalURL: "https://sp1.example.com/piece/abc"},
+					{ProviderID: types.ProviderID(2), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp2.example.com/piece/abc"},
+					{ProviderID: types.ProviderID(3), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp3.example.com/piece/abc"},
 				},
 			}, nil
 		},
@@ -166,11 +166,11 @@ func TestRunMulticopy_PartialFailure(t *testing.T) {
 				RequestedCopies: 3,
 				Complete:        false,
 				Copies: []storage.CopyResult{
-					{ProviderID: big.NewInt(1), Role: storage.CopyRolePrimary, RetrievalURL: "https://sp1.example.com/piece/abc"},
-					{ProviderID: big.NewInt(2), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp2.example.com/piece/abc"},
+					{ProviderID: types.ProviderID(1), Role: storage.CopyRolePrimary, RetrievalURL: "https://sp1.example.com/piece/abc"},
+					{ProviderID: types.ProviderID(2), Role: storage.CopyRoleSecondary, RetrievalURL: "https://sp2.example.com/piece/abc"},
 				},
 				FailedAttempts: []storage.FailedAttempt{
-					{ProviderID: big.NewInt(3), Role: storage.CopyRoleSecondary, Stage: storage.CopyStagePull, Err: errors.New("timeout")},
+					{ProviderID: types.ProviderID(3), Role: storage.CopyRoleSecondary, Stage: storage.CopyStagePull, Err: errors.New("timeout")},
 				},
 			}, nil
 		},

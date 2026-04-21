@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/types"
 )
 
 // Service is a client for the FilBeam stats API.
@@ -77,12 +78,11 @@ type statsResponse struct {
 
 // GetDataSetStats fetches remaining egress quotas for a FWSS data set.
 // Returns ErrDataSetNotFound when the data set does not exist on FilBeam.
-func (s *Service) GetDataSetStats(ctx context.Context, dataSetID *big.Int) (*DataSetStats, error) {
-	if dataSetID == nil {
-		return nil, fmt.Errorf("filbeam.GetDataSetStats: nil dataSetID")
+func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.DataSetID) (*DataSetStats, error) {
+	if dataSetID == 0 {
+		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w", ErrInvalidArgument)
 	}
-
-	url := fmt.Sprintf("%s/data-set/%s", s.baseURL, dataSetID.String())
+	url := fmt.Sprintf("%s/data-set/%d", s.baseURL, uint64(dataSetID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *Service) GetDataSetStats(ctx context.Context, dataSetID *big.Int) (*Dat
 
 	if resp.StatusCode == http.StatusNotFound {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w: id=%s", ErrDataSetNotFound, dataSetID)
+		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w: id=%d", ErrDataSetNotFound, uint64(dataSetID))
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

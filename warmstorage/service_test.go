@@ -12,6 +12,7 @@ import (
 
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
+	"github.com/strahe/synapse-go/types"
 )
 
 // mockCaller implements bind.ContractCaller by routing calls to the
@@ -74,6 +75,32 @@ func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *b
 		}
 	}
 	return nil, errors.New("no method matches selector")
+}
+
+func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {
+	large := new(big.Int).Lsh(big.NewInt(1), 200)
+	got, err := toDataSetInfo(fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		DataSetId:       big.NewInt(1),
+		PdpRailId:       big.NewInt(2),
+		CacheMissRailId: big.NewInt(3),
+		CdnRailId:       big.NewInt(4),
+		Payer:           common.HexToAddress("0x1000000000000000000000000000000000000001"),
+		Payee:           common.HexToAddress("0x2000000000000000000000000000000000000002"),
+		ServiceProvider: common.HexToAddress("0x3000000000000000000000000000000000000003"),
+		CommissionBps:   big.NewInt(100),
+		ClientDataSetId: large,
+		PdpEndEpoch:     big.NewInt(0),
+		ProviderId:      big.NewInt(5),
+	})
+	if err != nil {
+		t.Fatalf("toDataSetInfo: %v", err)
+	}
+	if got.ClientDataSetID == nil {
+		t.Fatal("ClientDataSetID should be preserved as uint256")
+	}
+	if got.ClientDataSetID.Cmp(large) != 0 {
+		t.Fatalf("ClientDataSetID = %s, want %s", got.ClientDataSetID.String(), large.String())
+	}
 }
 
 func (m *mockCaller) setFWSSReply(t *testing.T, method string, values ...any) {
@@ -166,11 +193,11 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		ProviderId:      big.NewInt(9),
 		DataSetId:       big.NewInt(42),
 	})
-	got, err := s.GetDataSet(context.Background(), big.NewInt(42))
+	got, err := s.GetDataSet(context.Background(), types.DataSetID(42))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || got.DataSetID.Int64() != 42 || got.ProviderID.Int64() != 9 {
+	if got == nil || got.DataSetID != 42 || got.ProviderID != 9 {
 		t.Fatalf("got=%+v", got)
 	}
 
@@ -185,12 +212,30 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		ProviderId:      big.NewInt(0),
 		DataSetId:       big.NewInt(0),
 	})
-	got, err = s.GetDataSet(context.Background(), big.NewInt(99))
+	got, err = s.GetDataSet(context.Background(), types.DataSetID(99))
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
 	if got != nil {
 		t.Errorf("expected nil result with ErrNotFound, got %+v", got)
+	}
+}
+
+func TestGetDataSet_ZeroDataSetID(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getDataSet", fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		PdpRailId:       big.NewInt(0),
+		CacheMissRailId: big.NewInt(0),
+		CdnRailId:       big.NewInt(0),
+		CommissionBps:   big.NewInt(0),
+		ClientDataSetId: big.NewInt(0),
+		PdpEndEpoch:     big.NewInt(0),
+		ProviderId:      big.NewInt(0),
+		DataSetId:       big.NewInt(0),
+	})
+	_, err := s.GetDataSet(context.Background(), 0)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for zero data set ID, got %v", err)
 	}
 }
 
@@ -208,14 +253,14 @@ func TestGetClientDataSets(t *testing.T) {
 		{PdpRailId: big.NewInt(1), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(1)},
 		{PdpRailId: big.NewInt(2), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(2)},
 	})
-	list, err := s.GetClientDataSets(context.Background(), common.HexToAddress("0xaa"), big.NewInt(0), big.NewInt(10))
+	list, err := s.GetClientDataSets(context.Background(), common.HexToAddress("0xaa"), types.ListOptions{Offset: 0, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(list) != 2 {
 		t.Fatalf("len=%d", len(list))
 	}
-	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, nil, nil); err == nil || !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, types.ListOptions{}); err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument for zero payer, got %v", err)
 	}
 }
@@ -224,22 +269,19 @@ func TestGetAllDataSetMetadata(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{"source", "withCDN"}, []string{"app", ""})
 
-	got, err := s.GetAllDataSetMetadata(context.Background(), big.NewInt(42))
+	got, err := s.GetAllDataSetMetadata(context.Background(), types.DataSetID(42))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got["source"] != "app" || got["withCDN"] != "" {
 		t.Fatalf("metadata=%v", got)
 	}
-	if _, err := s.GetAllDataSetMetadata(context.Background(), nil); err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument for nil dataSetID, got %v", err)
-	}
 }
 
 func TestGetAllDataSetMetadata_EmptyReturnsEmptyMap(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
-	got, err := s.GetAllDataSetMetadata(context.Background(), big.NewInt(42))
+	got, err := s.GetAllDataSetMetadata(context.Background(), types.DataSetID(42))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,10 +293,19 @@ func TestGetAllDataSetMetadata_EmptyReturnsEmptyMap(t *testing.T) {
 	}
 }
 
+func TestGetAllDataSetMetadata_ZeroDataSetID(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
+	got, err := s.GetAllDataSetMetadata(context.Background(), 0)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for zero data set ID, got map=%v err=%v", got, err)
+	}
+}
+
 func TestGetApprovedProviderIDs(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)})
-	ids, err := s.GetApprovedProviderIDs(context.Background(), nil, nil)
+	ids, err := s.GetApprovedProviderIDs(context.Background(), types.ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,12 +317,21 @@ func TestGetApprovedProviderIDs(t *testing.T) {
 func TestIsProviderApproved(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "isProviderApproved", true)
-	ok, err := s.IsProviderApproved(context.Background(), big.NewInt(5))
+	ok, err := s.IsProviderApproved(context.Background(), types.ProviderID(5))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Error("want true")
+	}
+}
+
+func TestIsProviderApproved_ZeroProviderID(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "isProviderApproved", false)
+	_, err := s.IsProviderApproved(context.Background(), 0)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for zero provider ID, got %v", err)
 	}
 }
 
@@ -336,18 +396,10 @@ func TestGetApprovedProvidersLength_Error(t *testing.T) {
 // IsProviderApproved edge cases
 // ---------------------------------------------------------------------------
 
-func TestIsProviderApproved_NilProviderID(t *testing.T) {
-	s, _ := newTestService(t)
-	_, err := s.IsProviderApproved(context.Background(), nil)
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for nil providerID, got %v", err)
-	}
-}
-
 func TestIsProviderApproved_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["isProviderApproved"] = errors.New("rpc error")
-	_, err := s.IsProviderApproved(context.Background(), big.NewInt(1))
+	_, err := s.IsProviderApproved(context.Background(), types.ProviderID(1))
 	if err == nil {
 		t.Error("expected RPC error")
 	}
@@ -356,7 +408,7 @@ func TestIsProviderApproved_RPCError(t *testing.T) {
 func TestIsProviderApproved_ReturnsFalse(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "isProviderApproved", false)
-	ok, err := s.IsProviderApproved(context.Background(), big.NewInt(5))
+	ok, err := s.IsProviderApproved(context.Background(), types.ProviderID(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,16 +442,8 @@ func TestGetServicePrice_RPCError(t *testing.T) {
 func TestGetDataSet_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["getDataSet"] = errors.New("rpc error")
-	_, err := s.GetDataSet(context.Background(), big.NewInt(1))
+	_, err := s.GetDataSet(context.Background(), types.DataSetID(1))
 	if err == nil {
 		t.Error("expected error")
-	}
-}
-
-func TestGetDataSet_NilDataSetID(t *testing.T) {
-	s, _ := newTestService(t)
-	_, err := s.GetDataSet(context.Background(), nil)
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for nil dataSetID, got %v", err)
 	}
 }

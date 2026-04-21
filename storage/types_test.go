@@ -1,14 +1,15 @@
 package storage
 
 import (
-	"math/big"
 	"testing"
 
 	"github.com/ipfs/go-cid"
+
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 func TestUploadResultSuccessCount(t *testing.T) {
-	oneCopy := CopyResult{ProviderID: big.NewInt(1), DataSetID: big.NewInt(1), PieceID: big.NewInt(1)}
+	oneCopy := CopyResult{ProviderID: 1, DataSetID: 1, PieceID: 1}
 
 	tests := []struct {
 		name string
@@ -31,7 +32,7 @@ func TestUploadResultSuccessCount(t *testing.T) {
 
 func TestUploadResultPartialSuccess(t *testing.T) {
 	dummyCID := cid.MustParse("baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urr3enp3bccbm2fszfxwqvria")
-	oneCopy := CopyResult{ProviderID: big.NewInt(1), DataSetID: big.NewInt(1), PieceID: big.NewInt(1)}
+	oneCopy := CopyResult{ProviderID: 1, DataSetID: 1, PieceID: 1}
 
 	tests := []struct {
 		name string
@@ -50,4 +51,58 @@ func TestUploadResultPartialSuccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUploadResultPrimaryDataSetID(t *testing.T) {
+	primary := CopyResult{Role: CopyRolePrimary, ProviderID: 10, DataSetID: 42}
+	secondary := CopyResult{Role: CopyRoleSecondary, ProviderID: 11, DataSetID: 99}
+
+	t.Run("nil receiver", func(t *testing.T) {
+		var r *UploadResult
+		if id, ok := r.PrimaryDataSetID(); ok || id != 0 {
+			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
+		}
+	})
+
+	t.Run("no primary", func(t *testing.T) {
+		r := &UploadResult{Copies: []CopyResult{secondary}}
+		if id, ok := r.PrimaryDataSetID(); ok || id != 0 {
+			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
+		}
+	})
+
+	t.Run("primary present", func(t *testing.T) {
+		r := &UploadResult{Copies: []CopyResult{secondary, primary}}
+		id, ok := r.PrimaryDataSetID()
+		if !ok || id != sdktypes.DataSetID(42) {
+			t.Fatalf("got (%d, %v), want (42, true)", id, ok)
+		}
+	})
+}
+
+func TestUploadResultSuccessfulProviderIDs(t *testing.T) {
+	c1 := CopyResult{Role: CopyRolePrimary, ProviderID: 10, DataSetID: 1}
+	c2 := CopyResult{Role: CopyRoleSecondary, ProviderID: 11, DataSetID: 2}
+
+	t.Run("nil receiver", func(t *testing.T) {
+		var r *UploadResult
+		if got := r.SuccessfulProviderIDs(); got != nil {
+			t.Fatalf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("no copies", func(t *testing.T) {
+		if got := (&UploadResult{}).SuccessfulProviderIDs(); got != nil {
+			t.Fatalf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("preserves Copies order", func(t *testing.T) {
+		r := &UploadResult{Copies: []CopyResult{c1, c2}}
+		got := r.SuccessfulProviderIDs()
+		want := []sdktypes.ProviderID{10, 11}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
 }

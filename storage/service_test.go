@@ -6,15 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
+	"net/http"
 	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
+
+func mustNewService(t *testing.T, opts Options) *Service {
+	t.Helper()
+	s, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
 
 func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 	data := bytes.Repeat([]byte("ab"), 128)
@@ -31,7 +42,7 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 		callsMu.Unlock()
 	}
 	primary := &fakeUploadContext{
-		id:       big.NewInt(101),
+		id:       types.ProviderID(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -51,8 +62,8 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("primary commit should not receive secondary extraData")
 			}
 			return &CommitResult{
-				DataSetID:     big.NewInt(1001),
-				PieceIDs:      []*big.Int{big.NewInt(2001)},
+				DataSetID:     types.DataSetID(1001),
+				PieceIDs:      []types.PieceID{types.PieceID(2001)},
 				IsNewDataSet:  true,
 				TransactionID: "0xprimary",
 			}, nil
@@ -61,7 +72,7 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 
 	secondaryExtra := []byte{0xde, 0xad, 0xbe, 0xef}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(202),
+		id:       types.ProviderID(202),
 		endpoint: "https://secondary.example.com",
 		pieceURL: "https://secondary.example.com/piece/" + info.CIDv2.String(),
 		presignFn: func(_ context.Context, pieces []PieceInput) ([]byte, error) {
@@ -90,15 +101,15 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("commit extraData=%x want %x", req.ExtraData, secondaryExtra)
 			}
 			return &CommitResult{
-				DataSetID:     big.NewInt(1002),
-				PieceIDs:      []*big.Int{big.NewInt(2002)},
+				DataSetID:     types.DataSetID(1002),
+				PieceIDs:      []types.PieceID{types.PieceID(2002)},
 				IsNewDataSet:  true,
 				TransactionID: "0xsecondary",
 			}, nil
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
@@ -127,14 +138,14 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	want := errors.New("store failed")
 	primary := &fakeUploadContext{
-		id:       big.NewInt(101),
+		id:       types.ProviderID(101),
 		endpoint: "https://primary.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return nil, want
 		},
 	}
 
-	mgr := &Manager{
+	mgr := &Service{
 		resolver: &fakeResolver{contexts: []UploadContext{primary}},
 	}
 
@@ -146,8 +157,8 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	if !errors.As(err, &got) {
 		t.Fatalf("want StoreError, got %T", err)
 	}
-	if got.ProviderID.Cmp(primary.id) != 0 {
-		t.Fatalf("providerID=%s want %s", got.ProviderID, primary.id)
+	if got.ProviderID != primary.id {
+		t.Fatalf("providerID=%d want %d", got.ProviderID, primary.id)
 	}
 	if !errors.Is(err, want) {
 		t.Fatalf("error should wrap original cause: %v", err)
@@ -162,18 +173,18 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(101),
+		id:       types.ProviderID(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1001), PieceIDs: []*big.Int{big.NewInt(2001)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(202),
+		id:       types.ProviderID(202),
 		endpoint: "https://secondary.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -183,7 +194,7 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
@@ -211,7 +222,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(101),
+		id:       types.ProviderID(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -222,7 +233,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(202),
+		id:       types.ProviderID(202),
 		endpoint: "https://secondary.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -238,7 +249,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
 
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err == nil {
@@ -248,8 +259,8 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	if !errors.As(err, &got) {
 		t.Fatalf("want CommitError, got %T", err)
 	}
-	if got.ProviderID.Cmp(primary.id) != 0 {
-		t.Fatalf("providerID=%s want %s", got.ProviderID, primary.id)
+	if got.ProviderID != primary.id {
+		t.Fatalf("providerID=%d want %d", got.ProviderID, primary.id)
 	}
 }
 
@@ -261,18 +272,18 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(101),
+		id:       types.ProviderID(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1001), PieceIDs: []*big.Int{big.NewInt(2001)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
-		id:       big.NewInt(202),
+		id:       types.ProviderID(202),
 		endpoint: "https://secondary-a.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -282,7 +293,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 		},
 	}
 	replacement := &fakeUploadContext{
-		id:       big.NewInt(303),
+		id:       types.ProviderID(303),
 		endpoint: "https://secondary-b.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x02}, nil
@@ -294,7 +305,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 			}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1002), PieceIDs: []*big.Int{big.NewInt(2002)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1002), PieceIDs: []types.PieceID{types.PieceID(2002)}}, nil
 		},
 	}
 
@@ -302,7 +313,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 		contexts:     []UploadContext{primary, failedSecondary},
 		replacements: []UploadContext{replacement},
 	}
-	mgr := NewManager(WithUploadResolver(resolver))
+	mgr := mustNewService(t, Options{Resolver: resolver})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
@@ -317,8 +328,8 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	if resolver.replacementCalls != 1 {
 		t.Fatalf("replacementCalls=%d want 1", resolver.replacementCalls)
 	}
-	if got.Copies[1].ProviderID.Cmp(replacement.id) != 0 {
-		t.Fatalf("replacement provider=%s want %s", got.Copies[1].ProviderID, replacement.id)
+	if got.Copies[1].ProviderID != replacement.id {
+		t.Fatalf("replacement provider=%d want %d", got.Copies[1].ProviderID, replacement.id)
 	}
 }
 
@@ -337,7 +348,7 @@ func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOpti
 	return r.contexts, r.explicit, nil
 }
 
-func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]struct{}, _ *UploadOptions) (UploadContext, error) {
+func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[types.ProviderID]struct{}, _ *UploadOptions) (UploadContext, error) {
 	r.replacementCalls++
 	if len(r.replacements) == 0 {
 		return nil, errors.New("no replacement")
@@ -348,11 +359,11 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]struct{
 }
 
 type fakeUploadContext struct {
-	id              *big.Int
+	id              types.ProviderID
 	endpoint        string
 	pieceURL        string
-	dataSetID       *big.Int
-	clientDataSetID *big.Int
+	dataSetID       *types.DataSetID
+	clientDataSetID types.ClientDataSetID
 	dataSetMetadata map[string]string
 	storeFn         func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
 	presignFn       func(context.Context, []PieceInput) ([]byte, error)
@@ -360,9 +371,9 @@ type fakeUploadContext struct {
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
 }
 
-func (c *fakeUploadContext) ProviderID() *big.Int      { return new(big.Int).Set(c.id) }
-func (c *fakeUploadContext) ServiceURL() string        { return c.endpoint }
-func (c *fakeUploadContext) PieceURL(_ cid.Cid) string { return c.pieceURL }
+func (c *fakeUploadContext) ProviderID() types.ProviderID { return c.id }
+func (c *fakeUploadContext) ServiceURL() string           { return c.endpoint }
+func (c *fakeUploadContext) PieceURL(_ cid.Cid) string    { return c.pieceURL }
 
 func (c *fakeUploadContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if c.storeFn == nil {
@@ -413,18 +424,18 @@ func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
 		},
 	}
 
 	// Resolver returns only 1 context even though caller requests 3 copies.
-	mgr := &Manager{
+	mgr := &Service{
 		resolver:   &fakeResolver{contexts: []UploadContext{primary}},
 		httpClient: nil,
 	}
@@ -454,17 +465,17 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(2),
+		id:       types.ProviderID(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -475,7 +486,7 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
 
 	// Should not panic; primary copy should still succeed.
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
@@ -500,24 +511,24 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(2),
+		id:       types.ProviderID(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return nil, errors.New("presign failed: no signer")
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
@@ -532,7 +543,7 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 }
 
 func TestManagerUpload_NilReader(t *testing.T) {
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err := mgr.Upload(context.Background(), nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil reader")
@@ -542,7 +553,7 @@ func TestManagerUpload_NilReader(t *testing.T) {
 func TestManagerUpload_ReadError(t *testing.T) {
 	readErr := errors.New("read boom")
 	ctx := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			_, err := io.ReadAll(r)
@@ -552,7 +563,7 @@ func TestManagerUpload_ReadError(t *testing.T) {
 			return nil, errors.New("unexpected: reader should have errored")
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
 	_, err := mgr.Upload(context.Background(), iotest.ErrReader(readErr), nil)
 	if err == nil {
 		t.Fatal("expected error for failing reader")
@@ -570,7 +581,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			got, err := io.ReadAll(r)
@@ -583,10 +594,10 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
@@ -612,7 +623,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 
 	var read int64
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			n, err := io.Copy(io.Discard, r)
@@ -623,10 +634,10 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: n}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 
 	if _, err := mgr.Upload(context.Background(), src, &UploadOptions{Copies: 1}); err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -646,7 +657,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 	}
 	var gotPC cid.Cid
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 			_, _ = io.Copy(io.Discard, r)
@@ -656,10 +667,10 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, PieceCID: info.CIDv2})
 	if err != nil {
@@ -679,7 +690,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 	}
 	var cbSeen bool
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 			_, _ = io.Copy(io.Discard, r)
@@ -689,10 +700,10 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, OnProgress: func(int64) {}})
 	if err != nil {
@@ -714,21 +725,21 @@ func (zeroReader) Read(p []byte) (int, error) {
 
 func TestWithUploadResolver(t *testing.T) {
 	r := &fakeResolver{}
-	mgr := NewManager(WithUploadResolver(r))
+	mgr := mustNewService(t, Options{Resolver: r})
 	if mgr.resolver != r {
 		t.Fatal("WithUploadResolver did not set resolver")
 	}
 }
 
 func TestWithSource(t *testing.T) {
-	mgr := NewManager(WithSource("my-app"))
+	mgr := mustNewService(t, Options{Source: "my-app"})
 	if mgr.source != "my-app" {
 		t.Fatalf("source=%q want my-app", mgr.source)
 	}
 }
 
 func TestWithSourceMetadata(t *testing.T) {
-	m := &Manager{source: "app"}
+	m := &Service{source: "app"}
 
 	// nil opts → creates new opts with source
 	got := m.withSourceMetadata(nil)
@@ -758,6 +769,53 @@ func TestWithSourceMetadata(t *testing.T) {
 	// original should not be mutated
 	if _, ok := noSource.DataSetMetadata["source"]; ok {
 		t.Fatal("original opts should not be mutated")
+	}
+}
+
+// TestNew_ZeroOptions asserts that Service works with zero Options:
+// default HTTP client with non-zero timeout is installed, MaxSecondaryAttempts
+// falls back to the package default, and Upload fails cleanly (no panic)
+// because no resolver is configured.
+func TestNew_ZeroOptions(t *testing.T) {
+	s, err := New(Options{})
+	if err != nil {
+		t.Fatalf("New(Options{}): %v", err)
+	}
+	if s.httpClient == nil {
+		t.Fatal("default HTTPClient should be installed")
+	}
+	if s.httpClient.Timeout == 0 {
+		t.Fatal("default HTTP client must have a non-zero timeout")
+	}
+	if s.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
+		t.Fatalf("maxSecondaryAttempts = %d, want default %d", s.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
+	}
+}
+
+// TestNew_ZeroOptions_UploadReturnsError locks in that a zero-Options
+// Service does not panic on Upload; it returns a clean validation error
+// because no resolver was provided.
+func TestNew_ZeroOptions_UploadReturnsError(t *testing.T) {
+	s, err := New(Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = s.Upload(context.Background(), bytes.NewReader([]byte("hi")), nil)
+	if err == nil {
+		t.Fatal("expected error from Upload without resolver")
+	}
+}
+
+// TestNew_ExplicitHTTPClient asserts a caller-provided HTTP client is kept
+// verbatim (not overwritten by the default).
+func TestNew_ExplicitHTTPClient(t *testing.T) {
+	custom := &http.Client{Timeout: time.Second}
+	s, err := New(Options{HTTPClient: custom})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if s.httpClient != custom {
+		t.Fatal("caller-supplied HTTPClient should be kept")
 	}
 }
 
@@ -791,10 +849,10 @@ func TestRequestedCopiesForUpload(t *testing.T) {
 	}{
 		{"nil opts defaults to 2", nil, 2},
 		{"explicit Copies", &UploadOptions{Copies: 5}, 5},
-		{"DataSetIDs count", &UploadOptions{DataSetIDs: []*big.Int{big.NewInt(1), big.NewInt(2)}}, 2},
-		{"ProviderIDs count", &UploadOptions{ProviderIDs: []*big.Int{big.NewInt(10)}}, 1},
+		{"DataSetIDs count", &UploadOptions{DataSetIDs: []types.DataSetID{1, 2}}, 2},
+		{"ProviderIDs count", &UploadOptions{ProviderIDs: []types.ProviderID{10}}, 1},
 		{"zero Copies, no IDs defaults to 2", &UploadOptions{}, 2},
-		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []*big.Int{big.NewInt(1), big.NewInt(1)}}, 1},
+		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []types.DataSetID{1, 1}}, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -813,13 +871,13 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
 
@@ -831,7 +889,7 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 		},
 	}
 
-	mgr := &Manager{resolver: resolver, source: "test-app"}
+	mgr := &Service{resolver: resolver, source: "test-app"}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -855,19 +913,49 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: nil, PieceIDs: nil}, nil
+			return &CommitResult{DataSetID: types.DataSetID(0), PieceIDs: nil}, nil
 		},
 	}
-	mgr := &Manager{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when identifiers missing")
+	}
+	var ce *CommitError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want CommitError, got %T", err)
+	}
+}
+
+// TestManagerUpload_CommitResultZeroDataSetID proves that a commit result with
+// confirmed piece IDs but no assigned data set ID is still treated as invalid.
+func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
+	data := bytes.Repeat([]byte("zd"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.ProviderID(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: 0, PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+		},
+	}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+	if err == nil {
+		t.Fatal("expected CommitError when dataSetID is zero")
 	}
 	var ce *CommitError
 	if !errors.As(err, &ce) {
@@ -885,17 +973,17 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       big.NewInt(1),
+		id:       types.ProviderID(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: big.NewInt(1), PieceIDs: []*big.Int{big.NewInt(10)}}, nil
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       big.NewInt(2),
+		id:       types.ProviderID(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -905,7 +993,7 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(WithUploadResolver(&fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}))
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -917,25 +1005,25 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 
 func TestWithMaxSecondaryAttempts(t *testing.T) {
 	// Positive value is applied.
-	mgr := NewManager(WithMaxSecondaryAttempts(3))
+	mgr := mustNewService(t, Options{MaxSecondaryAttempts: 3})
 	if mgr.maxSecondaryAttempts != 3 {
 		t.Fatalf("maxSecondaryAttempts = %d, want 3", mgr.maxSecondaryAttempts)
 	}
 
 	// Zero is ignored; default of 5 is preserved.
-	mgr = NewManager(WithMaxSecondaryAttempts(0))
+	mgr = mustNewService(t, Options{MaxSecondaryAttempts: 0})
 	if mgr.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
 		t.Fatalf("maxSecondaryAttempts = %d after n=0, want default %d", mgr.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
 	}
 
 	// Negative value is ignored; default is preserved.
-	mgr = NewManager(WithMaxSecondaryAttempts(-1))
+	mgr = mustNewService(t, Options{MaxSecondaryAttempts: -1})
 	if mgr.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
 		t.Fatalf("maxSecondaryAttempts = %d after n=-1, want default %d", mgr.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
 	}
 
 	// Boundary: n=1 is accepted.
-	mgr = NewManager(WithMaxSecondaryAttempts(1))
+	mgr = mustNewService(t, Options{MaxSecondaryAttempts: 1})
 	if mgr.maxSecondaryAttempts != 1 {
 		t.Fatalf("maxSecondaryAttempts = %d after n=1, want 1", mgr.maxSecondaryAttempts)
 	}

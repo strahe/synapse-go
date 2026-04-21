@@ -4,6 +4,8 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 // ProductType mirrors the uint8 product-type enum used by the
@@ -17,7 +19,7 @@ const (
 
 // ProviderInfo is the canonical on-chain provider record.
 type ProviderInfo struct {
-	ID              *big.Int
+	ID              types.ProviderID
 	ServiceProvider common.Address
 	Payee           common.Address
 	Name            string
@@ -88,5 +90,5 @@ type ProviderFilter struct {
 	// ExcludeIDs is a set of provider IDs to skip. This supports the
 	// replacement-with-exclusion-set pattern required for secondary
 	// provider selection during multi-copy upload.
-	ExcludeIDs []*big.Int
+	ExcludeIDs []types.ProviderID
 }

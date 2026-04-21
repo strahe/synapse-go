@@ -2,14 +2,15 @@ package storage
 
 import (
 	"fmt"
-	"math/big"
 
 	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 // StoreError is returned when the primary store operation fails.
 type StoreError struct {
-	ProviderID *big.Int
+	ProviderID types.ProviderID
 	Endpoint   string
 	Cause      error
 }
@@ -19,9 +20,9 @@ func (e *StoreError) Error() string {
 		return "<nil>"
 	}
 	if e.Cause == nil {
-		return fmt.Sprintf("storage.StoreError: provider %s (%s)", bigIntString(e.ProviderID), e.Endpoint)
+		return fmt.Sprintf("storage.StoreError: provider %d (%s)", uint64(e.ProviderID), e.Endpoint)
 	}
-	return fmt.Sprintf("storage.StoreError: provider %s (%s): %v", bigIntString(e.ProviderID), e.Endpoint, e.Cause)
+	return fmt.Sprintf("storage.StoreError: provider %d (%s): %v", uint64(e.ProviderID), e.Endpoint, e.Cause)
 }
 
 func (e *StoreError) Unwrap() error {
@@ -34,7 +35,7 @@ func (e *StoreError) Unwrap() error {
 // CommitError is returned when all on-chain commit attempts fail and no copies
 // are stored. Individual per-provider failures are reported in UploadResult.FailedAttempts.
 type CommitError struct {
-	ProviderID *big.Int
+	ProviderID types.ProviderID
 	Endpoint   string
 	Cause      error
 }
@@ -44,9 +45,9 @@ func (e *CommitError) Error() string {
 		return "<nil>"
 	}
 	if e.Cause == nil {
-		return fmt.Sprintf("storage.CommitError: provider %s (%s)", bigIntString(e.ProviderID), e.Endpoint)
+		return fmt.Sprintf("storage.CommitError: provider %d (%s)", uint64(e.ProviderID), e.Endpoint)
 	}
-	return fmt.Sprintf("storage.CommitError: provider %s (%s): %v", bigIntString(e.ProviderID), e.Endpoint, e.Cause)
+	return fmt.Sprintf("storage.CommitError: provider %d (%s): %v", uint64(e.ProviderID), e.Endpoint, e.Cause)
 }
 
 func (e *CommitError) Unwrap() error {
@@ -103,11 +104,4 @@ func (e *CIDMismatchError) Error() string {
 	}
 	return fmt.Sprintf("storage.CIDMismatchError: pieceCID mismatch (computed v1=%s v2=%s, want %s)",
 		e.ComputedV1, e.ComputedV2, e.Expected)
-}
-
-func bigIntString(v *big.Int) string {
-	if v == nil {
-		return "<nil>"
-	}
-	return v.String()
 }

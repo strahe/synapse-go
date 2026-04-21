@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestParseUploadConfig_DefaultsToCalibrationAndTwoCopies(t *testing.T) {
@@ -76,8 +76,8 @@ func TestRunUpload_ReadsFileAndPrintsSummary(t *testing.T) {
 				RequestedCopies: 2,
 				Complete:        true,
 				Copies: []storage.CopyResult{
-					{ProviderID: big.NewInt(101), RetrievalURL: "https://sp.example.com/piece/" + info.CIDv2.String()},
-					{ProviderID: big.NewInt(202), RetrievalURL: "https://sp2.example.com/piece/" + info.CIDv2.String()},
+					{ProviderID: types.ProviderID(101), RetrievalURL: "https://sp.example.com/piece/" + info.CIDv2.String()},
+					{ProviderID: types.ProviderID(202), RetrievalURL: "https://sp2.example.com/piece/" + info.CIDv2.String()},
 				},
 			}, nil
 		},

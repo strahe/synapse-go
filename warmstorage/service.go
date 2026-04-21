@@ -10,6 +10,8 @@ import (
 
 	"github.com/strahe/synapse-go/internal/contracts/fwss"
 	"github.com/strahe/synapse-go/internal/contracts/fwssview"
+	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/types"
 )
 
 // EthClient is the minimal RPC surface the service needs. The interface is
@@ -103,73 +105,108 @@ func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
 
 // DataSetInfo mirrors FilecoinWarmStorageServiceDataSetInfoView.
 type DataSetInfo struct {
-	DataSetID       *big.Int
-	PDPRailID       *big.Int // payment rail for PDP proofs
-	CacheMissRailID *big.Int // payment rail for cache-miss egress
-	CDNRailID       *big.Int // payment rail for CDN egress
+	DataSetID       types.DataSetID
+	PDPRailID       types.RailID // payment rail for PDP proofs
+	CacheMissRailID types.RailID // payment rail for cache-miss egress
+	CDNRailID       types.RailID // payment rail for CDN egress
 	Payer           common.Address
 	Payee           common.Address
 	ServiceProvider common.Address
-	CommissionBps   *big.Int // commission rate in basis points (out of 10 000)
-	ClientDataSetID *big.Int // caller-assigned ID used in EIP-712 payloads
-	PDPEndEpoch     *big.Int // epoch at which PDP service expires; 0 = indefinite
-	ProviderID      *big.Int // numeric storage provider ID
+	CommissionBps   *big.Int              // commission rate in basis points (out of 10 000)
+	ClientDataSetID types.ClientDataSetID // caller-assigned ID used in EIP-712 payloads
+	PDPEndEpoch     types.Epoch           // epoch at which PDP service expires; 0 = indefinite
+	ProviderID      types.ProviderID      // numeric storage provider ID
 }
 
-func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) *DataSetInfo {
+func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) (*DataSetInfo, error) {
+	dsID, err := idconv.Safe[types.DataSetID]("DataSetID", v.DataSetId)
+	if err != nil {
+		return nil, err
+	}
+	pdpRail, err := idconv.Safe[types.RailID]("PDPRailID", v.PdpRailId)
+	if err != nil {
+		return nil, err
+	}
+	cacheRail, err := idconv.Safe[types.RailID]("CacheMissRailID", v.CacheMissRailId)
+	if err != nil {
+		return nil, err
+	}
+	cdnRail, err := idconv.Safe[types.RailID]("CDNRailID", v.CdnRailId)
+	if err != nil {
+		return nil, err
+	}
+	endEpoch, err := idconv.Safe[types.Epoch]("PDPEndEpoch", v.PdpEndEpoch)
+	if err != nil {
+		return nil, err
+	}
+	provID, err := idconv.Safe[types.ProviderID]("ProviderID", v.ProviderId)
+	if err != nil {
+		return nil, err
+	}
 	return &DataSetInfo{
-		DataSetID:       v.DataSetId,
-		PDPRailID:       v.PdpRailId,
-		CacheMissRailID: v.CacheMissRailId,
-		CDNRailID:       v.CdnRailId,
+		DataSetID:       dsID,
+		PDPRailID:       pdpRail,
+		CacheMissRailID: cacheRail,
+		CDNRailID:       cdnRail,
 		Payer:           v.Payer,
 		Payee:           v.Payee,
 		ServiceProvider: v.ServiceProvider,
-		CommissionBps:   v.CommissionBps,
-		ClientDataSetID: v.ClientDataSetId,
-		PDPEndEpoch:     v.PdpEndEpoch,
-		ProviderID:      v.ProviderId,
+		CommissionBps:   copyBigInt(v.CommissionBps),
+		ClientDataSetID: copyBigInt(v.ClientDataSetId),
+		PDPEndEpoch:     endEpoch,
+		ProviderID:      provID,
+	}, nil
+}
+
+func copyBigInt(v *big.Int) *big.Int {
+	if v == nil {
+		return nil
 	}
+	return new(big.Int).Set(v)
 }
 
 // GetDataSet returns the data set record for dataSetID. Returns an error
 // wrapping ErrNotFound when no such data set exists (the contract convention
 // is pdpRailId == 0 for "not found"). RPC or ABI errors are wrapped and
 // propagated as-is.
-func (s *Service) GetDataSet(ctx context.Context, dataSetID *big.Int) (*DataSetInfo, error) {
-	if dataSetID == nil {
-		return nil, fmt.Errorf("warmstorage.GetDataSet: %w: nil dataSetID", ErrInvalidArgument)
+func (s *Service) GetDataSet(ctx context.Context, dataSetID types.DataSetID) (*DataSetInfo, error) {
+	if dataSetID == 0 {
+		return nil, fmt.Errorf("warmstorage.GetDataSet: %w: zero dataSetID", ErrInvalidArgument)
 	}
-	v, err := s.viewBind.GetDataSet(&bind.CallOpts{Context: ctx}, dataSetID)
+	v, err := s.viewBind.GetDataSet(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", err)
 	}
 	if v.PdpRailId == nil || v.PdpRailId.Sign() == 0 {
 		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", ErrNotFound)
 	}
-	return toDataSetInfo(v), nil
+	info, err := toDataSetInfo(v)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", err)
+	}
+	return info, nil
 }
 
 // GetClientDataSets returns the paginated list of data sets owned by the
-// given payer. offset and limit follow the contract semantics (limit=0 means
-// "all remaining").
-func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, offset, limit *big.Int) ([]*DataSetInfo, error) {
+// given payer. opts.Limit == 0 means "all remaining starting from Offset",
+// matching the contract semantics.
+func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, opts types.ListOptions) ([]*DataSetInfo, error) {
 	if (payer == common.Address{}) {
 		return nil, fmt.Errorf("warmstorage.GetClientDataSets: %w: zero payer", ErrInvalidArgument)
 	}
-	if offset == nil {
-		offset = big.NewInt(0)
-	}
-	if limit == nil {
-		limit = big.NewInt(0)
-	}
+	offset := new(big.Int).SetUint64(opts.Offset)
+	limit := new(big.Int).SetUint64(opts.Limit)
 	raw, err := s.viewBind.GetClientDataSets(&bind.CallOpts{Context: ctx}, payer, offset, limit)
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetClientDataSets: %w", err)
 	}
 	out := make([]*DataSetInfo, 0, len(raw))
 	for _, v := range raw {
-		out = append(out, toDataSetInfo(v))
+		info, err := toDataSetInfo(v)
+		if err != nil {
+			return nil, fmt.Errorf("warmstorage.GetClientDataSets: %w", err)
+		}
+		out = append(out, info)
 	}
 	return out, nil
 }
@@ -179,11 +216,11 @@ func (s *Service) GetClientDataSets(ctx context.Context, payer common.Address, o
 // entries" (which the contract also returns when the dataset itself does not
 // exist — the two cases are indistinguishable at this layer). Mismatched
 // response lengths are treated as an RPC/ABI error.
-func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID *big.Int) (map[string]string, error) {
-	if dataSetID == nil {
-		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w: nil dataSetID", ErrInvalidArgument)
+func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID types.DataSetID) (map[string]string, error) {
+	if dataSetID == 0 {
+		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w: zero dataSetID", ErrInvalidArgument)
 	}
-	raw, err := s.viewBind.GetAllDataSetMetadata(&bind.CallOpts{Context: ctx}, dataSetID)
+	raw, err := s.viewBind.GetAllDataSetMetadata(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w", err)
 	}
@@ -210,19 +247,20 @@ func (s *Service) GetClientDataSetsLength(ctx context.Context, payer common.Addr
 }
 
 // GetApprovedProviderIDs returns the approved-provider id list (paginated).
-// limit=0 means all remaining starting from offset, matching the contract.
-func (s *Service) GetApprovedProviderIDs(ctx context.Context, offset, limit *big.Int) ([]*big.Int, error) {
-	if offset == nil {
-		offset = big.NewInt(0)
-	}
-	if limit == nil {
-		limit = big.NewInt(0)
-	}
+// opts.Limit == 0 means "all remaining starting from Offset", matching the
+// contract.
+func (s *Service) GetApprovedProviderIDs(ctx context.Context, opts types.ListOptions) ([]types.ProviderID, error) {
+	offset := new(big.Int).SetUint64(opts.Offset)
+	limit := new(big.Int).SetUint64(opts.Limit)
 	ids, err := s.viewBind.GetApprovedProviders(&bind.CallOpts{Context: ctx}, offset, limit)
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetApprovedProviderIDs: %w", err)
 	}
-	return ids, nil
+	out, err := idconv.SafeSlice[types.ProviderID]("ProviderID", ids)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetApprovedProviderIDs: %w", err)
+	}
+	return out, nil
 }
 
 // GetApprovedProvidersLength returns the total number of approved providers.
@@ -235,11 +273,11 @@ func (s *Service) GetApprovedProvidersLength(ctx context.Context) (*big.Int, err
 }
 
 // IsProviderApproved returns true if providerID is on the approved list.
-func (s *Service) IsProviderApproved(ctx context.Context, providerID *big.Int) (bool, error) {
-	if providerID == nil {
-		return false, fmt.Errorf("warmstorage.IsProviderApproved: %w: nil providerID", ErrInvalidArgument)
+func (s *Service) IsProviderApproved(ctx context.Context, providerID types.ProviderID) (bool, error) {
+	if providerID == 0 {
+		return false, fmt.Errorf("warmstorage.IsProviderApproved: %w: zero providerID", ErrInvalidArgument)
 	}
-	ok, err := s.viewBind.IsProviderApproved(&bind.CallOpts{Context: ctx}, providerID)
+	ok, err := s.viewBind.IsProviderApproved(&bind.CallOpts{Context: ctx}, idconv.Big(providerID))
 	if err != nil {
 		return false, fmt.Errorf("warmstorage.IsProviderApproved: %w", err)
 	}

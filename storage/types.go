@@ -1,9 +1,9 @@
 package storage
 
 import (
-	"math/big"
-
 	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 // CopyRole identifies the role a provider plays in a multi-copy upload.
@@ -86,17 +86,17 @@ type CommitRequest struct {
 
 // CommitResult is returned by a successful Commit call.
 type CommitResult struct {
-	TransactionID string   // on-chain transaction hash
-	DataSetID     *big.Int // data set that now holds the piece
-	PieceIDs      []*big.Int
+	TransactionID string          // on-chain transaction hash
+	DataSetID     types.DataSetID // data set that now holds the piece
+	PieceIDs      []types.PieceID
 	IsNewDataSet  bool // true when a new data set was created by this commit
 }
 
 // CopyResult describes one successfully committed copy.
 type CopyResult struct {
-	ProviderID   *big.Int
-	DataSetID    *big.Int
-	PieceID      *big.Int
+	ProviderID   types.ProviderID
+	DataSetID    types.DataSetID
+	PieceID      types.PieceID
 	Role         CopyRole
 	RetrievalURL string // HTTPS retrieval URL for this piece on the provider.
 	IsNewDataSet bool
@@ -104,7 +104,7 @@ type CopyResult struct {
 
 // FailedAttempt records a provider attempt that did not produce a copy.
 type FailedAttempt struct {
-	ProviderID *big.Int
+	ProviderID types.ProviderID
 	Role       CopyRole
 	Stage      CopyStage // pipeline stage where the failure occurred
 	Err        error
@@ -145,6 +145,38 @@ func (r *UploadResult) SuccessCount() int {
 	return len(r.Copies)
 }
 
+// PrimaryDataSetID returns the DataSetID of the primary copy.
+//
+// ok is false when no primary copy committed on-chain (even if secondaries
+// did). Callers that need precise provenance should inspect
+// [UploadResult.Copies] directly.
+func (r *UploadResult) PrimaryDataSetID() (types.DataSetID, bool) {
+	if r == nil {
+		return 0, false
+	}
+	for i := range r.Copies {
+		c := &r.Copies[i]
+		if c.Role != CopyRolePrimary {
+			continue
+		}
+		return c.DataSetID, true
+	}
+	return 0, false
+}
+
+// SuccessfulProviderIDs returns the ProviderID of every copy that committed
+// on-chain, in the order the copies appear in [UploadResult.Copies].
+func (r *UploadResult) SuccessfulProviderIDs() []types.ProviderID {
+	if r == nil || len(r.Copies) == 0 {
+		return nil
+	}
+	out := make([]types.ProviderID, 0, len(r.Copies))
+	for i := range r.Copies {
+		out = append(out, r.Copies[i].ProviderID)
+	}
+	return out
+}
+
 // PartialSuccess reports whether at least one copy was committed on-chain but
 // fewer than the requested number were obtained. Returns false when Complete is
 // true or when no copies succeeded at all.
@@ -165,11 +197,11 @@ type UploadOptions struct {
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
 	// ProviderIDs pins the upload to specific providers by ID.
-	ProviderIDs []*big.Int
+	ProviderIDs []types.ProviderID
 	// DataSetIDs pins the upload to specific existing data sets.
-	DataSetIDs []*big.Int
+	DataSetIDs []types.DataSetID
 	// ExcludeProviderIDs skips these providers during auto-selection.
-	ExcludeProviderIDs []*big.Int
+	ExcludeProviderIDs []types.ProviderID
 	// WithCDN enables CDN services for this upload.
 	WithCDN bool
 	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.

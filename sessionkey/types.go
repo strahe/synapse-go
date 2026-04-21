@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // LoginOptions configures a Login or LoginAndFund call. All fields are
@@ -30,62 +30,8 @@ type RevokeOptions struct {
 	Origin string
 }
 
-// WriteResult is returned by every state-changing call (Login, Revoke, etc.).
-//
-// Hash is always populated when WriteResult is non-nil — it is set as soon as
-// the transaction is broadcast. Receipt is populated only when the call was
-// made with WithWait(timeout) and the transaction was mined (successfully or
-// reverted) before the timeout elapsed.
-//
-// Error semantics (observe WriteResult and err together):
-//
-//   - WriteResult == nil, err != nil: pre-broadcast failure (validation,
-//     signing, or broadcast itself failed). The transaction was never
-//     submitted to the chain and it is safe to retry with fresh state.
-//   - WriteResult != nil, err == nil: transaction was broadcast successfully.
-//     Without WithWait, Receipt is nil. With WithWait, Receipt is non-nil and
-//     Status == 1 (successful execution).
-//   - WriteResult != nil, err != nil, Receipt == nil: WithWait timed out
-//     before a terminal receipt was returned, or receipt lookup failed. This
-//     includes both "not mined yet" and "already mined, but
-//     WithConfirmations(...) has not been satisfied yet". Hash is valid;
-//     callers can keep polling by Hash.
-//   - WriteResult != nil, err != nil, Receipt != nil: transaction was mined
-//     but execution reverted. err wraps ErrTxFailed (use errors.Is). Receipt
-//     carries the failed status and any logs emitted before revert.
-type WriteResult struct {
-	Hash    common.Hash
-	Receipt *types.Receipt
-}
-
-// WriteOption tunes the behaviour of a single state-changing call.
-type WriteOption func(*writeConfig)
-
-type writeConfig struct {
-	waitTimeout   time.Duration
-	confirmations uint64
-}
-
-func newWriteConfig(opts []WriteOption) writeConfig {
-	cfg := writeConfig{}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	return cfg
-}
-
-// WithWait makes the call block until the transaction is mined, or the
-// given timeout elapses. Use zero or a negative duration to return as soon
-// as the tx is broadcast (the default).
-func WithWait(timeout time.Duration) WriteOption {
-	return func(c *writeConfig) { c.waitTimeout = timeout }
-}
-
-// WithConfirmations requires N block confirmations in addition to WithWait.
-// Has no effect unless WithWait is also passed with a positive timeout.
-func WithConfirmations(n uint64) WriteOption {
-	return func(c *writeConfig) { c.confirmations = n }
-}
+// WriteResult is kept as an alias for backwards compatibility.
+type WriteResult = sdktypes.WriteResult
 
 // SessionKey represents a session key with its current authorization state.
 // It does not perform event watching — call GetExpirations to refresh.

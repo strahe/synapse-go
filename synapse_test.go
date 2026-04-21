@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/types"
 )
 
 // testKey returns a random ECDSA private key for testing.
@@ -572,7 +573,7 @@ func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	stats, err := client.FilBeam().GetDataSetStats(context.Background(), big.NewInt(123))
+	stats, err := client.FilBeam().GetDataSetStats(context.Background(), types.DataSetID(123))
 	if err != nil {
 		t.Fatalf("GetDataSetStats: %v", err)
 	}

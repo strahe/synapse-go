@@ -21,6 +21,7 @@ import (
 	icurio "github.com/strahe/synapse-go/internal/curio"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestContextStore_UploadsAndWaits(t *testing.T) {
@@ -73,6 +74,74 @@ func TestContextStore_UploadsAndWaits(t *testing.T) {
 	}
 }
 
+func TestNewContext_RejectsZeroDataSetID(t *testing.T) {
+	_, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithDataSetID(0))
+	if err == nil {
+		t.Fatal("expected error for zero dataSetID")
+	}
+}
+
+func TestNewContext_AllowsZeroClientDataSetID(t *testing.T) {
+	zero := big.NewInt(0)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithClientDataSetID(zero))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if ctx.clientDataSetID == nil {
+		t.Fatal("clientDataSetID should be stored")
+	}
+	if ctx.clientDataSetID.Sign() != 0 {
+		t.Fatalf("clientDataSetID = %s, want 0", ctx.clientDataSetID.String())
+	}
+}
+
+func TestContextPresignForCommit_GeneratesFullWidthClientDataSetID(t *testing.T) {
+	info := mustPieceInfo(t)
+	fullWidth := append([]byte{0x80}, make([]byte, 31)...)
+	nonce := append([]byte{0x01}, make([]byte, 31)...)
+	prev := randReader
+	randReader = bytes.NewReader(append(fullWidth, nonce...))
+	defer func() { randReader = prev }()
+
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+	want := new(big.Int).SetBytes(fullWidth)
+	if ctx.clientDataSetID == nil {
+		t.Fatal("clientDataSetID should be generated")
+	}
+	if ctx.clientDataSetID.Cmp(want) != 0 {
+		t.Fatalf("clientDataSetID = %s, want %s", ctx.clientDataSetID.String(), want.String())
+	}
+}
+
+func TestContextPresignForCommit_RandomFailureReturnsError(t *testing.T) {
+	info := mustPieceInfo(t)
+	prev := randReader
+	randReader = failingReader{err: errors.New("rng down")}
+	defer func() { randReader = prev }()
+
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); err == nil {
+		t.Fatal("expected random-source error")
+	}
+}
+
 func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
 	recordKeeper := testRecordKeeper()
@@ -120,12 +189,12 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 
 func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	info := mustPieceInfo(t)
-	dataSetID := big.NewInt(42)
+	dataSetID := types.DataSetID(42)
 
 	fake := &fakeCurioClient{
 		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
-			if gotDataSetID != dataSetID.Uint64() {
-				t.Fatalf("dataSetID=%d want %d", gotDataSetID, dataSetID.Uint64())
+			if gotDataSetID != uint64(dataSetID) {
+				t.Fatalf("dataSetID=%d want %d", gotDataSetID, uint64(dataSetID))
 			}
 			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
 				t.Fatalf("unexpected pieces: %+v", pieces)
@@ -141,7 +210,7 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 			}
 			return &icurio.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x01"),
-				DataSetID:         dataSetID.Uint64(),
+				DataSetID:         uint64(dataSetID),
 				PieceCount:        1,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
@@ -167,11 +236,82 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID.Cmp(dataSetID) != 0 {
-		t.Fatalf("dataSetID=%s want %s", got.DataSetID, dataSetID)
+	if got.DataSetID != dataSetID {
+		t.Fatalf("dataSetID=%d want %d", got.DataSetID, dataSetID)
 	}
-	if len(got.PieceIDs) != 1 || got.PieceIDs[0].Cmp(big.NewInt(7)) != 0 {
+	if len(got.PieceIDs) != 1 || got.PieceIDs[0] != types.PieceID(7) {
 		t.Fatalf("pieceIDs=%v want [7]", got.PieceIDs)
+	}
+}
+
+func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) {
+	info := mustPieceInfo(t)
+
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				DataSetID:         0,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	})
+	if err == nil {
+		t.Fatal("expected error for zero dataSetID in add-pieces status")
+	}
+}
+
+func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testing.T) {
+	info := mustPieceInfo(t)
+	expected := types.DataSetID(42)
+
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				DataSetID:         43,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(expected),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	})
+	if err == nil {
+		t.Fatal("expected error for mismatched dataSetID in add-pieces status")
 	}
 }
 
@@ -221,10 +361,10 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID.Cmp(big.NewInt(55)) != 0 {
-		t.Fatalf("dataSetID=%s want 55", got.DataSetID)
+	if got.DataSetID != types.DataSetID(55) {
+		t.Fatalf("dataSetID=%d want 55", got.DataSetID)
 	}
-	if ctx.dataSetID == nil || ctx.dataSetID.Cmp(big.NewInt(55)) != 0 {
+	if ctx.dataSetID == nil || *ctx.dataSetID != types.DataSetID(55) {
 		t.Fatalf("context dataSetID=%v want 55", ctx.dataSetID)
 	}
 }
@@ -339,7 +479,7 @@ func mustTestSigner(t *testing.T) signer.EVMSigner {
 
 func testProvider() Provider {
 	return Provider{
-		ID:              big.NewInt(1),
+		ID:              types.ProviderID(1),
 		ServiceURL:      "https://sp.example.com",
 		ServiceProvider: common.HexToAddress("0x1001"),
 		Payee:           common.HexToAddress("0x2002"),
@@ -363,6 +503,14 @@ type fakeCurioClient struct {
 	waitForAddedFn        func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 	createAndAddFn        func(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
+}
+
+type failingReader struct {
+	err error
+}
+
+func (r failingReader) Read(_ []byte) (int, error) {
+	return 0, r.err
 }
 
 func (f *fakeCurioClient) UploadPieceStreaming(ctx context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
@@ -398,13 +546,12 @@ func (f *fakeCurioClient) WaitForCreateDataSetAndAddPieces(ctx context.Context, 
 }
 
 // TestContextCommit_ExistingDataSet_LargeIDPreserved proves that a DataSetID
-// with the high bit set (value > math.MaxInt64) is not truncated when the
-// uint64 is converted to *big.Int.
+// with the high bit set (value > math.MaxInt64) is not truncated when moved
+// through the curio/context boundary.
 func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	info := mustPieceInfo(t)
-	// 1<<63 has the high bit set; int64(1<<63) == math.MinInt64 (wrong sign).
 	largeID := uint64(1) << 63
-	expectedBig := new(big.Int).SetUint64(largeID)
+	expected := types.DataSetID(largeID)
 
 	fake := &fakeCurioClient{
 		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
@@ -423,7 +570,7 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(big.NewInt(314159)),
-		WithDataSetID(expectedBig),
+		WithDataSetID(expected),
 		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
@@ -436,8 +583,8 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID.Cmp(expectedBig) != 0 {
-		t.Fatalf("DataSetID=%s want %s (uint64 high-bit truncation bug)", got.DataSetID, expectedBig)
+	if got.DataSetID != expected {
+		t.Fatalf("DataSetID=%d want %d (uint64 high-bit truncation bug)", got.DataSetID, expected)
 	}
 }
 
@@ -446,7 +593,7 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	info := mustPieceInfo(t)
 	largeID := uint64(math.MaxUint64) // all bits set; int64 cast gives -1
-	expectedBig := new(big.Int).SetUint64(largeID)
+	expected := types.DataSetID(largeID)
 
 	fake := &fakeCurioClient{
 		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
@@ -476,39 +623,12 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID.Cmp(expectedBig) != 0 {
-		t.Fatalf("DataSetID=%s want %s (uint64 high-bit truncation bug)", got.DataSetID, expectedBig)
+	if got.DataSetID != expected {
+		t.Fatalf("DataSetID=%d want %d (uint64 high-bit truncation bug)", got.DataSetID, expected)
 	}
 	// The context should also cache the correct value.
-	if ctx.dataSetID == nil || ctx.dataSetID.Cmp(expectedBig) != 0 {
-		t.Fatalf("cached dataSetID=%v want %s", ctx.dataSetID, expectedBig)
-	}
-}
-
-// TestContextPull_DataSetIDExceedsUint64ReturnsError proves that Pull returns
-// an explicit error when the stored dataSetID exceeds the uint64 range,
-// matching the explicit check already present in Commit.
-func TestContextPull_DataSetIDExceedsUint64ReturnsError(t *testing.T) {
-	info := mustPieceInfo(t)
-	// A value that cannot fit in uint64 (requires more than 64 bits).
-	overflowID := new(big.Int).Lsh(big.NewInt(1), 64) // 2^64
-
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
-		WithDataSetID(overflowID),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	_, err = ctx.Pull(context.Background(), PullRequest{
-		Pieces: []cid.Cid{info.CIDv2},
-		From:   func(c cid.Cid) string { return "https://primary.example.com/piece/" + c.String() },
-	})
-	if err == nil {
-		t.Fatal("expected error when dataSetID exceeds uint64, got nil")
+	if ctx.dataSetID == nil || *ctx.dataSetID != expected {
+		t.Fatalf("cached dataSetID=%v want %d", ctx.dataSetID, expected)
 	}
 }
 
@@ -517,7 +637,7 @@ func TestContextPull_DataSetIDExceedsUint64ReturnsError(t *testing.T) {
 // internal/curio.PullPieces requires RecordKeeper in all cases.
 func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
-	dataSetID := big.NewInt(42)
+	dataSetID := types.DataSetID(42)
 	rk := testRecordKeeper()
 
 	var capturedReq icurio.PullRequest
@@ -546,8 +666,8 @@ func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 	if capturedReq.RecordKeeper != rk {
 		t.Fatalf("RecordKeeper=%s want %s (existing-dataset pull must carry RecordKeeper)", capturedReq.RecordKeeper, rk)
 	}
-	if capturedReq.DataSetID != dataSetID.Uint64() {
-		t.Fatalf("DataSetID=%d want %d", capturedReq.DataSetID, dataSetID.Uint64())
+	if capturedReq.DataSetID != uint64(dataSetID) {
+		t.Fatalf("DataSetID=%d want %d", capturedReq.DataSetID, uint64(dataSetID))
 	}
 }
 
@@ -668,13 +788,8 @@ func TestContextProviderID(t *testing.T) {
 	}
 
 	got := ctx.ProviderID()
-	if got.Cmp(big.NewInt(1)) != 0 {
-		t.Fatalf("ProviderID()=%s want 1", got)
-	}
-	// Must return a copy, not the original
-	got.SetInt64(999)
-	if ctx.provider.ID.Cmp(big.NewInt(1)) != 0 {
-		t.Fatal("ProviderID must return a copy")
+	if got != types.ProviderID(1) {
+		t.Fatalf("ProviderID()=%d want 1", got)
 	}
 }
 
@@ -694,7 +809,7 @@ func TestContextServiceURL(t *testing.T) {
 func TestPieceURLFor_InvalidBaseURL(t *testing.T) {
 	ctx := &Context{
 		provider: Provider{
-			ID:         big.NewInt(1),
+			ID:         types.ProviderID(1),
 			ServiceURL: "://invalid-url",
 		},
 	}
@@ -718,17 +833,17 @@ func TestContextNewContext_ValidationErrors(t *testing.T) {
 			name:     "nil provider ID",
 			provider: Provider{ServiceURL: "https://sp.example.com"},
 			client:   &fakeCurioClient{},
-			wantErr:  "nil provider ID",
+			wantErr:  "zero provider ID",
 		},
 		{
 			name:     "empty service URL",
-			provider: Provider{ID: big.NewInt(1)},
+			provider: Provider{ID: types.ProviderID(1)},
 			client:   &fakeCurioClient{},
 			wantErr:  "empty provider service URL",
 		},
 		{
 			name:     "nil client",
-			provider: Provider{ID: big.NewInt(1), ServiceURL: "https://sp.example.com"},
+			provider: Provider{ID: types.ProviderID(1), ServiceURL: "https://sp.example.com"},
 			client:   nil,
 			wantErr:  "nil PDP client",
 		},
@@ -963,28 +1078,6 @@ func TestContextStore_WaitError(t *testing.T) {
 	}
 }
 
-func TestContextCommit_DataSetIDExceedsUint64(t *testing.T) {
-	info := mustPieceInfo(t)
-	overflowID := new(big.Int).Lsh(big.NewInt(1), 64)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
-		WithDataSetID(overflowID),
-		WithClientDataSetID(big.NewInt(99)),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	_, err = ctx.Commit(context.Background(), CommitRequest{
-		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
-		ExtraData: []byte{0x01},
-	})
-	if err == nil {
-		t.Fatal("expected error when dataSetID exceeds uint64")
-	}
-}
-
 func TestContextPull_EmptySourceURL(t *testing.T) {
 	info := mustPieceInfo(t)
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
@@ -1020,7 +1113,7 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(big.NewInt(314159)),
-		WithDataSetID(big.NewInt(42)),
+		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
@@ -1065,7 +1158,7 @@ func TestContextCommit_AddPiecesError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(big.NewInt(314159)),
-		WithDataSetID(big.NewInt(42)),
+		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
@@ -1094,7 +1187,7 @@ func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(big.NewInt(314159)),
-		WithDataSetID(big.NewInt(42)),
+		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {

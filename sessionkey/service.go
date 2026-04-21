@@ -17,6 +17,7 @@ import (
 	"github.com/strahe/synapse-go/internal/contracts/sessionkeyregistry"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // Backend is the minimal RPC surface used by the session key service. It is
@@ -31,7 +32,8 @@ type Backend interface {
 // contract. It handles login (authorization), revocation, and expiry queries.
 //
 // It is safe for concurrent use. All state-changing calls return a
-// WriteResult whose Receipt is only populated when WithWait is supplied.
+// [types.WriteResult] whose Receipt is only populated when WithWait is
+// supplied.
 type Service struct {
 	backend      Backend
 	chainID      *big.Int
@@ -108,13 +110,13 @@ func (s *Service) RegistryAddress() common.Address { return s.registryAddr }
 
 // Login authorises the given session key address with default options
 // (DefaultFWSSPermissions, 1 hour expiry, origin "synapse").
-func (s *Service) Login(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) Login(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	return s.LoginWithOptions(ctx, sessionKeyAddr, nil, opts...)
 }
 
 // LoginWithOptions authorises the given session key address with custom
 // login options.
-func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Address, loginOpts *LoginOptions, writeOpts ...WriteOption) (*WriteResult, error) {
+func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Address, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
 		return nil, errors.New("sessionkey.Login: nil signer")
 	}
@@ -146,12 +148,12 @@ func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Ad
 
 // LoginAndFund authorises a session key and transfers value (native FIL)
 // in the same transaction using the payable loginAndFund method.
-func (s *Service) LoginAndFund(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) LoginAndFund(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	return s.LoginAndFundWithOptions(ctx, sessionKeyAddr, value, nil, opts...)
 }
 
 // LoginAndFundWithOptions is the full-option variant of LoginAndFund.
-func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, loginOpts *LoginOptions, writeOpts ...WriteOption) (*WriteResult, error) {
+func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
 		return nil, errors.New("sessionkey.LoginAndFund: nil signer")
 	}
@@ -185,12 +187,12 @@ func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr co
 }
 
 // Revoke revokes default FWSS permissions from a session key.
-func (s *Service) Revoke(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) Revoke(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	return s.RevokeWithOptions(ctx, sessionKeyAddr, nil, opts...)
 }
 
 // RevokeWithOptions revokes specific permissions from a session key.
-func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.Address, revokeOpts *RevokeOptions, writeOpts ...WriteOption) (*WriteResult, error) {
+func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.Address, revokeOpts *RevokeOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if s.signer == nil {
 		return nil, errors.New("sessionkey.Revoke: nil signer")
 	}
@@ -342,9 +344,9 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	return txOpts, nil
 }
 
-func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*WriteResult, error) {
+func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
-	res := &WriteResult{Hash: tx.Hash()}
+	res := &sdktypes.WriteResult{Hash: tx.Hash()}
 
 	if cfg.waitTimeout <= 0 {
 		if s.nonces != nil {

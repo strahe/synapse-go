@@ -5,17 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 const maxSecondaryAttemptsDefault = 5
 
-// defaultDownloadTimeout is applied to the Manager's HTTP client for
+// defaultDownloadTimeout is applied to the Service's HTTP client for
 // URL-based downloads.  It is long enough for multi-GiB files transferred
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
@@ -23,7 +24,7 @@ const defaultDownloadTimeout = 24 * time.Hour
 // UploadContext abstracts a single provider's upload operations.
 // Implementations are returned by UploadResolver and are safe for concurrent use.
 type UploadContext interface {
-	ProviderID() *big.Int
+	ProviderID() types.ProviderID
 	ServiceURL() string
 	PieceURL(cid.Cid) string
 	Store(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
@@ -36,70 +37,58 @@ type UploadContext interface {
 // replacement candidates when a secondary provider fails.
 type UploadResolver interface {
 	ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
-	SelectReplacement(context.Context, map[string]struct{}, *UploadOptions) (UploadContext, error)
+	SelectReplacement(context.Context, map[types.ProviderID]struct{}, *UploadOptions) (UploadContext, error)
 }
 
-// Manager orchestrates multi-copy uploads and downloads.
-// Create with NewManager; configure via Option functions.
-type Manager struct {
+// Service orchestrates multi-copy uploads and downloads.
+// Create with New; configure via the [Options] struct.
+type Service struct {
 	resolver             UploadResolver
 	httpClient           *http.Client
 	source               string
 	maxSecondaryAttempts int
 }
 
-// Option configures a Manager.
-type Option func(*Manager)
+// Options configures a Service. Unset fields fall back to sensible defaults.
+type Options struct {
+	// Resolver selects providers for each upload and supplies replacement
+	// candidates when a secondary provider fails. A nil resolver is allowed
+	// so the Service can still serve DownloadFromContext / download-by-URL
+	// calls; Upload then returns a clean validation error.
+	Resolver UploadResolver
 
-// WithUploadResolver sets the resolver used to select providers for each upload.
-func WithUploadResolver(resolver UploadResolver) Option {
-	return func(m *Manager) {
-		m.resolver = resolver
-	}
+	// HTTPClient is used for URL-based downloads. nil installs a client with
+	// a 24-hour timeout — long enough for multi-GiB transfers over typical
+	// storage networks while preventing indefinite hangs.
+	HTTPClient *http.Client
+
+	// Source is the application identifier for dataset namespace isolation.
+	// Datasets with different Source values are treated as separate
+	// namespaces; reuse only occurs within the same Source.
+	Source string
+
+	// MaxSecondaryAttempts caps the number of provider candidates tried for
+	// each secondary copy slot before giving up. Values <= 0 select the
+	// default of 5.
+	MaxSecondaryAttempts int
 }
 
-// WithHTTPClient sets the HTTP client used for URL-based downloads.
-// Use this to inject custom timeouts, proxies, or transports.
-// If not provided, a client with defaultDownloadTimeout is used.
-func WithHTTPClient(c *http.Client) Option {
-	return func(m *Manager) {
-		m.httpClient = c
+// New creates a Service from the given Options.
+// The returned error is always nil today; callers should still check it for
+// forward compatibility.
+func New(opts Options) (*Service, error) {
+	if opts.HTTPClient == nil {
+		opts.HTTPClient = &http.Client{Timeout: defaultDownloadTimeout}
 	}
-}
-
-// WithSource sets the application source identifier for dataset namespace
-// isolation. Datasets with different source values are treated as separate
-// namespaces; reuse only occurs within the same source.
-func WithSource(s string) Option {
-	return func(m *Manager) {
-		m.source = s
+	if opts.MaxSecondaryAttempts <= 0 {
+		opts.MaxSecondaryAttempts = maxSecondaryAttemptsDefault
 	}
-}
-
-// WithMaxSecondaryAttempts sets the maximum number of provider candidates tried
-// for each secondary copy slot before giving up. Values <= 0 are ignored and
-// the default of 5 is used.
-func WithMaxSecondaryAttempts(n int) Option {
-	return func(m *Manager) {
-		if n > 0 {
-			m.maxSecondaryAttempts = n
-		}
-	}
-}
-
-// NewManager creates a Manager with the given options.
-// A default HTTP client with a 24-hour timeout is used unless overridden by WithHTTPClient.
-func NewManager(opts ...Option) *Manager {
-	m := &Manager{
-		httpClient:           &http.Client{Timeout: defaultDownloadTimeout},
-		maxSecondaryAttempts: maxSecondaryAttemptsDefault,
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(m)
-		}
-	}
-	return m
+	return &Service{
+		resolver:             opts.Resolver,
+		httpClient:           opts.HTTPClient,
+		source:               opts.Source,
+		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
+	}, nil
 }
 
 // Upload runs the multi-copy upload pipeline streaming from r in a single
@@ -110,30 +99,30 @@ func NewManager(opts ...Option) *Manager {
 // The reader is consumed once by the primary provider; secondary copies
 // are populated via server-to-server Pulls. On success the reader is
 // fully drained; on error it may be only partially consumed.
-func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
 	if r == nil {
-		return nil, errors.New("storage.Manager.Upload: nil reader")
+		return nil, errors.New("storage.Service.Upload: nil reader")
 	}
-	if m.resolver == nil {
-		return nil, errors.New("storage.Manager.Upload: no upload resolver configured")
+	if s.resolver == nil {
+		return nil, errors.New("storage.Service.Upload: no upload resolver configured")
 	}
 
 	// Inject manager-level source into dataset metadata if set and not
 	// already overridden by the caller.
-	if m.source != "" {
-		opts = m.withSourceMetadata(opts)
+	if s.source != "" {
+		opts = s.withSourceMetadata(opts)
 	}
 
 	// Capture the caller's intent before resolving (the resolver may return
 	// fewer contexts than requested; Complete must reflect the shortfall).
 	requestedCopies := requestedCopiesForUpload(opts)
 
-	contexts, explicitProviders, err := m.resolver.ResolveUploadContexts(ctx, opts)
+	contexts, explicitProviders, err := s.resolver.ResolveUploadContexts(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Manager.Upload: resolve contexts: %w", err)
+		return nil, fmt.Errorf("storage.Service.Upload: resolve contexts: %w", err)
 	}
 	if len(contexts) == 0 {
-		return nil, errors.New("storage.Manager.Upload: no upload contexts available")
+		return nil, errors.New("storage.Service.Upload: no upload contexts available")
 	}
 
 	primary := contexts[0]
@@ -158,9 +147,9 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		PieceMetadata: cloneMetadata(opts),
 	}}
 
-	usedProviders := make(map[string]struct{}, len(contexts))
+	usedProviders := make(map[types.ProviderID]struct{}, len(contexts))
 	for _, c := range contexts {
-		usedProviders[c.ProviderID().String()] = struct{}{}
+		usedProviders[c.ProviderID()] = struct{}{}
 	}
 
 	type successfulSecondary struct {
@@ -175,7 +164,7 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 
 	for _, secondary := range secondaries {
 		current := secondary
-		maxAttempts := m.maxSecondaryAttempts
+		maxAttempts := s.maxSecondaryAttempts
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			extraData, presignErr := current.PresignForCommit(ctx, pieceInputs)
 			if presignErr == nil {
@@ -218,12 +207,12 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			if explicitProviders || attempt == maxAttempts-1 {
 				break
 			}
-			replacement, replErr := m.resolver.SelectReplacement(ctx, usedProviders, opts)
+			replacement, replErr := s.resolver.SelectReplacement(ctx, usedProviders, opts)
 			if replErr != nil {
 				break
 			}
 			current = replacement
-			usedProviders[current.ProviderID().String()] = struct{}{}
+			usedProviders[current.ProviderID()] = struct{}{}
 		}
 	}
 
@@ -278,7 +267,7 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			})
 			continue
 		}
-		if outcome.result == nil || outcome.result.DataSetID == nil || len(outcome.result.PieceIDs) == 0 || outcome.result.PieceIDs[0] == nil {
+		if outcome.result == nil || outcome.result.DataSetID == 0 || len(outcome.result.PieceIDs) == 0 || outcome.result.PieceIDs[0] == 0 {
 			err := errors.New("commit result missing confirmed identifiers")
 			if target.role == CopyRolePrimary {
 				primaryCommitErr = err
@@ -295,8 +284,8 @@ func (m *Manager) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 
 		copies = append(copies, CopyResult{
 			ProviderID:   target.ctx.ProviderID(),
-			DataSetID:    new(big.Int).Set(outcome.result.DataSetID),
-			PieceID:      new(big.Int).Set(outcome.result.PieceIDs[0]),
+			DataSetID:    outcome.result.DataSetID,
+			PieceID:      outcome.result.PieceIDs[0],
 			Role:         target.role,
 			RetrievalURL: target.ctx.PieceURL(storeResult.PieceCID),
 			IsNewDataSet: outcome.result.IsNewDataSet,
@@ -340,20 +329,20 @@ func requestedCopiesForUpload(opts *UploadOptions) int {
 		return opts.Copies
 	}
 	if len(opts.DataSetIDs) > 0 {
-		return len(dedupeBigInts(opts.DataSetIDs))
+		return len(dedupeIDs(opts.DataSetIDs))
 	}
 	if len(opts.ProviderIDs) > 0 {
-		return len(dedupeBigInts(opts.ProviderIDs))
+		return len(dedupeIDs(opts.ProviderIDs))
 	}
 	return 2
 }
 
 // withSourceMetadata returns a shallow clone of opts with the manager-level
 // "source" key injected into DataSetMetadata, unless the caller already set it.
-func (m *Manager) withSourceMetadata(opts *UploadOptions) *UploadOptions {
+func (s *Service) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 	if opts == nil {
 		return &UploadOptions{
-			DataSetMetadata: map[string]string{"source": m.source},
+			DataSetMetadata: map[string]string{"source": s.source},
 		}
 	}
 	if _, ok := opts.DataSetMetadata["source"]; ok {
@@ -364,6 +353,6 @@ func (m *Manager) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 	for k, v := range opts.DataSetMetadata {
 		cloned.DataSetMetadata[k] = v
 	}
-	cloned.DataSetMetadata["source"] = m.source
+	cloned.DataSetMetadata["source"] = s.source
 	return &cloned
 }

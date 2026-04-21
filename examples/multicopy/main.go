@@ -126,13 +126,13 @@ func runMulticopy(ctx context.Context, cfg multicopyConfig, mgr uploader, stdout
 	w("complete=%t\n", result.Complete)
 	w("\nCopies (%d):\n", len(result.Copies))
 	for i, c := range result.Copies {
-		w("  [%d] provider=%s role=%s retrievalURL=%s\n",
+		w("  [%d] provider=%d role=%s retrievalURL=%s\n",
 			i+1, c.ProviderID, c.Role, c.RetrievalURL)
 	}
 	if len(result.FailedAttempts) > 0 {
 		w("\nFailed attempts (%d):\n", len(result.FailedAttempts))
 		for i, f := range result.FailedAttempts {
-			w("  [%d] provider=%s role=%s stage=%s err=%v\n",
+			w("  [%d] provider=%d role=%s stage=%s err=%v\n",
 				i+1, f.ProviderID, f.Role, f.Stage, f.Err)
 		}
 	}

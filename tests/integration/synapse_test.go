@@ -24,6 +24,7 @@ import (
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 const (
@@ -295,8 +296,8 @@ func TestIntegration(t *testing.T) {
 		}
 
 		for i, cp := range result.Copies {
-			if cp.ProviderID == nil || cp.ProviderID.Sign() <= 0 {
-				t.Errorf("Copy[%d].ProviderID invalid: %v", i, cp.ProviderID)
+			if cp.ProviderID == 0 {
+				t.Errorf("Copy[%d].ProviderID invalid: %d", i, cp.ProviderID)
 			}
 			if _, err := url.Parse(cp.RetrievalURL); err != nil {
 				t.Errorf("Copy[%d].RetrievalURL invalid: %v", i, err)
@@ -313,7 +314,7 @@ func TestIntegration(t *testing.T) {
 
 		if len(result.FailedAttempts) > 0 {
 			for _, fa := range result.FailedAttempts {
-				t.Logf("  failed attempt: provider=%s, role=%s, stage=%s, err=%v",
+				t.Logf("  failed attempt: provider=%d, role=%s, stage=%s, err=%v",
 					fa.ProviderID, fa.Role, fa.Stage, fa.Err)
 			}
 		}
@@ -443,15 +444,15 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Verify all providers are distinct.
-		seen := make(map[string]struct{})
+		seen := make(map[types.ProviderID]struct{})
 		for i, cp := range result.Copies {
-			if cp.ProviderID == nil {
-				t.Errorf("Copy[%d].ProviderID is nil", i)
+			if cp.ProviderID == 0 {
+				t.Errorf("Copy[%d].ProviderID is zero", i)
 				continue
 			}
-			pid := cp.ProviderID.String()
+			pid := cp.ProviderID
 			if _, dup := seen[pid]; dup {
-				t.Errorf("Copy[%d] has duplicate ProviderID: %s", i, pid)
+				t.Errorf("Copy[%d] has duplicate ProviderID: %d", i, pid)
 			}
 			seen[pid] = struct{}{}
 
@@ -466,12 +467,12 @@ func TestIntegration(t *testing.T) {
 		t.Logf("multicopy: cid=%s, copies=%d/%d",
 			result.PieceCID, len(result.Copies), result.RequestedCopies)
 		for i, cp := range result.Copies {
-			t.Logf("  copy[%d]: provider=%s, role=%s, url=%s",
+			t.Logf("  copy[%d]: provider=%d, role=%s, url=%s",
 				i, cp.ProviderID, cp.Role, cp.RetrievalURL)
 		}
 		if len(result.FailedAttempts) > 0 {
 			for _, fa := range result.FailedAttempts {
-				t.Logf("  failed: provider=%s, role=%s, stage=%s, err=%v",
+				t.Logf("  failed: provider=%d, role=%s, stage=%s, err=%v",
 					fa.ProviderID, fa.Role, fa.Stage, fa.Err)
 			}
 		}

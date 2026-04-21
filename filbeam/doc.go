@@ -10,5 +10,5 @@
 //	if err != nil {
 //		// handle error (e.g. unsupported chain)
 //	}
-//	stats, err := svc.GetDataSetStats(ctx, big.NewInt(12345))
+//	stats, err := svc.GetDataSetStats(ctx, types.DataSetID(12345))
 package filbeam

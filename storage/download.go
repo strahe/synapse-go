@@ -18,11 +18,17 @@ type DownloadContext interface {
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
-// DownloadOptions configures a Manager.Download call.
+// DownloadOptions configures a Service.Download call. Exactly one of Context
+// or URL must be set; supplying both, or neither, returns an error wrapping
+// [ErrInvalidDownloadOptions].
 type DownloadOptions struct {
 	Context DownloadContext // when set, delegates to DownloadContext.Download; mutually exclusive with URL
 	URL     string          // direct HTTPS URL; validated against pieceCID on read completion
 }
+
+// ErrInvalidDownloadOptions is returned when [DownloadOptions] is nil, empty,
+// or specifies more than one download source. Wrap with errors.Is to detect.
+var ErrInvalidDownloadOptions = errors.New("storage: invalid download options")
 
 // validatePieceCID returns nil if c is a valid PieceCIDv1 or PieceCIDv2, or
 // an error that describes why c is not a piece CID.  Arbitrary non-piece CIDs
@@ -45,23 +51,23 @@ func validatePieceCID(c cid.Cid) error {
 // used, the response body is streamed through a validating reader; the
 // terminal read error from io.ReadAll (or any last Read call that returns
 // io.EOF) carries the integrity check result — callers must not discard it.
-func (m *Manager) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
+func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
 	if err := validatePieceCID(pieceCID); err != nil {
-		return nil, fmt.Errorf("storage.Manager.Download: %w", err)
+		return nil, fmt.Errorf("storage.Service.Download: %w", err)
 	}
 	if opts == nil {
-		return nil, errors.New("storage.Manager.Download: nil options")
+		return nil, fmt.Errorf("storage.Service.Download: %w: options must not be nil", ErrInvalidDownloadOptions)
+	}
+	if opts.Context != nil && opts.URL != "" {
+		return nil, fmt.Errorf("storage.Service.Download: %w: Context and URL are mutually exclusive", ErrInvalidDownloadOptions)
 	}
 	if opts.Context != nil {
-		if opts.URL != "" {
-			return nil, errors.New("storage.Manager.Download: cannot specify both Context and URL")
-		}
 		return opts.Context.Download(ctx, pieceCID)
 	}
 	if opts.URL == "" {
-		return nil, errors.New("storage.Manager.Download: no download source configured")
+		return nil, fmt.Errorf("storage.Service.Download: %w: either Context or URL must be set", ErrInvalidDownloadOptions)
 	}
-	return m.downloadAndValidate(ctx, opts.URL, pieceCID)
+	return s.downloadAndValidate(ctx, opts.URL, pieceCID)
 }
 
 // Download retrieves a piece from the storage provider.  Validation is
@@ -70,7 +76,7 @@ func (m *Manager) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 //
 // pieceCID must be a PieceCIDv2.  PieceCIDv1 is not accepted on this path
 // because curio only accepts v2 and the raw size needed to normalise v1→v2 is
-// not available here.  Use Manager.Download with a URL if you only have v1.
+// not available here.  Use Service.Download with a URL if you only have v1.
 func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	if _, err := piece.ParseV2(pieceCID); err != nil {
 		return nil, fmt.Errorf("storage.Context.Download: PieceCIDv2 required: %w", err)
@@ -82,12 +88,12 @@ func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser
 	return newValidatingReadCloser(body, pieceCID), nil
 }
 
-func (m *Manager) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
+func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, &DownloadError{URL: rawURL, Cause: err}
 	}
-	resp, err := m.httpClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, &DownloadError{URL: rawURL, Cause: err}
 	}

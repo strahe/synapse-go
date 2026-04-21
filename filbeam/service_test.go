@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/types"
 )
 
 // newTestService builds a filbeam Service for tests. It panics on error.
@@ -71,7 +73,7 @@ func TestGetDataSetStats_Success(t *testing.T) {
 	cacheVal := "9876543210987654321"
 	_, svc := serveStats(t, cdnVal, cacheVal)
 
-	stats, err := svc.GetDataSetStats(context.Background(), big.NewInt(42))
+	stats, err := svc.GetDataSetStats(context.Background(), types.DataSetID(42))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,9 +87,20 @@ func TestGetDataSetStats_Success(t *testing.T) {
 	}
 }
 
+func TestGetDataSetStats_TypedDataSetIDSignature(t *testing.T) {
+	method, ok := reflect.TypeOf((*Service)(nil)).MethodByName("GetDataSetStats")
+	if !ok {
+		t.Fatal("GetDataSetStats method not found")
+	}
+	want := reflect.TypeOf(func(*Service, context.Context, types.DataSetID) (*DataSetStats, error) { return nil, nil })
+	if method.Type != want {
+		t.Fatalf("GetDataSetStats signature = %v, want %v", method.Type, want)
+	}
+}
+
 func TestGetDataSetStats_ZeroQuotas(t *testing.T) {
 	_, svc := serveStats(t, "0", "0")
-	stats, err := svc.GetDataSetStats(context.Background(), big.NewInt(1))
+	stats, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +123,7 @@ func TestGetDataSetStats_404(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), big.NewInt(99))
+	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(99))
 	if !errors.Is(err, ErrDataSetNotFound) {
 		t.Fatalf("expected ErrDataSetNotFound, got %v", err)
 	}
@@ -127,7 +140,7 @@ func TestGetDataSetStats_500(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), big.NewInt(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -144,7 +157,7 @@ func TestGetDataSetStats_InvalidJSON(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), big.NewInt(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -165,17 +178,9 @@ func TestGetDataSetStats_InvalidBigIntField(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), big.NewInt(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
 	if err == nil {
 		t.Fatal("expected error for non-numeric quota string")
-	}
-}
-
-func TestGetDataSetStats_NilDataSetID(t *testing.T) {
-	svc := newTestService(t, chain.Calibration)
-	_, err := svc.GetDataSetStats(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error for nil dataSetID")
 	}
 }
 

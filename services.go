@@ -101,31 +101,40 @@ func (c *Client) initServices() error {
 			if err != nil {
 				return nil, fmt.Errorf("create curio client for %s: %w", sel.Provider.ServiceURL, err)
 			}
+			ctxOpts := []storage.ContextOption{
+				storage.WithPayer(c.evmSigner.EVMAddress()),
+				storage.WithChainID(c.selectedChain.BigChainID()),
+				storage.WithRecordKeeper(c.addresses.FWSS),
+				storage.WithDataSetMetadata(sel.DataSetMetadata),
+				storage.WithCDN(opts != nil && opts.WithCDN),
+			}
+			if sel.DataSetID != nil {
+				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))
+			}
+			if sel.ClientDataSetID != nil {
+				ctxOpts = append(ctxOpts, storage.WithClientDataSetID(sel.ClientDataSetID))
+			}
 			return storage.NewContext(
 				sel.Provider,
 				curioClient,
 				c.evmSigner,
-				storage.WithPayer(c.evmSigner.EVMAddress()),
-				storage.WithChainID(c.selectedChain.BigChainID()),
-				storage.WithRecordKeeper(c.addresses.FWSS),
-				storage.WithDataSetID(sel.DataSetID),
-				storage.WithClientDataSetID(sel.ClientDataSetID),
-				storage.WithDataSetMetadata(sel.DataSetMetadata),
-				storage.WithCDN(opts != nil && opts.WithCDN),
+				ctxOpts...,
 			)
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("create storage resolver: %w", err)
 	}
-	managerOpts := []storage.Option{storage.WithUploadResolver(resolver)}
-	if c.httpClient != nil {
-		managerOpts = append(managerOpts, storage.WithHTTPClient(c.httpClient))
+	storageOpts := storage.Options{
+		Resolver:   resolver,
+		HTTPClient: c.httpClient,
+		Source:     c.source,
 	}
-	if c.source != "" {
-		managerOpts = append(managerOpts, storage.WithSource(c.source))
+	svc, err := storage.New(storageOpts)
+	if err != nil {
+		return fmt.Errorf("create storage service: %w", err)
 	}
-	c.storage = storage.NewManager(managerOpts...)
+	c.storage = svc
 
 	return nil
 }
@@ -160,11 +169,11 @@ func (c *Client) FilBeam() *filbeam.Service {
 	return c.filbeam
 }
 
-// Storage returns the [storage.Manager].
+// Storage returns the [storage.Service].
 //
-// The manager is wired with a [storage.ServiceResolver] that uses
+// The service is wired with a [storage.ServiceResolver] that uses
 // [WarmStorage] and [SPRegistry]. A per-provider curio client is
 // created inside the [storage.ContextFactory] closure on each upload.
-func (c *Client) Storage() *storage.Manager {
+func (c *Client) Storage() *storage.Service {
 	return c.storage
 }

@@ -104,7 +104,7 @@ func TestManagerDownload_URLValidatesPiece(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
 	if err != nil {
 		t.Fatalf("Download: %v", err)
@@ -126,7 +126,7 @@ func TestManagerDownload_ContextAndURLConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{
 		Context: fakeDownloadContext{},
 		URL:     "https://example.com",
@@ -134,8 +134,11 @@ func TestManagerDownload_ContextAndURLConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected conflict error")
 	}
-	if !strings.Contains(err.Error(), "cannot specify both") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrInvalidDownloadOptions) {
+		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutually-exclusive message, got: %v", err)
 	}
 }
 
@@ -165,7 +168,7 @@ func TestManagerDownload_WithHTTPClient(t *testing.T) {
 	customTransport := &recordingTransport{inner: http.DefaultTransport}
 	custom := &http.Client{Transport: customTransport}
 
-	mgr := NewManager(WithHTTPClient(custom))
+	mgr := mustNewService(t, Options{HTTPClient: custom})
 	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
 	if err != nil {
 		t.Fatalf("Download: %v", err)
@@ -185,7 +188,7 @@ func TestManagerDownload_WithHTTPClient(t *testing.T) {
 // TestManagerDownload_DefaultClientHasTimeout proves the default Manager has a
 // finite HTTP timeout (not zero / no-timeout like http.DefaultClient).
 func TestManagerDownload_DefaultClientHasTimeout(t *testing.T) {
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	if mgr.httpClient == nil {
 		t.Fatal("httpClient is nil")
 	}
@@ -237,7 +240,7 @@ func TestManagerDownload_URLAcceptsPieceCIDv1(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	reader, err := mgr.Download(context.Background(), info.CIDv1, &DownloadOptions{URL: server.URL})
 	if err != nil {
 		t.Fatalf("Manager.Download with v1 CID: %v", err)
@@ -261,7 +264,7 @@ func TestManagerDownload_RejectsNonPieceCID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cid.Parse: %v", err)
 	}
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err = mgr.Download(context.Background(), nonPiece, &DownloadOptions{URL: "https://example.com"})
 	if err == nil {
 		t.Fatal("expected error for non-piece CID, got nil")
@@ -297,7 +300,7 @@ func TestDownloadAndValidate_Non2xxStatus(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
 	if err == nil {
 		t.Fatal("expected error for non-2xx status")
@@ -321,7 +324,7 @@ func TestDownloadAndValidate_RequestCreationError(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	// A URL with an invalid control character triggers http.NewRequestWithContext failure
 	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: "http://example.com/\x7f"})
 	if err == nil {
@@ -346,10 +349,13 @@ func TestManagerDownload_NilOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err = mgr.Download(context.Background(), info.CIDv2, nil)
 	if err == nil {
 		t.Fatal("expected error for nil options")
+	}
+	if !errors.Is(err, ErrInvalidDownloadOptions) {
+		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
 	}
 }
 
@@ -359,9 +365,12 @@ func TestManagerDownload_NoSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	mgr := NewManager()
+	mgr := mustNewService(t, Options{})
 	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{})
 	if err == nil {
 		t.Fatal("expected error for no download source")
+	}
+	if !errors.Is(err, ErrInvalidDownloadOptions) {
+		t.Fatalf("expected ErrInvalidDownloadOptions, got: %v", err)
 	}
 }

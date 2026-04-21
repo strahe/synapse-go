@@ -52,7 +52,7 @@ type Client struct {
 	sessionKey  *sessionkey.Service
 	costs       *costs.Service
 	filbeam     *filbeam.Service
-	storage     *storage.Manager
+	storage     *storage.Service
 }
 
 // New creates a Client, connecting to the given RPC endpoint and

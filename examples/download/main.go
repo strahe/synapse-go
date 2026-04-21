@@ -42,7 +42,11 @@ func realMain(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return runDownload(ctx, cfg, managerDownloader{manager: storage.NewManager()})
+	svc, err := storage.New(storage.Options{})
+	if err != nil {
+		return fmt.Errorf("create storage service: %w", err)
+	}
+	return runDownload(ctx, cfg, managerDownloader{manager: svc})
 }
 
 func parseDownloadConfig(args []string) (downloadConfig, error) {
@@ -89,7 +93,7 @@ func runDownload(ctx context.Context, cfg downloadConfig, downloader pieceDownlo
 }
 
 type managerDownloader struct {
-	manager *storage.Manager
+	manager *storage.Service
 }
 
 func (d managerDownloader) DownloadPiece(ctx context.Context, pieceCID cid.Cid, pieceURL string) (io.ReadCloser, error) {

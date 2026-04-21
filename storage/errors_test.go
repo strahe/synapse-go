@@ -2,9 +2,10 @@ package storage
 
 import (
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestStoreError_Error(t *testing.T) {
@@ -19,18 +20,18 @@ func TestStoreError_Error(t *testing.T) {
 			wantPrefix: "<nil>",
 		},
 		{
-			name:       "nil ProviderID and nil Cause",
-			err:        &StoreError{ProviderID: nil, Endpoint: "https://sp.example.com"},
-			wantPrefix: "storage.StoreError: provider <nil>",
+			name:       "zero ProviderID and nil Cause",
+			err:        &StoreError{ProviderID: 0, Endpoint: "https://sp.example.com"},
+			wantPrefix: "storage.StoreError: provider 0",
 		},
 		{
 			name:       "with ProviderID, nil Cause",
-			err:        &StoreError{ProviderID: big.NewInt(42), Endpoint: "https://sp.example.com"},
+			err:        &StoreError{ProviderID: types.ProviderID(42), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.StoreError: provider 42",
 		},
 		{
 			name:       "with Cause",
-			err:        &StoreError{ProviderID: big.NewInt(7), Endpoint: "https://sp.example.com", Cause: errors.New("timeout")},
+			err:        &StoreError{ProviderID: types.ProviderID(7), Endpoint: "https://sp.example.com", Cause: errors.New("timeout")},
 			wantPrefix: "storage.StoreError: provider 7",
 			wantAlso:   "timeout",
 		},
@@ -68,18 +69,18 @@ func TestCommitError_Error(t *testing.T) {
 			wantPrefix: "<nil>",
 		},
 		{
-			name:       "nil ProviderID and nil Cause",
-			err:        &CommitError{ProviderID: nil, Endpoint: "https://sp.example.com"},
-			wantPrefix: "storage.CommitError: provider <nil>",
+			name:       "zero ProviderID and nil Cause",
+			err:        &CommitError{ProviderID: 0, Endpoint: "https://sp.example.com"},
+			wantPrefix: "storage.CommitError: provider 0",
 		},
 		{
 			name:       "with ProviderID, nil Cause",
-			err:        &CommitError{ProviderID: big.NewInt(99), Endpoint: "https://sp.example.com"},
+			err:        &CommitError{ProviderID: types.ProviderID(99), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.CommitError: provider 99",
 		},
 		{
 			name:       "with Cause",
-			err:        &CommitError{ProviderID: big.NewInt(5), Endpoint: "https://sp.example.com", Cause: errors.New("conflict")},
+			err:        &CommitError{ProviderID: types.ProviderID(5), Endpoint: "https://sp.example.com", Cause: errors.New("conflict")},
 			wantPrefix: "storage.CommitError: provider 5",
 			wantAlso:   "conflict",
 		},
@@ -102,24 +103,5 @@ func TestCommitError_Unwrap(t *testing.T) {
 	err := &CommitError{Cause: cause}
 	if !errors.Is(err.Unwrap(), cause) {
 		t.Fatalf("Unwrap()=%v want %v", err.Unwrap(), cause)
-	}
-}
-
-func TestBigIntString(t *testing.T) {
-	tests := []struct {
-		name string
-		v    *big.Int
-		want string
-	}{
-		{"nil", nil, "<nil>"},
-		{"zero", big.NewInt(0), "0"},
-		{"positive", big.NewInt(12345), "12345"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := bigIntString(tt.v); got != tt.want {
-				t.Fatalf("bigIntString()=%q want %q", got, tt.want)
-			}
-		})
 	}
 }

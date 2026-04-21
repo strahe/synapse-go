@@ -2,6 +2,7 @@ package spregistry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
+	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/types"
 )
 
 // EthClient is the minimal RPC surface the service needs. Tests can substitute
@@ -56,18 +59,22 @@ func (s *Service) Address() common.Address { return s.addr }
 // ErrNotFound when no such provider exists (contract convention: a zero
 // ServiceProvider address in the returned record). RPC or ABI errors are
 // wrapped and propagated as-is.
-func (s *Service) GetProvider(ctx context.Context, providerID *big.Int) (*ProviderInfo, error) {
-	if providerID == nil {
-		return nil, fmt.Errorf("spregistry.GetProvider: %w: nil providerID", ErrInvalidArgument)
+func (s *Service) GetProvider(ctx context.Context, providerID types.ProviderID) (*ProviderInfo, error) {
+	if providerID == 0 {
+		return nil, fmt.Errorf("spregistry.GetProvider: %w: zero providerID", ErrInvalidArgument)
 	}
-	v, err := s.contract.GetProvider(&bind.CallOpts{Context: ctx}, providerID)
+	v, err := s.contract.GetProvider(&bind.CallOpts{Context: ctx}, idconv.Big(providerID))
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProvider: %w", err)
 	}
 	if (v.Info.ServiceProvider == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.GetProvider: %w", ErrNotFound)
 	}
-	return fromRawView(v), nil
+	info, err := fromRawView(v)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetProvider: %w", err)
+	}
+	return info, nil
 }
 
 // GetProviderByAddress returns the provider record whose serviceProvider
@@ -84,29 +91,39 @@ func (s *Service) GetProviderByAddress(ctx context.Context, addr common.Address)
 	if (v.Info.ServiceProvider == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w", ErrNotFound)
 	}
-	return fromRawView(v), nil
+	info, err := fromRawView(v)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w", err)
+	}
+	return info, nil
 }
 
-// GetProviderIDByAddress returns the provider ID for addr. Returns 0 if the
-// address is not registered (contract convention). Callers that prefer a
-// typed error can check id.Sign() == 0 instead of a sentinel.
-func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Address) (*big.Int, error) {
+// GetProviderIDByAddress returns the provider ID for addr. Returns 0 when
+// addr is not registered (contract convention).
+func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Address) (types.ProviderID, error) {
 	if (addr == common.Address{}) {
-		return nil, fmt.Errorf("spregistry.GetProviderIDByAddress: %w: zero address", ErrInvalidArgument)
+		return 0, fmt.Errorf("spregistry.GetProviderIDByAddress: %w: zero address", ErrInvalidArgument)
 	}
 	id, err := s.contract.GetProviderIdByAddress(&bind.CallOpts{Context: ctx}, addr)
 	if err != nil {
-		return nil, fmt.Errorf("spregistry.GetProviderIDByAddress: %w", err)
+		return 0, fmt.Errorf("spregistry.GetProviderIDByAddress: %w", err)
 	}
-	return id, nil
+	if id == nil || id.Sign() == 0 {
+		return 0, nil
+	}
+	pid, err := idconv.Safe[types.ProviderID]("providerID", id)
+	if err != nil {
+		return 0, fmt.Errorf("spregistry.GetProviderIDByAddress: %w", err)
+	}
+	return pid, nil
 }
 
 // IsProviderActive returns true if the provider id is registered AND active.
-func (s *Service) IsProviderActive(ctx context.Context, providerID *big.Int) (bool, error) {
-	if providerID == nil {
-		return false, fmt.Errorf("spregistry.IsProviderActive: %w: nil providerID", ErrInvalidArgument)
+func (s *Service) IsProviderActive(ctx context.Context, providerID types.ProviderID) (bool, error) {
+	if providerID == 0 {
+		return false, fmt.Errorf("spregistry.IsProviderActive: %w: zero providerID", ErrInvalidArgument)
 	}
-	ok, err := s.contract.IsProviderActive(&bind.CallOpts{Context: ctx}, providerID)
+	ok, err := s.contract.IsProviderActive(&bind.CallOpts{Context: ctx}, idconv.Big(providerID))
 	if err != nil {
 		return false, fmt.Errorf("spregistry.IsProviderActive: %w", err)
 	}
@@ -136,31 +153,36 @@ func (s *Service) GetActiveProviderCount(ctx context.Context) (*big.Int, error) 
 // GetPDPProvider returns the provider + decoded PDP offering for providerID.
 // Returns an error wrapping ErrNotFound when the provider has no PDP product
 // registered.
-func (s *Service) GetPDPProvider(ctx context.Context, providerID *big.Int) (*PDPProvider, error) {
-	if providerID == nil {
-		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w: nil providerID", ErrInvalidArgument)
+func (s *Service) GetPDPProvider(ctx context.Context, providerID types.ProviderID) (*PDPProvider, error) {
+	if providerID == 0 {
+		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w: zero providerID", ErrInvalidArgument)
 	}
-	v, err := s.contract.GetProviderWithProduct(&bind.CallOpts{Context: ctx}, providerID, uint8(ProductTypePDP))
+	v, err := s.contract.GetProviderWithProduct(&bind.CallOpts{Context: ctx}, idconv.Big(providerID), uint8(ProductTypePDP))
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", err)
 	}
 	if (v.ProviderInfo.ServiceProvider == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", ErrNotFound)
 	}
-	return decodeProviderWithProduct(v)
+	provider, err := decodeProviderWithProduct(v)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", err)
+	}
+	return provider, nil
 }
 
 // GetPDPProviders lists PDP providers with pagination. When onlyActive is
 // true the registry filters out inactive providers BEFORE applying offset
-// and limit (matches the contract semantics).
-func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, offset, limit *big.Int) (*PaginatedPDPProviders, error) {
-	if offset == nil {
-		offset = big.NewInt(0)
+// and limit (matches the contract semantics). opts.Limit == 0 means the
+// service default (currently 50).
+func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, opts types.ListOptions) (*PaginatedPDPProviders, error) {
+	limit := opts.Limit
+	if limit == 0 {
+		limit = 50
 	}
-	if limit == nil {
-		limit = big.NewInt(50)
-	}
-	raw, err := s.contract.GetProvidersByProductType(&bind.CallOpts{Context: ctx}, uint8(ProductTypePDP), onlyActive, offset, limit)
+	offsetBig := new(big.Int).SetUint64(opts.Offset)
+	limitBig := new(big.Int).SetUint64(limit)
+	raw, err := s.contract.GetProvidersByProductType(&bind.CallOpts{Context: ctx}, uint8(ProductTypePDP), onlyActive, offsetBig, limitBig)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetPDPProviders: %w", err)
 	}
@@ -168,7 +190,7 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, offset, 
 	for _, p := range raw.Providers {
 		dec, err := decodeProviderWithProduct(p)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("spregistry.GetPDPProviders: %w", err)
 		}
 		if dec != nil {
 			out.Providers = append(out.Providers, *dec)
@@ -180,16 +202,12 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, offset, 
 // GetProvidersByIDs returns the provider records for the given ids, in the
 // same order. Entries whose validIds flag was false come back as nil.
 // An empty input slice returns an empty (non-nil) result slice.
-func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []*big.Int) ([]*ProviderInfo, error) {
+func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []types.ProviderID) ([]*ProviderInfo, error) {
 	if len(providerIDs) == 0 {
 		return []*ProviderInfo{}, nil
 	}
-	for i, id := range providerIDs {
-		if id == nil {
-			return nil, fmt.Errorf("spregistry.GetProvidersByIDs: %w: providerIDs[%d] is nil", ErrInvalidArgument, i)
-		}
-	}
-	raw, err := s.contract.GetProvidersByIds(&bind.CallOpts{Context: ctx}, providerIDs)
+	bigIDs := idconv.BigSlice(providerIDs)
+	raw, err := s.contract.GetProvidersByIds(&bind.CallOpts{Context: ctx}, bigIDs)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProvidersByIDs: %w", err)
 	}
@@ -201,7 +219,10 @@ func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []*big.Int)
 		if !raw.ValidIds[i] {
 			continue
 		}
-		info := fromRawView(raw.ProviderInfos[i])
+		info, err := fromRawView(raw.ProviderInfos[i])
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.GetProvidersByIDs: %w", err)
+		}
 		out[i] = info
 	}
 	return out, nil
@@ -230,27 +251,24 @@ func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter
 		maxSelectPages = 200 // safety cap: 200 × 50 = 10 000 providers
 	)
 
-	excludeSet := make(map[string]struct{}, len(f.ExcludeIDs))
+	excludeSet := make(map[types.ProviderID]struct{}, len(f.ExcludeIDs))
 	for _, id := range f.ExcludeIDs {
-		if id != nil {
-			excludeSet[id.String()] = struct{}{}
-		}
+		excludeSet[id] = struct{}{}
 	}
 
 	var all []PDPProvider
-	offset := big.NewInt(0)
-	limit := big.NewInt(pageSize)
+	offset := uint64(0)
 	for page := 0; ; page++ {
 		if page >= maxSelectPages {
 			return nil, fmt.Errorf("spregistry.SelectActivePDPProviders: pagination exceeded %d pages; possible RPC misbehaviour", maxSelectPages)
 		}
-		result, err := s.GetPDPProviders(ctx, true, offset, limit)
+		result, err := s.GetPDPProviders(ctx, true, types.ListOptions{Offset: offset, Limit: pageSize})
 		if err != nil {
 			return nil, fmt.Errorf("spregistry.SelectActivePDPProviders: %w", err)
 		}
 		for _, p := range result.Providers {
-			if p.Info.ID == nil {
-				continue // skip malformed entries with nil ID
+			if p.Info.ID == 0 {
+				return nil, errors.New("spregistry.SelectActivePDPProviders: provider list contains zero provider ID")
 			}
 			if matchesFilter(p, f, excludeSet) {
 				all = append(all, p)
@@ -259,22 +277,22 @@ func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter
 		if !result.HasMore {
 			break
 		}
-		offset = new(big.Int).Add(offset, limit)
+		offset += pageSize
 	}
 
 	sort.Slice(all, func(i, j int) bool {
-		return all[i].Info.ID.Cmp(all[j].Info.ID) < 0
+		return all[i].Info.ID < all[j].Info.ID
 	})
 	return all, nil
 }
 
 // matchesFilter returns true when p satisfies all criteria in f.
-// Providers with a nil ID are always rejected.
-func matchesFilter(p PDPProvider, f ProviderFilter, excludeSet map[string]struct{}) bool {
-	if p.Info.ID == nil {
+// Providers with a zero ID are always rejected.
+func matchesFilter(p PDPProvider, f ProviderFilter, excludeSet map[types.ProviderID]struct{}) bool {
+	if p.Info.ID == 0 {
 		return false
 	}
-	if _, excluded := excludeSet[p.Info.ID.String()]; excluded {
+	if _, excluded := excludeSet[p.Info.ID]; excluded {
 		return false
 	}
 	if f.PieceSizeBytes != nil && f.PieceSizeBytes.Sign() > 0 {
@@ -299,15 +317,19 @@ func matchesFilter(p PDPProvider, f ProviderFilter, excludeSet map[string]struct
 
 // --- helpers ---
 
-func fromRawView(v spr.ServiceProviderRegistryServiceProviderInfoView) *ProviderInfo {
+func fromRawView(v spr.ServiceProviderRegistryServiceProviderInfoView) (*ProviderInfo, error) {
+	id, err := idconv.Safe[types.ProviderID]("providerID", v.ProviderId)
+	if err != nil {
+		return nil, err
+	}
 	return &ProviderInfo{
-		ID:              v.ProviderId,
+		ID:              id,
 		ServiceProvider: v.Info.ServiceProvider,
 		Payee:           v.Info.Payee,
 		Name:            v.Info.Name,
 		Description:     v.Info.Description,
 		IsActive:        v.Info.IsActive,
-	}
+	}, nil
 }
 
 func decodeProviderWithProduct(v spr.ServiceProviderRegistryStorageProviderWithProduct) (*PDPProvider, error) {
@@ -316,9 +338,13 @@ func decodeProviderWithProduct(v spr.ServiceProviderRegistryStorageProviderWithP
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.decodeProviderWithProduct: %w", err)
 	}
+	id, err := idconv.Safe[types.ProviderID]("providerID", v.ProviderId)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.decodeProviderWithProduct: %w", err)
+	}
 	return &PDPProvider{
 		Info: ProviderInfo{
-			ID:              v.ProviderId,
+			ID:              id,
 			ServiceProvider: v.ProviderInfo.ServiceProvider,
 			Payee:           v.ProviderInfo.Payee,
 			Name:            v.ProviderInfo.Name,

@@ -10,25 +10,26 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/spregistry"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReusesMatchingDataSet(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		approvedProviderIDs: []*big.Int{big.NewInt(2), big.NewInt(1), big.NewInt(3)},
+		approvedProviderIDs: []types.ProviderID{2, 1, 3},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(1, "https://sp-1.example.com"),
 			testPDPProvider(2, "https://sp-2.example.com"),
 			testPDPProvider(3, "https://sp-3.example.com"),
 		},
 		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: big.NewInt(11), ProviderID: big.NewInt(1), PDPEndEpoch: big.NewInt(0)},
-			{DataSetID: big.NewInt(12), ProviderID: big.NewInt(1), PDPEndEpoch: big.NewInt(0)},
-			{DataSetID: big.NewInt(21), ProviderID: big.NewInt(2), PDPEndEpoch: big.NewInt(7)},
+			{DataSetID: 11, ProviderID: 1, PDPEndEpoch: 0},
+			{DataSetID: 12, ProviderID: 1, PDPEndEpoch: 0},
+			{DataSetID: 21, ProviderID: 2, PDPEndEpoch: 7},
 		},
-		dataSetMetadata: map[string]map[string]string{
-			"11": {"source": "app", "withCDN": ""},
-			"12": {"source": "other"},
+		dataSetMetadata: map[types.DataSetID]map[string]string{
+			11: {"source": "app", "withCDN": ""},
+			12: {"source": "other"},
 		},
 	})
 
@@ -48,11 +49,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 	}
 
 	got := contextsToFake(t, contexts)
-	if got[0].id.Cmp(big.NewInt(1)) != 0 || got[0].dataSetID.Cmp(big.NewInt(11)) != 0 {
-		t.Fatalf("first context provider=%s dataset=%s want provider=1 dataset=11", got[0].id, got[0].dataSetID)
+	if got[0].id != 1 || got[0].dataSetID == nil || *got[0].dataSetID != 11 {
+		t.Fatalf("first context provider=%d dataset=%v want provider=1 dataset=11", got[0].id, got[0].dataSetID)
 	}
-	if got[1].id.Cmp(big.NewInt(2)) != 0 {
-		t.Fatalf("second context provider=%s want 2", got[1].id)
+	if got[1].id != 2 {
+		t.Fatalf("second context provider=%d want 2", got[1].id)
 	}
 	if got[1].dataSetID != nil {
 		t.Fatalf("second context dataset=%v want nil", got[1].dataSetID)
@@ -64,21 +65,21 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 
 func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacement(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{
-			"7": ptrPDPProvider(testPDPProvider(7, "https://sp-7.example.com")),
-			"8": ptrPDPProvider(testPDPProvider(8, "https://sp-8.example.com")),
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			7: ptrPDPProvider(testPDPProvider(7, "https://sp-7.example.com")),
+			8: ptrPDPProvider(testPDPProvider(8, "https://sp-8.example.com")),
 		},
 		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: big.NewInt(71), ProviderID: big.NewInt(7), PDPEndEpoch: big.NewInt(0)},
+			{DataSetID: 71, ProviderID: 7, PDPEndEpoch: 0},
 		},
-		dataSetMetadata: map[string]map[string]string{
-			"71": {"source": "app"},
+		dataSetMetadata: map[types.DataSetID]map[string]string{
+			71: {"source": "app"},
 		},
 	})
 
 	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 		Copies:          2,
-		ProviderIDs:     []*big.Int{big.NewInt(7), big.NewInt(7), big.NewInt(8)},
+		ProviderIDs:     []types.ProviderID{7, 7, 8},
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
 	if err != nil {
@@ -91,17 +92,17 @@ func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacem
 	if len(got) != 2 {
 		t.Fatalf("contexts len=%d want 2", len(got))
 	}
-	if got[0].id.Cmp(big.NewInt(7)) != 0 || got[0].dataSetID.Cmp(big.NewInt(71)) != 0 {
+	if got[0].id != 7 || got[0].dataSetID == nil || *got[0].dataSetID != 71 {
 		t.Fatalf("first context=%+v", got[0])
 	}
-	if got[1].id.Cmp(big.NewInt(8)) != 0 || got[1].dataSetID != nil {
+	if got[1].id != 8 || got[1].dataSetID != nil {
 		t.Fatalf("second context=%+v", got[1])
 	}
 }
 
 func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		approvedProviderIDs: []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)},
+		approvedProviderIDs: []types.ProviderID{1, 2, 3},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(1, "https://sp-1.example.com"),
 			testPDPProvider(2, "https://sp-2.example.com"),
@@ -109,28 +110,28 @@ func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 		},
 	})
 
-	replacement, err := resolver.SelectReplacement(context.Background(), map[string]struct{}{
-		"1": {},
-		"2": {},
+	replacement, err := resolver.SelectReplacement(context.Background(), map[types.ProviderID]struct{}{
+		1: {},
+		2: {},
 	}, &UploadOptions{})
 	if err != nil {
 		t.Fatalf("SelectReplacement: %v", err)
 	}
 	got := replacement.(*fakeUploadContext)
-	if got.id.Cmp(big.NewInt(3)) != 0 {
-		t.Fatalf("replacement provider=%s want 3", got.id)
+	if got.id != 3 {
+		t.Fatalf("replacement provider=%d want 3", got.id)
 	}
 }
 
 func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnership(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			"33": {DataSetID: big.NewInt(33), ProviderID: big.NewInt(5), Payer: common.HexToAddress("0x00000000000000000000000000000000000000ff"), PDPEndEpoch: big.NewInt(0)},
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{
+			33: {DataSetID: 33, ProviderID: 5, Payer: common.HexToAddress("0x00000000000000000000000000000000000000ff"), PDPEndEpoch: 0},
 		},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(33)},
+		DataSetIDs: []types.DataSetID{33},
 	})
 	if err == nil || err.Error() == "" {
 		t.Fatal("expected ownership error")
@@ -138,12 +139,12 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnershi
 }
 
 type serviceResolverFixture struct {
-	approvedProviderIDs []*big.Int
+	approvedProviderIDs []types.ProviderID
 	activeProviders     []spregistry.PDPProvider
 	clientDataSets      []*warmstorage.DataSetInfo
-	dataSetMetadata     map[string]map[string]string
-	providersByID       map[string]*spregistry.PDPProvider
-	dataSetsByID        map[string]*warmstorage.DataSetInfo
+	dataSetMetadata     map[types.DataSetID]map[string]string
+	providersByID       map[types.ProviderID]*spregistry.PDPProvider
+	dataSetsByID        map[types.DataSetID]*warmstorage.DataSetInfo
 }
 
 func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
@@ -156,8 +157,8 @@ func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *Servi
 			return &fakeUploadContext{
 				id:              selection.Provider.ID,
 				endpoint:        selection.Provider.ServiceURL,
-				dataSetID:       copyBigInt(selection.DataSetID),
-				clientDataSetID: copyBigInt(selection.ClientDataSetID),
+				dataSetID:       selection.DataSetID,
+				clientDataSetID: selection.ClientDataSetID,
 				dataSetMetadata: cloneStringMap(selection.DataSetMetadata),
 			}, nil
 		},
@@ -172,18 +173,18 @@ type fakePDPProviderSource struct {
 	fixture serviceResolverFixture
 }
 
-func (f *fakePDPProviderSource) GetPDPProvider(_ context.Context, providerID *big.Int) (*spregistry.PDPProvider, error) {
-	if providerID == nil {
-		return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w: nil providerID", spregistry.ErrInvalidArgument)
+func (f *fakePDPProviderSource) GetPDPProvider(_ context.Context, providerID types.ProviderID) (*spregistry.PDPProvider, error) {
+	if providerID == 0 {
+		return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w: zero providerID", spregistry.ErrInvalidArgument)
 	}
 	if f.fixture.providersByID != nil {
-		if p, ok := f.fixture.providersByID[providerID.String()]; ok && p != nil {
+		if p, ok := f.fixture.providersByID[providerID]; ok && p != nil {
 			return p, nil
 		}
 		return nil, fmt.Errorf("fakePDPProviderSource.GetPDPProvider: %w", spregistry.ErrNotFound)
 	}
 	for _, provider := range f.fixture.activeProviders {
-		if provider.Info.ID.Cmp(providerID) == 0 {
+		if provider.Info.ID == providerID {
 			return ptrPDPProvider(provider), nil
 		}
 	}
@@ -205,11 +206,13 @@ type fakeDataSetCatalog struct {
 	fixture serviceResolverFixture
 }
 
-func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, _, _ *big.Int) ([]*big.Int, error) {
-	return cloneBigInts(f.fixture.approvedProviderIDs), nil
+func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, _ types.ListOptions) ([]types.ProviderID, error) {
+	out := make([]types.ProviderID, len(f.fixture.approvedProviderIDs))
+	copy(out, f.fixture.approvedProviderIDs)
+	return out, nil
 }
 
-func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Address, _, _ *big.Int) ([]*warmstorage.DataSetInfo, error) {
+func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Address, _ types.ListOptions) ([]*warmstorage.DataSetInfo, error) {
 	out := make([]*warmstorage.DataSetInfo, 0, len(f.fixture.clientDataSets))
 	for _, dataSet := range f.fixture.clientDataSets {
 		cloned := *dataSet
@@ -218,11 +221,11 @@ func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Addre
 	return out, nil
 }
 
-func (f *fakeDataSetCatalog) GetDataSet(_ context.Context, dataSetID *big.Int) (*warmstorage.DataSetInfo, error) {
+func (f *fakeDataSetCatalog) GetDataSet(_ context.Context, dataSetID types.DataSetID) (*warmstorage.DataSetInfo, error) {
 	if f.fixture.dataSetsByID == nil {
 		return nil, fmt.Errorf("fakeDataSetCatalog.GetDataSet: %w", warmstorage.ErrNotFound)
 	}
-	dataSet := f.fixture.dataSetsByID[dataSetID.String()]
+	dataSet := f.fixture.dataSetsByID[dataSetID]
 	if dataSet == nil {
 		return nil, fmt.Errorf("fakeDataSetCatalog.GetDataSet: %w", warmstorage.ErrNotFound)
 	}
@@ -230,19 +233,19 @@ func (f *fakeDataSetCatalog) GetDataSet(_ context.Context, dataSetID *big.Int) (
 	return &cloned, nil
 }
 
-func (f *fakeDataSetCatalog) GetAllDataSetMetadata(_ context.Context, dataSetID *big.Int) (map[string]string, error) {
+func (f *fakeDataSetCatalog) GetAllDataSetMetadata(_ context.Context, dataSetID types.DataSetID) (map[string]string, error) {
 	if f.fixture.dataSetMetadata == nil {
 		return map[string]string{}, nil
 	}
-	return cloneStringMap(f.fixture.dataSetMetadata[dataSetID.String()]), nil
+	return cloneStringMap(f.fixture.dataSetMetadata[dataSetID]), nil
 }
 
-func testPDPProvider(id int64, serviceURL string) spregistry.PDPProvider {
+func testPDPProvider(id types.ProviderID, serviceURL string) spregistry.PDPProvider {
 	return spregistry.PDPProvider{
 		Info: spregistry.ProviderInfo{
-			ID:              big.NewInt(id),
-			ServiceProvider: common.HexToAddress(fmt.Sprintf("0x%040x", id)),
-			Payee:           common.HexToAddress(fmt.Sprintf("0x%040x", id+100)),
+			ID:              id,
+			ServiceProvider: common.HexToAddress(fmt.Sprintf("0x%040x", uint64(id))),
+			Payee:           common.HexToAddress(fmt.Sprintf("0x%040x", uint64(id)+100)),
 			IsActive:        true,
 		},
 		Offering: spregistry.PDPOffering{ServiceURL: serviceURL},
@@ -254,9 +257,9 @@ func ptrPDPProvider(provider spregistry.PDPProvider) *spregistry.PDPProvider {
 	return &cp
 }
 
-func containsExcludedProvider(values []*big.Int, target *big.Int) bool {
+func containsExcludedProvider(values []types.ProviderID, target types.ProviderID) bool {
 	for _, value := range values {
-		if value != nil && value.Cmp(target) == 0 {
+		if value == target {
 			return true
 		}
 	}
@@ -282,12 +285,12 @@ func contextsToFake(t *testing.T, contexts []UploadContext) []*fakeUploadContext
 func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.T) {
 	clientDataSetID := big.NewInt(0xABCD)
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		approvedProviderIDs: []*big.Int{big.NewInt(1)},
+		approvedProviderIDs: []types.ProviderID{1},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(1, "https://sp-1.example.com"),
 		},
 		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: big.NewInt(11), ProviderID: big.NewInt(1), PDPEndEpoch: big.NewInt(0), ClientDataSetID: clientDataSetID},
+			{DataSetID: 11, ProviderID: 1, PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
 		},
 	})
 
@@ -300,7 +303,7 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 	}
 	got := contextsToFake(t, contexts)
 	if got[0].clientDataSetID == nil || got[0].clientDataSetID.Cmp(clientDataSetID) != 0 {
-		t.Fatalf("clientDataSetID=%v want %s (ClientDataSetID not threaded through resolver)", got[0].clientDataSetID, clientDataSetID)
+		t.Fatalf("clientDataSetID=%v want %s (ClientDataSetID not threaded through resolver)", got[0].clientDataSetID, clientDataSetID.String())
 	}
 }
 
@@ -309,21 +312,21 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 // (PDPEndEpoch == 0), matching the behaviour of autoSelect.
 func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsRejectsInactive(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			"55": {
-				DataSetID:   big.NewInt(55),
-				ProviderID:  big.NewInt(5),
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{
+			55: {
+				DataSetID:   55,
+				ProviderID:  5,
 				Payer:       testPayer(),
-				PDPEndEpoch: big.NewInt(1000), // non-zero: inactive
+				PDPEndEpoch: 1000, // non-zero: inactive
 			},
 		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			"5": ptrPDPProvider(testPDPProvider(5, "https://sp-5.example.com")),
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			5: ptrPDPProvider(testPDPProvider(5, "https://sp-5.example.com")),
 		},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(55)},
+		DataSetIDs: []types.DataSetID{55},
 	})
 	if err == nil {
 		t.Fatal("expected error for inactive dataset, got nil")
@@ -365,9 +368,9 @@ func TestWithCopies(t *testing.T) {
 		Copies:             1,
 		PieceMetadata:      map[string]string{"pk": "pv"},
 		DataSetMetadata:    map[string]string{"dk": "dv"},
-		ProviderIDs:        []*big.Int{big.NewInt(1)},
-		DataSetIDs:         []*big.Int{big.NewInt(2)},
-		ExcludeProviderIDs: []*big.Int{big.NewInt(3)},
+		ProviderIDs:        []types.ProviderID{1},
+		DataSetIDs:         []types.DataSetID{2},
+		ExcludeProviderIDs: []types.ProviderID{3},
 	}
 	cloned := withCopies(orig, 5)
 	if cloned.Copies != 5 {
@@ -382,17 +385,17 @@ func TestWithCopies(t *testing.T) {
 	if orig.PieceMetadata["pk"] != "pv" {
 		t.Fatal("PieceMetadata clone mutated original")
 	}
-	// Cloned slices must be independent (deep clone of *big.Int elements)
-	cloned.ProviderIDs[0] = big.NewInt(99)
-	if orig.ProviderIDs[0].Cmp(big.NewInt(1)) != 0 {
+	// Cloned slices must be independent
+	cloned.ProviderIDs[0] = 99
+	if orig.ProviderIDs[0] != 1 {
 		t.Fatal("ProviderIDs clone mutated original")
 	}
-	cloned.DataSetIDs[0] = big.NewInt(99)
-	if orig.DataSetIDs[0].Cmp(big.NewInt(2)) != 0 {
+	cloned.DataSetIDs[0] = 99
+	if orig.DataSetIDs[0] != 2 {
 		t.Fatal("DataSetIDs clone mutated original")
 	}
-	cloned.ExcludeProviderIDs[0] = big.NewInt(99)
-	if orig.ExcludeProviderIDs[0].Cmp(big.NewInt(3)) != 0 {
+	cloned.ExcludeProviderIDs[0] = 99
+	if orig.ExcludeProviderIDs[0] != 3 {
 		t.Fatal("ExcludeProviderIDs clone mutated original")
 	}
 }
@@ -400,21 +403,21 @@ func TestWithCopies(t *testing.T) {
 func TestResolveByDataSetIDs_SameProviderError(t *testing.T) {
 	// Two datasets resolving to the same provider — should yield an error
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
-			"20": {DataSetID: big.NewInt(20), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{
+			10: {DataSetID: 10, ProviderID: 1, Payer: testPayer(), PDPEndEpoch: 0},
+			20: {DataSetID: 20, ProviderID: 1, Payer: testPayer(), PDPEndEpoch: 0},
 		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			1: ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
 		},
-		dataSetMetadata: map[string]map[string]string{
-			"10": {},
-			"20": {},
+		dataSetMetadata: map[types.DataSetID]map[string]string{
+			10: {},
+			20: {},
 		},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(10), big.NewInt(20)},
+		DataSetIDs: []types.DataSetID{10, 20},
 	})
 	if err == nil {
 		t.Fatal("expected duplicate provider error")
@@ -423,11 +426,11 @@ func TestResolveByDataSetIDs_SameProviderError(t *testing.T) {
 
 func TestResolveByDataSetIDs_NilDataSetError(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{},
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(999)},
+		DataSetIDs: []types.DataSetID{999},
 	})
 	if err == nil {
 		t.Fatal("expected error for nonexistent dataset")
@@ -439,14 +442,14 @@ func TestResolveByDataSetIDs_NilDataSetError(t *testing.T) {
 
 func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(99), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{
+			10: {DataSetID: 10, ProviderID: 99, Payer: testPayer(), PDPEndEpoch: 0},
 		},
-		providersByID: map[string]*spregistry.PDPProvider{},
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(10)},
+		DataSetIDs: []types.DataSetID{10},
 	})
 	if err == nil {
 		t.Fatal("expected error for missing provider")
@@ -458,17 +461,17 @@ func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
 
 func TestResolveByDataSetIDs_CountMismatchError(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			"10": {DataSetID: big.NewInt(10), ProviderID: big.NewInt(1), Payer: testPayer(), PDPEndEpoch: big.NewInt(0)},
+		dataSetsByID: map[types.DataSetID]*warmstorage.DataSetInfo{
+			10: {DataSetID: 10, ProviderID: 1, Payer: testPayer(), PDPEndEpoch: 0},
 		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			1: ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
 		},
 	})
 
 	// Copies=3 but only 1 dataset ID
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []*big.Int{big.NewInt(10)},
+		DataSetIDs: []types.DataSetID{10},
 		Copies:     3,
 	})
 	if err == nil {
@@ -478,15 +481,15 @@ func TestResolveByDataSetIDs_CountMismatchError(t *testing.T) {
 
 func TestSelectReplacement_ErrorFromAutoSelect(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		approvedProviderIDs: []*big.Int{big.NewInt(1)},
+		approvedProviderIDs: []types.ProviderID{1},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(1, "https://sp-1.example.com"),
 		},
 	})
 
 	// Exclude all providers → should fail
-	_, err := resolver.SelectReplacement(context.Background(), map[string]struct{}{
-		"1": {},
+	_, err := resolver.SelectReplacement(context.Background(), map[types.ProviderID]struct{}{
+		1: {},
 	}, &UploadOptions{})
 	if err == nil {
 		t.Fatal("expected error when all providers excluded")
@@ -544,13 +547,13 @@ func TestNewServiceResolver_ValidationErrors(t *testing.T) {
 
 func TestResolveByProviderIDs_CountMismatchError(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{
-			"1": ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			1: ptrPDPProvider(testPDPProvider(1, "https://sp-1.example.com")),
 		},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []*big.Int{big.NewInt(1)},
+		ProviderIDs: []types.ProviderID{1},
 		Copies:      3,
 	})
 	if err == nil {
@@ -560,33 +563,32 @@ func TestResolveByProviderIDs_CountMismatchError(t *testing.T) {
 
 func TestResolveByProviderIDs_ProviderNotFound(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{},
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{},
 	})
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []*big.Int{big.NewInt(999)},
+		ProviderIDs: []types.ProviderID{999},
 	})
 	if err == nil {
 		t.Fatal("expected error for missing provider")
 	}
 }
 
-func TestDedupeBigInts(t *testing.T) {
+func TestDedupeIDs(t *testing.T) {
 	tests := []struct {
 		name string
-		in   []*big.Int
+		in   []types.ProviderID
 		want int
 	}{
 		{"empty", nil, 0},
-		{"with nils", []*big.Int{nil, nil}, 0},
-		{"duplicates", []*big.Int{big.NewInt(1), big.NewInt(1), big.NewInt(2)}, 2},
-		{"all unique", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)}, 3},
+		{"duplicates", []types.ProviderID{1, 1, 2}, 2},
+		{"all unique", []types.ProviderID{1, 2, 3}, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dedupeBigInts(tt.in)
+			got := dedupeIDs(tt.in)
 			if len(got) != tt.want {
-				t.Fatalf("dedupeBigInts len=%d want %d", len(got), tt.want)
+				t.Fatalf("dedupeIDs len=%d want %d", len(got), tt.want)
 			}
 		})
 	}

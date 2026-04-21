@@ -16,6 +16,7 @@ import (
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // Backend is the minimal RPC surface used by the payments service. It is
@@ -31,7 +32,8 @@ type Backend interface {
 // plus convenience wrappers around ERC20 allowance management.
 //
 // It is safe for concurrent use. All state-changing calls return a
-// WriteResult whose Receipt is only populated when WithWait is supplied.
+// [types.WriteResult] whose Receipt is only populated when WithWait is
+// supplied.
 type Service struct {
 	backend     Backend
 	chainID     *big.Int
@@ -251,7 +253,7 @@ func (s *Service) ServiceApproval(ctx context.Context, token, client, operator c
 //
 // spender is typically the FilPay contract address; use service.Address()
 // for that convenience.
-func (s *Service) Approve(ctx context.Context, token, spender common.Address, amount *big.Int, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) Approve(ctx context.Context, token, spender common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.requireSigner("Approve"); err != nil {
 		return nil, err
 	}
@@ -283,7 +285,7 @@ func (s *Service) Approve(ctx context.Context, token, spender common.Address, am
 // Deposit calls FilPay.deposit(token, to, amount). The caller must have
 // first approved at least `amount` on the token contract for FilPay.
 // When `to` is the zero address the caller's EOA is used.
-func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount *big.Int, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.requireSigner("Deposit"); err != nil {
 		return nil, err
 	}
@@ -332,7 +334,7 @@ func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount 
 // Withdraw calls FilPay.withdraw(token, amount). The amount must not
 // exceed AccountInfo.AvailableFunds (pre-check can be disabled via
 // WithSkipPrecheck).
-func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *big.Int, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.requireSigner("Withdraw"); err != nil {
 		return nil, err
 	}
@@ -369,7 +371,7 @@ func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *bi
 // ApproveService calls FilPay.setOperatorApproval(token, operator, true,
 // rateAllowance, lockupAllowance, maxLockupPeriod). Use RevokeService to
 // clear the approval.
-func (s *Service) ApproveService(ctx context.Context, token, operator common.Address, rateAllowance, lockupAllowance, maxLockupPeriod *big.Int, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) ApproveService(ctx context.Context, token, operator common.Address, rateAllowance, lockupAllowance, maxLockupPeriod *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.requireSigner("ApproveService"); err != nil {
 		return nil, err
 	}
@@ -403,7 +405,7 @@ func (s *Service) ApproveService(ctx context.Context, token, operator common.Add
 
 // RevokeService clears a prior ApproveService by setting approved=false
 // and all allowances to zero.
-func (s *Service) RevokeService(ctx context.Context, token, operator common.Address, opts ...WriteOption) (*WriteResult, error) {
+func (s *Service) RevokeService(ctx context.Context, token, operator common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.requireSigner("RevokeService"); err != nil {
 		return nil, err
 	}
@@ -459,9 +461,9 @@ func (s *Service) releaseNonce(nonce *big.Int) {
 	s.nonces.MarkFailed(nonce.Uint64())
 }
 
-func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*WriteResult, error) {
+func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
-	res := &WriteResult{Hash: tx.Hash()}
+	res := &sdktypes.WriteResult{Hash: tx.Hash()}
 	if cfg.waitTimeout <= 0 {
 		if s.nonces != nil {
 			s.nonces.MarkConfirmed(tx.Nonce())
