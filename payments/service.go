@@ -14,6 +14,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/contracts/erc20"
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -36,7 +37,7 @@ type Backend interface {
 // supplied.
 type Service struct {
 	backend     Backend
-	chainID     *big.Int
+	chainID     sdktypes.ChainID
 	filPayAddr  common.Address
 	filPayCall  *filpay.FilPayCaller
 	filPayWrite *filpay.FilPayTransactor
@@ -44,14 +45,15 @@ type Service struct {
 	nonces      *txutil.NonceManager
 	logger      *slog.Logger
 	receiptWait time.Duration
+	lifecycle   *lifecycle.Lifecycle
 }
 
 // Options bundles the dependencies for constructing a Service.
 type Options struct {
 	// Backend is the Ethereum RPC client. Required.
 	Backend Backend
-	// ChainID of the target FEVM chain. Required.
-	ChainID *big.Int
+	// ChainID of the target FEVM chain. Required; must be > 0.
+	ChainID sdktypes.ChainID
 	// FilPayAddress is the Filecoin Pay contract address. Required.
 	FilPayAddress common.Address
 	// Signer is used to sign transactions. Required for write methods;
@@ -66,6 +68,11 @@ type Options struct {
 	// provide a more specific WithWait(timeout). Zero uses
 	// txutil.DefaultReceiptWaitConfig.
 	ReceiptWait time.Duration
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed] without touching the RPC backend. Nil is allowed for
+	// standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New constructs a Service.
@@ -73,7 +80,7 @@ func New(opts Options) (*Service, error) {
 	if opts.Backend == nil {
 		return nil, fmt.Errorf("payments.New: %w: nil Backend", ErrInvalidArgument)
 	}
-	if opts.ChainID == nil || opts.ChainID.Sign() <= 0 {
+	if !opts.ChainID.IsValid() {
 		return nil, fmt.Errorf("payments.New: %w: invalid ChainID", ErrInvalidArgument)
 	}
 	if (opts.FilPayAddress == common.Address{}) {
@@ -89,7 +96,7 @@ func New(opts Options) (*Service, error) {
 	}
 	s := &Service{
 		backend:     opts.Backend,
-		chainID:     new(big.Int).Set(opts.ChainID),
+		chainID:     opts.ChainID,
 		filPayAddr:  opts.FilPayAddress,
 		filPayCall:  caller,
 		filPayWrite: writer,
@@ -97,6 +104,7 @@ func New(opts Options) (*Service, error) {
 		logger:      opts.Logger,
 		nonces:      opts.NonceManager,
 		receiptWait: opts.ReceiptWait,
+		lifecycle:   opts.Lifecycle,
 	}
 	if s.nonces == nil && s.signer != nil {
 		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
@@ -111,8 +119,8 @@ func invalidZeroAddressError(op, arg string) error {
 // Address returns the FilPay contract address.
 func (s *Service) Address() common.Address { return s.filPayAddr }
 
-// ChainID returns the configured chain id (copy).
-func (s *Service) ChainID() *big.Int { return new(big.Int).Set(s.chainID) }
+// ChainID returns the configured chain id.
+func (s *Service) ChainID() sdktypes.ChainID { return s.chainID }
 
 // Account returns the EOA address used for writes, or the zero address
 // when the service was constructed without a signer.
@@ -131,6 +139,9 @@ func (s *Service) Account() common.Address {
 // as AccountState.Funds. All lockup fields are zero because native FIL is not
 // tracked by the FilPay contract.
 func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) (*AccountState, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if (owner == common.Address{}) {
 		return nil, invalidZeroAddressError("payments.AccountInfo", "owner")
 	}
@@ -171,6 +182,9 @@ func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) 
 
 // Balance is a convenience that returns the Funds field of AccountInfo.
 func (s *Service) Balance(ctx context.Context, token, owner common.Address) (*big.Int, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	info, err := s.AccountInfo(ctx, token, owner)
 	if err != nil {
 		return nil, err
@@ -182,6 +196,9 @@ func (s *Service) Balance(ctx context.Context, token, owner common.Address) (*bi
 // address the native FIL balance is returned via BalanceAt. Otherwise the
 // ERC20 balanceOf(account) is queried.
 func (s *Service) WalletBalance(ctx context.Context, token, account common.Address) (*big.Int, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if (account == common.Address{}) {
 		return nil, invalidZeroAddressError("payments.WalletBalance", "account")
 	}
@@ -205,6 +222,9 @@ func (s *Service) WalletBalance(ctx context.Context, token, account common.Addre
 
 // Allowance returns the ERC20 allowance of owner towards spender for token.
 func (s *Service) Allowance(ctx context.Context, token, owner, spender common.Address) (*big.Int, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if (token == common.Address{}) {
 		return nil, invalidZeroAddressError("payments.Allowance", "token")
 	}
@@ -228,6 +248,9 @@ func (s *Service) Allowance(ctx context.Context, token, owner, spender common.Ad
 // ServiceApproval returns the operator approval record for
 // (token, client, operator).
 func (s *Service) ServiceApproval(ctx context.Context, token, client, operator common.Address) (*OperatorApproval, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if (token == common.Address{}) {
 		return nil, invalidZeroAddressError("payments.ServiceApproval", "token")
 	}
@@ -258,6 +281,9 @@ func (s *Service) ServiceApproval(ctx context.Context, token, client, operator c
 // spender is typically the FilPay contract address; use service.Address()
 // for that convenience.
 func (s *Service) Approve(ctx context.Context, token, spender common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if err := s.requireSigner("Approve"); err != nil {
 		return nil, err
 	}
@@ -291,6 +317,9 @@ func (s *Service) Approve(ctx context.Context, token, spender common.Address, am
 // first approved at least `amount` on the token contract for FilPay.
 // When `to` is the zero address the caller's EOA is used.
 func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if err := s.requireSigner("Deposit"); err != nil {
 		return nil, err
 	}
@@ -341,6 +370,9 @@ func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount 
 // exceed AccountInfo.AvailableFunds (pre-check can be disabled via
 // WithSkipPrecheck).
 func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if err := s.requireSigner("Withdraw"); err != nil {
 		return nil, err
 	}
@@ -379,6 +411,9 @@ func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *bi
 // rateAllowance, lockupAllowance, maxLockupPeriod). Use RevokeService to
 // clear the approval.
 func (s *Service) ApproveService(ctx context.Context, token, operator common.Address, rateAllowance, lockupAllowance, maxLockupPeriod *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if err := s.requireSigner("ApproveService"); err != nil {
 		return nil, err
 	}
@@ -414,6 +449,9 @@ func (s *Service) ApproveService(ctx context.Context, token, operator common.Add
 // RevokeService clears a prior ApproveService by setting approved=false
 // and all allowances to zero.
 func (s *Service) RevokeService(ctx context.Context, token, operator common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if err := s.requireSigner("RevokeService"); err != nil {
 		return nil, err
 	}
@@ -452,7 +490,7 @@ func (s *Service) requireSigner(method string) error {
 // (e.g. on bind.Transactor.* failure). Until release is called all other
 // nonce acquisitions on this service are blocked.
 func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func(), error) {
-	opts, err := s.signer.Transactor(s.chainID)
+	opts, err := s.signer.Transactor(s.chainID.BigInt())
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}

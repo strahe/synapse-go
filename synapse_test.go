@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/types"
@@ -287,6 +289,51 @@ func TestServiceGetters_Exist(t *testing.T) {
 	}
 	if client.Storage() == nil {
 		t.Error("Storage() returned nil")
+	}
+}
+
+func TestClose_AllServicesReturnErrClosed(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	ctx := context.Background()
+	addr := client.Address()
+
+	// After Close every service method must fail with ErrClosed.
+	// Use a read method that exercises lifecycle before any other I/O.
+	if _, err := client.Payments().Balance(ctx, addr, addr); !errors.Is(err, ErrClosed) {
+		t.Errorf("Payments.Balance: got %v, want ErrClosed", err)
+	}
+	if _, err := client.WarmStorage().GetServicePrice(ctx); !errors.Is(err, ErrClosed) {
+		t.Errorf("WarmStorage.GetServicePrice: got %v, want ErrClosed", err)
+	}
+	if _, err := client.SPRegistry().GetProviderIDByAddress(ctx, addr); !errors.Is(err, ErrClosed) {
+		t.Errorf("SPRegistry.GetProviderIDByAddress: got %v, want ErrClosed", err)
+	}
+	if _, err := client.SessionKey().Login(ctx, addr, nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("SessionKey.Login: got %v, want ErrClosed", err)
+	}
+	if _, err := client.Costs().GetServicePrice(ctx); !errors.Is(err, ErrClosed) {
+		t.Errorf("Costs.GetServicePrice: got %v, want ErrClosed", err)
+	}
+	if _, err := client.FilBeam().GetDataSetStats(ctx, types.DataSetID(1)); !errors.Is(err, ErrClosed) {
+		t.Errorf("FilBeam.GetDataSetStats: got %v, want ErrClosed", err)
+	}
+	if _, err := client.Storage().Download(ctx, cid.Undef, nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("Storage.Download: got %v, want ErrClosed", err)
 	}
 }
 

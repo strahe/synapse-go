@@ -357,7 +357,7 @@ func TestGetPDPProviders(t *testing.T) {
 		HasMore: true,
 	}
 	mc.set(t, "getProvidersByProductType", raw)
-	out, err := s.GetPDPProviders(context.Background(), true, types.ListOptions{})
+	out, err := s.GetPDPProviders(context.Background(), true, types.ListOptions{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestGetPDPProviders_DecodeErrorIsWrapped(t *testing.T) {
 		},
 	})
 
-	_, err := s.GetPDPProviders(context.Background(), true, types.ListOptions{})
+	_, err := s.GetPDPProviders(context.Background(), true, types.ListOptions{Limit: 50})
 	if err == nil {
 		t.Fatal("expected decode error")
 	}

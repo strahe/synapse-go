@@ -85,7 +85,7 @@ type Context struct {
 	client       PDPClient
 	signer       signer.EVMSigner
 	payer        common.Address
-	chainID      *big.Int
+	chainID      types.ChainID
 	recordKeeper common.Address
 	withCDN      bool
 
@@ -145,12 +145,8 @@ func WithPayer(payer common.Address) ContextOption {
 }
 
 // WithChainID sets the EIP-155 chain ID used for EIP-712 domain separation.
-func WithChainID(chainID *big.Int) ContextOption {
-	return func(c *Context) {
-		if chainID != nil {
-			c.chainID = new(big.Int).Set(chainID)
-		}
-	}
+func WithChainID(chainID types.ChainID) ContextOption {
+	return func(c *Context) { c.chainID = chainID }
 }
 
 // WithRecordKeeper sets the FWSS contract address (record-keeper) used for
@@ -280,8 +276,8 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if c.signer == nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil signer", ErrInvalidArgument)
 	}
-	if c.chainID == nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil chainID", ErrInvalidArgument)
+	if !c.chainID.IsValid() {
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: invalid chainID", ErrInvalidArgument)
 	}
 	if c.recordKeeper == (common.Address{}) {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: zero recordKeeper", ErrInvalidArgument)
@@ -307,7 +303,7 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
 
-	domain := ityped.NewDomain(c.chainID, c.recordKeeper)
+	domain := ityped.NewDomain(c.chainID.BigInt(), c.recordKeeper)
 
 	// Snapshot all mutable fields under the lock, initialize clientDataSetID
 	// on first use, then release the lock before any CPU/crypto work. This

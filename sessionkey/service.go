@@ -15,6 +15,7 @@ import (
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
 	"github.com/strahe/synapse-go/internal/contracts/sessionkeyregistry"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -36,7 +37,7 @@ type Backend interface {
 // supplied.
 type Service struct {
 	backend      Backend
-	chainID      *big.Int
+	chainID      sdktypes.ChainID
 	registryAddr common.Address
 	registryCall *sessionkeyregistry.SessionKeyRegistryCaller
 	registryTx   *sessionkeyregistry.SessionKeyRegistryTransactor
@@ -44,14 +45,15 @@ type Service struct {
 	nonces       *txutil.NonceManager
 	logger       *slog.Logger
 	receiptWait  time.Duration
+	lifecycle    *lifecycle.Lifecycle
 }
 
 // Options bundles the dependencies for constructing a Service.
 type Options struct {
 	// Backend is the Ethereum RPC client. Required.
 	Backend Backend
-	// ChainID of the target FEVM chain. Required.
-	ChainID *big.Int
+	// ChainID of the target FEVM chain. Required; must be > 0.
+	ChainID sdktypes.ChainID
 	// RegistryAddress is the SessionKeyRegistry contract address. Required.
 	RegistryAddress common.Address
 	// Signer is used to sign transactions. Required for write methods
@@ -63,6 +65,10 @@ type Options struct {
 	NonceManager *txutil.NonceManager
 	// ReceiptWait overrides the default receipt polling timeout.
 	ReceiptWait time.Duration
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed]. Nil is allowed for standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New constructs a Service.
@@ -70,7 +76,7 @@ func New(opts Options) (*Service, error) {
 	if opts.Backend == nil {
 		return nil, fmt.Errorf("sessionkey.New: %w: nil Backend", ErrInvalidArgument)
 	}
-	if opts.ChainID == nil || opts.ChainID.Sign() <= 0 {
+	if !opts.ChainID.IsValid() {
 		return nil, fmt.Errorf("sessionkey.New: %w: invalid ChainID", ErrInvalidArgument)
 	}
 	if (opts.RegistryAddress == common.Address{}) {
@@ -88,7 +94,7 @@ func New(opts Options) (*Service, error) {
 
 	s := &Service{
 		backend:      opts.Backend,
-		chainID:      new(big.Int).Set(opts.ChainID),
+		chainID:      opts.ChainID,
 		registryAddr: opts.RegistryAddress,
 		registryCall: caller,
 		registryTx:   writer,
@@ -96,6 +102,7 @@ func New(opts Options) (*Service, error) {
 		logger:       opts.Logger,
 		nonces:       opts.NonceManager,
 		receiptWait:  opts.ReceiptWait,
+		lifecycle:    opts.Lifecycle,
 	}
 	if s.nonces == nil && s.signer != nil {
 		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
@@ -111,12 +118,18 @@ func (s *Service) RegistryAddress() common.Address { return s.registryAddr }
 // Login authorises the given session key address with default options
 // (DefaultFWSSPermissions, 1 hour expiry, origin "synapse").
 func (s *Service) Login(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	return s.LoginWithOptions(ctx, sessionKeyAddr, nil, opts...)
 }
 
 // LoginWithOptions authorises the given session key address with custom
 // login options.
 func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Address, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if s.signer == nil {
 		return nil, fmt.Errorf("sessionkey.Login: %w: nil signer", ErrInvalidArgument)
 	}
@@ -148,11 +161,17 @@ func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Ad
 // LoginAndFund authorises a session key and transfers value (native FIL)
 // in the same transaction using the payable loginAndFund method.
 func (s *Service) LoginAndFund(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	return s.LoginAndFundWithOptions(ctx, sessionKeyAddr, value, nil, opts...)
 }
 
 // LoginAndFundWithOptions is the full-option variant of LoginAndFund.
 func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr common.Address, value *big.Int, loginOpts *LoginOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if s.signer == nil {
 		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w: nil signer", ErrInvalidArgument)
 	}
@@ -186,11 +205,17 @@ func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr co
 
 // Revoke revokes default FWSS permissions from a session key.
 func (s *Service) Revoke(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	return s.RevokeWithOptions(ctx, sessionKeyAddr, nil, opts...)
 }
 
 // RevokeWithOptions revokes specific permissions from a session key.
 func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.Address, revokeOpts *RevokeOptions, writeOpts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if s.signer == nil {
 		return nil, fmt.Errorf("sessionkey.Revoke: %w: nil signer", ErrInvalidArgument)
 	}
@@ -221,6 +246,9 @@ func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.A
 // AuthorizationExpiry returns the Unix timestamp at which a specific
 // permission for a session key expires. Returns 0 if not authorised.
 func (s *Service) AuthorizationExpiry(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permission Permission) (uint64, error) {
+	if err := s.checkInit(); err != nil {
+		return 0, err
+	}
 	raw, err := s.registryCall.AuthorizationExpiry(&bind.CallOpts{Context: ctx}, rootAddr, sessionKeyAddr, permission)
 	if err != nil {
 		return 0, fmt.Errorf("sessionkey.AuthorizationExpiry: %w", err)
@@ -234,6 +262,9 @@ func (s *Service) AuthorizationExpiry(ctx context.Context, rootAddr, sessionKeyA
 // IsExpired returns true when the given permission for a session key has
 // expired (i.e., the on-chain expiry is in the past).
 func (s *Service) IsExpired(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permission Permission) (bool, error) {
+	if err := s.checkInit(); err != nil {
+		return false, err
+	}
 	exp, err := s.AuthorizationExpiry(ctx, rootAddr, sessionKeyAddr, permission)
 	if err != nil {
 		return false, err
@@ -258,6 +289,9 @@ func (s *Service) IsExpired(ctx context.Context, rootAddr, sessionKeyAddr common
 //	// exps may be partially populated even when err != nil.
 //	if err != nil { /* log / surface partial failure */ }
 func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permissions []Permission) (Expirations, error) {
+	if err := s.checkInit(); err != nil {
+		return Expirations{}, err
+	}
 	if len(permissions) == 0 {
 		permissions = DefaultFWSSPermissions
 	}
@@ -363,7 +397,7 @@ func (s *Service) getExpirationsSequential(ctx context.Context, rootAddr, sessio
 // ---------- internal helpers ----------
 
 func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpts, func(), error) {
-	txOpts, err := s.signer.Transactor(s.chainID)
+	txOpts, err := s.signer.Transactor(s.chainID.BigInt())
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}

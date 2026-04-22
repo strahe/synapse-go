@@ -11,6 +11,7 @@ import (
 
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -51,6 +52,7 @@ type Service struct {
 	maxSecondaryAttempts int
 	commitConcurrency    int
 	downloadMaxBytes     int64
+	lifecycle            *lifecycle.Lifecycle
 }
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
@@ -100,6 +102,11 @@ type Options struct {
 	// Exceeding it returns [ErrMaxBytesExceeded] either eagerly (via
 	// Content-Length) or at the terminal Read of the returned reader.
 	DownloadMaxBytes int64
+
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed]. Nil is allowed for standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New creates a Service from the given Options.
@@ -125,6 +132,7 @@ func New(opts Options) (*Service, error) {
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
+		lifecycle:            opts.Lifecycle,
 	}, nil
 }
 
@@ -146,6 +154,9 @@ func New(opts Options) (*Service, error) {
 // Pull, and Commit use the UploadContext implementation's own HTTP client
 // configuration.
 func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if r == nil {
 		return nil, fmt.Errorf("storage.Service.Upload: %w: nil reader", ErrInvalidArgument)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	iabi "github.com/strahe/synapse-go/internal/abi"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/sessionkey"
@@ -44,6 +45,7 @@ type Client struct {
 	httpClient    *http.Client
 	source        string
 
+	lifecycle *lifecycle.Lifecycle
 	closeOnce sync.Once
 
 	warmStorage *warmstorage.Service
@@ -176,6 +178,7 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		logger:        cfg.logger,
 		httpClient:    cfg.httpClient,
 		source:        cfg.source,
+		lifecycle:     lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {
 		if ownsClient {
@@ -195,6 +198,9 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 // not be used.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		if c.lifecycle != nil {
+			c.lifecycle.Close()
+		}
 		if c.ownsClient && c.ethClient != nil {
 			c.ethClient.Close()
 		}

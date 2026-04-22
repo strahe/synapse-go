@@ -2,10 +2,11 @@ package payments
 
 import (
 	"errors"
-	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // TestErrInvalidArgument_Detection verifies every New() validation path
@@ -21,19 +22,19 @@ func TestErrInvalidArgument_Detection(t *testing.T) {
 	}{
 		{
 			name: "nil Backend",
-			opts: Options{ChainID: big.NewInt(314), FilPayAddress: common.HexToAddress("0x01")},
+			opts: Options{ChainID: sdktypes.ChainID(314), FilPayAddress: common.HexToAddress("0x01")},
 		},
 		{
-			name: "nil ChainID",
+			name: "zero ChainID (omitted)",
 			opts: Options{Backend: nonNilBackend, FilPayAddress: common.HexToAddress("0x01")},
 		},
 		{
-			name: "zero ChainID",
-			opts: Options{Backend: nonNilBackend, ChainID: big.NewInt(0), FilPayAddress: common.HexToAddress("0x01")},
+			name: "negative ChainID",
+			opts: Options{Backend: nonNilBackend, ChainID: sdktypes.ChainID(-1), FilPayAddress: common.HexToAddress("0x01")},
 		},
 		{
 			name: "zero FilPayAddress",
-			opts: Options{Backend: nonNilBackend, ChainID: big.NewInt(314)},
+			opts: Options{Backend: nonNilBackend, ChainID: sdktypes.ChainID(314)},
 		},
 	}
 

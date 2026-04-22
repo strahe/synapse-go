@@ -19,6 +19,7 @@ import (
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // mockBackend implements the Backend interface and captures every broadcast
@@ -244,7 +245,7 @@ func newTestServiceWith(t *testing.T, sg signer.EVMSigner) (*Service, *mockBacke
 	mb := newMockBackend(t)
 	s, err := New(Options{
 		Backend:       mb,
-		ChainID:       big.NewInt(314159),
+		ChainID:       sdktypes.ChainID(314159),
 		FilPayAddress: filPayAddr,
 		Signer:        sg,
 	})
@@ -261,13 +262,13 @@ func newTestService(t *testing.T) (*Service, *mockBackend) {
 
 func TestNewValidation(t *testing.T) {
 	mb := newMockBackend(t)
-	if _, err := New(Options{ChainID: big.NewInt(1), FilPayAddress: filPayAddr}); err == nil {
+	if _, err := New(Options{ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}); err == nil {
 		t.Error("expected nil Backend error")
 	}
 	if _, err := New(Options{Backend: mb, FilPayAddress: filPayAddr}); err == nil {
 		t.Error("expected nil ChainID error")
 	}
-	if _, err := New(Options{Backend: mb, ChainID: big.NewInt(1)}); err == nil {
+	if _, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1)}); err == nil {
 		t.Error("expected zero FilPayAddress error")
 	}
 }
@@ -563,7 +564,7 @@ func TestValidation_NegativeAmounts(t *testing.T) {
 
 func TestNoSigner_WritesFail(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,13 +669,8 @@ func TestAddress(t *testing.T) {
 func TestChainID(t *testing.T) {
 	s, _ := newTestService(t)
 	got := s.ChainID()
-	if got.Int64() != 314159 {
-		t.Errorf("ChainID() = %s, want 314159", got)
-	}
-	// Ensure it's a copy, not the same pointer.
-	got.SetInt64(0)
-	if s.ChainID().Int64() != 314159 {
-		t.Error("ChainID returned the internal pointer, not a copy")
+	if got != sdktypes.ChainID(314159) {
+		t.Errorf("ChainID() = %d, want 314159", got)
 	}
 }
 
@@ -781,7 +777,7 @@ func TestRevokeService_ZeroAddresses(t *testing.T) {
 
 func TestRevokeService_NoSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -923,7 +919,7 @@ func TestApproveService_ZeroAddresses(t *testing.T) {
 
 func TestAccount_NilSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -938,11 +934,11 @@ func TestNew_Validation(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"nil backend", Options{ChainID: big.NewInt(1), FilPayAddress: filPayAddr}},
-		{"nil chainID", Options{Backend: mb, FilPayAddress: filPayAddr}},
-		{"zero chainID", Options{Backend: mb, ChainID: big.NewInt(0), FilPayAddress: filPayAddr}},
-		{"negative chainID", Options{Backend: mb, ChainID: big.NewInt(-1), FilPayAddress: filPayAddr}},
-		{"zero filpay", Options{Backend: mb, ChainID: big.NewInt(1)}},
+		{"nil backend", Options{ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}},
+		{"zero chainID (omitted)", Options{Backend: mb, FilPayAddress: filPayAddr}},
+		{"zero chainID", Options{Backend: mb, ChainID: sdktypes.ChainID(0), FilPayAddress: filPayAddr}},
+		{"negative chainID", Options{Backend: mb, ChainID: sdktypes.ChainID(-1), FilPayAddress: filPayAddr}},
+		{"zero filpay", Options{Backend: mb, ChainID: sdktypes.ChainID(1)}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -985,7 +981,7 @@ func TestApprove_NegativeAmount(t *testing.T) {
 
 func TestApprove_NoSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1100,7 +1096,7 @@ func TestWithdraw_NegativeAmount(t *testing.T) {
 
 func TestWithdraw_NoSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1132,7 +1128,7 @@ func TestApproveService_NegativeAllowances(t *testing.T) {
 
 func TestApproveService_NoSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1144,7 +1140,7 @@ func TestApproveService_NoSigner(t *testing.T) {
 
 func TestDeposit_NoSigner(t *testing.T) {
 	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: big.NewInt(1), FilPayAddress: filPayAddr})
+	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
 	if err != nil {
 		t.Fatal(err)
 	}

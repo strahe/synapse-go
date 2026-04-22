@@ -260,7 +260,7 @@ func TestGetClientDataSets(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("len=%d", len(list))
 	}
-	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, types.ListOptions{}); err == nil || !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.GetClientDataSets(context.Background(), common.Address{}, types.ListOptions{Limit: 50}); err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument for zero payer, got %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestGetAllDataSetMetadata_ZeroDataSetID(t *testing.T) {
 func TestGetApprovedProviderIDs(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)})
-	ids, err := s.GetApprovedProviderIDs(context.Background(), types.ListOptions{})
+	ids, err := s.GetApprovedProviderIDs(context.Background(), types.ListOptions{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

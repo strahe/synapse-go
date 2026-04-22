@@ -59,6 +59,9 @@ func validatePieceCID(c cid.Cid) error {
 // terminal read error from io.ReadAll (or any last Read call that returns
 // io.EOF) carries the integrity check result — callers must not discard it.
 func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
+	if err := s.checkInit(); err != nil {
+		return io.ReadCloser(nil), err
+	}
 	if err := validatePieceCID(pieceCID); err != nil {
 		return nil, fmt.Errorf("storage.Service.Download: %w: %w", ErrInvalidArgument, err)
 	}

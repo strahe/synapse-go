@@ -12,6 +12,7 @@ import (
 
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -26,15 +27,20 @@ type EthClient interface {
 // All state-mutating operations (register/update/remove) are out of scope
 // for the SDK — providers manage their on-chain records directly via curio.
 type Service struct {
-	caller   EthClient
-	addr     common.Address
-	contract *spr.SPRegistryCaller
+	caller    EthClient
+	addr      common.Address
+	contract  *spr.SPRegistryCaller
+	lifecycle *lifecycle.Lifecycle
 }
 
 // Options configures the service.
 type Options struct {
 	Client  EthClient
 	Address common.Address
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed]. Nil is allowed for standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New creates a Service bound to the given registry address.
@@ -49,7 +55,7 @@ func New(opts Options) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.New: bind: %w", err)
 	}
-	return &Service{caller: opts.Client, addr: opts.Address, contract: c}, nil
+	return &Service{caller: opts.Client, addr: opts.Address, contract: c, lifecycle: opts.Lifecycle}, nil
 }
 
 // Address returns the configured registry contract address.
@@ -60,6 +66,9 @@ func (s *Service) Address() common.Address { return s.addr }
 // ServiceProvider address in the returned record). RPC or ABI errors are
 // wrapped and propagated as-is.
 func (s *Service) GetProvider(ctx context.Context, providerID types.ProviderID) (*ProviderInfo, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if providerID == 0 {
 		return nil, fmt.Errorf("spregistry.GetProvider: %w: zero providerID", ErrInvalidArgument)
 	}
@@ -81,6 +90,9 @@ func (s *Service) GetProvider(ctx context.Context, providerID types.ProviderID) 
 // matches addr. Returns an error wrapping ErrNotFound when no provider is
 // registered for that address.
 func (s *Service) GetProviderByAddress(ctx context.Context, addr common.Address) (*ProviderInfo, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if (addr == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.GetProviderByAddress: %w: zero address", ErrInvalidArgument)
 	}
@@ -101,6 +113,9 @@ func (s *Service) GetProviderByAddress(ctx context.Context, addr common.Address)
 // GetProviderIDByAddress returns the provider ID for addr. Returns 0 when
 // addr is not registered (contract convention).
 func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Address) (types.ProviderID, error) {
+	if err := s.checkInit(); err != nil {
+		return types.ProviderID(0), err
+	}
 	if (addr == common.Address{}) {
 		return 0, fmt.Errorf("spregistry.GetProviderIDByAddress: %w: zero address", ErrInvalidArgument)
 	}
@@ -120,6 +135,9 @@ func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Addres
 
 // IsProviderActive returns true if the provider id is registered AND active.
 func (s *Service) IsProviderActive(ctx context.Context, providerID types.ProviderID) (bool, error) {
+	if err := s.checkInit(); err != nil {
+		return false, err
+	}
 	if providerID == 0 {
 		return false, fmt.Errorf("spregistry.IsProviderActive: %w: zero providerID", ErrInvalidArgument)
 	}
@@ -133,6 +151,9 @@ func (s *Service) IsProviderActive(ctx context.Context, providerID types.Provide
 // GetProviderCount returns the total number of registered providers
 // (active + inactive).
 func (s *Service) GetProviderCount(ctx context.Context) (*big.Int, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	n, err := s.contract.GetProviderCount(&bind.CallOpts{Context: ctx})
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetProviderCount: %w", err)
@@ -143,6 +164,9 @@ func (s *Service) GetProviderCount(ctx context.Context) (*big.Int, error) {
 // GetActiveProviderCount returns the number of providers whose IsActive flag
 // is true.
 func (s *Service) GetActiveProviderCount(ctx context.Context) (*big.Int, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	n, err := s.contract.ActiveProviderCount(&bind.CallOpts{Context: ctx})
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetActiveProviderCount: %w", err)
@@ -154,6 +178,9 @@ func (s *Service) GetActiveProviderCount(ctx context.Context) (*big.Int, error) 
 // Returns an error wrapping ErrNotFound when the provider has no PDP product
 // registered.
 func (s *Service) GetPDPProvider(ctx context.Context, providerID types.ProviderID) (*PDPProvider, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if providerID == 0 {
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w: zero providerID", ErrInvalidArgument)
 	}
@@ -173,15 +200,17 @@ func (s *Service) GetPDPProvider(ctx context.Context, providerID types.ProviderI
 
 // GetPDPProviders lists PDP providers with pagination. When onlyActive is
 // true the registry filters out inactive providers BEFORE applying offset
-// and limit (matches the contract semantics). opts.Limit == 0 means the
-// service default (currently 50).
+// and limit (matches the contract semantics). opts.Limit must be > 0; use
+// IterateAllPDPProviders for unbounded traversal.
 func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, opts types.ListOptions) (*PaginatedPDPProviders, error) {
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 50
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if err := opts.Validate(); err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProviders: %w: %w", ErrInvalidArgument, err)
 	}
 	offsetBig := new(big.Int).SetUint64(opts.Offset)
-	limitBig := new(big.Int).SetUint64(limit)
+	limitBig := new(big.Int).SetUint64(opts.Limit)
 	raw, err := s.contract.GetProvidersByProductType(&bind.CallOpts{Context: ctx}, uint8(ProductTypePDP), onlyActive, offsetBig, limitBig)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetPDPProviders: %w", err)
@@ -203,6 +232,9 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, opts typ
 // same order. Entries whose validIds flag was false come back as nil.
 // An empty input slice returns an empty (non-nil) result slice.
 func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []types.ProviderID) ([]*ProviderInfo, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if len(providerIDs) == 0 {
 		return []*ProviderInfo{}, nil
 	}
@@ -246,6 +278,9 @@ func (s *Service) GetProvidersByIDs(ctx context.Context, providerIDs []types.Pro
 // An error is returned if pagination exceeds maxSelectPages to guard against
 // a misbehaving RPC that returns HasMore=true indefinitely.
 func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter) ([]PDPProvider, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	const (
 		pageSize       = 50
 		maxSelectPages = 200 // safety cap: 200 × 50 = 10 000 providers

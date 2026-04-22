@@ -20,6 +20,10 @@ import (
 // each call hits a public RPC endpoint; aligns with TS SDK BATCH_SIZE.
 const selectorMetadataConcurrency = 8
 
+// selectorListPageSize mirrors warmstorage's IterateAll* page size so resolver
+// scans remain explicit after ListOptions started rejecting Limit==0.
+const selectorListPageSize = 100
+
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
 type PDPProviderSource interface {
 	GetPDPProvider(context.Context, types.ProviderID) (*spregistry.PDPProvider, error)
@@ -199,7 +203,7 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: requested %d context(s) but providerIDs resolved to %d after deduplication", count, len(ids))
 	}
 
-	dataSets, err := r.warmStorage.GetClientDataSets(ctx, r.payer, types.ListOptions{})
+	dataSets, err := r.getAllClientDataSets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data sets: %w", err)
 	}
@@ -227,7 +231,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	if count == 0 {
 		count = 2
 	}
-	approvedIDs, err := r.warmStorage.GetApprovedProviderIDs(ctx, types.ListOptions{})
+	approvedIDs, err := r.getAllApprovedProviderIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get approved providers: %w", err)
 	}
@@ -244,7 +248,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		approvedSet[id] = struct{}{}
 	}
 
-	dataSets, err := r.warmStorage.GetClientDataSets(ctx, r.payer, types.ListOptions{})
+	dataSets, err := r.getAllClientDataSets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data sets: %w", err)
 	}
@@ -277,6 +281,48 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
 	}
 	return selected, nil
+}
+
+func (r *ServiceResolver) getAllClientDataSets(ctx context.Context) ([]*warmstorage.DataSetInfo, error) {
+	var (
+		offset uint64
+		all    []*warmstorage.DataSetInfo
+	)
+	for {
+		page, err := r.warmStorage.GetClientDataSets(ctx, r.payer, types.ListOptions{
+			Offset: offset,
+			Limit:  selectorListPageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if uint64(len(page)) < selectorListPageSize {
+			return all, nil
+		}
+		offset += uint64(len(page))
+	}
+}
+
+func (r *ServiceResolver) getAllApprovedProviderIDs(ctx context.Context) ([]types.ProviderID, error) {
+	var (
+		offset uint64
+		all    []types.ProviderID
+	)
+	for {
+		page, err := r.warmStorage.GetApprovedProviderIDs(ctx, types.ListOptions{
+			Offset: offset,
+			Limit:  selectorListPageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if uint64(len(page)) < selectorListPageSize {
+			return all, nil
+		}
+		offset += uint64(len(page))
+	}
 }
 
 func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID types.ProviderID, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string) (*types.DataSetID, types.ClientDataSetID, map[string]string, error) {

@@ -3,6 +3,7 @@ package sessionkey
 import (
 	"errors"
 
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -12,6 +13,14 @@ import (
 // This is an alias of types.ErrTxFailed kept for backwards compatibility;
 // callers can match either interchangeably.
 var ErrTxFailed = types.ErrTxFailed
+
+// ErrUninitialized is returned when a method is invoked on a zero-value
+// Service (one that was not constructed via [New]).
+var ErrUninitialized = errors.New("sessionkey: service not initialized; use sessionkey.New")
+
+// ErrClosed is returned when a method is called after the owning Client
+// has been closed. Alias of [internal/lifecycle.ErrClosed].
+var ErrClosed = lifecycle.ErrClosed
 
 // ErrInvalidArgument is returned, wrapped via fmt.Errorf with %w, when a
 // caller passes an argument that violates a precondition (nil pointer,

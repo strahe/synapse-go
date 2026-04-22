@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/types"
 )
@@ -21,6 +22,7 @@ type Service struct {
 	baseURL    string
 	httpClient *http.Client
 	logger     *slog.Logger
+	lifecycle  *lifecycle.Lifecycle
 }
 
 // Options configures a [Service].
@@ -37,6 +39,11 @@ type Options struct {
 
 	// Logger is the structured logger. If nil, logging is silent.
 	Logger *slog.Logger
+
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed]. Nil is allowed for standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New creates a [Service] for the given chain.
@@ -55,6 +62,7 @@ func New(opts Options) (*Service, error) {
 		baseURL:    baseURL,
 		httpClient: httpClient,
 		logger:     opts.Logger,
+		lifecycle:  opts.Lifecycle,
 	}, nil
 }
 
@@ -87,6 +95,9 @@ type statsResponse struct {
 // non-transient statuses (4xx other than 404) and decode errors are also
 // returned without retry.
 func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.DataSetID) (*DataSetStats, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if dataSetID == 0 {
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w", ErrInvalidArgument)
 	}

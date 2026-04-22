@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -44,6 +45,7 @@ type Service struct {
 	usdfc       common.Address
 	fwss        common.Address
 	logger      *slog.Logger
+	lifecycle   *lifecycle.Lifecycle
 }
 
 // Options configures a [Service].
@@ -63,6 +65,11 @@ type Options struct {
 
 	// Logger is the structured logger. If nil, logging is silent.
 	Logger *slog.Logger
+
+	// Lifecycle, when non-nil, ties this Service to the owning Client's
+	// close state. After the Lifecycle is closed, every method returns
+	// [ErrClosed]. Nil is allowed for standalone use.
+	Lifecycle *lifecycle.Lifecycle
 }
 
 // New constructs a [Service] using addresses from opts.Chain.Addresses().
@@ -97,6 +104,7 @@ func New(opts Options) (*Service, error) {
 		usdfc:       addrs.USDFC,
 		fwss:        addrs.FWSS,
 		logger:      opts.Logger,
+		lifecycle:   opts.Lifecycle,
 	}, nil
 }
 
@@ -111,6 +119,9 @@ func computeDebt(account *payments.AccountState) *big.Int {
 
 // GetServicePrice delegates to the warmstorage service.
 func (s *Service) GetServicePrice(ctx context.Context) (*warmstorage.ServicePrice, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	return s.ws.GetServicePrice(ctx)
 }
 
@@ -124,6 +135,9 @@ func (s *Service) GetUploadCosts(
 	dataSizeBytes *big.Int,
 	opts *UploadCostOptions,
 ) (*UploadCosts, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	if opts == nil {
 		opts = &UploadCostOptions{}
 	}
@@ -267,6 +281,9 @@ func (s *Service) GetUploadCosts(
 
 // GetAccountSummary returns a payment health snapshot for the given owner.
 func (s *Service) GetAccountSummary(ctx context.Context, owner common.Address) (*AccountSummary, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
 	account, err := s.pay.AccountInfo(ctx, s.usdfc, owner)
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetAccountSummary: %w", err)

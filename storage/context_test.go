@@ -56,7 +56,7 @@ func TestContextStore_UploadsAndWaits(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -106,7 +106,7 @@ func TestContextPresignForCommit_GeneratesFullWidthClientDataSetID(t *testing.T)
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -132,7 +132,7 @@ func TestContextPresignForCommit_RandomFailureReturnsError(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -168,7 +168,7 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(recordKeeper),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -221,7 +221,7 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(dataSetID),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -263,7 +263,7 @@ func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) 
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -299,7 +299,7 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testi
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(expected),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -348,7 +348,7 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -376,7 +376,7 @@ func TestContextPresignForCommit_NewDataSetCombinedEncoding(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, signer,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithCDN(true),
 		WithDataSetMetadata(map[string]string{"z": "last", "a": "first"}),
 	)
@@ -462,7 +462,7 @@ func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) 
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, signer,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 	)
 	if err != nil {
@@ -513,7 +513,7 @@ func TestContextPresignForCommit_CtxCancelled(t *testing.T) {
 	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(1)),
 	)
 	if err != nil {
@@ -530,7 +530,7 @@ func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.
 	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(1)),
 	)
 	if err != nil {
@@ -554,7 +554,7 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(1)),
 	)
 	if err != nil {
@@ -572,7 +572,7 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 	sctx2, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext (new-dataset): %v", err)
@@ -700,7 +700,7 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(expected),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -742,7 +742,7 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -859,7 +859,7 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 	storageCtx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1005,7 +1005,7 @@ func TestContextStore_NilReader(t *testing.T) {
 
 func TestContextPresignForCommit_NilSigner(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, nil,
-		WithChainID(big.NewInt(1)),
+		WithChainID(types.ChainID(1)),
 		WithRecordKeeper(testRecordKeeper()),
 		WithPayer(testPayer()),
 	)
@@ -1092,7 +1092,7 @@ func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1108,7 +1108,7 @@ func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
 
 func TestContextPresignForCommit_ZeroRecordKeeper(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
-		WithChainID(big.NewInt(1)),
+		WithChainID(types.ChainID(1)),
 		WithPayer(testPayer()),
 	)
 	if err != nil {
@@ -1123,7 +1123,7 @@ func TestContextPresignForCommit_ZeroRecordKeeper(t *testing.T) {
 
 func TestContextPresignForCommit_ZeroPayer(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
-		WithChainID(big.NewInt(1)),
+		WithChainID(types.ChainID(1)),
 		WithRecordKeeper(testRecordKeeper()),
 	)
 	if err != nil {
@@ -1243,7 +1243,7 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -1268,7 +1268,7 @@ func TestContextPresignForCommit_ExistingDataSet_TracksAddOnlyPayload(t *testing
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -1291,7 +1291,7 @@ func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1312,7 +1312,7 @@ func TestContextCommit_AddPiecesError(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -1378,7 +1378,7 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
@@ -1424,7 +1424,7 @@ func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -1491,7 +1491,7 @@ func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
 		WithClientDataSetID(big.NewInt(99)),
 	)
@@ -1517,7 +1517,7 @@ func TestContextCommit_CreateAndAddError(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1544,7 +1544,7 @@ func TestContextCommit_WaitCreateAndAddError(t *testing.T) {
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(big.NewInt(314159)),
+		WithChainID(types.ChainID(314159)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)

@@ -20,6 +20,7 @@ import (
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/contracts/sessionkeyregistry"
 	"github.com/strahe/synapse-go/signer"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -259,7 +260,7 @@ func (m *mockBackend) setReply(t *testing.T, addr common.Address, method string,
 
 var (
 	testRegistryAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	testChainID      = big.NewInt(314159)
+	testChainID      = sdktypes.ChainID(314159)
 )
 
 func newTestSigner(t *testing.T) signer.EVMSigner {
@@ -299,8 +300,8 @@ func TestNew_ValidatesRequired(t *testing.T) {
 		opts Options
 	}{
 		{"nil backend", Options{ChainID: testChainID, RegistryAddress: testRegistryAddr}},
-		{"nil chainID", Options{Backend: newMockBackend(t), RegistryAddress: testRegistryAddr}},
-		{"zero chainID", Options{Backend: newMockBackend(t), ChainID: big.NewInt(0), RegistryAddress: testRegistryAddr}},
+		{"zero chainID", Options{Backend: newMockBackend(t), RegistryAddress: testRegistryAddr}},
+		{"negative chainID", Options{Backend: newMockBackend(t), ChainID: sdktypes.ChainID(-1), RegistryAddress: testRegistryAddr}},
 		{"zero registry", Options{Backend: newMockBackend(t), ChainID: testChainID}},
 	}
 	for _, tt := range tests {

@@ -11,6 +11,7 @@ import (
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -22,6 +23,7 @@ func (c *Client) initServices() error {
 		Client:       c.ethClient,
 		FWSS:         c.addresses.FWSS,
 		ViewContract: c.addresses.ViewContract,
+		Lifecycle:    c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create warmstorage service: %w", err)
@@ -29,8 +31,9 @@ func (c *Client) initServices() error {
 	c.warmStorage = ws
 
 	spReg, err := spregistry.New(spregistry.Options{
-		Client:  c.ethClient,
-		Address: c.addresses.SPRegistry,
+		Client:    c.ethClient,
+		Address:   c.addresses.SPRegistry,
+		Lifecycle: c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create spregistry service: %w", err)
@@ -39,11 +42,12 @@ func (c *Client) initServices() error {
 
 	pay, err := payments.New(payments.Options{
 		Backend:       c.ethClient,
-		ChainID:       c.selectedChain.BigChainID(),
+		ChainID:       types.ChainID(c.selectedChain.ChainID()),
 		FilPayAddress: c.addresses.Payments,
 		Signer:        c.evmSigner,
 		Logger:        c.logger,
 		NonceManager:  c.nonces,
+		Lifecycle:     c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create payments service: %w", err)
@@ -52,11 +56,12 @@ func (c *Client) initServices() error {
 
 	sk, err := sessionkey.New(sessionkey.Options{
 		Backend:         c.ethClient,
-		ChainID:         c.selectedChain.BigChainID(),
+		ChainID:         types.ChainID(c.selectedChain.ChainID()),
 		RegistryAddress: c.addresses.SessionKeyRegistry,
 		Signer:          c.evmSigner,
 		Logger:          c.logger,
 		NonceManager:    c.nonces,
+		Lifecycle:       c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create sessionkey service: %w", err)
@@ -67,6 +72,7 @@ func (c *Client) initServices() error {
 		Chain:      c.selectedChain,
 		HTTPClient: c.httpClient,
 		Logger:     c.logger,
+		Lifecycle:  c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create filbeam service: %w", err)
@@ -79,6 +85,7 @@ func (c *Client) initServices() error {
 		Payments:    pay,
 		Caller:      c.ethClient,
 		Logger:      c.logger,
+		Lifecycle:   c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create costs service: %w", err)
@@ -103,7 +110,7 @@ func (c *Client) initServices() error {
 			}
 			ctxOpts := []storage.ContextOption{
 				storage.WithPayer(c.evmSigner.EVMAddress()),
-				storage.WithChainID(c.selectedChain.BigChainID()),
+				storage.WithChainID(types.ChainID(c.selectedChain.ChainID())),
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(sel.DataSetMetadata),
 				storage.WithCDN(opts != nil && opts.WithCDN),
@@ -129,6 +136,7 @@ func (c *Client) initServices() error {
 		Resolver:   resolver,
 		HTTPClient: c.httpClient,
 		Source:     c.source,
+		Lifecycle:  c.lifecycle,
 	}
 	svc, err := storage.New(storageOpts)
 	if err != nil {

@@ -147,7 +147,8 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	}
 
 	mgr := &Service{
-		resolver: &fakeResolver{contexts: []UploadContext{primary}},
+		httpClient: &http.Client{},
+		resolver:   &fakeResolver{contexts: []UploadContext{primary}},
 	}
 
 	_, err := mgr.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), nil)
@@ -438,7 +439,7 @@ func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	// Resolver returns only 1 context even though caller requests 3 copies.
 	mgr := &Service{
 		resolver:   &fakeResolver{contexts: []UploadContext{primary}},
-		httpClient: nil,
+		httpClient: &http.Client{},
 	}
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 3})
@@ -564,7 +565,7 @@ func TestManagerUpload_ReadError(t *testing.T) {
 			return nil, errors.New("unexpected: reader should have errored")
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
 	_, err := mgr.Upload(context.Background(), iotest.ErrReader(readErr), nil)
 	if err == nil {
 		t.Fatal("expected error for failing reader")
@@ -598,7 +599,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
@@ -638,7 +639,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 
 	if _, err := mgr.Upload(context.Background(), src, &UploadOptions{Copies: 1}); err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -671,7 +672,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, PieceCID: info.CIDv2})
 	if err != nil {
@@ -704,7 +705,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, OnProgress: func(int64) {}})
 	if err != nil {
@@ -823,7 +824,7 @@ func TestWithSource(t *testing.T) {
 }
 
 func TestWithSourceMetadata(t *testing.T) {
-	m := &Service{source: "app"}
+	m := &Service{httpClient: &http.Client{}, source: "app"}
 
 	// nil opts → creates new opts with source
 	got := m.withSourceMetadata(nil)
@@ -973,7 +974,7 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 		},
 	}
 
-	mgr := &Service{resolver: resolver, source: "test-app"}
+	mgr := &Service{httpClient: &http.Client{}, resolver: resolver, source: "test-app"}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -1006,7 +1007,7 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(0), PieceIDs: nil}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when identifiers missing")
@@ -1036,7 +1037,7 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 			return &CommitResult{DataSetID: 0, PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when dataSetID is zero")
@@ -1081,7 +1082,7 @@ func TestManagerUpload_CommitResultPieceIDZeroMidArray(t *testing.T) {
 			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: ids}, nil
 		},
 	}
-	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when a non-head PieceID is zero")

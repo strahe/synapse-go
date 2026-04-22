@@ -139,12 +139,13 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnershi
 }
 
 type serviceResolverFixture struct {
-	approvedProviderIDs []types.ProviderID
-	activeProviders     []spregistry.PDPProvider
-	clientDataSets      []*warmstorage.DataSetInfo
-	dataSetMetadata     map[types.DataSetID]map[string]string
-	providersByID       map[types.ProviderID]*spregistry.PDPProvider
-	dataSetsByID        map[types.DataSetID]*warmstorage.DataSetInfo
+	approvedProviderIDs      []types.ProviderID
+	activeProviders          []spregistry.PDPProvider
+	clientDataSets           []*warmstorage.DataSetInfo
+	dataSetMetadata          map[types.DataSetID]map[string]string
+	providersByID            map[types.ProviderID]*spregistry.PDPProvider
+	dataSetsByID             map[types.DataSetID]*warmstorage.DataSetInfo
+	requirePositiveListLimit bool
 }
 
 func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
@@ -206,15 +207,45 @@ type fakeDataSetCatalog struct {
 	fixture serviceResolverFixture
 }
 
-func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, _ types.ListOptions) ([]types.ProviderID, error) {
-	out := make([]types.ProviderID, len(f.fixture.approvedProviderIDs))
-	copy(out, f.fixture.approvedProviderIDs)
+func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, opts types.ListOptions) ([]types.ProviderID, error) {
+	if f.fixture.requirePositiveListLimit {
+		if err := opts.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	start := int(opts.Offset)
+	if start > len(f.fixture.approvedProviderIDs) {
+		start = len(f.fixture.approvedProviderIDs)
+	}
+	end := len(f.fixture.approvedProviderIDs)
+	if opts.Limit > 0 {
+		if limitEnd := start + int(opts.Limit); limitEnd < end {
+			end = limitEnd
+		}
+	}
+	out := make([]types.ProviderID, end-start)
+	copy(out, f.fixture.approvedProviderIDs[start:end])
 	return out, nil
 }
 
-func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Address, _ types.ListOptions) ([]*warmstorage.DataSetInfo, error) {
-	out := make([]*warmstorage.DataSetInfo, 0, len(f.fixture.clientDataSets))
-	for _, dataSet := range f.fixture.clientDataSets {
+func (f *fakeDataSetCatalog) GetClientDataSets(_ context.Context, _ common.Address, opts types.ListOptions) ([]*warmstorage.DataSetInfo, error) {
+	if f.fixture.requirePositiveListLimit {
+		if err := opts.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	start := int(opts.Offset)
+	if start > len(f.fixture.clientDataSets) {
+		start = len(f.fixture.clientDataSets)
+	}
+	end := len(f.fixture.clientDataSets)
+	if opts.Limit > 0 {
+		if limitEnd := start + int(opts.Limit); limitEnd < end {
+			end = limitEnd
+		}
+	}
+	out := make([]*warmstorage.DataSetInfo, 0, end-start)
+	for _, dataSet := range f.fixture.clientDataSets[start:end] {
 		cloned := *dataSet
 		out = append(out, &cloned)
 	}
@@ -591,5 +622,85 @@ func TestDedupeIDs(t *testing.T) {
 				t.Fatalf("dedupeIDs len=%d want %d", len(got), tt.want)
 			}
 		})
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsTraversesPagedDataSets(t *testing.T) {
+	const pageBoundary = 100
+
+	clientDataSets := make([]*warmstorage.DataSetInfo, 0, pageBoundary+1)
+	for i := 1; i <= pageBoundary; i++ {
+		clientDataSets = append(clientDataSets, &warmstorage.DataSetInfo{
+			DataSetID:   types.DataSetID(i),
+			ProviderID:  types.ProviderID(i),
+			PDPEndEpoch: 0,
+		})
+	}
+	clientDataSets = append(clientDataSets, &warmstorage.DataSetInfo{
+		DataSetID:   1001,
+		ProviderID:  999,
+		PDPEndEpoch: 0,
+	})
+
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		clientDataSets: clientDataSets,
+		providersByID: map[types.ProviderID]*spregistry.PDPProvider{
+			999: ptrPDPProvider(testPDPProvider(999, "https://sp-999.example.com")),
+		},
+		dataSetMetadata: map[types.DataSetID]map[string]string{
+			1001: {"source": "paged"},
+		},
+		requirePositiveListLimit: true,
+	})
+
+	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs:     []types.ProviderID{999},
+		DataSetMetadata: map[string]string{"source": "paged"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	if !explicit {
+		t.Fatal("explicit=false want true")
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 {
+		t.Fatalf("contexts len=%d want 1", len(got))
+	}
+	if got[0].dataSetID == nil || *got[0].dataSetID != 1001 {
+		t.Fatalf("dataSetID=%v want 1001", got[0].dataSetID)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectTraversesPagedApprovedProviders(t *testing.T) {
+	const pageBoundary = 100
+
+	approved := make([]types.ProviderID, 0, pageBoundary+1)
+	for i := 1; i <= pageBoundary; i++ {
+		approved = append(approved, types.ProviderID(i))
+	}
+	approved = append(approved, 999)
+
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: approved,
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(999, "https://sp-999.example.com"),
+		},
+		requirePositiveListLimit: true,
+	})
+
+	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	if explicit {
+		t.Fatal("explicit=true want false")
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 {
+		t.Fatalf("contexts len=%d want 1", len(got))
+	}
+	if got[0].id != 999 {
+		t.Fatalf("provider=%d want 999", got[0].id)
 	}
 }
