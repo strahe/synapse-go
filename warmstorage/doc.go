@@ -8,6 +8,10 @@
 // Key operations: data set management, service price queries, approval
 // management, and provider allocation.
 //
+// When multiple write-capable services share the same signer / EOA, pass the
+// same txutil.NonceManager to each constructor so nonce allocation stays
+// serialized across services.
+//
 // Errors are returned as wrapped sentinels. Use errors.Is to check:
 //
 //   - ErrNotFound: returned when a queried record (e.g. data set) does not

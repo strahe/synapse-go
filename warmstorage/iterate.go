@@ -44,6 +44,35 @@ func (s *Service) IterateAllClientDataSets(ctx context.Context, payer common.Add
 	}
 }
 
+// IterateAllClientDataSetIds yields every data set ID owned by payer
+// across all pages. Semantics match IterateAllClientDataSets but returns
+// a shallow list of IDs (lighter-weight than the full DataSetInfo).
+func (s *Service) IterateAllClientDataSetIds(ctx context.Context, payer common.Address) iter.Seq2[types.DataSetID, error] {
+	return func(yield func(types.DataSetID, error) bool) {
+		var offset uint64
+		for {
+			if err := ctx.Err(); err != nil {
+				yield(0, err)
+				return
+			}
+			page, err := s.GetClientDataSetIds(ctx, payer, types.ListOptions{Offset: offset, Limit: defaultIteratePageSize})
+			if err != nil {
+				yield(0, err)
+				return
+			}
+			for _, id := range page {
+				if !yield(id, nil) {
+					return
+				}
+			}
+			if uint64(len(page)) < defaultIteratePageSize {
+				return
+			}
+			offset += uint64(len(page))
+		}
+	}
+}
+
 // IterateAllApprovedProviderIDs yields every approved-provider id across all
 // pages. Semantics match IterateAllClientDataSets.
 func (s *Service) IterateAllApprovedProviderIDs(ctx context.Context) iter.Seq2[types.ProviderID, error] {

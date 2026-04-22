@@ -24,9 +24,10 @@ var ErrZeroAddress = errors.New("payments: zero address")
 type WriteOption func(*writeConfig)
 
 type writeConfig struct {
-	waitTimeout   time.Duration
-	confirmations uint64
-	skipPrecheck  bool
+	waitTimeout           time.Duration
+	confirmations         uint64
+	skipPrecheck          bool
+	fundNeedsFwssApproval *bool
 }
 
 func newWriteConfig(opts []WriteOption) writeConfig {
@@ -55,4 +56,11 @@ func WithConfirmations(n uint64) WriteOption {
 // or wants to probe an on-chain revert for diagnostic purposes.
 func WithSkipPrecheck() WriteOption {
 	return func(c *writeConfig) { c.skipPrecheck = true }
+}
+
+// WithFundNeedsFwssApproval overrides Fund / FundSync's approval-state probe.
+// When set, Fund skips isFwssMaxApproved and uses the supplied decision
+// directly so prepare/execute flows can reuse a previously computed result.
+func WithFundNeedsFwssApproval(needs bool) WriteOption {
+	return func(c *writeConfig) { c.fundNeedsFwssApproval = &needs }
 }

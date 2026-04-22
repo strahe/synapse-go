@@ -12,6 +12,7 @@ import (
 
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
+	pdpbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -21,10 +22,12 @@ import (
 type mockCaller struct {
 	fwssABI abi.ABI
 	viewABI abi.ABI
+	pdpABI  abi.ABI
 	// method name → reply bytes or error
-	replies map[string][]byte
-	errs    map[string]error
-	lastIn  map[string][]byte
+	replies  map[string][]byte
+	errs     map[string]error
+	lastIn   map[string][]byte
+	handlers map[string]func([]byte) ([]byte, error)
 }
 
 func newMockCaller(t *testing.T) *mockCaller {
@@ -37,12 +40,18 @@ func newMockCaller(t *testing.T) *mockCaller {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pABI, err := pdpbind.PDPVerifierMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &mockCaller{
-		fwssABI: *fABI,
-		viewABI: *vABI,
-		replies: map[string][]byte{},
-		errs:    map[string]error{},
-		lastIn:  map[string][]byte{},
+		fwssABI:  *fABI,
+		viewABI:  *vABI,
+		pdpABI:   *pABI,
+		replies:  map[string][]byte{},
+		errs:     map[string]error{},
+		lastIn:   map[string][]byte{},
+		handlers: map[string]func([]byte) ([]byte, error){},
 	}
 }
 
@@ -68,6 +77,21 @@ func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *b
 	for name, method := range m.viewABI.Methods {
 		if [4]byte(method.ID) == selector {
 			m.lastIn[name] = data
+			if handler, ok := m.handlers[name]; ok {
+				return handler(data)
+			}
+			if err, ok := m.errs[name]; ok {
+				return nil, err
+			}
+			return m.replies[name], nil
+		}
+	}
+	for name, method := range m.pdpABI.Methods {
+		if [4]byte(method.ID) == selector {
+			m.lastIn[name] = data
+			if handler, ok := m.handlers[name]; ok {
+				return handler(data)
+			}
 			if err, ok := m.errs[name]; ok {
 				return nil, err
 			}
@@ -129,6 +153,19 @@ func (m *mockCaller) setViewReply(t *testing.T, method string, values ...any) {
 	m.replies[method] = b
 }
 
+func (m *mockCaller) setPDPReply(t *testing.T, method string, values ...any) {
+	t.Helper()
+	mth, ok := m.pdpABI.Methods[method]
+	if !ok {
+		t.Fatalf("pdp method %q not found", method)
+	}
+	b, err := mth.Outputs.Pack(values...)
+	if err != nil {
+		t.Fatalf("pack %s: %v", method, err)
+	}
+	m.replies[method] = b
+}
+
 func newTestService(t *testing.T) (*Service, *mockCaller) {
 	t.Helper()
 	mc := newMockCaller(t)
@@ -136,6 +173,21 @@ func newTestService(t *testing.T) (*Service, *mockCaller) {
 		Client:       mc,
 		FWSS:         common.HexToAddress("0x1111111111111111111111111111111111111111"),
 		ViewContract: common.HexToAddress("0x2222222222222222222222222222222222222222"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, mc
+}
+
+func newTestServiceWithPDP(t *testing.T) (*Service, *mockCaller) {
+	t.Helper()
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:       mc,
+		FWSS:         common.HexToAddress("0x1111111111111111111111111111111111111111"),
+		ViewContract: common.HexToAddress("0x2222222222222222222222222222222222222222"),
+		PDPVerifier:  common.HexToAddress("0x3333333333333333333333333333333333333333"),
 	})
 	if err != nil {
 		t.Fatal(err)

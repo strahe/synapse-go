@@ -3,15 +3,21 @@ package warmstorage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/strahe/synapse-go/internal/contracts/fwss"
 	"github.com/strahe/synapse-go/internal/contracts/fwssview"
+	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/txutil"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -21,19 +27,39 @@ type EthClient interface {
 	bind.ContractCaller
 }
 
+// Backend extends EthClient with the surface required for sending
+// transactions (TopUpCDNPaymentRails). The full [ethclient.Client] satisfies
+// this interface.
+type Backend interface {
+	bind.ContractBackend
+	TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error)
+	BlockNumber(ctx context.Context) (uint64, error)
+}
+
 // Service provides read access to FilecoinWarmStorageService (FWSS) and its
-// companion StateView contract.
+// companion StateView contract, plus a small number of writes that are
+// semantically owned by the WarmStorage contract (TopUpCDNPaymentRails).
 //
-// All writes flow through the curio HTTP client and the payments service;
-// FWSS is only invoked here for queries that back SDK decisions (service
-// pricing, dataset existence, provider approval).
+// Most writes still flow through the payments service or the curio HTTP
+// client. FWSS is invoked here for queries that back SDK decisions
+// (service pricing, dataset existence, provider approval, dataset
+// management checks).
 type Service struct {
-	caller    EthClient
-	fwssAddr  common.Address
-	viewAddr  common.Address
-	fwssBind  *fwss.FWSSCaller
-	viewBind  *fwssview.FWSSViewCaller
-	lifecycle *lifecycle.Lifecycle
+	caller         EthClient
+	backend        Backend
+	chainID        types.ChainID
+	fwssAddr       common.Address
+	viewAddr       common.Address
+	pdpVerifierAdr common.Address
+	fwssBind       *fwss.FWSSCaller
+	viewBind       *fwssview.FWSSViewCaller
+	pdpBind        *pdpverifier.PDPVerifierCaller
+	fwssWrite      *fwss.FWSSTransactor
+	signer         signer.EVMSigner
+	nonces         *txutil.NonceManager
+	logger         *slog.Logger
+	receiptWait    time.Duration
+	lifecycle      *lifecycle.Lifecycle
 }
 
 // Options bundle the caller and contract addresses.
@@ -41,6 +67,28 @@ type Options struct {
 	Client       EthClient
 	FWSS         common.Address
 	ViewContract common.Address
+	// PDPVerifier is the PDPVerifier contract address. Optional. Required
+	// only for methods that call PDPVerifier directly (ValidateDataSet,
+	// GetActivePieceCount, GetScheduledRemovals, and the isLive / listener
+	// decorators on GetClientDataSetsWithDetails).
+	PDPVerifier common.Address
+	// ChainID is required only when writes are used (TopUpCDNPaymentRails).
+	ChainID types.ChainID
+	// Backend provides a full RPC surface for writes. When nil Service is
+	// read-only; write methods return [ErrInvalidArgument].
+	Backend Backend
+	// Signer signs write transactions. Optional.
+	Signer signer.EVMSigner
+	// NonceManager is optional. When nil, one is created from Backend if
+	// Signer is also provided. Services that share the same signer / EOA must
+	// also share the same NonceManager instance; otherwise concurrent writes
+	// can race on nonce allocation.
+	NonceManager *txutil.NonceManager
+	// Logger is optional.
+	Logger *slog.Logger
+	// ReceiptWait overrides the default receipt polling timeout for
+	// WithWait calls. Zero uses txutil.DefaultReceiptWaitConfig.
+	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// [ErrClosed]. Nil is allowed for standalone use.
@@ -67,14 +115,39 @@ func New(opts Options) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.New: bind fwssview: %w", err)
 	}
-	return &Service{
-		caller:    opts.Client,
-		fwssAddr:  opts.FWSS,
-		viewAddr:  opts.ViewContract,
-		fwssBind:  fb,
-		viewBind:  vb,
-		lifecycle: opts.Lifecycle,
-	}, nil
+	s := &Service{
+		caller:         opts.Client,
+		backend:        opts.Backend,
+		chainID:        opts.ChainID,
+		fwssAddr:       opts.FWSS,
+		viewAddr:       opts.ViewContract,
+		pdpVerifierAdr: opts.PDPVerifier,
+		fwssBind:       fb,
+		viewBind:       vb,
+		signer:         opts.Signer,
+		logger:         opts.Logger,
+		nonces:         opts.NonceManager,
+		receiptWait:    opts.ReceiptWait,
+		lifecycle:      opts.Lifecycle,
+	}
+	if (opts.PDPVerifier != common.Address{}) {
+		pb, err := pdpverifier.NewPDPVerifierCaller(opts.PDPVerifier, opts.Client)
+		if err != nil {
+			return nil, fmt.Errorf("warmstorage.New: bind pdpverifier: %w", err)
+		}
+		s.pdpBind = pb
+	}
+	if opts.Backend != nil {
+		tw, err := fwss.NewFWSSTransactor(opts.FWSS, opts.Backend)
+		if err != nil {
+			return nil, fmt.Errorf("warmstorage.New: bind fwss transactor: %w", err)
+		}
+		s.fwssWrite = tw
+	}
+	if s.nonces == nil && s.signer != nil && s.backend != nil {
+		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
+	}
+	return s, nil
 }
 
 // FWSSAddress returns the configured FWSS contract address.
@@ -82,6 +155,10 @@ func (s *Service) FWSSAddress() common.Address { return s.fwssAddr }
 
 // ViewAddress returns the configured StateView contract address.
 func (s *Service) ViewAddress() common.Address { return s.viewAddr }
+
+// PDPVerifierAddress returns the configured PDPVerifier address. Zero when
+// the Service was constructed without a PDPVerifier.
+func (s *Service) PDPVerifierAddress() common.Address { return s.pdpVerifierAdr }
 
 // ServicePrice mirrors FilecoinWarmStorageServiceServicePricing. All amounts
 // are in base units of the payment token.

@@ -564,6 +564,18 @@ func (c *Context) ProviderID() types.ProviderID {
 	return c.provider.ID
 }
 
+// GetProviderInfo returns a copy of the Provider that this Context was
+// constructed with. Safe for concurrent use; the returned struct is a
+// deep copy for all non-address fields.
+func (c *Context) GetProviderInfo() Provider {
+	return Provider{
+		ID:              c.provider.ID,
+		ServiceURL:      c.provider.ServiceURL,
+		ServiceProvider: c.provider.ServiceProvider,
+		Payee:           c.provider.Payee,
+	}
+}
+
 // ServiceURL returns the base URL of the provider's curio HTTP API.
 func (c *Context) ServiceURL() string {
 	return c.provider.ServiceURL

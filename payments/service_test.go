@@ -37,6 +37,7 @@ type mockBackend struct {
 
 	// per-account balances; nil -> 0
 	balances map[common.Address]*big.Int
+	lastIn   map[string][]byte
 
 	// sent transactions (hash -> tx)
 	sent      []*types.Transaction
@@ -68,6 +69,7 @@ func newMockBackend(t *testing.T) *mockBackend {
 		replies:   map[string][]byte{},
 		errs:      map[string]error{},
 		balances:  map[common.Address]*big.Int{},
+		lastIn:    map[string][]byte{},
 		receipts:  map[common.Hash]*types.Receipt{},
 		nonces:    map[common.Address]uint64{},
 	}
@@ -90,6 +92,7 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 	for name, method := range m.filPayABI.Methods {
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
+			m.lastIn[key] = append([]byte(nil), call.Data...)
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -99,6 +102,7 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 	for name, method := range m.erc20ABI.Methods {
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
+			m.lastIn[key] = append([]byte(nil), call.Data...)
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}

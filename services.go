@@ -1,7 +1,10 @@
 package synapse
 
 import (
+	"context"
 	"fmt"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	icurio "github.com/strahe/synapse-go/internal/curio"
 
@@ -21,8 +24,14 @@ import (
 func (c *Client) initServices() error {
 	ws, err := warmstorage.New(warmstorage.Options{
 		Client:       c.ethClient,
+		Backend:      c.ethClient,
+		ChainID:      types.ChainID(c.selectedChain.ChainID()),
 		FWSS:         c.addresses.FWSS,
 		ViewContract: c.addresses.ViewContract,
+		PDPVerifier:  c.addresses.PDPVerifier,
+		Signer:       c.evmSigner,
+		Logger:       c.logger,
+		NonceManager: c.nonces,
 		Lifecycle:    c.lifecycle,
 	})
 	if err != nil {
@@ -41,13 +50,15 @@ func (c *Client) initServices() error {
 	c.spRegistry = spReg
 
 	pay, err := payments.New(payments.Options{
-		Backend:       c.ethClient,
-		ChainID:       types.ChainID(c.selectedChain.ChainID()),
-		FilPayAddress: c.addresses.Payments,
-		Signer:        c.evmSigner,
-		Logger:        c.logger,
-		NonceManager:  c.nonces,
-		Lifecycle:     c.lifecycle,
+		Backend:            c.ethClient,
+		ChainID:            types.ChainID(c.selectedChain.ChainID()),
+		FilPayAddress:      c.addresses.Payments,
+		WarmStorageAddress: c.addresses.FWSS,
+		USDFCTokenAddress:  c.addresses.USDFC,
+		Signer:             c.evmSigner,
+		Logger:             c.logger,
+		NonceManager:       c.nonces,
+		Lifecycle:          c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create payments service: %w", err)
@@ -184,4 +195,21 @@ func (c *Client) FilBeam() *filbeam.Service {
 // created inside the [storage.ContextFactory] closure on each upload.
 func (c *Client) Storage() *storage.Service {
 	return c.storage
+}
+
+// GetProviderInfo is a convenience shortcut for looking up a storage
+// provider on [SPRegistry]. `idOrAddress` may be either a numeric
+// [types.ProviderID] or a [common.Address] — any other type returns
+// [spregistry.ErrInvalidArgument].
+//
+// Mirrors the TS synapse.getProviderInfo helper.
+func (c *Client) GetProviderInfo(ctx context.Context, idOrAddress any) (*spregistry.ProviderInfo, error) {
+	switch v := idOrAddress.(type) {
+	case types.ProviderID:
+		return c.spRegistry.GetProvider(ctx, v)
+	case common.Address:
+		return c.spRegistry.GetProviderByAddress(ctx, v)
+	default:
+		return nil, fmt.Errorf("synapse.GetProviderInfo: %w: unsupported idOrAddress type %T", spregistry.ErrInvalidArgument, v)
+	}
 }

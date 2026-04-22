@@ -39,6 +39,8 @@ type Service struct {
 	backend     Backend
 	chainID     sdktypes.ChainID
 	filPayAddr  common.Address
+	warmStorage common.Address
+	usdfcToken  common.Address
 	filPayCall  *filpay.FilPayCaller
 	filPayWrite *filpay.FilPayTransactor
 	signer      signer.EVMSigner
@@ -56,12 +58,25 @@ type Options struct {
 	ChainID sdktypes.ChainID
 	// FilPayAddress is the Filecoin Pay contract address. Required.
 	FilPayAddress common.Address
+	// WarmStorageAddress is the FilecoinWarmStorageService contract address.
+	// Optional; required for Fund / FundSync smart-route helpers because
+	// they route through WarmStorage operator approval state. When zero
+	// Fund / FundSync return ErrInvalidArgument.
+	WarmStorageAddress common.Address
+	// USDFCTokenAddress is the USDFC (or other ERC-2612) token address
+	// used as the default for Fund / FundSync and for permit operations
+	// that do not receive an explicit token argument. Optional; callers
+	// may always pass a token explicitly to DepositWithPermit.
+	USDFCTokenAddress common.Address
 	// Signer is used to sign transactions. Required for write methods;
 	// may be nil when the Service is used for reads only.
 	Signer signer.EVMSigner
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
 	// NonceManager is optional. When nil, one is created from Backend.
+	// Services that share the same signer / EOA must also share the same
+	// NonceManager instance; otherwise concurrent writes can race on nonce
+	// allocation.
 	NonceManager *txutil.NonceManager
 	// ReceiptWait overrides the default receipt polling timeout used by
 	// WithConfirmations when the call waits for a receipt but does not
@@ -98,6 +113,8 @@ func New(opts Options) (*Service, error) {
 		backend:     opts.Backend,
 		chainID:     opts.ChainID,
 		filPayAddr:  opts.FilPayAddress,
+		warmStorage: opts.WarmStorageAddress,
+		usdfcToken:  opts.USDFCTokenAddress,
 		filPayCall:  caller,
 		filPayWrite: writer,
 		signer:      opts.Signer,
