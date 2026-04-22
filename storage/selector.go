@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
+
+// selectorMetadataConcurrency caps fan-out of parallel
+// GetAllDataSetMetadata calls made by ServiceResolver. Kept small because
+// each call hits a public RPC endpoint; aligns with TS SDK BATCH_SIZE.
+const selectorMetadataConcurrency = 8
 
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
 type PDPProviderSource interface {
@@ -287,18 +293,64 @@ func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID 
 	sort.Slice(matching, func(i, j int) bool {
 		return matching[i].DataSetID < matching[j].DataSetID
 	})
-	// TODO: N+1 RPC calls — one GetAllDataSetMetadata per candidate dataset.
-	// Batch metadata fetch would require a new server API endpoint.
-	for _, dataSet := range matching {
-		metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dataSet.DataSetID)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %d: %w", uint64(dataSet.DataSetID), err)
+	if len(matching) == 0 {
+		return nil, nil, cloneStringMap(requestedMetadata), nil
+	}
+
+	// Fetch metadata for all candidates concurrently with a bounded worker
+	// pool. The caller's ctx remains the only time budget; the iteration order
+	// for the match check remains deterministic (sorted by DataSetID).
+	//
+	// Batched metadata fetch would require a new server API; this only
+	// pipelines the existing N+1 calls.
+	metadataByID := make(map[types.DataSetID]map[string]string, len(matching))
+	var mu sync.Mutex
+	workers := selectorMetadataConcurrency
+	if workers > len(matching) {
+		workers = len(matching)
+	}
+	sem := make(chan struct{}, workers)
+	errCh := make(chan error, len(matching))
+	var wg sync.WaitGroup
+	for _, ds := range matching {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w", ctx.Err())
 		}
-		if metadataMatches(metadata, requestedMetadata) {
+		wg.Add(1)
+		go func(dsID types.DataSetID) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dsID)
+			if err != nil {
+				errCh <- fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %d: %w", uint64(dsID), err)
+				return
+			}
+			mu.Lock()
+			metadataByID[dsID] = metadata
+			mu.Unlock()
+		}(ds.DataSetID)
+	}
+	wg.Wait()
+	close(errCh)
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return nil, nil, nil, errors.Join(errs...)
+	}
+
+	for _, dataSet := range matching {
+		if metadata, ok := metadataByID[dataSet.DataSetID]; ok && metadataMatches(metadata, requestedMetadata) {
 			dsID := dataSet.DataSetID
 			return &dsID, copyClientDataSetID(dataSet.ClientDataSetID), metadata, nil
 		}
 	}
+
 	return nil, nil, cloneStringMap(requestedMetadata), nil
 }
 

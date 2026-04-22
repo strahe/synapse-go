@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"testing/iotest"
@@ -1043,6 +1044,54 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 	var ce *CommitError
 	if !errors.As(err, &ce) {
 		t.Fatalf("want CommitError, got %T", err)
+	}
+}
+
+// TestManagerUpload_CommitResultPieceIDZeroMidArray proves that a commit
+// result with a zero entry anywhere in PieceIDs (not just the head) is
+// treated as invalid. Previously only PieceIDs[0] was checked, hiding
+// partial confirmations for batch commits.
+func TestManagerUpload_CommitResultPieceIDZeroMidArray(t *testing.T) {
+	data := bytes.Repeat([]byte("mid"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.ProviderID(1),
+		endpoint: "https://p.example.com",
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
+			ids := make([]types.PieceID, len(req.Pieces))
+			for i := range ids {
+				ids[i] = types.PieceID(10 + i)
+			}
+			if len(ids) > 0 {
+				// Inject a zero somewhere past index 0 to exercise
+				// the full-length validation path.
+				idx := len(ids) / 2
+				if idx == 0 && len(ids) > 1 {
+					idx = 1
+				}
+				ids[idx] = 0
+			}
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: ids}, nil
+		},
+	}
+	mgr := &Service{resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+	if err == nil {
+		t.Fatal("expected CommitError when a non-head PieceID is zero")
+	}
+	var ce *CommitError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want CommitError, got %T (%v)", err, err)
+	}
+	if !strings.Contains(err.Error(), "index") {
+		t.Fatalf("expected error to mention the zero index, got %q", err.Error())
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sync"
 
 	commpwriter "github.com/filecoin-project/go-commp-utils/v2/writer"
 	"github.com/ipfs/go-cid"
@@ -90,10 +92,19 @@ func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.Download: %w", err)
 	}
-	return newValidatingReadCloser(body, pieceCID), nil
+	return newValidatingReadCloser(body, pieceCID, 0), nil
 }
 
 func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, &DownloadError{URL: rawURL, Cause: err}
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return nil, &DownloadError{URL: rawURL, Cause: fmt.Errorf("%w: %q", ErrUnsupportedScheme, parsed.Scheme)}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, &DownloadError{URL: rawURL, Cause: err}
@@ -106,31 +117,70 @@ func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceC
 		_ = resp.Body.Close()
 		return nil, &DownloadError{URL: rawURL, StatusCode: resp.StatusCode}
 	}
-	return newValidatingReadCloser(resp.Body, pieceCID), nil
+	if s.downloadMaxBytes > 0 && resp.ContentLength > s.downloadMaxBytes {
+		_ = resp.Body.Close()
+		return nil, &DownloadError{URL: rawURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, s.downloadMaxBytes)}
+	}
+	return newValidatingReadCloser(resp.Body, pieceCID, s.downloadMaxBytes), nil
 }
 
 type validatingReadCloser struct {
+	mu       sync.Mutex
 	reader   io.ReadCloser
 	hasher   *commpwriter.Writer
 	expected cid.Cid
+	maxBytes int64
+	read     int64
 	finished bool
 	finalErr error
 }
 
-func newValidatingReadCloser(reader io.ReadCloser, expected cid.Cid) io.ReadCloser {
+func newValidatingReadCloser(reader io.ReadCloser, expected cid.Cid, maxBytes int64) io.ReadCloser {
 	return &validatingReadCloser{
 		reader:   reader,
 		hasher:   &commpwriter.Writer{},
 		expected: expected,
+		maxBytes: maxBytes,
 	}
 }
 
 func (r *validatingReadCloser) Read(p []byte) (int, error) {
+	r.mu.Lock()
 	if r.finished {
+		err := r.finalErr
+		r.mu.Unlock()
+		return 0, err
+	}
+	r.mu.Unlock()
+	n, err := r.reader.Read(p)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finished {
+		if n > 0 {
+			return n, r.finalErr
+		}
 		return 0, r.finalErr
 	}
-	n, err := r.reader.Read(p)
 	if n > 0 {
+		r.read += int64(n)
+		if r.maxBytes > 0 && r.read > r.maxBytes {
+			// Trim written bytes so the hasher and the caller never see
+			// the overflow: the hasher must be consistent with what the
+			// caller observes, and the caller must stop at the cap.
+			over := r.read - r.maxBytes
+			n -= int(over)
+			if n < 0 {
+				n = 0
+			}
+			r.finished = true
+			r.finalErr = fmt.Errorf("%w: read %d bytes (cap %d)", ErrMaxBytesExceeded, r.read, r.maxBytes)
+			if n > 0 {
+				if _, writeErr := r.hasher.Write(p[:n]); writeErr != nil {
+					r.finalErr = writeErr
+				}
+			}
+			return n, r.finalErr
+		}
 		if _, writeErr := r.hasher.Write(p[:n]); writeErr != nil {
 			r.finished = true
 			r.finalErr = writeErr
@@ -155,8 +205,20 @@ func (r *validatingReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close closes the underlying reader and marks the stream finished. If the
+// caller closes before EOF, subsequent Reads return [io.ErrClosedPipe] so
+// that partial data cannot silently masquerade as validated content.
 func (r *validatingReadCloser) Close() error {
-	return r.reader.Close()
+	closeErr := r.reader.Close()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.finished {
+		r.finished = true
+		if r.finalErr == nil {
+			r.finalErr = io.ErrClosedPipe
+		}
+	}
+	return closeErr
 }
 
 func (r *validatingReadCloser) validate() error {

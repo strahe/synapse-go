@@ -3,6 +3,7 @@ package curio
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // DefaultUserAgent is set on every outgoing request unless overridden.
@@ -25,6 +29,13 @@ const DefaultHTTPTimeout = 30 * time.Second
 // DefaultMaxRetries is the number of retries attempted for transient failures
 // (5xx, 429, network errors) when no explicit value is set.
 const DefaultMaxRetries = 3
+
+// MaxControlResponseBytes caps the size of control-plane JSON response bodies
+// read fully into memory. Curio's control-plane endpoints return small JSON
+// documents (dataset status, piece IDs, etc.); anything larger indicates a
+// buggy or hostile server and should not be allowed to exhaust client memory.
+// Streaming endpoints (piece download) bypass this limit.
+const MaxControlResponseBytes = 16 << 20 // 16 MiB
 
 // Client is a thin HTTP client for a single Curio PDP service URL.
 // Safe for concurrent use.
@@ -141,9 +152,16 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, readErr := io.ReadAll(resp.Body)
+	// Cap response body size to protect against unbounded or hostile responses.
+	// Read MaxControlResponseBytes+1 so we can detect overflow distinctly from
+	// an exactly-sized reply.
+	limited := io.LimitReader(resp.Body, MaxControlResponseBytes+1)
+	body, readErr := io.ReadAll(limited)
 	if readErr != nil {
 		return resp, nil, fmt.Errorf("curio: read body: %w", readErr)
+	}
+	if int64(len(body)) > MaxControlResponseBytes {
+		return resp, nil, fmt.Errorf("curio: %s %s: response body exceeds %d bytes (MaxControlResponseBytes)", req.Method, req.URL.Path, MaxControlResponseBytes)
 	}
 
 	if len(expectStatuses) == 0 {
@@ -161,10 +179,23 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 }
 
 // isRetryable reports whether the error warrants a retry attempt.
-// Context errors and client errors (4xx, except 429) are not retried.
-// Server errors (5xx, excluding 501 Not Implemented), rate-limit (429),
-// and transient network errors are retried. Permanent transport errors
-// such as TLS certificate failures or invalid URL schemes are not retried.
+//
+// Non-retryable (permanent):
+//   - context.Canceled / context.DeadlineExceeded
+//   - HTTP 4xx except 429
+//   - HTTP 501 Not Implemented
+//   - TLS alert errors (bad cert, expired cert, protocol violations)
+//
+// Retryable (transient):
+//   - HTTP 5xx (except 501) and 429
+//   - Connection-level failures: ECONNREFUSED, ECONNRESET, EPIPE
+//   - Transient DNS errors (IsTemporary || IsTimeout)
+//   - I/O cut short: io.ErrUnexpectedEOF
+//   - url.Error with Timeout() == true
+//
+// Unknown error types are NOT retried. Older releases retried optimistically,
+// but that masked permanent misconfigurations (bad URL, invalid signer).
+// Callers that need broader retries should do so at the business layer.
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -179,24 +210,47 @@ func isRetryable(err error) bool {
 		}
 		return httpErr.StatusCode >= 500 && httpErr.StatusCode != http.StatusNotImplemented
 	}
-	// Network / transport errors: retry timeouts and connection-level failures
-	// (e.g. ECONNRESET, ECONNREFUSED), but not permanent errors such as TLS
-	// certificate failures or invalid URL schemes.
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		if urlErr.Timeout() {
-			return true
-		}
-		var opErr *net.OpError
-		if errors.As(urlErr.Err, &opErr) {
-			// opErr.Temporary() returns false for permanent failures such as
-			// TLS handshake rejections (tls.AlertError has no Temporary method).
-			return opErr.Temporary()
-		}
+	// TLS handshake rejections are permanent — bad/expired cert, protocol
+	// mismatch. Check before url.Error since these wrap tls.AlertError inside
+	// net.OpError inside url.Error.
+	var tlsAlert tls.AlertError
+	if errors.As(err, &tlsAlert) {
 		return false
 	}
-	// Unknown non-URL errors: retry optimistically.
-	return true
+	// Connection-level failures are transient.
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	// Server cut the stream mid-response; worth retrying an idempotent call.
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// HTTP/2: retry on GOAWAY and stream-level recoverable errors.
+	var goaway http2.GoAwayError
+	if errors.As(err, &goaway) {
+		return true
+	}
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case http2.ErrCodeRefusedStream, http2.ErrCodeCancel:
+			return true
+		}
+	}
+	// DNS: retry only explicitly temporary or timeout failures.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTemporary || dnsErr.IsTimeout
+	}
+	// url.Error surfaces timeouts (request timeout, idle timeout).
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Timeout()
+	}
+	// Unknown error type: do not retry. Safer than optimistic retry.
+	return false
 }
 
 // httpRetryDelay returns the delay to wait before the next retry attempt.
@@ -227,7 +281,11 @@ func httpRetryDelay(err error, attempt int) time.Duration {
 // executes it with c.do. Transient errors (5xx, 429, network) are retried up
 // to c.maxRetries times with exponential back-off (or Retry-After delay for
 // 429). Non-retryable errors (4xx except 429, context errors) are returned
-// immediately. Long-running and streaming calls should use c.do directly.
+// immediately.
+//
+// Only safe for GET/HEAD or other idempotent operations. POST/DELETE that
+// mutate server state must not be retried here — see postJSON/deleteJSON.
+// Long-running and streaming calls should use c.do directly.
 func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request, error), expectStatuses ...int) (*http.Response, []byte, error) {
 	maxRetries := c.maxRetries
 	if maxRetries < 0 {
@@ -269,10 +327,10 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 }
 
 // postJSON builds a POST request with a JSON-encoded body and executes it
-// with retry. Callers must ensure the endpoint is effectively idempotent
-// (i.e. the server deduplicates requests with identical parameters), because
-// a transient network failure after the server has processed the request may
-// cause it to be retried and re-submitted.
+// exactly once. POST is not idempotent in general (a transient failure after
+// the server has processed the request may cause duplicate submissions), so
+// callers that need retry behavior must implement it at the business layer
+// with appropriate deduplication.
 func (c *Client) postJSON(ctx context.Context, path string, payload any, expect ...int) (*http.Response, []byte, error) {
 	u, err := c.resolve(path)
 	if err != nil {
@@ -282,14 +340,12 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, expect 
 	if err != nil {
 		return nil, nil, fmt.Errorf("curio: marshal %s: %w", path, err)
 	}
-	return c.doRetryable(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
-		if err != nil {
-			return nil, fmt.Errorf("curio: build POST %s: %w", path, err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		return req, nil
-	}, expect...)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
+	if err != nil {
+		return nil, nil, fmt.Errorf("curio: build POST %s: %w", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, expect...)
 }
 
 // longClient returns a clone of c.httpClient with Timeout=0 so that
@@ -351,10 +407,10 @@ func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 }
 
 // deleteJSON performs DELETE with an optional JSON body and decodes the
-// response into dst. Callers must ensure the endpoint is effectively idempotent
-// (i.e. the server deduplicates requests with identical parameters), because
-// a transient network failure after the server has processed the request may
-// cause it to be retried and re-submitted.
+// response into dst. Executes exactly once. DELETE is not idempotent here
+// for retry purposes because callers (e.g. dataset/piece removal) may depend
+// on distinguishing "already gone" from "just removed" via HTTP status.
+// Business-layer retry is the caller's responsibility.
 func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) error {
 	u, err := c.resolve(path)
 	if err != nil {
@@ -368,21 +424,19 @@ func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) 
 			return fmt.Errorf("curio: marshal %s: %w", path, err)
 		}
 	}
-	_, respBody, err := c.doRetryable(ctx, func() (*http.Request, error) {
-		var body io.Reader
-		if buf != nil {
-			body = bytes.NewReader(buf)
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), body)
-		if err != nil {
-			return nil, fmt.Errorf("curio: build DELETE %s: %w", path, err)
-		}
-		if buf != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		req.Header.Set("Accept", "application/json")
-		return req, nil
-	})
+	var body io.Reader
+	if buf != nil {
+		body = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), body)
+	if err != nil {
+		return fmt.Errorf("curio: build DELETE %s: %w", path, err)
+	}
+	if buf != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	_, respBody, err := c.do(req)
 	if err != nil {
 		return err
 	}

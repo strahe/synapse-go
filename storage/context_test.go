@@ -1263,7 +1263,7 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 	}
 }
 
-func TestContextPresignForCommit_ExistingDataSet_DoesNotTrackPayload(t *testing.T) {
+func TestContextPresignForCommit_ExistingDataSet_TracksAddOnlyPayload(t *testing.T) {
 	info := mustPieceInfo(t)
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
@@ -1275,11 +1275,15 @@ func TestContextPresignForCommit_ExistingDataSet_DoesNotTrackPayload(t *testing.
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); err != nil {
+	payload, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
 	}
-	if got := len(ctx.presignedKinds); got != 0 {
-		t.Fatalf("tracked presigns=%d want 0 for existing dataset path", got)
+	if got := len(ctx.presignedKinds); got != 1 {
+		t.Fatalf("tracked presigns=%d want 1 for existing dataset path", got)
+	}
+	if got := ctx.presignedKinds[presignedExtraDataKey(payload)]; got != commitExtraDataAddOnly {
+		t.Fatalf("kind=%d want %d (AddOnly)", got, commitExtraDataAddOnly)
 	}
 }
 
@@ -1409,6 +1413,69 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 	if got := len(ctx.presignedKinds); got != 0 {
 		t.Fatalf("tracked presigns after stale refresh=%d want 0", got)
 	}
+}
+
+// TestContextPresignForCommit_ConcurrentWithReaders exercises the lock-split
+// path in PresignForCommit: signing runs outside c.mu so concurrent callers
+// that briefly acquire c.mu (presignedExtraDataIsStale, forgetPresignedExtraData)
+// must not race with signing. Run under -race to validate.
+func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
+	info := mustPieceInfo(t)
+	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(big.NewInt(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	pieces := make([]PieceInput, 8)
+	for i := range pieces {
+		pieces[i] = PieceInput{PieceCID: info.CIDv2}
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	probe := []byte{0xde, 0xad}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = ctx.presignedExtraDataIsStale(probe)
+				ctx.forgetPresignedExtraData(probe)
+			}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				if _, err := ctx.PresignForCommit(context.Background(), pieces); err != nil {
+					t.Errorf("PresignForCommit: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	<-done
 }
 
 func TestContextCommit_WaitAddPiecesError(t *testing.T) {

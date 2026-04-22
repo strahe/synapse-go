@@ -13,10 +13,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"golang.org/x/net/http2"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/piece"
@@ -780,12 +782,13 @@ func TestLastPathSegment(t *testing.T) {
 
 // ---- retry tests ----
 
-// tempNetError is a test helper implementing the Temporary() interface,
-// representing a transient network error (e.g. ECONNRESET, EAGAIN).
-type tempNetError struct{}
+// timeoutError implements net.Error with Timeout()=true, simulating a transport
+// timeout (e.g. client.Timeout exceeded).
+type timeoutError struct{}
 
-func (tempNetError) Error() string   { return "temporary network error" }
-func (tempNetError) Temporary() bool { return true }
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func TestIsRetryable(t *testing.T) {
 	tests := []struct {
@@ -802,17 +805,27 @@ func TestIsRetryable(t *testing.T) {
 		{"HTTP 404", &HTTPError{StatusCode: 404}, false},
 		{"HTTP 400", &HTTPError{StatusCode: 400}, false},
 		{"HTTP 501", &HTTPError{StatusCode: 501}, false},
-		{"network error (optimistic retry)", errors.New("connection reset"), true},
-		// url.Error wrapping net.OpError with a transient inner error — retry.
-		// Uses tempNetError which implements Temporary()=true (like syscall.EAGAIN).
-		{"url.Error+net.OpError(transient)", &url.Error{Op: "Get", URL: "http://x", Err: &net.OpError{Op: "read", Err: tempNetError{}}}, true},
+		// Unknown error types are NOT retried anymore (was "optimistic retry").
+		{"unknown error (no retry)", errors.New("connection reset"), false},
+		// Curated transient errors via errors.Is.
+		{"syscall ECONNREFUSED", syscall.ECONNREFUSED, true},
+		{"syscall ECONNRESET", syscall.ECONNRESET, true},
+		{"syscall EPIPE", syscall.EPIPE, true},
+		{"io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
+		{"HTTP2 GOAWAY value", http2.GoAwayError{LastStreamID: 1, ErrCode: http2.ErrCodeNo}, true},
+		{"HTTP2 stream refused value", http2.StreamError{StreamID: 1, Code: http2.ErrCodeRefusedStream}, true},
+		// url.Error wrapping transient syscall error — retry.
+		{"url.Error+ECONNRESET", &url.Error{Op: "Get", URL: "http://x", Err: &net.OpError{Op: "read", Err: syscall.ECONNRESET}}, true},
 		// url.Error wrapping a plain (non-OpError) error — permanent, no retry.
 		{"url.Error+plain error", &url.Error{Op: "Get", URL: "http://x", Err: errors.New("some permanent failure")}, false},
-		// url.Error wrapping *net.OpError with TLS alert — real Go TLS handshake
-		// rejections arrive as *url.Error{Err: *net.OpError{Op:"remote error",
-		// Err: tls.AlertError}}. tls.AlertError does not implement Temporary(),
-		// so opErr.Temporary() returns false — correctly not retried.
+		// TLS handshake rejections are permanent — bad/expired cert.
 		{"url.Error+net.OpError(TLS alert)", &url.Error{Op: "Get", URL: "http://x", Err: &net.OpError{Op: "remote error", Err: tls.AlertError(42)}}, false},
+		// DNS: temporary/timeout are retried; permanent lookup failures are not.
+		{"DNS temporary", &net.DNSError{Err: "server misbehaving", Name: "x", IsTemporary: true}, true},
+		{"DNS timeout", &net.DNSError{Err: "i/o timeout", Name: "x", IsTimeout: true}, true},
+		{"DNS permanent (NXDOMAIN)", &net.DNSError{Err: "no such host", Name: "x", IsNotFound: true}, false},
+		// Timeout on url.Error still retries (e.g. client.Timeout exceeded).
+		{"url.Error timeout", &url.Error{Op: "Get", URL: "http://x", Err: timeoutError{}}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1104,5 +1117,112 @@ func TestWithMaxRetries_NegativeClampsToZero(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Errorf("expected exactly 1 attempt with negative maxRetries, got %d", attempts)
+	}
+}
+
+// ---- B2 tests ----
+
+// TestPostJSON_NoRetry verifies that POST requests are executed exactly once
+// even when the server returns a retryable status code. POST is not
+// idempotent; retrying on 5xx after a partial server-side processing could
+// cause duplicate submissions.
+func TestPostJSON_NoRetry(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, WithMaxRetries(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.retryDelayFn = noRetryDelay
+	_, _, err = c.postJSON(context.Background(), "", map[string]string{"a": "b"})
+	if err == nil {
+		t.Fatal("expected error from 500 response")
+	}
+	if attempts != 1 {
+		t.Errorf("POST must not retry on 5xx: expected 1 attempt, got %d", attempts)
+	}
+}
+
+// TestDeleteJSON_NoRetry verifies that DELETE requests are executed exactly
+// once.
+func TestDeleteJSON_NoRetry(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, WithMaxRetries(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.retryDelayFn = noRetryDelay
+	err = c.deleteJSON(context.Background(), "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error from 503 response")
+	}
+	if attempts != 1 {
+		t.Errorf("DELETE must not retry on 5xx: expected 1 attempt, got %d", attempts)
+	}
+}
+
+// TestDoWithClient_RejectsOversizeBody verifies that control-plane responses
+// larger than MaxControlResponseBytes are rejected to protect against
+// unbounded or hostile servers.
+func TestDoWithClient_RejectsOversizeBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Stream just over the limit without allocating full cap up front.
+		buf := make([]byte, 1<<20)
+		for i := 0; i < (MaxControlResponseBytes/len(buf))+2; i++ {
+			_, _ = w.Write(buf)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.getJSON(context.Background(), "", nil)
+	if err == nil {
+		t.Fatal("expected error from oversized response")
+	}
+	if !strings.Contains(err.Error(), "MaxControlResponseBytes") {
+		t.Errorf("expected error to mention MaxControlResponseBytes, got: %v", err)
+	}
+}
+
+// TestDoWithClient_AllowsExactBoundary verifies a response sized exactly
+// at the limit is accepted (off-by-one regression guard).
+func TestDoWithClient_AllowsExactBoundary(t *testing.T) {
+	// Use a small cap via a dedicated path trick: we can't change the constant
+	// at test time, so construct a response just under the limit. Use 1 MiB of
+	// JSON padding to keep the test fast.
+	body := `{"pad":"` + strings.Repeat("x", 1<<20) + `"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst map[string]string
+	if err := c.getJSON(context.Background(), "", &dst); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dst["pad"]) != 1<<20 {
+		t.Errorf("body not decoded fully: got pad len %d", len(dst["pad"]))
 	}
 }

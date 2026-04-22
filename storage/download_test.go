@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ipfs/go-cid"
 
@@ -104,7 +105,7 @@ func TestManagerDownload_URLValidatesPiece(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mgr := mustNewService(t, Options{})
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
 	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
 	if err != nil {
 		t.Fatalf("Download: %v", err)
@@ -243,7 +244,7 @@ func TestManagerDownload_URLAcceptsPieceCIDv1(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mgr := mustNewService(t, Options{})
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
 	reader, err := mgr.Download(context.Background(), info.CIDv1, &DownloadOptions{URL: server.URL})
 	if err != nil {
 		t.Fatalf("Manager.Download with v1 CID: %v", err)
@@ -303,7 +304,7 @@ func TestDownloadAndValidate_Non2xxStatus(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	mgr := mustNewService(t, Options{})
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
 	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
 	if err == nil {
 		t.Fatal("expected error for non-2xx status")
@@ -382,4 +383,196 @@ func TestManagerDownload_NoSource(t *testing.T) {
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
 	}
+}
+
+// TestManagerDownload_RejectsLoopbackByDefault verifies that the default
+// Service refuses to dial loopback addresses, preventing SSRF via
+// Service.Download URL-based calls.
+func TestManagerDownload_RejectsLoopbackByDefault(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	mgr := mustNewService(t, Options{})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
+	if err == nil {
+		t.Fatal("expected ErrPrivateNetwork, got nil")
+	}
+	if !errors.Is(err, ErrPrivateNetwork) {
+		t.Fatalf("expected ErrPrivateNetwork, got: %v", err)
+	}
+}
+
+// TestManagerDownload_AllowPrivateNetworksOptOut verifies that opting in
+// via AllowPrivateNetworks=true lets the same loopback download succeed.
+func TestManagerDownload_AllowPrivateNetworksOptOut(t *testing.T) {
+	data := bytes.Repeat([]byte("y"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
+	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+}
+
+// TestManagerDownload_RejectsUnsupportedScheme verifies that only http and
+// https schemes are accepted.
+func TestManagerDownload_RejectsUnsupportedScheme(t *testing.T) {
+	data := bytes.Repeat([]byte("z"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: "file:///etc/passwd"})
+	if err == nil {
+		t.Fatal("expected ErrUnsupportedScheme, got nil")
+	}
+	if !errors.Is(err, ErrUnsupportedScheme) {
+		t.Fatalf("expected ErrUnsupportedScheme, got: %v", err)
+	}
+}
+
+// TestManagerDownload_MaxBytesContentLength verifies eager rejection when
+// Content-Length reports a body larger than the cap.
+func TestManagerDownload_MaxBytesContentLength(t *testing.T) {
+	data := bytes.Repeat([]byte("q"), 4096)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true, DownloadMaxBytes: 128})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
+	if err == nil {
+		t.Fatal("expected ErrMaxBytesExceeded, got nil")
+	}
+	if !errors.Is(err, ErrMaxBytesExceeded) {
+		t.Fatalf("expected ErrMaxBytesExceeded, got: %v", err)
+	}
+}
+
+// TestManagerDownload_MaxBytesStreaming verifies that a body exceeding the
+// cap mid-stream surfaces ErrMaxBytesExceeded as the terminal Read error
+// even when Content-Length is absent.
+func TestManagerDownload_MaxBytesStreaming(t *testing.T) {
+	data := bytes.Repeat([]byte("s"), 4096)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		_, _ = w.Write(data[:256])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write(data[256:])
+	}))
+	defer server.Close()
+
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true, DownloadMaxBytes: 128})
+	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	_, err = io.ReadAll(reader)
+	if err == nil {
+		t.Fatal("expected ErrMaxBytesExceeded, got nil")
+	}
+	if !errors.Is(err, ErrMaxBytesExceeded) {
+		t.Fatalf("expected ErrMaxBytesExceeded, got: %v", err)
+	}
+}
+
+// TestValidatingReadCloser_CloseBeforeEOF verifies that closing the reader
+// before draining returns ErrClosedPipe on subsequent Reads rather than
+// allowing the caller to mistake partial data for validated content.
+func TestValidatingReadCloser_CloseBeforeEOF(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), 256)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	rc := newValidatingReadCloser(io.NopCloser(bytes.NewReader(data)), info.CIDv2, 0)
+	buf := make([]byte, 8)
+	if _, err := rc.Read(buf); err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	n, err := rc.Read(buf)
+	if err == nil {
+		t.Fatal("expected error after Close, got nil")
+	}
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("expected io.ErrClosedPipe, got: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 bytes after Close, got %d", n)
+	}
+}
+
+type sleepyRaceReadCloser struct {
+	data  []byte
+	delay time.Duration
+}
+
+func (b *sleepyRaceReadCloser) Read(p []byte) (int, error) {
+	time.Sleep(b.delay)
+	n := copy(p, b.data)
+	return n, io.EOF
+}
+
+func (*sleepyRaceReadCloser) Close() error { return nil }
+
+// TestValidatingReadCloser_ConcurrentReadAndClose exercises the common pattern
+// where one goroutine is blocked in Read while another closes the stream to
+// abort it. Run with -race: the test should be free of Read/Close state races.
+func TestValidatingReadCloser_ConcurrentReadAndClose(t *testing.T) {
+	data := bytes.Repeat([]byte("b"), 256)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	base := &sleepyRaceReadCloser{data: data, delay: 20 * time.Millisecond}
+	rc := newValidatingReadCloser(base, info.CIDv2, 0)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, len(data))
+		_, _ = rc.Read(buf)
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+	if err := rc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	<-done
 }

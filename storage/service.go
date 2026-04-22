@@ -50,6 +50,7 @@ type Service struct {
 	source               string
 	maxSecondaryAttempts int
 	commitConcurrency    int
+	downloadMaxBytes     int64
 }
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
@@ -62,7 +63,13 @@ type Options struct {
 
 	// HTTPClient is used for URL-based downloads. nil installs a client with
 	// a 24-hour timeout — long enough for multi-GiB transfers over typical
-	// storage networks while preventing indefinite hangs.
+	// storage networks while preventing indefinite hangs. The default client
+	// also disables environment-variable proxies to avoid proxy-assisted SSRF
+	// bypass. When set, the SDK's built-in SSRF protection is bypassed
+	// entirely: the provided Transport is responsible for implementing
+	// equivalent safeguards (private-network rejection, DNS-rebind close
+	// window, redirect filtering). AllowPrivateNetworks has no effect in this
+	// case.
 	HTTPClient *http.Client
 
 	// Source is the application identifier for dataset namespace isolation.
@@ -79,6 +86,20 @@ type Options struct {
 	// issued across primary + secondary copies. Values <= 0 select the
 	// default of 4. The cap only matters when RequestedCopies exceeds it.
 	CommitConcurrency int
+
+	// AllowPrivateNetworks disables the default SSRF protection applied to
+	// URL-based Service.Download calls. When false (the default), the
+	// built-in HTTP client refuses to dial loopback / link-local / RFC1918 /
+	// ULA / multicast / unspecified addresses and returns [ErrPrivateNetwork].
+	// Set to true only when you knowingly need to download from a private
+	// network (e.g. in-cluster storage). Ignored when HTTPClient is set.
+	AllowPrivateNetworks bool
+
+	// DownloadMaxBytes caps the number of bytes a single URL-based
+	// Service.Download will return. Zero (the default) disables the cap.
+	// Exceeding it returns [ErrMaxBytesExceeded] either eagerly (via
+	// Content-Length) or at the terminal Read of the returned reader.
+	DownloadMaxBytes int64
 }
 
 // New creates a Service from the given Options.
@@ -86,7 +107,7 @@ type Options struct {
 // forward compatibility.
 func New(opts Options) (*Service, error) {
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = &http.Client{Timeout: defaultDownloadTimeout}
+		opts.HTTPClient = newSafeHTTPClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
 	}
 	if opts.MaxSecondaryAttempts <= 0 {
 		opts.MaxSecondaryAttempts = maxSecondaryAttemptsDefault
@@ -94,12 +115,16 @@ func New(opts Options) (*Service, error) {
 	if opts.CommitConcurrency <= 0 {
 		opts.CommitConcurrency = commitConcurrencyDefault
 	}
+	if opts.DownloadMaxBytes < 0 {
+		opts.DownloadMaxBytes = 0
+	}
 	return &Service{
 		resolver:             opts.Resolver,
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
+		downloadMaxBytes:     opts.DownloadMaxBytes,
 	}, nil
 }
 
@@ -304,8 +329,30 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			})
 			continue
 		}
-		if outcome.result == nil || outcome.result.DataSetID == 0 || len(outcome.result.PieceIDs) == 0 || outcome.result.PieceIDs[0] == 0 {
-			err := errors.New("commit result missing confirmed identifiers")
+		if outcome.result == nil || outcome.result.DataSetID == 0 || len(outcome.result.PieceIDs) != len(pieceInputs) {
+			var err error
+			switch {
+			case outcome.result == nil:
+				err = errors.New("commit result missing confirmed identifiers: nil result")
+			case outcome.result.DataSetID == 0:
+				err = errors.New("commit result missing confirmed identifiers: zero dataSetID")
+			default:
+				err = fmt.Errorf("commit result missing confirmed identifiers: got %d pieceIDs want %d", len(outcome.result.PieceIDs), len(pieceInputs))
+			}
+			if target.role == CopyRolePrimary {
+				primaryCommitErr = err
+			}
+			failedAttempts = append(failedAttempts, FailedAttempt{
+				ProviderID: target.ctx.ProviderID(),
+				Role:       target.role,
+				Stage:      CopyStageCommit,
+				Err:        err,
+				Explicit:   explicitProviders,
+			})
+			continue
+		}
+		if zeroIdx := firstZeroPieceID(outcome.result.PieceIDs); zeroIdx >= 0 {
+			err := fmt.Errorf("commit result contains zero pieceID at index %d", zeroIdx)
 			if target.role == CopyRolePrimary {
 				primaryCommitErr = err
 			}
@@ -392,4 +439,15 @@ func (s *Service) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 	}
 	cloned.DataSetMetadata["source"] = s.source
 	return &cloned
+}
+
+// firstZeroPieceID returns the index of the first zero PieceID in ids, or -1
+// if all entries are non-zero. Used by Upload to validate commit results.
+func firstZeroPieceID(ids []types.PieceID) int {
+	for i, id := range ids {
+		if id == 0 {
+			return i
+		}
+	}
+	return -1
 }

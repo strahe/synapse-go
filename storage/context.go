@@ -309,18 +309,32 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 
 	domain := ityped.NewDomain(c.chainID, c.recordKeeper)
 
+	// Snapshot all mutable fields under the lock, initialize clientDataSetID
+	// on first use, then release the lock before any CPU/crypto work. This
+	// prevents PresignForCommit from blocking concurrent read accessors
+	// (DataSetID, ProviderID, ...) while signing hundreds of pieces.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.clientDataSetID == nil {
 		v, err := randomClientDataSetID()
 		if err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 		}
 		c.clientDataSetID = v
 	}
 	clientDataSetID := new(big.Int).Set(c.clientDataSetID)
+	var dataSetIDSnap *types.DataSetID
 	if c.dataSetID != nil {
+		id := *c.dataSetID
+		dataSetIDSnap = &id
+	}
+	dataSetMetadataSnap := cloneStringMap(c.dataSetMetadata)
+	payerSnap := c.payer
+	payeeSnap := c.provider.Payee
+	withCDNSnap := c.withCDN
+	c.mu.Unlock()
+
+	if dataSetIDSnap != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 		}
@@ -339,17 +353,18 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 		if err != nil {
 			return nil, err
 		}
+		c.rememberPresignedExtraData(payload, commitExtraDataAddOnly)
 		return payload, nil
 	}
 
-	dataSetMetadata, err := dataSetMetadataEntries(c.dataSetMetadata, c.withCDN)
+	dataSetMetadata, err := dataSetMetadataEntries(dataSetMetadataSnap, withCDNSnap)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 	}
-	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID, c.provider.Payee, dataSetMetadata)
+	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID, payeeSnap, dataSetMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
@@ -370,7 +385,7 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 		}
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
 	}
-	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID, dataSetMetadata, signatureBytes(createSig))
+	createPayload, err := encodeCreateDataSetExtraData(payerSnap, clientDataSetID, dataSetMetadata, signatureBytes(createSig))
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +397,7 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if err != nil {
 		return nil, err
 	}
-	c.rememberPresignedExtraDataLocked(payload, commitExtraDataCreateAndAdd)
+	c.rememberPresignedExtraData(payload, commitExtraDataCreateAndAdd)
 	return payload, nil
 }
 
@@ -469,6 +484,7 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 			return nil, err
 		}
 	}
+	defer c.forgetPresignedExtraData(extraData)
 
 	// Snapshot create-vs-add decision under the data lock after any required
 	// re-signing so the chosen curio API matches the payload we are sending.
@@ -535,7 +551,6 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		PieceIDs:      pieceIDs,
 		IsNewDataSet:  true,
 	}
-	c.forgetPresignedExtraData(extraData)
 	newID := result.DataSetID
 	c.mu.Lock()
 	c.dataSetID = &newID
@@ -706,8 +721,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+func (c *Context) rememberPresignedExtraData(extraData []byte, kind commitExtraDataKind) {
+	if len(extraData) == 0 || kind == commitExtraDataUnknown {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rememberPresignedExtraDataLocked(extraData, kind)
+}
+
 func (c *Context) rememberPresignedExtraDataLocked(extraData []byte, kind commitExtraDataKind) {
-	if len(extraData) == 0 || kind != commitExtraDataCreateAndAdd {
+	if len(extraData) == 0 || kind == commitExtraDataUnknown {
 		return
 	}
 	if c.presignedKinds == nil {
