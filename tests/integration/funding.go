@@ -43,7 +43,7 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 		currentLockupRate,
 		debt,
 		availableFunds,
-		costs.DefaultRunwayEpochs,
+		costs.DefaultExtraRunwayEpochs,
 		costs.DefaultBufferEpochs,
 		true,
 	)

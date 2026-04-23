@@ -80,7 +80,7 @@ func PermissionFromEncodeType(encodeType string) Permission {
 func mustPermission(hexStr string) Permission {
 	b, err := hex.DecodeString(hexStr)
 	if err != nil || len(b) != 32 {
-		panic(fmt.Sprintf("invalid permission hex: %s", hexStr))
+		panic(fmt.Sprintf("invalid permission hex: %s", hexStr)) //nolint:forbidigo // package-level Permission constants are decoded at init from compile-time-constant strings
 	}
 	var p Permission
 	copy(p[:], b)

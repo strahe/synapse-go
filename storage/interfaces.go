@@ -37,6 +37,14 @@ type FWSSTerminator interface {
 	TerminateDataSet(ctx context.Context, dataSetID sdktypes.DataSetID, opts ...warmstorage.WriteOption) (*sdktypes.WriteResult, error)
 }
 
+// FWSSDataSetReader reads an existing data set's on-chain record from the
+// FWSSView contract. Used by [Service.CreateContext] / [Service.CreateContexts]
+// to auto-fetch the on-chain ClientDataSetID when the resolver path did not
+// already supply one. Satisfied by *warmstorage.Service (see GetDataSet).
+type FWSSDataSetReader interface {
+	GetDataSet(ctx context.Context, dataSetID sdktypes.DataSetID) (*warmstorage.DataSetInfo, error)
+}
+
 // DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
 // by *warmstorage.Service via GetClientDataSetsWithDetails. Mirrors TS
 // StorageManager.findDataSets.

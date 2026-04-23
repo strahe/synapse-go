@@ -320,10 +320,11 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 		case <-time.After(delay):
 		}
 	}
-	// Unreachable: the loop always returns via an explicit return on the last
-	// attempt. The guard above ensures maxRetries ≥ 0, so the loop body runs
-	// at least once.
-	panic("curio: doRetryable: unreachable")
+	// Defensive: the loop's `attempt == maxRetries` branch always returns on
+	// the last iteration, and the `maxRetries < 0 → 0` guard ensures the
+	// loop runs at least once. Returning a sentinel error here keeps the
+	// function total without using panic in library code.
+	return nil, nil, fmt.Errorf("curio: doRetryable: retry loop exited without result")
 }
 
 // postJSON builds a POST request with a JSON-encoded body and executes it

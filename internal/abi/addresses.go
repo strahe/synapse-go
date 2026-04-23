@@ -56,7 +56,7 @@ func ResolveAddresses(ctx context.Context, caller ContractCaller, fwssAddr commo
 	callData := func(name string) []byte {
 		b, err := fwssABI.Pack(name)
 		if err != nil {
-			panic(err)
+			panic(err) //nolint:forbidigo // names below are hardcoded methods; Pack failure implies an ABI/codegen mismatch at build time
 		}
 		return b
 	}

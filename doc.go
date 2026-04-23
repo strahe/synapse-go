@@ -20,4 +20,13 @@
 //
 // Lower-level packages ([chain], [signer], [piece], [storage], [payments], etc.)
 // can still be used independently without the root client.
+//
+// # Stability
+//
+// This SDK is in its 0.x phase. Public APIs may change between minor
+// releases; breaking changes are called out in PR descriptions and
+// release notes. Pin to a specific minor version in production. The
+// reference implementation is the TypeScript SDK at
+// https://github.com/FilOzone/synapse-sdk; behavioural divergences are
+// either flagged in package docs or considered bugs.
 package synapse

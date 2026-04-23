@@ -15,4 +15,11 @@
 // This package exists so every service can share the same vocabulary
 // (WriteResult, DataSetID, ProviderID, ...) without cross-importing each
 // other's service package.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Identifier
+// widths follow the on-chain ABI; bounded SDK identifiers use uint64,
+// while protocol-width identifiers (e.g. ClientDataSetID) keep the full
+// uint256 *big.Int width for TS / contract interoperability.
 package types

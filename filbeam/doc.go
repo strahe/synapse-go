@@ -11,4 +11,9 @@
 //		// handle error (e.g. unsupported chain)
 //	}
 //	stats, err := svc.GetDataSetStats(ctx, types.DataSetID(12345))
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Mirrors the
+// TS SDK at synapse-sdk/packages/synapse-sdk/src/filbeam.
 package filbeam

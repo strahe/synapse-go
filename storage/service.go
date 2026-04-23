@@ -63,6 +63,7 @@ type Service struct {
 	costCalc   MultiCostCalculator
 	funder     PaymentsFunder
 	sizeReader DataSetSizeReader
+	dsReader   FWSSDataSetReader
 
 	// signerAddr is the default client/payer used by manager-level
 	// helpers when the caller does not explicitly supply one. Zero
@@ -147,6 +148,13 @@ type Options struct {
 	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
 	DataSetSizeReader DataSetSizeReader
 
+	// FWSSDataSetReader is used by [Service.CreateContext] /
+	// [Service.CreateContexts] to auto-fetch the on-chain
+	// ClientDataSetID when a context resolves with a pinned dataSetID
+	// but the resolver did not already populate clientDataSetID. When
+	// nil, the safety net is skipped (existing behaviour).
+	FWSSDataSetReader FWSSDataSetReader
+
 	// SignerAddress is the default payer/client used by manager-level
 	// helpers (FindDataSets, GetStorageInfo, CreateContext{s}, Prepare)
 	// when the caller does not explicitly supply one.
@@ -183,6 +191,7 @@ func New(opts Options) (*Service, error) {
 		costCalc:             normalizeOptional(opts.CostCalculator),
 		funder:               normalizeOptional(opts.PaymentsFunder),
 		sizeReader:           normalizeOptional(opts.DataSetSizeReader),
+		dsReader:             normalizeOptional(opts.FWSSDataSetReader),
 		signerAddr:           opts.SignerAddress,
 	}, nil
 }
@@ -231,6 +240,9 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 	if len(contexts) == 0 {
 		return nil, errors.New("storage.Service.Upload: no upload contexts available")
+	}
+	if err := s.populateClientDataSetIDsFromInterfaces(ctx, contexts); err != nil {
+		return nil, fmt.Errorf("storage.Service.Upload: %w", err)
 	}
 
 	primary := contexts[0]
@@ -320,7 +332,17 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 				break
 			}
 			current = replacement
-			usedProviders[current.ProviderID()] = struct{}{}
+			usedProviders[replacement.ProviderID()] = struct{}{}
+			if err := s.populateClientDataSetIDsFromInterfaces(ctx, []UploadContext{replacement}); err != nil {
+				failedAttempts = append(failedAttempts, FailedAttempt{
+					ProviderID: replacement.ProviderID(),
+					Role:       CopyRoleSecondary,
+					Stage:      CopyStagePresign,
+					Err:        err,
+					Explicit:   explicitProviders,
+				})
+				continue
+			}
 		}
 	}
 

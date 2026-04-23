@@ -273,7 +273,7 @@ func TestDepositNeeded_InsufficientFunds(t *testing.T) {
 		bi(50),
 		bi(0),
 		usdfc(1),
-		DefaultRunwayEpochs,
+		DefaultExtraRunwayEpochs,
 		DefaultBufferEpochs,
 		false,
 	)
@@ -291,7 +291,7 @@ func TestDepositNeeded_SufficientFunds(t *testing.T) {
 		bi(1),
 		bi(0),
 		huge,
-		DefaultRunwayEpochs,
+		DefaultExtraRunwayEpochs,
 		DefaultBufferEpochs,
 		false,
 	)
@@ -307,11 +307,11 @@ func TestDepositNeeded_SufficientFunds(t *testing.T) {
 func TestDepositNeeded_WithDebt(t *testing.T) {
 	depositNoDebt := CalculateDepositNeeded(
 		usdfc(10), bi(100), bi(50), bi(0), usdfc(1),
-		DefaultRunwayEpochs, DefaultBufferEpochs, false,
+		DefaultExtraRunwayEpochs, DefaultBufferEpochs, false,
 	)
 	depositWithDebt := CalculateDepositNeeded(
 		usdfc(10), bi(100), bi(50), usdfc(5), usdfc(1),
-		DefaultRunwayEpochs, DefaultBufferEpochs, false,
+		DefaultExtraRunwayEpochs, DefaultBufferEpochs, false,
 	)
 
 	if depositWithDebt.Cmp(depositNoDebt) <= 0 {
@@ -323,12 +323,12 @@ func TestDepositNeeded_WithDebt(t *testing.T) {
 func TestDepositNeeded_BufferSkipped_NewDataSet_ZeroRate(t *testing.T) {
 	depositNew := CalculateDepositNeeded(
 		usdfc(10), bi(100), bi(0), bi(0), bi(0),
-		DefaultRunwayEpochs, DefaultBufferEpochs,
+		DefaultExtraRunwayEpochs, DefaultBufferEpochs,
 		true, // new dataset, zero current rate → buffer skipped
 	)
 	depositExisting := CalculateDepositNeeded(
 		usdfc(10), bi(100), bi(0), bi(0), bi(0),
-		DefaultRunwayEpochs, DefaultBufferEpochs,
+		DefaultExtraRunwayEpochs, DefaultBufferEpochs,
 		false,
 	)
 

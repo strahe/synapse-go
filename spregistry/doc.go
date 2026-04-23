@@ -16,4 +16,9 @@
 //     or otherwise malformed.
 //   - ErrInvalidOffering: returned by ValidatePDPOffering when a PDP
 //     offering fails structural validation.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Mirrors the
+// TS SDK package at synapse-sdk/packages/synapse-sdk/src/sp-registry.
 package spregistry

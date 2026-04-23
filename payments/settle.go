@@ -114,7 +114,7 @@ func (s *Service) SettleAuto(ctx context.Context, railID, untilEpoch *big.Int, o
 var filPayStaticABI = func() abi.ABI {
 	parsed, err := abi.JSON(strings.NewReader(filpay.FilPayMetaData.ABI))
 	if err != nil {
-		panic(fmt.Sprintf("payments: parse filpay ABI: %v", err))
+		panic(fmt.Sprintf("payments: parse filpay ABI: %v", err)) //nolint:forbidigo // init-time ABI parse: error implies a build/codegen bug, not a runtime condition
 	}
 	return parsed
 }()

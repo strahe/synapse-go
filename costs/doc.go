@@ -34,4 +34,10 @@
 // stream of payments. `LockupRatePerEpoch` is the per-epoch drain rate;
 // `FundedUntilEpoch` is the epoch at which existing funds are exhausted
 // at that rate.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Cost
+// formulas mirror the TS SDK at
+// synapse-sdk/packages/synapse-sdk/src/utils/calculate-storage-cost.ts.
 package costs

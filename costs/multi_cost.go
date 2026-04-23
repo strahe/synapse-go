@@ -59,7 +59,7 @@ type MultiContextCosts struct {
 // computed once from the payer's account state. Mirrors TS
 // StorageManager.calculateMultiContextCosts.
 //
-// Default buffer/runway follow DefaultBufferEpochs / DefaultRunwayEpochs
+// Default buffer/runway follow DefaultBufferEpochs / DefaultExtraRunwayEpochs
 // when the corresponding opts field is zero.
 func (s *Service) CalculateMultiContextCosts(
 	ctx context.Context,
@@ -80,7 +80,7 @@ func (s *Service) CalculateMultiContextCosts(
 	if opts == nil {
 		opts = &UploadCostOptions{}
 	}
-	runwayEpochs := opts.RunwayEpochs
+	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs := opts.BufferEpochs
 	if bufferEpochs == 0 {
 		bufferEpochs = DefaultBufferEpochs

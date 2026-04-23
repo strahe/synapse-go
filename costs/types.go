@@ -30,8 +30,8 @@ type UploadCosts struct {
 
 // UploadCostOptions customises the GetUploadCosts calculation.
 type UploadCostOptions struct {
-	// RunwayEpochs is extra epoch runway on top of lockup. Defaults to DefaultRunwayEpochs (0).
-	RunwayEpochs int64
+	// ExtraRunwayEpochs is extra epoch runway on top of lockup. Defaults to DefaultExtraRunwayEpochs (0).
+	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit buffer for execution latency.
 	// Zero (the zero value) uses DefaultBufferEpochs (5); there is no way to
 	// request a zero-epoch buffer via this field.

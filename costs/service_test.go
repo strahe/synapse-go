@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"reflect"
 	"testing"
 
 	"github.com/ethereum/go-ethereum"
@@ -196,6 +197,24 @@ func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
 	}
 	if costs == nil {
 		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
+	typ := reflect.TypeOf(UploadCostOptions{})
+	got := make([]string, typ.NumField())
+	for i := range typ.NumField() {
+		got[i] = typ.Field(i).Name
+	}
+	want := []string{
+		"ExtraRunwayEpochs",
+		"BufferEpochs",
+		"EnableCDN",
+		"IsNewDataSet",
+		"CurrentDataSetSizeBytes",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UploadCostOptions fields=%v want %v", got, want)
 	}
 }
 

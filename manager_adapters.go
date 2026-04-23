@@ -211,8 +211,8 @@ func (a *costsAdapter) CalculateMultiContextCosts(
 		})
 	}
 	got, err := a.c.CalculateMultiContextCosts(ctx, payer, dataSizeBytes, out, &costs.UploadCostOptions{
-		RunwayEpochs: opts.ExtraRunwayEpochs,
-		BufferEpochs: opts.BufferEpochs,
+		ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
+		BufferEpochs:      opts.BufferEpochs,
 	})
 	if err != nil {
 		return nil, err

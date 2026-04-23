@@ -92,6 +92,9 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 		}
 		out[i] = concrete
 	}
+	if err := s.populateClientDataSetIDs(ctx, out); err != nil {
+		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
+	}
 	return out, nil
 }
 
@@ -119,7 +122,90 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	if !ok {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver returned non-*Context value", ErrInvalidArgument)
 	}
+	if err := s.populateClientDataSetIDs(ctx, []*Context{concrete}); err != nil {
+		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
+	}
 	return concrete, nil
+}
+
+// populateClientDataSetIDs is the F-48b safety net: for each resolved
+// Context bound to an existing on-chain dataSetID but missing
+// clientDataSetID (the resolver path normally populates it from the
+// FWSS dataset record, but a nil result on certain code paths is
+// possible), fetch the canonical value via FWSSDataSetReader and
+// inject it. Skipped silently when no FWSSDataSetReader is configured.
+//
+// Errors are surfaced unwrapped so callers can route transient
+// failures (context.Canceled, RPC timeouts, contract reverts) without
+// misclassifying them as ErrInvalidArgument. Only the genuinely-empty
+// FWSS result (info == nil || ClientDataSetID == nil) is wrapped as
+// ErrInvalidArgument because that indicates the dataSetID does not
+// resolve to a valid record.
+func (s *Service) populateClientDataSetIDs(ctx context.Context, contexts []*Context) error {
+	if s.dsReader == nil {
+		return nil
+	}
+	cache := make(map[types.DataSetID]types.ClientDataSetID)
+	for _, c := range contexts {
+		if c == nil {
+			continue
+		}
+		c.mu.Lock()
+		needsFetch := c.dataSetID != nil && c.clientDataSetID == nil
+		var dsID types.DataSetID
+		if needsFetch {
+			dsID = *c.dataSetID
+		}
+		c.mu.Unlock()
+		if !needsFetch {
+			continue
+		}
+		if cachedID, ok := cache[dsID]; ok {
+			c.mu.Lock()
+			if c.clientDataSetID == nil {
+				c.clientDataSetID = copyClientDataSetID(cachedID)
+			}
+			c.mu.Unlock()
+			continue
+		}
+		info, err := s.dsReader.GetDataSet(ctx, dsID)
+		if err != nil {
+			return fmt.Errorf("fetch ClientDataSetID for dataSetID %d: %w", uint64(dsID), err)
+		}
+		if info == nil || info.ClientDataSetID == nil {
+			return fmt.Errorf("%w: FWSS returned no ClientDataSetID for dataSetID %d", ErrInvalidArgument, uint64(dsID))
+		}
+		cache[dsID] = copyClientDataSetID(info.ClientDataSetID)
+		c.mu.Lock()
+		// Re-check under lock in case a concurrent setter populated it
+		// between the unlocked read above and this point.
+		if c.clientDataSetID == nil {
+			c.clientDataSetID = copyClientDataSetID(cache[dsID])
+		}
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+// populateClientDataSetIDsFromInterfaces is the Service.Upload-side
+// counterpart of populateClientDataSetIDs: the resolver returns a
+// []UploadContext interface slice, so non-*Context implementations
+// are skipped silently (the safety net only applies to the SDK's
+// concrete Context type).
+func (s *Service) populateClientDataSetIDsFromInterfaces(ctx context.Context, contexts []UploadContext) error {
+	if s.dsReader == nil {
+		return nil
+	}
+	concretes := make([]*Context, 0, len(contexts))
+	for _, uc := range contexts {
+		if c, ok := uc.(*Context); ok {
+			concretes = append(concretes, c)
+		}
+	}
+	if len(concretes) == 0 {
+		return nil
+	}
+	return s.populateClientDataSetIDs(ctx, concretes)
 }
 
 // GetDefaultContext returns a single auto-selected context using

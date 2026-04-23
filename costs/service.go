@@ -141,7 +141,7 @@ func (s *Service) GetUploadCosts(
 	if opts == nil {
 		opts = &UploadCostOptions{}
 	}
-	runwayEpochs := opts.RunwayEpochs
+	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs := opts.BufferEpochs
 	if bufferEpochs == 0 {
 		bufferEpochs = DefaultBufferEpochs
@@ -333,7 +333,7 @@ func init() {
 	var err error
 	usdfcSybilFeeABI, err = abi.JSON(strings.NewReader(usdfcSybilFeeABIJSON))
 	if err != nil {
-		panic("costs: failed to parse USDFC_SYBIL_FEE ABI: " + err.Error())
+		panic("costs: failed to parse USDFC_SYBIL_FEE ABI: " + err.Error()) //nolint:forbidigo // init() ABI parse: error implies a build/codegen bug, not a runtime condition
 	}
 }
 

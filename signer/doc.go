@@ -10,4 +10,8 @@
 //
 // Consumers should accept the interface types; this package returns concrete
 // types per Go convention.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases.
 package signer

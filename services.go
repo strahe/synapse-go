@@ -164,6 +164,7 @@ func (c *Client) initServices() error {
 		DataSetFinder:     &dataSetFinderAdapter{ws: ws},
 		StorageInfoReader: &storageInfoAdapter{ws: ws, sp: c.spRegistry, pay: c.payments, usdfcToken: c.addresses.USDFC, fwss: c.addresses.FWSS},
 		DataSetTerminator: ws,
+		FWSSDataSetReader: ws,
 		CostCalculator:    &costsAdapter{c: c.costs},
 		PaymentsFunder:    &paymentsFunderAdapter{p: c.payments},
 		SignerAddress:     c.evmSigner.EVMAddress(),

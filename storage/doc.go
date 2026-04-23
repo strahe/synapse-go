@@ -44,4 +44,10 @@
 // if you need explicit proxy control. Bound the number of bytes accepted per
 // URL-based Service.Download call via [Options.DownloadMaxBytes];
 // Context.Download (curio-backed) is not subject to this cap.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Mirrors the
+// TS SDK package at synapse-sdk/packages/synapse-sdk/src/storage; any
+// intentional divergence is documented at the affected symbol.
 package storage

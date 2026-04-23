@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,10 +14,13 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	icurio "github.com/strahe/synapse-go/internal/curio"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func mustNewService(t *testing.T, opts Options) *Service {
@@ -349,6 +353,191 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 	if got.Copies[1].ProviderID != replacement.id {
 		t.Fatalf("replacement provider=%d want %d", got.Copies[1].ProviderID, replacement.id)
+	}
+}
+
+func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
+	data := bytes.Repeat([]byte("ij"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.ProviderID(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.ProviderID(202),
+		endpoint: "https://secondary-a.example.com",
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+
+	const dsID types.DataSetID = 404
+	replacementClient := &fakeCurioClient{
+		pullPiecesFn: func(_ context.Context, req icurio.PullRequest) (*icurio.PullResult, error) {
+			if req.DataSetID != uint64(dsID) {
+				t.Fatalf("pull dataSetID=%d want %d", req.DataSetID, uint64(dsID))
+			}
+			if len(req.ExtraData) == 0 {
+				t.Fatal("pull extraData should be populated for replacement existing dataset")
+			}
+			return &icurio.PullResult{
+				Status: icurio.PullStatusComplete,
+				Pieces: []icurio.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete}},
+			}, nil
+		},
+		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+			if gotDataSetID != uint64(dsID) {
+				t.Fatalf("commit dataSetID=%d want %d", gotDataSetID, uint64(dsID))
+			}
+			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
+				t.Fatalf("unexpected pieces: %+v", pieces)
+			}
+			if len(extraData) == 0 {
+				t.Fatal("commit extraData should be populated for replacement existing dataset")
+			}
+			return &icurio.AddPiecesResult{TxHash: common.HexToHash("0x02"), StatusURL: "https://secondary-b.example.com/status"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, statusURL string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			if statusURL == "" {
+				t.Fatal("empty statusURL")
+			}
+			return &icurio.AddPiecesStatus{
+				TxHash:            common.HexToHash("0x02"),
+				DataSetID:         uint64(dsID),
+				PieceCount:        1,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(2002)},
+			}, nil
+		},
+	}
+	replacement, err := NewContext(testProvider(), replacementClient, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(dsID),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{ClientDataSetID: big.NewInt(0xFEED)},
+	}
+	resolver := &fakeResolver{
+		contexts:     []UploadContext{primary, failedSecondary},
+		replacements: []UploadContext{replacement},
+	}
+	mgr := mustNewService(t, Options{Resolver: resolver, FWSSDataSetReader: reader})
+
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("reader.calls=%d want 1 (replacement existing dataset should auto-fetch once)", reader.calls)
+	}
+	if replacement.clientDataSetID == nil {
+		t.Fatal("replacement clientDataSetID should be backfilled")
+	}
+	if len(got.Copies) != 2 || got.Copies[1].ProviderID != replacement.ProviderID() {
+		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement.ProviderID())
+	}
+}
+
+func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *testing.T) {
+	data := bytes.Repeat([]byte("kl"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.ProviderID(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.ProviderID(202),
+		endpoint: "https://secondary-a.example.com",
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+
+	replacementProvider := testProvider()
+	replacementProvider.ID = types.ProviderID(404)
+	replacementCtx, err := NewContext(replacementProvider, &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(404)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	replacement2 := &fakeUploadContext{
+		id:       types.ProviderID(303),
+		endpoint: "https://secondary-b.example.com",
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x02}, nil
+		},
+		pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+			return &PullResult{
+				Status: PullStatusComplete,
+				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+			}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.DataSetID(1002), PieceIDs: []types.PieceID{types.PieceID(2002)}}, nil
+		},
+	}
+
+	reader := &fakeFWSSDataSetReader{infoErr: errors.New("fwss unavailable")}
+	resolver := &fakeResolver{
+		contexts:     []UploadContext{primary, failedSecondary},
+		replacements: []UploadContext{replacementCtx, replacement2},
+	}
+	mgr := mustNewService(t, Options{
+		Resolver:             resolver,
+		MaxSecondaryAttempts: 3,
+		FWSSDataSetReader:    reader,
+	})
+
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(got.Copies) != 2 || got.Copies[1].ProviderID != replacement2.id {
+		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement2.id)
+	}
+	if len(got.FailedAttempts) != 3 {
+		t.Fatalf("FailedAttempts=%+v want 3 entries", got.FailedAttempts)
+	}
+	if got.FailedAttempts[2].ProviderID != replacementProvider.ID {
+		t.Fatalf("last failed provider=%d want replacement provider %d (retry should advance to replacement after populate failure)", got.FailedAttempts[2].ProviderID, replacementProvider.ID)
 	}
 }
 

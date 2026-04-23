@@ -6,10 +6,35 @@ linters:
     - errorlint
     - misspell
     - errname
+    - forbidigo
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: '^panic\('
+          msg: "panic should not be used in library code; return error instead (use //nolint:forbidigo for init-time ABI parsing)"
+        - pattern: '^log\.Fatal'
+          msg: "log.Fatal* exits the process; return error instead"
+        - pattern: '^os\.Exit'
+          msg: "os.Exit should not be used in library code"
+      analyze-types: false
   exclusions:
+    rules:
+      # Tests may use panic/Fatal helpers freely.
+      - path: _test\.go$
+        linters:
+          - forbidigo
+      # CLI entry points are allowed to exit.
+      - path: ^examples/
+        linters:
+          - forbidigo
+      - path: ^internal/contracts/cmd/
+        linters:
+          - forbidigo
     paths:
       - synapse-sdk
       - go-synapse
+      - curio
+      - lotus
 
 formatters:
   enable:
@@ -18,3 +43,5 @@ formatters:
     paths:
       - synapse-sdk
       - go-synapse
+      - curio
+      - lotus

@@ -42,7 +42,7 @@ func mustParsePermitABI() abi.ABI {
 ]`
 	parsed, err := abi.JSON(strings.NewReader(src))
 	if err != nil {
-		panic(fmt.Sprintf("payments: parse permit ABI: %v", err))
+		panic(fmt.Sprintf("payments: parse permit ABI: %v", err)) //nolint:forbidigo // init-time ABI parse: error implies a build/codegen bug, not a runtime condition
 	}
 	return parsed
 }

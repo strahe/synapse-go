@@ -37,4 +37,9 @@
 //   - [PieceInfoFromV1] reconstructs a PieceInfo from a stored v1 CID and raw size.
 //   - [PaddedSize] computes the smallest power-of-two padded piece size for a
 //     given raw byte count.
+//
+// # Stability
+//
+// 0.x phase: public API may change between minor releases. Mirrors the
+// TS SDK piece utilities at synapse-sdk/packages/synapse-sdk/src/piece.
 package piece

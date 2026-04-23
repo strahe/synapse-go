@@ -56,7 +56,7 @@ func BatchCall(ctx context.Context, caller ContractCaller, calls []Call3) ([]Res
 func mustParseABI(def string) gethabi.ABI {
 	a, err := gethabi.JSON(strings.NewReader(def))
 	if err != nil {
-		panic(err)
+		panic(err) //nolint:forbidigo // mustParseABI is only used to parse compile-time-constant ABI strings during package init
 	}
 	return a
 }
