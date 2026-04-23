@@ -5,8 +5,9 @@
 // All other contract addresses (PDPVerifier, SPRegistry, Payments) are
 // auto-discovered from FWSS using Multicall3.
 //
-// Key operations: data set management, service price queries, approval
-// management, and provider allocation.
+// Key operations: data set management (including [Service.TerminateDataSet]
+// for FWSS-initiated teardown), service price queries, approval management,
+// and provider allocation.
 //
 // When multiple write-capable services share the same signer / EOA, pass the
 // same txutil.NonceManager to each constructor so nonce allocation stays

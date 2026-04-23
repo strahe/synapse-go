@@ -5,6 +5,23 @@
 // [*ServiceResolver] (selection + dataset-reuse wiring against warmstorage and
 // spregistry services).
 //
+// # Manager-level operations
+//
+// [Service] also exposes the TS `StorageManager` surface:
+//
+//   - [Service.FindDataSets] — enumerate the caller's data sets.
+//   - [Service.GetStorageInfo] — aggregated pricing / providers / allowances view.
+//   - [Service.TerminateDataSet] — terminate an FWSS-managed data set.
+//   - [Service.CalculateMultiContextCosts] — aggregate cost calculation across refs.
+//   - [Service.CreateContext] / [Service.CreateContexts] / [Service.GetDefaultContext] —
+//     build upload contexts without invoking the full upload pipeline.
+//   - [Service.Prepare] — compute required funding and return a deferred
+//     [PrepareTransaction] to move funds into place when the account is not Ready.
+//
+// Per-context manager operations live on [*Context]: [Context.Upload]
+// (single-copy), [Context.DeletePiece], [Context.PieceStatus],
+// [Context.GetScheduledRemovals] and [Context.Terminate].
+//
 // # Upload Flow
 //
 // The multi-copy upload follows a store → pull → commit pipeline:

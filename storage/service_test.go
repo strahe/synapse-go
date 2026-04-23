@@ -216,6 +216,23 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 	}
 }
 
+func TestNew_TypedNilResolverIsTreatedAsUnset(t *testing.T) {
+	var resolver *fakeResolver
+
+	svc := mustNewService(t, Options{Resolver: resolver})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Upload panicked with typed-nil resolver: %v", r)
+		}
+	}()
+
+	_, err := svc.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), nil)
+	if err == nil || !strings.Contains(err.Error(), "no upload resolver configured") {
+		t.Fatalf("err=%v want no upload resolver configured", err)
+	}
+}
+
 func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	data := bytes.Repeat([]byte("ef"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -1048,11 +1065,9 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 	}
 }
 
-// TestManagerUpload_CommitResultPieceIDZeroMidArray proves that a commit
-// result with a zero entry anywhere in PieceIDs (not just the head) is
-// treated as invalid. Previously only PieceIDs[0] was checked, hiding
-// partial confirmations for batch commits.
-func TestManagerUpload_CommitResultPieceIDZeroMidArray(t *testing.T) {
+// TestManagerUpload_CommitResultAllowsZeroPieceID proves TS-compatible piece
+// ID 0 is accepted as a successful confirmation.
+func TestManagerUpload_CommitResultAllowsZeroPieceID(t *testing.T) {
 	data := bytes.Repeat([]byte("mid"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -1065,34 +1080,20 @@ func TestManagerUpload_CommitResultPieceIDZeroMidArray(t *testing.T) {
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
-		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-			ids := make([]types.PieceID, len(req.Pieces))
-			for i := range ids {
-				ids[i] = types.PieceID(10 + i)
-			}
-			if len(ids) > 0 {
-				// Inject a zero somewhere past index 0 to exercise
-				// the full-length validation path.
-				idx := len(ids) / 2
-				if idx == 0 && len(ids) > 1 {
-					idx = 1
-				}
-				ids[idx] = 0
-			}
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: ids}, nil
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{0}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
-	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
-	if err == nil {
-		t.Fatal("expected CommitError when a non-head PieceID is zero")
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
 	}
-	var ce *CommitError
-	if !errors.As(err, &ce) {
-		t.Fatalf("want CommitError, got %T (%v)", err, err)
+	if got.SuccessCount() != 1 {
+		t.Fatalf("success count=%d want 1", got.SuccessCount())
 	}
-	if !strings.Contains(err.Error(), "index") {
-		t.Fatalf("expected error to mention the zero index, got %q", err.Error())
+	if len(got.Copies) != 1 || got.Copies[0].PieceID != 0 {
+		t.Fatalf("copies=%+v want pieceID 0", got.Copies)
 	}
 }
 

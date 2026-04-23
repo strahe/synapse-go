@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	icurio "github.com/strahe/synapse-go/internal/curio"
 
 	"github.com/strahe/synapse-go/costs"
@@ -103,6 +104,14 @@ func (c *Client) initServices() error {
 	}
 	c.costs = costsvc
 
+	if c.addresses.PDPVerifier != (common.Address{}) {
+		caller, err := pdpverifier.NewPDPVerifierCaller(c.addresses.PDPVerifier, c.ethClient)
+		if err != nil {
+			return fmt.Errorf("create pdpverifier caller: %w", err)
+		}
+		c.pdpReader = &pdpVerifierAdapter{caller: caller, backend: c.ethClient}
+	}
+
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
 		Payer:       c.evmSigner.EVMAddress(),
 		SPRegistry:  spReg,
@@ -125,6 +134,9 @@ func (c *Client) initServices() error {
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(sel.DataSetMetadata),
 				storage.WithCDN(opts != nil && opts.WithCDN),
+				storage.WithPDPVerifierReader(c.pdpReader),
+				storage.WithPDPConfigReader(ws),
+				storage.WithFWSSTerminator(ws),
 			}
 			if sel.DataSetID != nil {
 				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))
@@ -148,6 +160,21 @@ func (c *Client) initServices() error {
 		HTTPClient: c.httpClient,
 		Source:     c.source,
 		Lifecycle:  c.lifecycle,
+
+		DataSetFinder:     &dataSetFinderAdapter{ws: ws},
+		StorageInfoReader: &storageInfoAdapter{ws: ws, sp: c.spRegistry, pay: c.payments, usdfcToken: c.addresses.USDFC, fwss: c.addresses.FWSS},
+		DataSetTerminator: ws,
+		CostCalculator:    &costsAdapter{c: c.costs},
+		PaymentsFunder:    &paymentsFunderAdapter{p: c.payments},
+		SignerAddress:     c.evmSigner.EVMAddress(),
+	}
+	if c.pdpReader != nil {
+		// Guard against Go's typed-nil-interface trap: assigning a nil
+		// *pdpVerifierAdapter directly to the interface field would yield
+		// a non-nil DataSetSizeReader whose underlying value is nil,
+		// causing GetDataSetSizeBytes to panic when PDPVerifier is
+		// unwired.
+		storageOpts.DataSetSizeReader = c.pdpReader
 	}
 	svc, err := storage.New(storageOpts)
 	if err != nil {

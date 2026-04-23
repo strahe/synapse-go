@@ -4,6 +4,13 @@
 // effective rates, lockup requirements, and CDN options. The calculation
 // matches on-chain Solidity integer division for accuracy.
 //
+// # Entry points
+//
+//   - [Service.GetUploadCosts] — single-dataset upload cost.
+//   - [Service.CalculateMultiContextCosts] — aggregated cost across multiple
+//     upload contexts (one new + N existing data sets); used by the storage
+//     manager's Prepare flow.
+//
 // # Glossary
 //
 // Epoch — Filecoin block interval (30 seconds on mainnet and calibration).

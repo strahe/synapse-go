@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
@@ -53,6 +54,20 @@ type Service struct {
 	commitConcurrency    int
 	downloadMaxBytes     int64
 	lifecycle            *lifecycle.Lifecycle
+
+	// Manager-level collaborators (all optional). When unset, the
+	// corresponding public method returns a descriptive error.
+	finder     DataSetFinder
+	info       StorageInfoReader
+	terminator FWSSTerminator
+	costCalc   MultiCostCalculator
+	funder     PaymentsFunder
+	sizeReader DataSetSizeReader
+
+	// signerAddr is the default client/payer used by manager-level
+	// helpers when the caller does not explicitly supply one. Zero
+	// address is allowed (callers must pass an address explicitly).
+	signerAddr common.Address
 }
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
@@ -107,6 +122,35 @@ type Options struct {
 	// close state. After the Lifecycle is closed, every method returns
 	// [ErrClosed]. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
+
+	// DataSetFinder backs Service.FindDataSets. Optional; when nil the
+	// method returns an ErrUninitialized-wrapped error.
+	DataSetFinder DataSetFinder
+
+	// StorageInfoReader backs Service.GetStorageInfo. Optional.
+	StorageInfoReader StorageInfoReader
+
+	// DataSetTerminator backs Service.TerminateDataSet. Optional.
+	DataSetTerminator FWSSTerminator
+
+	// CostCalculator backs Service.CalculateMultiContextCosts and the
+	// cost estimation inside Prepare. Optional.
+	CostCalculator MultiCostCalculator
+
+	// PaymentsFunder backs PrepareTransaction.Execute. Optional.
+	PaymentsFunder PaymentsFunder
+
+	// DataSetSizeReader backs the per-dataset size lookup performed by
+	// [Service.Prepare] for existing-dataset contexts. Optional; when
+	// nil, Prepare falls back to zero sizes (floor-price lockup). For
+	// accurate add-pieces pricing, wire an implementation backed by
+	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
+	DataSetSizeReader DataSetSizeReader
+
+	// SignerAddress is the default payer/client used by manager-level
+	// helpers (FindDataSets, GetStorageInfo, CreateContext{s}, Prepare)
+	// when the caller does not explicitly supply one.
+	SignerAddress common.Address
 }
 
 // New creates a Service from the given Options.
@@ -126,13 +170,20 @@ func New(opts Options) (*Service, error) {
 		opts.DownloadMaxBytes = 0
 	}
 	return &Service{
-		resolver:             opts.Resolver,
+		resolver:             normalizeOptional(opts.Resolver),
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
 		lifecycle:            opts.Lifecycle,
+		finder:               normalizeOptional(opts.DataSetFinder),
+		info:                 normalizeOptional(opts.StorageInfoReader),
+		terminator:           normalizeOptional(opts.DataSetTerminator),
+		costCalc:             normalizeOptional(opts.CostCalculator),
+		funder:               normalizeOptional(opts.PaymentsFunder),
+		sizeReader:           normalizeOptional(opts.DataSetSizeReader),
+		signerAddr:           opts.SignerAddress,
 	}, nil
 }
 
@@ -340,15 +391,13 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			})
 			continue
 		}
-		if outcome.result == nil || outcome.result.DataSetID == 0 || len(outcome.result.PieceIDs) != len(pieceInputs) {
+		if outcome.result == nil || outcome.result.DataSetID == 0 {
 			var err error
 			switch {
 			case outcome.result == nil:
 				err = errors.New("commit result missing confirmed identifiers: nil result")
 			case outcome.result.DataSetID == 0:
 				err = errors.New("commit result missing confirmed identifiers: zero dataSetID")
-			default:
-				err = fmt.Errorf("commit result missing confirmed identifiers: got %d pieceIDs want %d", len(outcome.result.PieceIDs), len(pieceInputs))
 			}
 			if target.role == CopyRolePrimary {
 				primaryCommitErr = err
@@ -362,8 +411,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			})
 			continue
 		}
-		if zeroIdx := firstZeroPieceID(outcome.result.PieceIDs); zeroIdx >= 0 {
-			err := fmt.Errorf("commit result contains zero pieceID at index %d", zeroIdx)
+		if err := validateConfirmedPieceIDs(outcome.result.PieceIDs, len(pieceInputs)); err != nil {
 			if target.role == CopyRolePrimary {
 				primaryCommitErr = err
 			}
@@ -452,13 +500,9 @@ func (s *Service) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 	return &cloned
 }
 
-// firstZeroPieceID returns the index of the first zero PieceID in ids, or -1
-// if all entries are non-zero. Used by Upload to validate commit results.
-func firstZeroPieceID(ids []types.PieceID) int {
-	for i, id := range ids {
-		if id == 0 {
-			return i
-		}
+func validateConfirmedPieceIDs(ids []types.PieceID, want int) error {
+	if len(ids) != want {
+		return fmt.Errorf("commit result missing confirmed identifiers: got %d pieceIDs want %d", len(ids), want)
 	}
-	return -1
+	return nil
 }

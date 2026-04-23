@@ -315,6 +315,44 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testi
 	}
 }
 
+func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.T) {
+	info := mustPieceInfo(t)
+
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				DataSetID:         42,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{
+			{PieceCID: info.CIDv2},
+			{PieceCID: info.CIDv2},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for mismatched confirmed pieceIDs")
+	}
+}
+
 func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	info := mustPieceInfo(t)
 
@@ -366,6 +404,43 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	}
 	if ctx.dataSetID == nil || *ctx.dataSetID != types.DataSetID(55) {
 		t.Fatalf("context dataSetID=%v want 55", ctx.dataSetID)
+	}
+}
+
+func TestContextCommit_NewDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.T) {
+	info := mustPieceInfo(t)
+
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				DataSetID:         55,
+				PieceCount:        2,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{
+			{PieceCID: info.CIDv2},
+			{PieceCID: info.CIDv2},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for mismatched confirmed pieceIDs")
 	}
 }
 
@@ -464,6 +539,7 @@ func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) 
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -544,6 +620,32 @@ func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.
 	}
 }
 
+// TestContextPresignForCommit_ExistingDataSetRequiresClientDataSetID
+// locks the PresignForCommit guard that rejects existing-dataset
+// contexts constructed without WithClientDataSetID. The contract
+// reconstructs the EIP-712 hash from the clientDataSetId it stored at
+// creation time, so a randomly-minted value would produce a signature
+// the verifier rejects.
+func TestContextPresignForCommit_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
+	info := mustPieceInfo(t)
+	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(42)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = sctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "clientDataSetID is required") {
+		t.Fatalf("error should mention clientDataSetID requirement; got: %v", err)
+	}
+}
+
 func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 	info := mustPieceInfo(t)
 	// Wrap the signer in a no-op type that only implements EVMSigner via embedding, not hashSigner
@@ -556,6 +658,7 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithDataSetID(types.DataSetID(1)),
+		WithClientDataSetID(big.NewInt(7)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -634,6 +737,7 @@ type fakeCurioClient struct {
 	waitForAddedFn        func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 	createAndAddFn        func(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
+	scheduleDeletionFn    func(context.Context, uint64, uint64, []byte) (common.Hash, error)
 }
 
 type failingReader struct {
@@ -674,6 +778,13 @@ func (f *fakeCurioClient) CreateDataSetAndAddPieces(ctx context.Context, recordK
 
 func (f *fakeCurioClient) WaitForCreateDataSetAndAddPieces(ctx context.Context, statusURL string, pollInterval time.Duration) (*icurio.AddPiecesStatus, error) {
 	return f.waitForCreateAndAddFn(ctx, statusURL, pollInterval)
+}
+
+func (f *fakeCurioClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
+	if f.scheduleDeletionFn == nil {
+		return common.Hash{}, fmt.Errorf("fakeCurioClient.SchedulePieceDeletion: not configured")
+	}
+	return f.scheduleDeletionFn(ctx, dataSetID, pieceID, extraData)
 }
 
 // TestContextCommit_ExistingDataSet_LargeIDPreserved proves that a DataSetID
@@ -1209,6 +1320,50 @@ func TestContextStore_WaitError(t *testing.T) {
 	}
 }
 
+func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
+	data := bytes.Repeat([]byte("up"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	fake := &fakeCurioClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			return &icurio.AddPiecesStatus{
+				DataSetID:         42,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(0)},
+				TxHash:            common.HexToHash("0x1234"),
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	got, err := ctx.Upload(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got.SuccessCount() != 1 {
+		t.Fatalf("success count=%d want 1", got.SuccessCount())
+	}
+	if len(got.Copies) != 1 || got.Copies[0].PieceID != 0 {
+		t.Fatalf("copies=%+v want pieceID 0", got.Copies)
+	}
+}
+
 func TestContextPull_EmptySourceURL(t *testing.T) {
 	info := mustPieceInfo(t)
 	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
@@ -1476,6 +1631,66 @@ func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(stop)
 	<-done
+}
+
+func TestContextDataSetID_ConcurrentWithCommit(t *testing.T) {
+	info := mustPieceInfo(t)
+	releaseCreate := make(chan struct{})
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			<-releaseCreate
+			return &icurio.AddPiecesStatus{
+				DataSetID:         42,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(11)},
+				TxHash:            common.HexToHash("0x1234"),
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	stopReaders := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stopReaders:
+					return
+				default:
+				}
+				_ = ctx.DataSetID()
+			}
+		}()
+	}
+
+	commitDone := make(chan error, 1)
+	go func() {
+		_, err := ctx.Commit(context.Background(), CommitRequest{
+			Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
+			ExtraData: []byte{0x01},
+		})
+		commitDone <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(releaseCreate)
+	if err := <-commitDone; err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	close(stopReaders)
+	readers.Wait()
 }
 
 func TestContextCommit_WaitAddPiecesError(t *testing.T) {

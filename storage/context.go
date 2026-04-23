@@ -58,6 +58,7 @@ type PDPClient interface {
 	WaitForPiecesAdded(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 	CreateDataSetAndAddPieces(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
+	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error)
 }
 
 // Provider holds the on-chain identity of a storage provider.
@@ -93,6 +94,14 @@ type Context struct {
 	clientDataSetID types.ClientDataSetID
 	dataSetMetadata map[string]string
 	presignedKinds  map[[32]byte]commitExtraDataKind
+
+	// Optional read/write collaborators used by TS-parity lifecycle
+	// methods (GetScheduledRemovals, PieceStatus, DeletePiece, Terminate).
+	// All are nil by default; when unset the corresponding method returns
+	// a descriptive error.
+	pdpCaller      PDPVerifierReader
+	pdpConfig      PDPConfigReader
+	fwssTerminator FWSSTerminator
 }
 
 type commitExtraDataKind uint8
@@ -187,6 +196,24 @@ func WithDataSetMetadata(metadata map[string]string) ContextOption {
 // the contract activates CDN and applies its configured lockup upon seeing it.
 func WithCDN(enabled bool) ContextOption {
 	return func(c *Context) { c.withCDN = enabled }
+}
+
+// WithPDPVerifierReader injects a reader for PDPVerifier contract state.
+// Required by [Context.GetScheduledRemovals], [Context.PieceStatus] and
+// [Context.DeletePiece]; callers that only Store/Pull/Commit may leave it nil.
+func WithPDPVerifierReader(r PDPVerifierReader) ContextOption {
+	return func(c *Context) { c.pdpCaller = normalizeOptional(r) }
+}
+
+// WithPDPConfigReader injects a reader for FWSSView PDPConfig. Required by
+// [Context.PieceStatus] for challenge-window math.
+func WithPDPConfigReader(r PDPConfigReader) ContextOption {
+	return func(c *Context) { c.pdpConfig = normalizeOptional(r) }
+}
+
+// WithFWSSTerminator injects the terminator used by [Context.Terminate].
+func WithFWSSTerminator(t FWSSTerminator) ContextOption {
+	return func(c *Context) { c.fwssTerminator = normalizeOptional(t) }
 }
 
 // Store streams data to the provider and waits for it to be parked.
@@ -311,6 +338,14 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	// (DataSetID, ProviderID, ...) while signing hundreds of pieces.
 	c.mu.Lock()
 	if c.clientDataSetID == nil {
+		if c.dataSetID != nil {
+			c.mu.Unlock()
+			return nil, fmt.Errorf(
+				"storage.Context.PresignForCommit: %w: clientDataSetID is required when the context targets an existing data set; "+
+					"supply it with WithClientDataSetID or construct the context via Service.CreateContext",
+				ErrInvalidArgument,
+			)
+		}
 		v, err := randomClientDataSetID()
 		if err != nil {
 			c.mu.Unlock()
@@ -513,6 +548,9 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
 		}
+		if err := validateConfirmedPieceIDs(pieceIDs, len(req.Pieces)); err != nil {
+			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+		}
 		return &CommitResult{
 			TransactionID: status.TxHash.Hex(),
 			DataSetID:     types.DataSetID(status.DataSetID),
@@ -539,6 +577,9 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	}
 	pieceIDs, err := idconv.SafeSlice[types.PieceID]("pieceID", status.ConfirmedPieceIDs)
 	if err != nil {
+		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+	}
+	if err := validateConfirmedPieceIDs(pieceIDs, len(req.Pieces)); err != nil {
 		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
 	}
 	result := &CommitResult{
@@ -579,6 +620,24 @@ func (c *Context) GetProviderInfo() Provider {
 // ServiceURL returns the base URL of the provider's curio HTTP API.
 func (c *Context) ServiceURL() string {
 	return c.provider.ServiceURL
+}
+
+// DataSetID returns the Context's bound data set ID, or nil if the
+// Context targets a data set that does not yet exist (will be created
+// on first upload).
+func (c *Context) DataSetID() *types.DataSetID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.dataSetID == nil {
+		return nil
+	}
+	id := *c.dataSetID
+	return &id
+}
+
+// WithCDN reports whether CDN services are enabled for this Context.
+func (c *Context) WithCDN() bool {
+	return c.withCDN
 }
 
 func (c *Context) pieceURLFor(pieceCID cid.Cid) string {

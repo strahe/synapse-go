@@ -55,6 +55,7 @@ type Client struct {
 	costs       *costs.Service
 	filbeam     *filbeam.Service
 	storage     *storage.Service
+	pdpReader   *pdpVerifierAdapter
 }
 
 // New creates a Client, connecting to the given RPC endpoint and
