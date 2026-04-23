@@ -6,11 +6,11 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
-	icurio "github.com/strahe/synapse-go/internal/curio"
-
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
+	"github.com/strahe/synapse-go/internal/adapters"
+	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
+	icurio "github.com/strahe/synapse-go/internal/curio"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/spregistry"
@@ -114,7 +114,7 @@ func (c *Client) initServices() error {
 		if err != nil {
 			return fmt.Errorf("create pdpverifier caller: %w", err)
 		}
-		c.pdpReader = &pdpVerifierAdapter{caller: caller, backend: c.ethClient}
+		c.pdpReader = adapters.NewPDPVerifierReader(caller, c.ethClient)
 	}
 
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
@@ -171,20 +171,15 @@ func (c *Client) initServices() error {
 		DefaultWithCDN: c.withCDN,
 		Lifecycle:      c.lifecycle,
 
-		DataSetFinder:     &dataSetFinderAdapter{ws: ws},
-		StorageInfoReader: &storageInfoAdapter{ws: ws, sp: c.spRegistry, pay: c.payments, usdfcToken: c.addresses.USDFC, fwss: c.addresses.FWSS},
+		DataSetFinder:     adapters.NewDataSetFinder(ws),
+		StorageInfoReader: adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),
 		DataSetTerminator: ws,
 		FWSSDataSetReader: ws,
-		CostCalculator:    &costsAdapter{c: c.costs},
-		PaymentsFunder:    &paymentsFunderAdapter{p: c.payments},
+		CostCalculator:    adapters.NewCostCalculator(costsvc),
+		PaymentsFunder:    adapters.NewPaymentsFunder(pay),
 		SignerAddress:     c.evmSigner.EVMAddress(),
 	}
 	if c.pdpReader != nil {
-		// Guard against Go's typed-nil-interface trap: assigning a nil
-		// *pdpVerifierAdapter directly to the interface field would yield
-		// a non-nil DataSetSizeReader whose underlying value is nil,
-		// causing GetDataSetSizeBytes to panic when PDPVerifier is
-		// unwired.
 		storageOpts.DataSetSizeReader = c.pdpReader
 	}
 	svc, err := storage.New(storageOpts)

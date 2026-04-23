@@ -1,4 +1,4 @@
-package synapse
+package adapters
 
 import (
 	"math/big"
