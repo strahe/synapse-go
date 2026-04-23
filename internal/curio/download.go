@@ -48,7 +48,7 @@ func (c *Client) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCl
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("curio request", "method", req.Method, "url", req.URL.String())
+		c.logger.Debug("curio request", "method", req.Method, "url", redactURL(req.URL))
 	}
 
 	resp, err := httpClient.Do(req)

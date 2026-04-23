@@ -202,8 +202,13 @@ type UploadOptions struct {
 	DataSetIDs []types.DataSetID
 	// ExcludeProviderIDs skips these providers during auto-selection.
 	ExcludeProviderIDs []types.ProviderID
-	// WithCDN enables CDN services for this upload.
-	WithCDN bool
+	// WithCDN is tri-state: nil inherits the Client-level default
+	// configured via [synapse.WithCDN]; non-nil explicitly overrides
+	// for this upload. Declare a local variable to take its address:
+	//
+	//	b := true
+	//	opts := &storage.UploadOptions{WithCDN: &b}
+	WithCDN *bool
 	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
 	// When set, the primary provider client skips inline commP calculation;
 	// the server still verifies the uploaded bytes match this value.

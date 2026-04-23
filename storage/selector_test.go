@@ -33,10 +33,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 		},
 	})
 
+	withCDN := true
 	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 		Copies:          2,
 		DataSetMetadata: map[string]string{"source": "app"},
-		WithCDN:         true,
+		WithCDN:         &withCDN,
 	})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)

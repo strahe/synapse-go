@@ -4,15 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/txutil"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -22,21 +27,54 @@ type EthClient interface {
 	bind.ContractCaller
 }
 
-// Service provides read access to the ServiceProviderRegistry contract.
-//
-// All state-mutating operations (register/update/remove) are out of scope
-// for the SDK — providers manage their on-chain records directly via curio.
+// Backend extends EthClient with the surface required for sending
+// transactions (register/update/remove provider, add/update/remove product).
+// The full [*ethclient.Client] satisfies this interface.
+type Backend interface {
+	bind.ContractBackend
+	TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error)
+	BlockNumber(ctx context.Context) (uint64, error)
+}
+
+// Service provides read access to the ServiceProviderRegistry contract,
+// and (when constructed with a Signer + Backend) a small, typed set of
+// state-changing methods that mirror the public SP-registry surface of
+// `@filoz/synapse-sdk`.
 type Service struct {
-	caller    EthClient
-	addr      common.Address
-	contract  *spr.SPRegistryCaller
-	lifecycle *lifecycle.Lifecycle
+	caller      EthClient
+	backend     Backend
+	chainID     types.ChainID
+	addr        common.Address
+	contract    *spr.SPRegistryCaller
+	write       *spr.SPRegistryTransactor
+	signer      signer.EVMSigner
+	nonces      *txutil.NonceManager
+	logger      *slog.Logger
+	receiptWait time.Duration
+	lifecycle   *lifecycle.Lifecycle
 }
 
 // Options configures the service.
 type Options struct {
 	Client  EthClient
 	Address common.Address
+	// ChainID is required only when writes are used.
+	ChainID types.ChainID
+	// Backend provides a full RPC surface for writes. When nil Service is
+	// read-only; write methods return [ErrWriteNotConfigured].
+	Backend Backend
+	// Signer signs write transactions. Optional.
+	Signer signer.EVMSigner
+	// NonceManager is optional. When nil, one is created from Backend if
+	// Signer is also provided. Services that share the same signer / EOA must
+	// also share the same NonceManager instance; otherwise concurrent writes
+	// can race on nonce allocation.
+	NonceManager *txutil.NonceManager
+	// Logger is optional.
+	Logger *slog.Logger
+	// ReceiptWait overrides the default receipt polling timeout for
+	// WithWait calls. Zero uses txutil.DefaultReceiptWaitConfig.
+	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// [ErrClosed]. Nil is allowed for standalone use.
@@ -51,15 +89,103 @@ func New(opts Options) (*Service, error) {
 	if (opts.Address == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.New: %w: zero Address", ErrInvalidArgument)
 	}
+	if opts.Backend != nil && opts.Signer != nil && !opts.ChainID.IsValid() {
+		return nil, fmt.Errorf("spregistry.New: %w: ChainID is required when writes are enabled (Backend+Signer provided)", ErrInvalidArgument)
+	}
 	c, err := spr.NewSPRegistryCaller(opts.Address, opts.Client)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.New: bind: %w", err)
 	}
-	return &Service{caller: opts.Client, addr: opts.Address, contract: c, lifecycle: opts.Lifecycle}, nil
+	s := &Service{
+		caller:      opts.Client,
+		backend:     opts.Backend,
+		chainID:     opts.ChainID,
+		addr:        opts.Address,
+		contract:    c,
+		signer:      opts.Signer,
+		nonces:      opts.NonceManager,
+		logger:      opts.Logger,
+		receiptWait: opts.ReceiptWait,
+		lifecycle:   opts.Lifecycle,
+	}
+	if opts.Backend != nil {
+		tw, err := spr.NewSPRegistryTransactor(opts.Address, opts.Backend)
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.New: bind transactor: %w", err)
+		}
+		s.write = tw
+	}
+	if s.nonces == nil && s.signer != nil && s.backend != nil {
+		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
+	}
+	return s, nil
 }
 
 // Address returns the configured registry contract address.
 func (s *Service) Address() common.Address { return s.addr }
+
+// requireSigner returns ErrWriteNotConfigured unless the service was built
+// with a Signer, Backend, and NonceManager.
+func (s *Service) requireSigner() error {
+	if s.signer == nil || s.backend == nil || s.write == nil || s.nonces == nil {
+		return ErrWriteNotConfigured
+	}
+	return nil
+}
+
+// newTransactOpts obtains a fresh bind.TransactOpts bound to ctx and a
+// nonce allocated from the shared NonceManager. The returned release
+// function must be called exactly once.
+func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func(), error) {
+	topts, err := s.signer.Transactor(s.chainID.BigInt())
+	if err != nil {
+		return nil, nil, fmt.Errorf("transactor: %w", err)
+	}
+	topts.Context = ctx
+	nonce, release, err := s.nonces.Acquire(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("nonce: %w", err)
+	}
+	topts.Nonce = new(big.Int).SetUint64(nonce)
+	return topts, release, nil
+}
+
+// finalize applies WriteOption post-broadcast semantics: it returns the
+// transaction hash immediately, unless the caller asked to wait for a
+// receipt (WithWait). When the transaction reverts on-chain, the returned
+// error wraps ErrTxFailed and the receipt is still populated for inspection.
+func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts []WriteOption) (*WriteResult, error) {
+	cfg := newWriteConfig(opts)
+	res := &WriteResult{Hash: tx.Hash()}
+	if cfg.waitTimeout <= 0 {
+		return res, nil
+	}
+	var (
+		receipt *ethtypes.Receipt
+		err     error
+	)
+	if cfg.confirmations > 0 {
+		waitCfg := txutil.DefaultReceiptWaitConfig()
+		if s.receiptWait > 0 {
+			waitCfg.Timeout = s.receiptWait
+		}
+		if cfg.waitTimeout > 0 {
+			waitCfg.Timeout = cfg.waitTimeout
+		}
+		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
+	} else {
+		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)
+	}
+	if err != nil {
+		if errors.Is(err, txutil.ErrTxFailed) {
+			res.Receipt = receipt
+			return res, fmt.Errorf("wait receipt: %w", err)
+		}
+		return res, fmt.Errorf("wait receipt: %w", err)
+	}
+	res.Receipt = receipt
+	return res, nil
+}
 
 // GetProvider returns the provider by id. Returns an error wrapping
 // ErrNotFound when no such provider exists (contract convention: a zero

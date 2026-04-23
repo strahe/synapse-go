@@ -427,9 +427,10 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("generate multicopy data: %v", err)
 		}
 
+		withCDN := true
 		result, err := client.Storage().Upload(cctx, bytes.NewReader(multiData), &storage.UploadOptions{
 			Copies:  2,
-			WithCDN: true,
+			WithCDN: &withCDN,
 		})
 		if err != nil {
 			t.Fatalf("Upload (multicopy) failed: %v", err)

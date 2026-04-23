@@ -1,8 +1,11 @@
 package spregistry
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"sort"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/multiformats/go-multibase"
@@ -133,15 +136,156 @@ func DecodePDPOffering(caps map[string][]byte) (PDPOffering, error) {
 // ValidatePDPOffering checks that required fields are present and have basic
 // sane values. Optional capabilities and detailed size/range relationships
 // are left to higher-level caller policy.
+//
+// All *big.Int fields must be non-nil and non-negative. MinProvingPeriodInEpochs
+// must additionally be strictly positive (zero proving periods are rejected
+// by the on-chain validation). ServiceURL must be non-empty.
 func ValidatePDPOffering(o PDPOffering) error {
 	if o.ServiceURL == "" {
 		return fmt.Errorf("%w: missing serviceURL", ErrInvalidOffering)
 	}
-	if o.StoragePricePerTiBPerDay == nil || o.StoragePricePerTiBPerDay.Sign() < 0 {
-		return fmt.Errorf("%w: invalid storagePricePerTibPerDay", ErrInvalidOffering)
+	if o.MinPieceSizeInBytes == nil {
+		return fmt.Errorf("%w: missing minPieceSizeInBytes", ErrInvalidOffering)
 	}
-	if o.MinProvingPeriodInEpochs == nil || o.MinProvingPeriodInEpochs.Sign() <= 0 {
-		return fmt.Errorf("%w: invalid minProvingPeriodInEpochs", ErrInvalidOffering)
+	if o.MinPieceSizeInBytes.Sign() < 0 {
+		return fmt.Errorf("%w: negative minPieceSizeInBytes", ErrInvalidOffering)
+	}
+	if o.MaxPieceSizeInBytes == nil {
+		return fmt.Errorf("%w: missing maxPieceSizeInBytes", ErrInvalidOffering)
+	}
+	if o.MaxPieceSizeInBytes.Sign() < 0 {
+		return fmt.Errorf("%w: negative maxPieceSizeInBytes", ErrInvalidOffering)
+	}
+	if o.StoragePricePerTiBPerDay == nil {
+		return fmt.Errorf("%w: missing storagePricePerTibPerDay", ErrInvalidOffering)
+	}
+	if o.StoragePricePerTiBPerDay.Sign() < 0 {
+		return fmt.Errorf("%w: negative storagePricePerTibPerDay", ErrInvalidOffering)
+	}
+	if o.MinProvingPeriodInEpochs == nil {
+		return fmt.Errorf("%w: missing minProvingPeriodInEpochs", ErrInvalidOffering)
+	}
+	if o.MinProvingPeriodInEpochs.Sign() <= 0 {
+		return fmt.Errorf("%w: non-positive minProvingPeriodInEpochs", ErrInvalidOffering)
 	}
 	return nil
+}
+
+// EncodePDPCapabilities produces the parallel (keys, values) byte slices
+// expected by the ServiceProviderRegistry contract's registerProvider,
+// addProduct, and updateProduct methods.
+//
+// Canonical layout (positions 1-9) mirrors the TypeScript reference
+// implementation in synapse-sdk/packages/synapse-core/src/utils/pdp-capabilities.ts:
+//
+//  1. serviceURL               (UTF-8 bytes)
+//  2. minPieceSizeInBytes      (big-endian minimal; zero encodes as 0x00)
+//  3. maxPieceSizeInBytes
+//  4. (optional) ipniPiece     (single byte 0x01, omitted when false)
+//  5. (optional) ipniIpfs      (single byte 0x01, omitted when false)
+//  6. storagePricePerTibPerDay
+//  7. minProvingPeriodInEpochs
+//  8. location                 (UTF-8 bytes)
+//  9. paymentTokenAddress      (20 bytes)
+//
+// 10. any entries in extras (intentionally DIVERGES from TS: see below)
+//
+// Note: ipniPeerId is intentionally NOT emitted; the TS encoder also omits
+// it even though the decoder accepts it for backwards compatibility.
+//
+// For extras values:
+//   - an empty string encodes as the single byte 0x01 (matching TS);
+//   - a "0x"-prefixed string is hex-decoded;
+//   - otherwise the raw UTF-8 bytes are used.
+//
+// DIVERGENCE from the TS encoder: TS preserves Object.entries insertion
+// order for extras, Go map iteration is randomised. This SDK therefore
+// sorts extras keys alphabetically to guarantee deterministic output.
+// On-chain storage is a (key => value) mapping so this ordering
+// difference is not observable to the contract. Callers performing
+// byte-level cross-SDK diffing / hashing / replay must normalise by
+// sorting both sides first.
+//
+// Attempting to set a canonical PDP key through extras returns
+// ErrInvalidOffering: doing so would either duplicate or shadow the
+// typed field in a way the contract cannot disambiguate.
+//
+// The offering itself is validated via [ValidatePDPOffering] before any
+// bytes are emitted.
+func EncodePDPCapabilities(o PDPOffering, extras map[string]string) (keys []string, values [][]byte, err error) {
+	if err := ValidatePDPOffering(o); err != nil {
+		return nil, nil, err
+	}
+	for k := range extras {
+		if _, clashes := knownCaps[k]; clashes {
+			return nil, nil, fmt.Errorf("%w: extra capability %q clashes with a canonical PDP key", ErrInvalidOffering, k)
+		}
+	}
+
+	keys = make([]string, 0, 9+len(extras))
+	values = make([][]byte, 0, 9+len(extras))
+
+	push := func(k string, v []byte) {
+		keys = append(keys, k)
+		values = append(values, v)
+	}
+
+	push(CapServiceURL, []byte(o.ServiceURL))
+	push(CapMinPieceSize, bigIntBytes(o.MinPieceSizeInBytes))
+	push(CapMaxPieceSize, bigIntBytes(o.MaxPieceSizeInBytes))
+	if o.IPNIPiece {
+		push(CapIPNIPiece, []byte{0x01})
+	}
+	if o.IPNIIPFS {
+		push(CapIPNIIPFS, []byte{0x01})
+	}
+	push(CapStoragePrice, bigIntBytes(o.StoragePricePerTiBPerDay))
+	push(CapMinProvingPeriod, bigIntBytes(o.MinProvingPeriodInEpochs))
+	push(CapLocation, []byte(o.Location))
+	push(CapPaymentToken, o.PaymentTokenAddress.Bytes())
+
+	if len(extras) > 0 {
+		sortedKeys := make([]string, 0, len(extras))
+		for k := range extras {
+			sortedKeys = append(sortedKeys, k)
+		}
+		sort.Strings(sortedKeys)
+		for _, k := range sortedKeys {
+			encoded, err := encodeExtraValue(extras[k])
+			if err != nil {
+				return nil, nil, fmt.Errorf("%w: capability %q: %w", ErrInvalidOffering, k, err)
+			}
+			push(k, encoded)
+		}
+	}
+
+	return keys, values, nil
+}
+
+func bigIntBytes(v *big.Int) []byte {
+	if v == nil {
+		return nil
+	}
+	if v.Sign() == 0 {
+		// Match the TS reference (`numberToBytes(0n) -> Uint8Array([0])`):
+		// big.Int.Bytes() returns an empty slice for zero which would
+		// diverge from the on-chain / TS wire format and cause readers
+		// calling BigInt('0x') to throw.
+		return []byte{0x00}
+	}
+	return v.Bytes()
+}
+
+func encodeExtraValue(v string) ([]byte, error) {
+	if v == "" {
+		return []byte{0x01}, nil
+	}
+	if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
+		decoded, err := hex.DecodeString(v[2:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex value: %w", err)
+		}
+		return decoded, nil
+	}
+	return []byte(v), nil
 }

@@ -51,6 +51,34 @@ type PDPOffering struct {
 	ExtraCapabilities map[string][]byte
 }
 
+// ProviderRegistrationInfo bundles the arguments accepted by
+// [Service.RegisterProvider].
+//
+// Capabilities merges with PDPOffering at encoding time: canonical PDP keys
+// (serviceURL, minPieceSizeInBytes, ...) are always emitted from the typed
+// fields; any keys present in Capabilities are appended in sorted order
+// AFTER the canonical keys. Do not duplicate a canonical key inside
+// Capabilities.
+type ProviderRegistrationInfo struct {
+	// Payee receives rail payouts. Must be non-zero.
+	Payee common.Address
+	// Name is a human-readable provider name (stored on-chain).
+	Name string
+	// Description is free-form provider metadata (stored on-chain).
+	Description string
+	// PDPOffering is the PDP product registered atomically with the
+	// provider. Must pass [ValidatePDPOffering].
+	PDPOffering PDPOffering
+	// Capabilities are extra product capability key/value pairs in
+	// addition to the canonical PDP keys. Values starting with "0x"
+	// are hex-decoded; empty values encode as the single byte 0x01
+	// (matching the TypeScript SDK).
+	Capabilities map[string]string
+}
+
+// WriteResult is kept as an alias for backwards compatibility.
+type WriteResult = types.WriteResult
+
 // PDPProvider is a provider record together with its decoded PDP offering.
 // This is the high-level view that consumers (storage package) need.
 type PDPProvider struct {

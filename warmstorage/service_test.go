@@ -499,3 +499,281 @@ func TestGetDataSet_RPCError(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Coverage additions: methods.go / iterate.go / terminate.go
+// ---------------------------------------------------------------------------
+
+func TestValidateDataSet_ZeroID(t *testing.T) {
+	s, _ := newTestServiceWithPDP(t)
+	err := s.ValidateDataSet(context.Background(), 0)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestValidateDataSet_NoPDP(t *testing.T) {
+	s, _ := newTestService(t)
+	err := s.ValidateDataSet(context.Background(), 1)
+	if err == nil || !errors.Is(err, ErrPDPVerifierNotConfigured) {
+		t.Errorf("expected ErrPDPVerifierNotConfigured, got %v", err)
+	}
+}
+
+func TestValidateDataSet_NotLive(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	mc.setPDPReply(t, "dataSetLive", false)
+	err := s.ValidateDataSet(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPDPVerifierNotConfigured) {
+		t.Errorf("unexpected sentinel: %v", err)
+	}
+}
+
+func TestValidateDataSet_WrongListener(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	mc.setPDPReply(t, "dataSetLive", true)
+	mc.setPDPReply(t, "getDataSetListener", common.HexToAddress("0xdead"))
+	err := s.ValidateDataSet(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidateDataSet_OK(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	mc.setPDPReply(t, "dataSetLive", true)
+	mc.setPDPReply(t, "getDataSetListener", common.HexToAddress("0x1111111111111111111111111111111111111111"))
+	if err := s.ValidateDataSet(context.Background(), 1); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+}
+
+func TestGetActivePieceCount(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(42))
+	n, err := s.GetActivePieceCount(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Int64() != 42 {
+		t.Errorf("got %d", n.Int64())
+	}
+}
+
+func TestGetActivePieceCount_ZeroID(t *testing.T) {
+	s, _ := newTestServiceWithPDP(t)
+	_, err := s.GetActivePieceCount(context.Background(), 0)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestGetActivePieceCount_NoPDP(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetActivePieceCount(context.Background(), 1)
+	if err == nil || !errors.Is(err, ErrPDPVerifierNotConfigured) {
+		t.Errorf("expected ErrPDPVerifierNotConfigured, got %v", err)
+	}
+}
+
+func TestGetPieceMetadata(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getPieceMetadata", true, "value-1")
+	ok, v, err := s.GetPieceMetadata(context.Background(), 1, 2, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || v != "value-1" {
+		t.Errorf("got (%v, %q)", ok, v)
+	}
+}
+
+func TestGetPieceMetadata_ZeroID(t *testing.T) {
+	s, _ := newTestService(t)
+	_, _, err := s.GetPieceMetadata(context.Background(), 0, 1, "k")
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestGetAllPieceMetadata(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getAllPieceMetadata", []string{"a", "b"}, []string{"1", "2"})
+	got, err := s.GetAllPieceMetadata(context.Background(), 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["a"] != "1" || got["b"] != "2" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestGetAllPieceMetadata_ZeroID(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetAllPieceMetadata(context.Background(), 0, 1)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestGetOwner(t *testing.T) {
+	s, mc := newTestService(t)
+	want := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+	mc.setFWSSReply(t, "owner", want)
+	got, err := s.GetOwner(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("got %s", got.Hex())
+	}
+}
+
+func TestIsOwner(t *testing.T) {
+	s, mc := newTestService(t)
+	want := common.HexToAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+	mc.setFWSSReply(t, "owner", want)
+	ok, err := s.IsOwner(context.Background(), want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected true")
+	}
+	mc.setFWSSReply(t, "owner", want)
+	ok, err = s.IsOwner(context.Background(), common.HexToAddress("0xdead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected false")
+	}
+}
+
+func TestGetOwner_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["owner"] = errors.New("rpc error")
+	_, err := s.GetOwner(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetPDPConfig(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getPDPConfig",
+		uint64(7200),
+		big.NewInt(60),
+		big.NewInt(5),
+		big.NewInt(100),
+	)
+	cfg, err := s.GetPDPConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxProvingPeriod != 7200 || cfg.ChallengeWindowSize.Int64() != 60 || cfg.ChallengesPerProof.Int64() != 5 || cfg.InitChallengeWindowStart.Int64() != 100 {
+		t.Errorf("got %+v", cfg)
+	}
+}
+
+func TestGetPDPConfig_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getPDPConfig"] = errors.New("rpc error")
+	_, err := s.GetPDPConfig(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetClientDataSetIds(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "clientDataSets", []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)})
+	ids, err := s.GetClientDataSetIds(context.Background(), common.HexToAddress("0xabcd"), types.ListOptions{Offset: 0, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 || ids[0] != 1 || ids[2] != 3 {
+		t.Errorf("got %+v", ids)
+	}
+}
+
+func TestGetClientDataSetIds_ZeroPayer(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetClientDataSetIds(context.Background(), common.Address{}, types.ListOptions{Limit: 10})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestTerminateDataSet_WriteNotConfigured(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.TerminateDataSet(context.Background(), 1)
+	if err == nil || !errors.Is(err, ErrWriteNotConfigured) {
+		t.Errorf("expected ErrWriteNotConfigured, got %v", err)
+	}
+}
+
+func TestIterateAllApprovedProviderIDs_Success(t *testing.T) {
+	s, mc := newTestService(t)
+	// Single page under defaultIteratePageSize terminates after one call.
+	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2)})
+	var got []types.ProviderID
+	for id, err := range s.IterateAllApprovedProviderIDs(context.Background()) {
+		if err != nil {
+			t.Fatalf("iter err: %v", err)
+		}
+		got = append(got, id)
+	}
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestIterateAllApprovedProviderIDs_CtxCancelled(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sawErr := false
+	for _, err := range s.IterateAllApprovedProviderIDs(ctx) {
+		if err != nil {
+			sawErr = true
+			break
+		}
+	}
+	if !sawErr {
+		t.Error("expected cancelled ctx to yield error")
+	}
+}
+
+func TestIterateAllClientDataSetIds_Success(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "clientDataSets", []*big.Int{big.NewInt(10), big.NewInt(11)})
+	var ids []types.DataSetID
+	for id, err := range s.IterateAllClientDataSetIds(context.Background(), common.HexToAddress("0xabcd")) {
+		if err != nil {
+			t.Fatalf("iter err: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) != 2 || ids[0] != 10 || ids[1] != 11 {
+		t.Errorf("got %+v", ids)
+	}
+}
+
+func TestIterateAllClientDataSets_Error(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getClientDataSets"] = errors.New("rpc error")
+	sawErr := false
+	for _, err := range s.IterateAllClientDataSets(context.Background(), common.HexToAddress("0xabcd")) {
+		if err != nil {
+			sawErr = true
+			break
+		}
+	}
+	if !sawErr {
+		t.Error("expected rpc error to propagate via iterator")
+	}
+}

@@ -23,9 +23,13 @@ type PrepareOptions struct {
 	Contexts []UploadContext
 	// Costs (optional) short-circuits calculation when supplied.
 	Costs *MultiContextCosts
-	// EnableCDN mirrors the TS `withCDN` flag; used only when neither
-	// Costs nor Contexts is supplied (new dataset path).
-	EnableCDN bool
+	// EnableCDN mirrors the TS `withCDN` flag. Tri-state:
+	//   nil         → inherit the Client-level default (synapse.WithCDN)
+	//   &true/&false → explicit per-Prepare override
+	// Only consulted on the auto-create-context branch (i.e. when neither
+	// Costs nor Contexts is supplied); once Contexts are provided, each
+	// context's own WithCDN() takes precedence.
+	EnableCDN *bool
 	// ExtraRunwayEpochs is additional runway (epochs) above the
 	// minimum lockup period passed through to the cost calculator. Defaults
 	// to 0 when unset. Mirrors TS `prepare({extraRunwayEpochs})`.
@@ -145,6 +149,8 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 	contexts := opts.Contexts
 
 	if len(contexts) == 0 {
+		// Forward EnableCDN unchanged: nil lets resolveWithCDN inherit the
+		// Client-level DefaultWithCDN, matching TS StorageManager.prepare().
 		created, err := s.CreateContexts(ctx, &CreateContextsOptions{WithCDN: opts.EnableCDN})
 		if err != nil {
 			return nil, fmt.Errorf("storage.Service.Prepare: CreateContexts: %w", err)

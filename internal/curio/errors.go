@@ -10,6 +10,13 @@ import (
 )
 
 // HTTPError wraps a non-success response from the Curio API.
+//
+// The URL field is always pre-redacted: userinfo is stripped and sensitive
+// query parameters (see sensitiveQueryKeys in redact.go) are masked as
+// "***". This removes the footgun where a caller logs `%+v` or JSON
+// marshals the struct and leaks credentials. The pre-redacted form is
+// sufficient for debugging — path, scheme, host and non-sensitive query
+// values are preserved.
 type HTTPError struct {
 	Method     string
 	URL        string
@@ -24,7 +31,7 @@ type HTTPError struct {
 func newHTTPError(req *http.Request, resp *http.Response, body []byte) *HTTPError {
 	e := &HTTPError{
 		Method:     req.Method,
-		URL:        req.URL.String(),
+		URL:        redactURL(req.URL),
 		StatusCode: resp.StatusCode,
 		Body:       strings.TrimSpace(string(body)),
 	}
@@ -53,7 +60,14 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
-// Error implements the error interface.
+// RedactedURL returns the log-safe URL stored in e.URL. Retained for
+// backwards compatibility; new code can simply read e.URL directly as it
+// is always pre-redacted.
+func (e *HTTPError) RedactedURL() string {
+	return e.URL
+}
+
+// Error implements the error interface using the pre-redacted URL.
 func (e *HTTPError) Error() string {
 	if e.Body == "" {
 		return fmt.Sprintf("curio: %s %s: HTTP %d", e.Method, e.URL, e.StatusCode)

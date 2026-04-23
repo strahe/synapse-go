@@ -13,23 +13,33 @@ import (
 // Copies controls how many provider copies to create. When zero, the
 // resolver uses its default (two copies when no explicit providers or
 // datasets are pinned; otherwise len(ProviderIDs) / len(DataSetIDs)).
+//
+// WithCDN is tri-state: nil means inherit the Client-level default
+// configured via [synapse.WithCDN]; non-nil explicitly overrides for this
+// call. Declare a local variable to take its address:
+//
+//	b := true
+//	opts := &storage.CreateContextsOptions{WithCDN: &b}
 type CreateContextsOptions struct {
 	Copies             int
 	ProviderIDs        []types.ProviderID
 	DataSetIDs         []types.DataSetID
 	ExcludeProviderIDs []types.ProviderID
 	DataSetMetadata    map[string]string
-	WithCDN            bool
+	WithCDN            *bool
 }
 
 // CreateContextOptions configures Service.CreateContext — the
 // single-copy variant. Same knobs as CreateContextsOptions minus Copies.
+//
+// WithCDN follows the same tri-state convention as
+// [CreateContextsOptions.WithCDN].
 type CreateContextOptions struct {
 	ProviderIDs        []types.ProviderID
 	DataSetIDs         []types.DataSetID
 	ExcludeProviderIDs []types.ProviderID
 	DataSetMetadata    map[string]string
-	WithCDN            bool
+	WithCDN            *bool
 }
 
 // toUploadOptions maps CreateContextsOptions onto the resolver's
@@ -80,6 +90,7 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
+	uploadOpts = s.resolveWithCDN(uploadOpts)
 	contexts, _, err := s.resolver.ResolveUploadContexts(ctx, uploadOpts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
@@ -111,6 +122,7 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
+	uploadOpts = s.resolveWithCDN(uploadOpts)
 	contexts, _, err := s.resolver.ResolveUploadContexts(ctx, uploadOpts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)

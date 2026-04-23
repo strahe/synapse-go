@@ -1063,6 +1063,48 @@ func TestWithSourceMetadata(t *testing.T) {
 	}
 }
 
+// TestResolveWithCDN_TriState asserts the tri-state resolution between
+// Service.defaultWithCDN and UploadOptions.WithCDN: caller-provided non-nil
+// always wins; nil inherits the Service default.
+func TestResolveWithCDN_TriState(t *testing.T) {
+	bTrue, bFalse := true, false
+
+	cases := []struct {
+		name    string
+		defCDN  bool
+		inOpts  *UploadOptions
+		want    bool
+		wantPtr bool // ensure returned WithCDN is non-nil (normalized)
+	}{
+		{"nil opts, default false", false, nil, false, true},
+		{"nil opts, default true", true, nil, true, true},
+		{"nil WithCDN inherits false", false, &UploadOptions{Copies: 1}, false, true},
+		{"nil WithCDN inherits true", true, &UploadOptions{Copies: 1}, true, true},
+		{"explicit true overrides false default", false, &UploadOptions{WithCDN: &bTrue}, true, true},
+		{"explicit false overrides true default", true, &UploadOptions{WithCDN: &bFalse}, false, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Service{defaultWithCDN: tc.defCDN}
+			got := s.resolveWithCDN(tc.inOpts)
+			if got == nil {
+				t.Fatal("resolveWithCDN returned nil")
+			}
+			if tc.wantPtr && got.WithCDN == nil {
+				t.Fatal("WithCDN should be non-nil after resolution")
+			}
+			if got.WithCDN != nil && *got.WithCDN != tc.want {
+				t.Fatalf("WithCDN=%v want %v", *got.WithCDN, tc.want)
+			}
+			// Must not mutate caller-provided opts.
+			if tc.inOpts != nil && tc.inOpts.WithCDN == nil && got == tc.inOpts {
+				t.Fatal("resolveWithCDN mutated caller opts (should clone when setting default)")
+			}
+		})
+	}
+}
+
 // TestNew_ZeroOptions asserts that Service works with zero Options:
 // default HTTP client with non-zero timeout is installed, MaxSecondaryAttempts
 // falls back to the package default, and Upload fails cleanly (no panic)

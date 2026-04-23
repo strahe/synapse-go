@@ -105,9 +105,10 @@ func runMulticopy(ctx context.Context, cfg multicopyConfig, mgr uploader, stdout
 	}
 	defer func() { _ = file.Close() }()
 
+	withCDN := true
 	result, err := mgr.Upload(ctx, file, &storage.UploadOptions{
 		Copies:  3,
-		WithCDN: true,
+		WithCDN: &withCDN,
 	})
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)

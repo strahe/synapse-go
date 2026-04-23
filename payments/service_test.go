@@ -109,6 +109,16 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 			return m.replies[key], nil
 		}
 	}
+	for name, method := range permitERC20ABI.Methods {
+		if [4]byte(method.ID) == selector {
+			key := toHex + ":" + name
+			m.lastIn[key] = append([]byte(nil), call.Data...)
+			if err, ok := m.errs[key]; ok {
+				return nil, err
+			}
+			return m.replies[key], nil
+		}
+	}
 	return nil, errors.New("no method matches selector")
 }
 

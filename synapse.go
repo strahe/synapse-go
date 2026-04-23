@@ -44,6 +44,7 @@ type Client struct {
 	logger        *slog.Logger
 	httpClient    *http.Client
 	source        string
+	withCDN       bool
 
 	lifecycle *lifecycle.Lifecycle
 	closeOnce sync.Once
@@ -179,6 +180,7 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		logger:        cfg.logger,
 		httpClient:    cfg.httpClient,
 		source:        cfg.source,
+		withCDN:       cfg.withCDN,
 		lifecycle:     lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {

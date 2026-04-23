@@ -137,9 +137,10 @@ func TestPrepare_IgnoresEnableCDNWhenContextsSupplied(t *testing.T) {
 	svc.costCalc = costCalc
 	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
 
+	cdn := true
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize:     128,
-		EnableCDN:    true,
+		EnableCDN:    &cdn,
 		Contexts:     []UploadContext{&fakeUploadContext{id: 1}},
 		BufferEpochs: 9,
 	})

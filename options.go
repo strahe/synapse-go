@@ -19,6 +19,7 @@ type clientConfig struct {
 	logger        *slog.Logger
 	httpClient    *http.Client
 	source        string
+	withCDN       bool
 }
 
 // ClientOption configures a [Client] via [New].
@@ -87,4 +88,21 @@ func WithHTTPClient(c *http.Client) ClientOption {
 // same source. Mirrors the TS SDK's Synapse.create({ source }) option.
 func WithSource(s string) ClientOption {
 	return func(cfg *clientConfig) { cfg.source = s }
+}
+
+// WithCDN sets the Client-wide default for CDN-accelerated retrieval
+// and the withCDN dataset-metadata flag used during provider selection.
+// Mirrors the TS SDK's Synapse.create({ withCDN }) option.
+//
+// This is a default only: each [storage.UploadOptions] and
+// [storage.CreateContextsOptions] carries its own *bool WithCDN that
+// overrides the Client default when non-nil. Leaving the per-op field
+// nil inherits this Client default.
+//
+// Example — override per upload:
+//
+//	b := false
+//	_, err := client.Storage().Upload(ctx, r, &storage.UploadOptions{WithCDN: &b})
+func WithCDN(enabled bool) ClientOption {
+	return func(cfg *clientConfig) { cfg.withCDN = enabled }
 }

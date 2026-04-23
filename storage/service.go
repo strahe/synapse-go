@@ -50,6 +50,7 @@ type Service struct {
 	resolver             UploadResolver
 	httpClient           *http.Client
 	source               string
+	defaultWithCDN       bool
 	maxSecondaryAttempts int
 	commitConcurrency    int
 	downloadMaxBytes     int64
@@ -94,6 +95,12 @@ type Options struct {
 	// Datasets with different Source values are treated as separate
 	// namespaces; reuse only occurs within the same Source.
 	Source string
+
+	// DefaultWithCDN is the Client-level CDN default applied when an
+	// [UploadOptions.WithCDN] / [CreateContextsOptions.WithCDN] /
+	// [CreateContextOptions.WithCDN] field is nil. Ignored when the
+	// per-op field is non-nil. Mirrors TS Synapse.create({ withCDN }).
+	DefaultWithCDN bool
 
 	// MaxSecondaryAttempts caps the number of provider candidates tried for
 	// each secondary copy slot before giving up. Values <= 0 select the
@@ -181,6 +188,7 @@ func New(opts Options) (*Service, error) {
 		resolver:             normalizeOptional(opts.Resolver),
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
+		defaultWithCDN:       opts.DefaultWithCDN,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
@@ -229,6 +237,8 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	if s.source != "" {
 		opts = s.withSourceMetadata(opts)
 	}
+	// Resolve WithCDN to a non-nil *bool using Client-level default.
+	opts = s.resolveWithCDN(opts)
 
 	// Capture the caller's intent before resolving (the resolver may return
 	// fewer contexts than requested; Complete must reflect the shortfall).
@@ -519,6 +529,25 @@ func (s *Service) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 		cloned.DataSetMetadata[k] = v
 	}
 	cloned.DataSetMetadata["source"] = s.source
+	return &cloned
+}
+
+// resolveWithCDN returns a shallow clone of opts with WithCDN resolved to a
+// non-nil *bool: caller-provided value wins, otherwise the manager-level
+// [Options.DefaultWithCDN] default is used. A nil opts is lifted to an empty
+// UploadOptions so downstream code can assume opts != nil when CDN is
+// relevant.
+func (s *Service) resolveWithCDN(opts *UploadOptions) *UploadOptions {
+	if opts == nil {
+		b := s.defaultWithCDN
+		return &UploadOptions{WithCDN: &b}
+	}
+	if opts.WithCDN != nil {
+		return opts
+	}
+	cloned := *opts
+	b := s.defaultWithCDN
+	cloned.WithCDN = &b
 	return &cloned
 }
 

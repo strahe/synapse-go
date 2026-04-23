@@ -41,9 +41,14 @@ func (c *Client) initServices() error {
 	c.warmStorage = ws
 
 	spReg, err := spregistry.New(spregistry.Options{
-		Client:    c.ethClient,
-		Address:   c.addresses.SPRegistry,
-		Lifecycle: c.lifecycle,
+		Client:       c.ethClient,
+		Address:      c.addresses.SPRegistry,
+		ChainID:      types.ChainID(c.selectedChain.ChainID()),
+		Backend:      c.ethClient,
+		Signer:       c.evmSigner,
+		NonceManager: c.nonces,
+		Logger:       c.logger,
+		Lifecycle:    c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create spregistry service: %w", err)
@@ -128,12 +133,16 @@ func (c *Client) initServices() error {
 			if err != nil {
 				return nil, fmt.Errorf("create curio client for %s: %w", sel.Provider.ServiceURL, err)
 			}
+			effectiveCDN := c.withCDN
+			if opts != nil && opts.WithCDN != nil {
+				effectiveCDN = *opts.WithCDN
+			}
 			ctxOpts := []storage.ContextOption{
 				storage.WithPayer(c.evmSigner.EVMAddress()),
 				storage.WithChainID(types.ChainID(c.selectedChain.ChainID())),
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(sel.DataSetMetadata),
-				storage.WithCDN(opts != nil && opts.WithCDN),
+				storage.WithCDN(effectiveCDN),
 				storage.WithPDPVerifierReader(c.pdpReader),
 				storage.WithPDPConfigReader(ws),
 				storage.WithFWSSTerminator(ws),
@@ -156,10 +165,11 @@ func (c *Client) initServices() error {
 		return fmt.Errorf("create storage resolver: %w", err)
 	}
 	storageOpts := storage.Options{
-		Resolver:   resolver,
-		HTTPClient: c.httpClient,
-		Source:     c.source,
-		Lifecycle:  c.lifecycle,
+		Resolver:       resolver,
+		HTTPClient:     c.httpClient,
+		Source:         c.source,
+		DefaultWithCDN: c.withCDN,
+		Lifecycle:      c.lifecycle,
 
 		DataSetFinder:     &dataSetFinderAdapter{ws: ws},
 		StorageInfoReader: &storageInfoAdapter{ws: ws, sp: c.spRegistry, pay: c.payments, usdfcToken: c.addresses.USDFC, fwss: c.addresses.FWSS},
@@ -225,19 +235,18 @@ func (c *Client) Storage() *storage.Service {
 	return c.storage
 }
 
-// GetProviderInfo is a convenience shortcut for looking up a storage
-// provider on [SPRegistry]. `idOrAddress` may be either a numeric
-// [types.ProviderID] or a [common.Address] — any other type returns
-// [spregistry.ErrInvalidArgument].
+// GetProviderInfoByID looks up a storage provider on [SPRegistry] by its
+// numeric [types.ProviderID].
 //
-// Mirrors the TS synapse.getProviderInfo helper.
-func (c *Client) GetProviderInfo(ctx context.Context, idOrAddress any) (*spregistry.ProviderInfo, error) {
-	switch v := idOrAddress.(type) {
-	case types.ProviderID:
-		return c.spRegistry.GetProvider(ctx, v)
-	case common.Address:
-		return c.spRegistry.GetProviderByAddress(ctx, v)
-	default:
-		return nil, fmt.Errorf("synapse.GetProviderInfo: %w: unsupported idOrAddress type %T", spregistry.ErrInvalidArgument, v)
-	}
+// Mirrors the TS synapse.getProviderInfo(id) call path.
+func (c *Client) GetProviderInfoByID(ctx context.Context, id types.ProviderID) (*spregistry.ProviderInfo, error) {
+	return c.spRegistry.GetProvider(ctx, id)
+}
+
+// GetProviderInfoByAddress looks up a storage provider on [SPRegistry] by
+// its service-provider [common.Address].
+//
+// Mirrors the TS synapse.getProviderInfo(address) call path.
+func (c *Client) GetProviderInfoByAddress(ctx context.Context, addr common.Address) (*spregistry.ProviderInfo, error) {
+	return c.spRegistry.GetProviderByAddress(ctx, addr)
 }

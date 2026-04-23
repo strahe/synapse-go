@@ -428,7 +428,7 @@ func metadataMatches(dataSetMetadata, requestedMetadata map[string]string) bool 
 
 func dataSetMetadataFromOptions(opts *UploadOptions) map[string]string {
 	metadata := cloneStringMap(opts.DataSetMetadata)
-	if opts.WithCDN {
+	if opts.WithCDN != nil && *opts.WithCDN {
 		if metadata == nil {
 			metadata = make(map[string]string, 1)
 		}

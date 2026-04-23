@@ -104,7 +104,7 @@ func TestRunMulticopy_ThreeCopies(t *testing.T) {
 			if opts.Copies != 3 {
 				t.Fatalf("Copies=%d want 3", opts.Copies)
 			}
-			if !opts.WithCDN {
+			if opts.WithCDN == nil || !*opts.WithCDN {
 				t.Fatal("WithCDN=false want true")
 			}
 			return &storage.UploadResult{
