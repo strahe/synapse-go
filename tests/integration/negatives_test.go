@@ -13,29 +13,26 @@ import (
 	"time"
 
 	synapse "github.com/strahe/synapse-go"
+	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
 )
 
-// TestNegatives runs negative integration scenarios against a calibration
-// network. Unlike the happy-path TestIntegration, each subtest deliberately
-// triggers a failure mode and asserts the SDK surfaces a recognizable error.
+// TestIntegration_Negatives runs negative integration scenarios against a
+// calibration network. Unlike the happy-path TestIntegration, each subtest
+// deliberately triggers a failure mode and asserts the SDK surfaces a
+// recognizable error.
 //
 // All scenarios are gated on INTEGRATION_PRIVATE_KEY (calibration tFIL +
 // USDFC). When unset the function skips, mirroring TestIntegration.
-func TestNegatives(t *testing.T) {
-	if err := loadEnvFile("../../.env"); err != nil {
-		t.Logf("warning: failed to load .env file: %v", err)
-	}
+func TestIntegration_Negatives(t *testing.T) {
+	integrationtest.EnsureEnv(t)
 
-	privateKeyHex := os.Getenv("INTEGRATION_PRIVATE_KEY")
+	privateKeyHex := os.Getenv(integrationtest.EnvPrivateKey)
 	if privateKeyHex == "" {
-		t.Skip("INTEGRATION_PRIVATE_KEY not set; skipping negative integration tests")
+		t.Skipf("%s not set; skipping negative integration tests", integrationtest.EnvPrivateKey)
 	}
 
-	rpcURL := os.Getenv("INTEGRATION_RPC_URL")
-	if rpcURL == "" {
-		rpcURL = defaultRPCURL
-	}
+	rpcURL := integrationtest.RPCURL()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -47,7 +44,7 @@ func TestNegatives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("synapse.New: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("InsufficientFundsDeposit", func(t *testing.T) {
 		testInsufficientFundsDeposit(ctx, t, client)
@@ -113,7 +110,7 @@ func testNonceConflictRecovery(ctx context.Context, t *testing.T, client *synaps
 	to := client.Address()
 
 	const concurrent = 5
-	amount := big.NewInt(1) // dust deposit; insufficient-allowance is fine, nonce-too-low is not
+	amount := big.NewInt(1) // skip precheck so concurrent calls reach nonce allocation even without allowance
 	type res struct {
 		idx int
 		err error
@@ -127,7 +124,7 @@ func testNonceConflictRecovery(ctx context.Context, t *testing.T, client *synaps
 			defer wg.Done()
 			subCtx, cancel := context.WithTimeout(ctx, txWaitTimeout)
 			defer cancel()
-			_, err := pm.Deposit(subCtx, usdfc, to, amount)
+			_, err := pm.Deposit(subCtx, usdfc, to, amount, payments.WithSkipPrecheck())
 			results[i] = res{idx: i, err: err}
 		}()
 	}

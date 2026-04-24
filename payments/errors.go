@@ -33,3 +33,10 @@ var ErrClosed = lifecycle.ErrClosed
 // ErrInsufficientAllowance live alongside this file and cover runtime
 // preconditions that are independent of caller-supplied arguments.
 var ErrInvalidArgument = errors.New("payments: invalid argument")
+
+// ErrPermitUnsupported is returned by DepositWithPermit and
+// DepositWithPermitAndApproveOperator when the token contract does not
+// expose the EIP-2612 permit ABI (name / version / nonces probes fail).
+// Callers can branch on this with errors.Is to fall back to Approve +
+// Deposit instead of surfacing a generic precondition error.
+var ErrPermitUnsupported = errors.New("payments: token contract does not support EIP-2612 permit")

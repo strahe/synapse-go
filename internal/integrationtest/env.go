@@ -1,6 +1,4 @@
-//go:build integration
-
-package integration_test
+package integrationtest
 
 import (
 	"bufio"
@@ -9,14 +7,15 @@ import (
 	"strings"
 )
 
-// loadEnvFile reads a KEY=VALUE file and sets any variables not already
-// present in the environment. Lines starting with # and empty lines are
-// skipped. Values may optionally be quoted with double quotes.
-func loadEnvFile(path string) error {
+// LoadDotEnv reads a KEY=VALUE file and sets any variables not already
+// present in the environment. Lines beginning with '#' and empty lines
+// are skipped. Values may optionally be wrapped in double-quotes. A
+// missing file is not an error.
+func LoadDotEnv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil // .env file is optional
+			return nil
 		}
 		return err
 	}
@@ -34,12 +33,10 @@ func loadEnvFile(path string) error {
 		}
 		k = strings.TrimSpace(k)
 		v = strings.TrimSpace(v)
-		// Strip optional surrounding double-quotes.
 		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
 			v = v[1 : len(v)-1]
 		}
-		// Only set if not already present in environment.
-		if _, ok := os.LookupEnv(k); !ok {
+		if _, present := os.LookupEnv(k); !present {
 			_ = os.Setenv(k, v)
 		}
 	}

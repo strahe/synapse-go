@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/ecdsa"
 	crypto_rand "crypto/rand"
+	"errors"
 	"io"
 	"math/big"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,35 +22,45 @@ import (
 
 	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/costs"
+	"github.com/strahe/synapse-go/filbeam"
+	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 const (
-	defaultRPCURL      = "https://api.calibration.node.glif.io/rpc/v1"
-	calibrationChainID = 314159
+	calibrationChainID = integrationtest.CalibrationChainID
 	testDataSize       = 256 * 1024 // 256 KB
 	txWaitTimeout      = 180 * time.Second
 )
 
+func isExecutionRevert(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, payments.ErrTxFailed) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	if strings.Contains(low, "execution reverted") || strings.Contains(low, "contract reverted") {
+		return true
+	}
+	return strings.Contains(low, "message execution failed") && strings.Contains(low, "revert reason")
+}
+
 func TestIntegration(t *testing.T) {
-	// Load .env from project root (two levels up from tests/integration/).
-	if err := loadEnvFile("../../.env"); err != nil {
-		t.Logf("warning: failed to load .env file: %v", err)
-	}
+	integrationtest.EnsureEnv(t)
 
-	privateKeyHex := os.Getenv("INTEGRATION_PRIVATE_KEY")
+	privateKeyHex := os.Getenv(integrationtest.EnvPrivateKey)
 	if privateKeyHex == "" {
-		t.Skip("INTEGRATION_PRIVATE_KEY not set; skipping integration tests")
+		t.Skipf("%s not set; skipping integration tests", integrationtest.EnvPrivateKey)
 	}
 
-	rpcURL := os.Getenv("INTEGRATION_RPC_URL")
-	if rpcURL == "" {
-		rpcURL = defaultRPCURL
-	}
+	rpcURL := integrationtest.RPCURL()
 
 	ctx := context.Background()
 
@@ -79,9 +91,11 @@ func TestIntegration(t *testing.T) {
 
 	// Shared state across subtests.
 	var (
-		uploadedCID cid.Cid
-		uploadedURL string
-		testData    []byte
+		uploadedCID       cid.Cid
+		uploadedURL       string
+		testData          []byte
+		uploadedDataSetID types.DataSetID
+		uploadedRailID    types.RailID
 	)
 
 	// Register cleanup to withdraw available funds at the end.
@@ -309,8 +323,19 @@ func TestIntegration(t *testing.T) {
 
 		uploadedCID = result.PieceCID
 		uploadedURL = result.Copies[0].RetrievalURL
-		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s",
-			result.PieceCID, result.Size, len(result.Copies), uploadedURL)
+		uploadedDataSetID = result.Copies[0].DataSetID
+		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s, dataSet=%d",
+			result.PieceCID, result.Size, len(result.Copies), uploadedURL, uploadedDataSetID)
+
+		if uploadedDataSetID != 0 {
+			dsInfo, derr := client.WarmStorage().GetDataSet(cctx, uploadedDataSetID)
+			if derr != nil {
+				t.Logf("GetDataSet(%d): %v", uploadedDataSetID, derr)
+			} else {
+				uploadedRailID = dsInfo.PDPRailID
+				t.Logf("dataSet rails: pdp=%d cacheMiss=%d cdn=%d", dsInfo.PDPRailID, dsInfo.CacheMissRailID, dsInfo.CDNRailID)
+			}
+		}
 
 		if len(result.FailedAttempts) > 0 {
 			for _, fa := range result.FailedAttempts {
@@ -545,5 +570,430 @@ func TestIntegration(t *testing.T) {
 			t.Error("session key should be expired after revoke")
 		}
 		t.Log("session key lifecycle: login → verify → revoke → confirm expired ✓")
+	})
+
+	// --- ClientSmoke: every synapse.Client service getter + provider lookups. ---
+	t.Run("ClientSmoke", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+
+		if client.Chain().ChainID() != calibrationChainID {
+			t.Errorf("ChainID = %d, want %d", client.Chain().ChainID(), calibrationChainID)
+		}
+		if client.Address() != addr {
+			t.Errorf("Address mismatch")
+		}
+		if client.WarmStorage() == nil || client.SPRegistry() == nil ||
+			client.Payments() == nil || client.SessionKey() == nil ||
+			client.Costs() == nil || client.FilBeam() == nil ||
+			client.Storage() == nil {
+			t.Fatal("one or more service getters returned nil")
+		}
+
+		page, err := client.SPRegistry().GetPDPProviders(cctx, true, types.ListOptions{Limit: 1})
+		if err != nil {
+			t.Fatalf("GetPDPProviders: %v", err)
+		}
+		if page == nil || len(page.Providers) == 0 {
+			t.Skip("no active PDP providers on calibration; skipping provider lookup")
+		}
+		first := page.Providers[0]
+		info, err := client.GetProviderInfoByID(cctx, first.Info.ID)
+		if err != nil {
+			t.Fatalf("GetProviderInfoByID(%d): %v", first.Info.ID, err)
+		}
+		if info.ID != first.Info.ID {
+			t.Errorf("provider id mismatch: got %d want %d", info.ID, first.Info.ID)
+		}
+		info2, err := client.GetProviderInfoByAddress(cctx, info.ServiceProvider)
+		if err != nil {
+			t.Fatalf("GetProviderInfoByAddress(%s): %v", info.ServiceProvider, err)
+		}
+		if info2.ID != info.ID {
+			t.Errorf("address-lookup mismatch: got %d want %d", info2.ID, info.ID)
+		}
+	})
+
+	// --- StorageManagerSurface: every storage.Service read method. ---
+	t.Run("StorageManagerSurface", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+
+		sm := client.Storage()
+
+		sets, err := sm.FindDataSets(cctx, nil)
+		if err != nil {
+			t.Fatalf("FindDataSets(default): %v", err)
+		}
+		t.Logf("FindDataSets(default): %d", len(sets))
+
+		setsManaged, err := sm.FindDataSets(cctx, &storage.FindDataSetsOptions{OnlyManaged: true})
+		if err != nil {
+			t.Fatalf("FindDataSets(onlyManaged): %v", err)
+		}
+		if len(setsManaged) > len(sets) {
+			t.Errorf("OnlyManaged returned %d > total %d", len(setsManaged), len(sets))
+		}
+
+		info, err := sm.GetStorageInfo(cctx, nil)
+		if err != nil {
+			t.Fatalf("GetStorageInfo: %v", err)
+		}
+		if len(info.Providers) == 0 {
+			t.Errorf("StorageInfo.Providers empty")
+		}
+		if info.Allowances == nil {
+			t.Errorf("StorageInfo.Allowances nil for configured signer")
+		}
+
+		prep, err := sm.Prepare(cctx, &storage.PrepareOptions{DataSize: 64 * 1024})
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if prep == nil || prep.Costs == nil {
+			t.Fatal("Prepare returned nil result/costs")
+		}
+		if prep.Transaction != nil {
+			t.Logf("Prepare reports funding required: deposit=%s includesApproval=%v",
+				prep.Transaction.DepositAmount, prep.Transaction.IncludesApproval)
+		}
+
+		mc, err := sm.CalculateMultiContextCosts(cctx, 64*1024, []storage.ContextCostRef{
+			{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
+		}, storage.MultiCostOptions{}, addr)
+		if err != nil {
+			t.Fatalf("CalculateMultiContextCosts: %v", err)
+		}
+		if mc == nil || mc.RatePerEpoch == nil {
+			t.Fatal("MultiContextCosts missing RatePerEpoch")
+		}
+
+		def, err := sm.GetDefaultContext(cctx)
+		if err != nil {
+			t.Fatalf("GetDefaultContext: %v", err)
+		}
+		if def == nil || def.ProviderID() == 0 {
+			t.Fatal("GetDefaultContext returned invalid context")
+		}
+
+		ctxs, err := sm.CreateContexts(cctx, &storage.CreateContextsOptions{Copies: 1})
+		if err != nil {
+			t.Fatalf("CreateContexts: %v", err)
+		}
+		if len(ctxs) != 1 {
+			t.Errorf("CreateContexts returned %d contexts, want 1", len(ctxs))
+		}
+
+		single, err := sm.CreateContext(cctx, nil)
+		if err != nil {
+			t.Fatalf("CreateContext(nil): %v", err)
+		}
+		if single == nil || single.ProviderID() == 0 {
+			t.Fatal("CreateContext returned invalid context")
+		}
+	})
+
+	// --- ContextInspection: read methods on the Context produced by Upload. ---
+	t.Run("ContextInspection", func(t *testing.T) {
+		if uploadedDataSetID == 0 || !uploadedCID.Defined() {
+			t.Skip("Upload subtest did not produce dataset/cid; skipping ContextInspection")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+
+		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
+			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+		})
+		if err != nil {
+			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+		}
+
+		if uctx.ProviderID() == 0 {
+			t.Errorf("ProviderID == 0")
+		}
+		if uctx.ServiceURL() == "" {
+			t.Errorf("ServiceURL empty")
+		}
+		if got := uctx.DataSetID(); got == nil || *got != uploadedDataSetID {
+			t.Errorf("DataSetID = %v, want %d", got, uploadedDataSetID)
+		}
+		_ = uctx.WithCDN()
+		prov := uctx.GetProviderInfo()
+		if prov.ID == 0 {
+			t.Errorf("Provider.ID == 0")
+		}
+		if u := uctx.PieceURL(uploadedCID); u == "" {
+			t.Errorf("PieceURL empty")
+		}
+
+		ps, err := uctx.PieceStatus(cctx, uploadedCID)
+		if err != nil {
+			t.Fatalf("PieceStatus: %v", err)
+		}
+		if ps == nil {
+			t.Fatal("PieceStatus returned nil")
+		}
+
+		removals, err := uctx.GetScheduledRemovals(cctx)
+		if err != nil {
+			t.Fatalf("GetScheduledRemovals: %v", err)
+		}
+		t.Logf("scheduled removals: %d", len(removals))
+
+		// Context-level Download.
+		rc, err := uctx.Download(cctx, uploadedCID)
+		if err != nil {
+			t.Fatalf("Context.Download: %v", err)
+		}
+		defer func() { _ = rc.Close() }()
+		got, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("read downloaded: %v", err)
+		}
+		if int64(len(got)) != int64(len(testData)) {
+			t.Errorf("downloaded size = %d, want %d", len(got), len(testData))
+		}
+	})
+
+	// --- WarmStorageInspection: per-dataset/per-piece warm-storage methods. ---
+	t.Run("WarmStorageInspection", func(t *testing.T) {
+		if uploadedDataSetID == 0 {
+			t.Skip("no uploaded dataset id; skipping WarmStorageInspection")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+
+		ws := client.WarmStorage()
+
+		ds, err := ws.GetDataSet(cctx, uploadedDataSetID)
+		if err != nil {
+			t.Fatalf("GetDataSet: %v", err)
+		}
+		if ds.PDPRailID == 0 {
+			t.Errorf("PDPRailID == 0")
+		}
+
+		md, err := ws.GetAllDataSetMetadata(cctx, uploadedDataSetID)
+		if err != nil {
+			t.Fatalf("GetAllDataSetMetadata: %v", err)
+		}
+		t.Logf("dataset metadata keys: %d", len(md))
+
+		if err := ws.ValidateDataSet(cctx, uploadedDataSetID); err != nil {
+			t.Fatalf("ValidateDataSet: %v", err)
+		}
+
+		count, err := ws.GetActivePieceCount(cctx, uploadedDataSetID)
+		if err != nil {
+			t.Fatalf("GetActivePieceCount: %v", err)
+		}
+		if count == nil || count.Sign() < 0 {
+			t.Errorf("active piece count invalid: %v", count)
+		}
+
+		// PieceID 0 is always queryable. "label" is not a key we set on
+		// upload, so (exists, value) must be (false, "") — assert both.
+		exists, value, err := ws.GetPieceMetadata(cctx, uploadedDataSetID, types.PieceID(0), "label")
+		if err != nil {
+			t.Fatalf("GetPieceMetadata(0,label): %v", err)
+		}
+		if exists || value != "" {
+			t.Errorf("GetPieceMetadata(0,label): want (false, \"\"), got (%v, %q)", exists, value)
+		}
+		all, err := ws.GetAllPieceMetadata(cctx, uploadedDataSetID, types.PieceID(0))
+		if err != nil {
+			t.Fatalf("GetAllPieceMetadata(0): %v", err)
+		}
+		if all == nil {
+			t.Errorf("GetAllPieceMetadata(0) returned nil map")
+		}
+		t.Logf("piece 0 metadata keys: %d", len(all))
+	})
+
+	// --- PaymentsRails: rail read methods + Settle on the upload's PDP rail. ---
+	t.Run("PaymentsRails", func(t *testing.T) {
+		if uploadedRailID == 0 {
+			t.Skip("no uploaded rail id; skipping PaymentsRails")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+
+		railBig := new(big.Int).SetUint64(uint64(uploadedRailID))
+
+		rv, err := client.Payments().GetRail(cctx, railBig)
+		if err != nil {
+			t.Fatalf("GetRail(%d): %v", uploadedRailID, err)
+		}
+		if rv == nil {
+			t.Fatal("GetRail returned nil")
+		}
+		t.Logf("rail %d: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
+
+		payee := rv.To
+		page, err := client.Payments().GetRailsAsPayee(cctx, payee, usdfc)
+		if err != nil {
+			t.Fatalf("GetRailsAsPayee: %v", err)
+		}
+		t.Logf("payee %s has %d rails (USDFC)", payee, len(page.Rails))
+
+		amts, err := client.Payments().GetSettlementAmounts(cctx, railBig, nil)
+		if err != nil {
+			t.Fatalf("GetSettlementAmounts: %v", err)
+		}
+		t.Logf("settlement preview: settled=%s netPayee=%s commission=%s networkFee=%s finalEpoch=%s note=%q",
+			amts.TotalSettledAmount, amts.TotalNetPayeeAmount, amts.TotalOperatorCommission,
+			amts.TotalNetworkFee, amts.FinalSettledEpoch, amts.Note)
+
+		// Settle is always safe to call; it's a no-op if nothing accrued.
+		settleRes, err := client.Payments().Settle(cctx, railBig, nil, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			t.Fatalf("Settle: %v", err)
+		}
+		if settleRes.Receipt == nil || settleRes.Receipt.Status != 1 {
+			t.Errorf("Settle tx not successful: %+v", settleRes.Receipt)
+		}
+		t.Logf("Settle tx=%s", settleRes.Hash)
+
+		// SettleAuto commonly reverts when the rail state has nothing new
+		// to auto-settle (e.g. already settled up to current epoch). The
+		// call path itself is what we want to cover, so a gas-estimate
+		// revert is logged and tolerated.
+		autoRes, err := client.Payments().SettleAuto(cctx, railBig, nil, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			if !isExecutionRevert(err) {
+				t.Fatalf("SettleAuto: %v", err)
+			}
+			t.Logf("SettleAuto reverted (tolerated, likely nothing to auto-settle): %v", err)
+			return
+		}
+		if autoRes.Receipt == nil || autoRes.Receipt.Status != 1 {
+			t.Fatalf("SettleAuto tx not successful: %+v", autoRes.Receipt)
+		}
+		t.Logf("SettleAuto tx=%s", autoRes.Hash)
+
+		// SettleTerminatedRail requires a rail in Terminated state with
+		// settled epoch beyond endEpoch — outside the scope of this test
+		// run.
+		t.Run("SettleTerminatedRail", func(t *testing.T) {
+			t.Skip("needs-terminated-rail")
+		})
+	})
+
+	// --- FilBeam: stats endpoint for the uploaded dataset. ---
+	t.Run("FilBeam", func(t *testing.T) {
+		if uploadedDataSetID == 0 {
+			t.Skip("no uploaded dataset id; skipping FilBeam")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+
+		stats, err := client.FilBeam().GetDataSetStats(cctx, uploadedDataSetID)
+		if err != nil {
+			// FilBeam aggregator may not have indexed brand-new uploads yet;
+			// log but do not fail the suite.
+			if errors.Is(err, filbeam.ErrDataSetNotFound) {
+				t.Skipf("FilBeam has no stats yet for dataset %d (eventual consistency)", uploadedDataSetID)
+			}
+			t.Fatalf("GetDataSetStats: %v", err)
+		}
+		if stats == nil {
+			t.Fatal("GetDataSetStats returned nil")
+		}
+		t.Logf("filbeam stats: %+v", stats)
+	})
+
+	// --- StorageLifecycle: DeletePiece + storage.Service.TerminateDataSet. ---
+	t.Run("StorageLifecycle", func(t *testing.T) {
+		if uploadedDataSetID == 0 || !uploadedCID.Defined() {
+			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
+		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
+			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+		})
+		if err != nil {
+			t.Fatalf("CreateContext: %v", err)
+		}
+
+		delRes, err := uctx.DeletePiece(cctx, uploadedCID)
+		if err != nil {
+			t.Fatalf("DeletePiece: %v", err)
+		}
+		// DeletePiece intentionally returns only a Hash (no on-chain wait),
+		// matching TS behaviour; the server schedules the removal.
+		t.Logf("DeletePiece tx=%s", delRes.Hash)
+
+		termRes, err := client.Storage().TerminateDataSet(cctx, uploadedDataSetID, &storage.TerminateDataSetOptions{
+			WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
+		})
+		if err != nil {
+			t.Fatalf("TerminateDataSet: %v", err)
+		}
+		if termRes.Receipt == nil || termRes.Receipt.Status != 1 {
+			t.Errorf("TerminateDataSet tx failed: %+v", termRes.Receipt)
+		}
+		t.Logf("TerminateDataSet tx=%s", termRes.Hash)
+	})
+
+	// --- DestructiveSuite: gated on INTEGRATION_DESTRUCTIVE_KEY. ---
+	t.Run("DestructiveSuite", func(t *testing.T) {
+		ok, destKey := integrationtest.DestructiveKey(t)
+		if !ok {
+			t.Skip("needs-destructive-account: INTEGRATION_DESTRUCTIVE_KEY not set")
+		}
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+
+		dclient := integrationtest.NewClient(t, dctx, destKey)
+		daddr := dclient.Address()
+
+		// RevokeService — reset operator approval to zero (idempotent).
+		revRes, err := dclient.Payments().RevokeService(dctx, usdfc, fwss, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			t.Fatalf("RevokeService: %v", err)
+		}
+		if revRes.Receipt == nil || revRes.Receipt.Status != 1 {
+			t.Errorf("RevokeService tx failed: %+v", revRes.Receipt)
+		}
+		t.Logf("RevokeService tx=%s", revRes.Hash)
+
+		// DepositWithPermit — 1 unit USDFC. Requires EIP-2612 support
+		// from the USDFC token contract on calibration; if the contract
+		// lacks one of the permit ABI methods, skip with the documented
+		// reason rather than failing.
+		amount := big.NewInt(1)
+		depRes, err := dclient.Payments().DepositWithPermit(dctx, usdfc, daddr, amount, nil, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			if errors.Is(err, payments.ErrPermitUnsupported) {
+				t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
+			}
+			t.Fatalf("DepositWithPermit: %v", err)
+		}
+		if depRes.Receipt == nil || depRes.Receipt.Status != 1 {
+			t.Errorf("DepositWithPermit tx failed: %+v", depRes.Receipt)
+		}
+		t.Logf("DepositWithPermit tx=%s", depRes.Hash)
+
+		// DepositWithPermitAndApproveOperator — combine deposit with
+		// FWSS operator approval bump.
+		rate := big.NewInt(1)
+		lockup := big.NewInt(1)
+		maxPeriod := big.NewInt(86400)
+		dpaRes, err := dclient.Payments().DepositWithPermitAndApproveOperator(
+			dctx, usdfc, daddr, amount, nil, fwss, rate, lockup, maxPeriod,
+			payments.WithWait(txWaitTimeout),
+		)
+		if err != nil {
+			if errors.Is(err, payments.ErrPermitUnsupported) {
+				t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
+			}
+			t.Fatalf("DepositWithPermitAndApproveOperator: %v", err)
+		}
+		if dpaRes.Receipt == nil || dpaRes.Receipt.Status != 1 {
+			t.Errorf("DepositWithPermitAndApproveOperator tx failed: %+v", dpaRes.Receipt)
+		}
+		t.Logf("DepositWithPermitAndApproveOperator tx=%s", dpaRes.Hash)
 	})
 }

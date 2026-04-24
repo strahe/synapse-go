@@ -66,29 +66,29 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 
 	var nameOut []interface{}
 	if err := bound.Call(call, &nameOut, "name"); err != nil {
-		return nil, fmt.Errorf("name(): %w", err)
+		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): %w", err)
 	}
 	name, ok := nameOut[0].(string)
 	if !ok {
-		return nil, fmt.Errorf("name(): unexpected type %T", nameOut[0])
+		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): unexpected type %T: %w", nameOut[0], ErrPermitUnsupported)
 	}
 
 	var versionOut []interface{}
 	if err := bound.Call(call, &versionOut, "version"); err != nil {
-		return nil, fmt.Errorf("version(): %w", err)
+		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): %w", err)
 	}
 	version, ok := versionOut[0].(string)
 	if !ok {
-		return nil, fmt.Errorf("version(): unexpected type %T", versionOut[0])
+		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): unexpected type %T: %w", versionOut[0], ErrPermitUnsupported)
 	}
 
 	var nonceOut []interface{}
 	if err := bound.Call(call, &nonceOut, "nonces", owner); err != nil {
-		return nil, fmt.Errorf("nonces(): %w", err)
+		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): %w", err)
 	}
 	nonce, ok := nonceOut[0].(*big.Int)
 	if !ok {
-		return nil, fmt.Errorf("nonces(): unexpected type %T", nonceOut[0])
+		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): unexpected type %T: %w", nonceOut[0], ErrPermitUnsupported)
 	}
 
 	return &permitInputs{Name: name, Version: version, Nonce: nonce}, nil

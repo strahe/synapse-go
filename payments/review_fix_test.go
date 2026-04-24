@@ -146,3 +146,19 @@ func TestGetRailsAsPayer_WithListLimitZeroPreservesZero(t *testing.T) {
 		t.Fatalf("explicit zero limit = %s, want 0", limit)
 	}
 }
+
+func TestFetchPermitInputs_CallErrorDoesNotWrapErrPermitUnsupported(t *testing.T) {
+	s, mb := newTestService(t)
+	mb.errs[tokenAddr.Hex()+":name"] = context.DeadlineExceeded
+
+	_, err := s.fetchPermitInputs(context.Background(), tokenAddr, s.signer.EVMAddress())
+	if err == nil {
+		t.Fatal("fetchPermitInputs err=nil, want call error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fetchPermitInputs err=%v, want context.DeadlineExceeded", err)
+	}
+	if errors.Is(err, ErrPermitUnsupported) {
+		t.Fatalf("fetchPermitInputs err=%v, should not wrap ErrPermitUnsupported for call failure", err)
+	}
+}

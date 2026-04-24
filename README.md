@@ -47,11 +47,14 @@ Chain is auto-detected from the RPC endpoint. See [`examples/`](examples/) for r
 ## Testing
 
 ```bash
-make test                  # unit tests
-make test-integration      # integration tests (Calibration testnet, ~7 min)
+make test                  # Unit tests
+make test-integration      # Full integration suite (Calibration)
+make test-integration-cross # High-level cross-package flows
 ```
 
-Integration tests require `INTEGRATION_PRIVATE_KEY` (hex private key), some tFIL for gas, and ~2 USDFC (calibration testnet token). Set via env or a `.env` file in the project root. `INTEGRATION_RPC_URL` is optional (defaults to Glif Calibration).
+Integration tests require `INTEGRATION_PRIVATE_KEY` in `.env` (needs **tFIL** for gas + **5 USDFC**).
+
+`INTEGRATION_RPC_URL` is optional.
 
 ## Development
 
