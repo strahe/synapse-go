@@ -165,11 +165,12 @@ func (c *Client) initServices() error {
 		return fmt.Errorf("create storage resolver: %w", err)
 	}
 	storageOpts := storage.Options{
-		Resolver:       resolver,
-		HTTPClient:     c.httpClient,
-		Source:         c.source,
-		DefaultWithCDN: c.withCDN,
-		Lifecycle:      c.lifecycle,
+		Resolver:             resolver,
+		HTTPClient:           c.httpClient,
+		Source:               c.source,
+		DefaultWithCDN:       c.withCDN,
+		AllowPrivateNetworks: c.allowPrivateNetworks,
+		Lifecycle:            c.lifecycle,
 
 		DataSetFinder:     adapters.NewDataSetFinder(ws),
 		StorageInfoReader: adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),

@@ -28,6 +28,23 @@ result, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies:
 
 Chain is auto-detected from the RPC endpoint. See [`examples/`](examples/) for runnable programs.
 
+## Client options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `WithPrivateKey(k)` / `WithPrivateKeyHex(s)` | — | ECDSA signing key (required) |
+| `WithRPCURL(url)` / `WithEthClient(c)` | — | JSON-RPC endpoint (required) |
+| `WithChain(c)` | auto-detect | Skip chain-ID RPC call |
+| `WithLogger(l)` | discard | Structured logger for sub-services |
+| `WithHTTPClient(c)` | service default | HTTP client for filbeam, storage downloads, and curio upload/pull/RPC |
+| `WithSource(s)` | `""` | Dataset namespace tag |
+| `WithCDN(b)` | `false` | Client-wide CDN default for uploads/retrieval |
+| `WithAllowPrivateNetworks(b)` | `false` | Trusted private-network storage download opt-in |
+
+`WithAllowPrivateNetworks(true)` only affects URL-based `storage.Service.Download`.
+Use it only for trusted private infrastructure; it has no effect when
+`WithHTTPClient` is set, because the custom transport owns that policy.
+
 ## Packages
 
 | Package | Purpose |

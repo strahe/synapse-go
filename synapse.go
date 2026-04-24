@@ -58,18 +58,21 @@ type Client struct {
 	filbeam     *filbeam.Service
 	storage     *storage.Service
 	pdpReader   adapters.PDPReader
+
+	allowPrivateNetworks bool
 }
 
 type clientConfig struct {
-	privateKey    *ecdsa.PrivateKey
-	privateKeyHex string
-	rpcURL        string
-	ethClient     *ethclient.Client
-	chain         *chain.Chain
-	logger        *slog.Logger
-	httpClient    *http.Client
-	source        string
-	withCDN       bool
+	privateKey           *ecdsa.PrivateKey
+	privateKeyHex        string
+	rpcURL               string
+	ethClient            *ethclient.Client
+	chain                *chain.Chain
+	logger               *slog.Logger
+	httpClient           *http.Client
+	source               string
+	withCDN              bool
+	allowPrivateNetworks bool
 }
 
 // ClientOption configures a [Client] via [New].
@@ -155,6 +158,23 @@ func WithSource(s string) ClientOption {
 //	_, err := client.Storage().Upload(ctx, r, &storage.UploadOptions{WithCDN: &b})
 func WithCDN(enabled bool) ClientOption {
 	return func(cfg *clientConfig) { cfg.withCDN = enabled }
+}
+
+// WithAllowPrivateNetworks disables the built-in SSRF guard for
+// URL-based [storage.Service.Download] calls. When false (the default),
+// the storage service refuses to dial loopback, RFC1918, link-local,
+// ULA, multicast, and unspecified addresses, returning
+// [storage.ErrPrivateNetwork].
+//
+// Set to true only when you knowingly need to fetch content from a
+// private network (e.g. in-cluster storage nodes). This is an explicit
+// SSRF opt-in for trusted private infrastructure; do not enable it for
+// untrusted user-supplied URLs.
+//
+// This option has no effect when [WithHTTPClient] is also provided:
+// the custom client's transport is responsible for any SSRF safeguards.
+func WithAllowPrivateNetworks(allow bool) ClientOption {
+	return func(cfg *clientConfig) { cfg.allowPrivateNetworks = allow }
 }
 
 // New creates a Client, connecting to the given RPC endpoint and
@@ -269,17 +289,18 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
 
 	c := &Client{
-		ethClient:     ec,
-		ownsClient:    ownsClient,
-		evmSigner:     evmSigner,
-		selectedChain: selectedChain,
-		addresses:     addresses,
-		nonces:        nonces,
-		logger:        cfg.logger,
-		httpClient:    cfg.httpClient,
-		source:        cfg.source,
-		withCDN:       cfg.withCDN,
-		lifecycle:     lifecycle.New(),
+		ethClient:            ec,
+		ownsClient:           ownsClient,
+		evmSigner:            evmSigner,
+		selectedChain:        selectedChain,
+		addresses:            addresses,
+		nonces:               nonces,
+		logger:               cfg.logger,
+		httpClient:           cfg.httpClient,
+		source:               cfg.source,
+		withCDN:              cfg.withCDN,
+		allowPrivateNetworks: cfg.allowPrivateNetworks,
+		lifecycle:            lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {
 		if ownsClient {

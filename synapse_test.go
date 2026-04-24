@@ -1,6 +1,7 @@
 package synapse
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -785,5 +788,133 @@ func TestGetters_ConcurrentAccess(t *testing.T) {
 	st1, st2 := client.Storage(), client.Storage()
 	if st1 != st2 {
 		t.Error("Storage() returned different instances")
+	}
+}
+
+// makeLoopbackDownloadClient creates a synapse.Client whose storage service
+// will attempt to download from a loopback httptest.Server.
+// It reuses fakeRPCServer (Calibration chain) defined elsewhere in this file.
+// The returned cleanup closure (rather than a t.Cleanup registration) lets
+// callers defer it inline, keeping the loopback download tests concise.
+func makeLoopbackDownloadClient(t *testing.T, opts ...ClientOption) (*Client, func()) {
+	t.Helper()
+	srv, ec := fakeRPCServer(t, "0x4cb2f") // Calibration
+	key := testKey(t)
+	base := []ClientOption{
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	}
+	base = append(base, opts...)
+	client, err := New(context.Background(), base...)
+	if err != nil {
+		srv.Close()
+		ec.Close()
+		t.Fatalf("New: %v", err)
+	}
+	cleanup := func() {
+		_ = client.Close()
+		ec.Close()
+		srv.Close()
+	}
+	return client, cleanup
+}
+
+// TestWithAllowPrivateNetworks_DefaultRejectsLoopback verifies that a root
+// client built without WithAllowPrivateNetworks rejects downloads from
+// loopback addresses with ErrPrivateNetwork.
+func TestWithAllowPrivateNetworks_DefaultRejectsLoopback(t *testing.T) {
+	data := bytes.Repeat([]byte("ssrf"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer loopback.Close()
+
+	client, cleanup := makeLoopbackDownloadClient(t) // default: AllowPrivateNetworks=false
+	defer cleanup()
+
+	_, dlErr := client.Storage().Download(context.Background(), info.CIDv2,
+		&storage.DownloadOptions{URL: loopback.URL})
+	if dlErr == nil {
+		t.Fatal("expected ErrPrivateNetwork, got nil")
+	}
+	if !errors.Is(dlErr, storage.ErrPrivateNetwork) {
+		t.Fatalf("expected ErrPrivateNetwork, got: %v", dlErr)
+	}
+}
+
+// TestWithAllowPrivateNetworks_TrueAllowsLoopback verifies that
+// WithAllowPrivateNetworks(true) allows downloading from a loopback server.
+func TestWithAllowPrivateNetworks_TrueAllowsLoopback(t *testing.T) {
+	data := bytes.Repeat([]byte("priv"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer loopback.Close()
+
+	client, cleanup := makeLoopbackDownloadClient(t, WithAllowPrivateNetworks(true))
+	defer cleanup()
+
+	reader, dlErr := client.Storage().Download(context.Background(), info.CIDv2,
+		&storage.DownloadOptions{URL: loopback.URL})
+	if dlErr != nil {
+		t.Fatalf("Download: %v", dlErr)
+	}
+	defer func() { _ = reader.Close() }()
+	got, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatalf("ReadAll: %v", readErr)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
+	}
+}
+
+// TestWithAllowPrivateNetworks_WithHTTPClientWins verifies that when
+// WithHTTPClient is supplied, the custom client's transport governs SSRF
+// policy regardless of the WithAllowPrivateNetworks value — the bool has
+// no effect because storage.Options.AllowPrivateNetworks is only consulted
+// when the SDK builds its own safe HTTP client (i.e. when HTTPClient is nil).
+func TestWithAllowPrivateNetworks_WithHTTPClientWins(t *testing.T) {
+	data := bytes.Repeat([]byte("cust"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer loopback.Close()
+
+	// Supply a custom HTTP client that permits loopback (uses DefaultTransport).
+	custom := &http.Client{Transport: http.DefaultTransport}
+
+	// Even without WithAllowPrivateNetworks the custom client's transport is used,
+	// so the download must succeed — the bool has no effect when HTTPClient is set.
+	client, cleanup := makeLoopbackDownloadClient(t,
+		WithHTTPClient(custom),
+		WithAllowPrivateNetworks(false), // explicit false — custom client still wins
+	)
+	defer cleanup()
+
+	reader, dlErr := client.Storage().Download(context.Background(), info.CIDv2,
+		&storage.DownloadOptions{URL: loopback.URL})
+	if dlErr != nil {
+		t.Fatalf("Download with custom HTTP client: %v", dlErr)
+	}
+	defer func() { _ = reader.Close() }()
+	got, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatalf("ReadAll: %v", readErr)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
 	}
 }
