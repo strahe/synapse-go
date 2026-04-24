@@ -244,6 +244,9 @@ func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*
 	if !res.PieceCID.Defined() {
 		return nil, errors.New("storage.Context.Store: upload returned undefined PieceCIDv2")
 	}
+	if _, err := piece.ParseV2(res.PieceCID); err != nil {
+		return nil, fmt.Errorf("storage.Context.Store: upload returned invalid PieceCIDv2: %w", err)
+	}
 	if err := c.client.WaitForPieceParked(ctx, res.PieceCID, 0); err != nil {
 		return nil, fmt.Errorf("storage.Context.Store: wait for parked: %w", err)
 	}

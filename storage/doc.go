@@ -45,6 +45,14 @@
 // URL-based Service.Download call via [Options.DownloadMaxBytes];
 // Context.Download (curio-backed) is not subject to this cap.
 //
+// Go currently exposes [UploadOptions.OnProgress] for the stream into the
+// primary provider. The TS StorageManager / StorageContext surface also exposes
+// additional lifecycle hooks around upload / pull / commit.
+//
+// [Context.Pull] checks that each requested piece resolves to a non-empty
+// source URL. Curio performs stricter source-URL validation before executing
+// the provider-to-provider pull.
+//
 // # Stability
 //
 // 0.x phase: public API may change between minor releases. Mirrors the

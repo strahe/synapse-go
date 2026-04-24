@@ -74,6 +74,51 @@ func TestContextStore_UploadsAndWaits(t *testing.T) {
 	}
 }
 
+func TestContextStore_RejectsNonV2PieceCID(t *testing.T) {
+	data := bytes.Repeat([]byte("st"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	fake := &fakeCurioClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatal("uploaded bytes mismatch")
+			}
+			if opts.Size != int64(len(data)) {
+				t.Fatalf("size=%d want %d", opts.Size, len(data))
+			}
+			return &icurio.UploadStreamingResult{PieceCID: info.CIDv1, Size: int64(len(got))}, nil
+		},
+		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error {
+			t.Fatal("WaitForPieceParked should not be called for non-v2 PieceCID")
+			return nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Store(context.Background(), bytes.NewReader(data), nil)
+	if err == nil {
+		t.Fatal("expected error for non-v2 PieceCID")
+	}
+	if !strings.Contains(err.Error(), "invalid PieceCIDv2") {
+		t.Fatalf("error = %v, want invalid PieceCIDv2", err)
+	}
+}
+
 func TestNewContext_RejectsZeroDataSetID(t *testing.T) {
 	_, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithDataSetID(0))
 	if err == nil {

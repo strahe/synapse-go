@@ -289,14 +289,12 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("Upload: %v", err)
 		}
 
-		// Verify PieceCID is a valid piece CID.
+		// Upload returns the Curio piece CID boundary value, which is PieceCIDv2.
 		if !result.PieceCID.Defined() {
 			t.Fatal("PieceCID is undefined")
 		}
-		if err := piece.Validate(result.PieceCID); err != nil {
-			if _, err2 := piece.ParseV2(result.PieceCID); err2 != nil {
-				t.Errorf("PieceCID is not a valid piece CID (v1: %v, v2: %v)", err, err2)
-			}
+		if _, err := piece.ParseV2(result.PieceCID); err != nil {
+			t.Fatalf("Upload PieceCID must be v2: %v", err)
 		}
 
 		if result.Size != int64(testDataSize) {
@@ -752,6 +750,74 @@ func TestIntegration(t *testing.T) {
 		}
 		if int64(len(got)) != int64(len(testData)) {
 			t.Errorf("downloaded size = %d, want %d", len(got), len(testData))
+		}
+	})
+
+	// --- ContextUploadExistingDataSet: explicit evidence that the existing-dataset
+	// AddPieces typed-data path accepts the current PieceCID encoding end-to-end. ---
+	t.Run("ContextUploadExistingDataSet", func(t *testing.T) {
+		if uploadedDataSetID == 0 {
+			t.Skip("Upload subtest did not produce dataset id; skipping existing-dataset AddPieces evidence")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+
+		ws := client.WarmStorage()
+		beforeCount, err := ws.GetActivePieceCount(cctx, uploadedDataSetID)
+		if err != nil {
+			t.Fatalf("GetActivePieceCount(before existing-dataset upload): %v", err)
+		}
+		if beforeCount == nil || beforeCount.Sign() < 0 {
+			t.Fatalf("active piece count before existing-dataset upload invalid: %v", beforeCount)
+		}
+
+		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
+			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+		})
+		if err != nil {
+			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+		}
+
+		extraData := make([]byte, 128*1024)
+		if _, err := crypto_rand.Read(extraData); err != nil {
+			t.Fatalf("generate existing-dataset upload data: %v", err)
+		}
+
+		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), nil)
+		if err != nil {
+			t.Fatalf("Context.Upload(existing dataset): %v", err)
+		}
+		if !result.PieceCID.Defined() {
+			t.Fatal("Context.Upload(existing dataset) returned undefined PieceCID")
+		}
+		info, err := piece.ParseV2(result.PieceCID)
+		if err != nil {
+			t.Fatalf("Context.Upload(existing dataset) PieceCID must be v2: %v", err)
+		}
+		if info.RawSize != uint64(len(extraData)) {
+			t.Fatalf("Context.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
+		}
+		if len(result.Copies) != 1 {
+			t.Fatalf("Context.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
+		}
+		copy0 := result.Copies[0]
+		if copy0.DataSetID != uploadedDataSetID {
+			t.Fatalf("Context.Upload(existing dataset) dataSetID = %d, want %d", copy0.DataSetID, uploadedDataSetID)
+		}
+		if copy0.IsNewDataSet {
+			t.Fatal("Context.Upload(existing dataset) unexpectedly created a new dataset")
+		}
+
+		if err := ws.ValidateDataSet(cctx, uploadedDataSetID); err != nil {
+			t.Fatalf("ValidateDataSet(existing dataset after addPieces): %v", err)
+		}
+		afterCount, err := ws.GetActivePieceCount(cctx, uploadedDataSetID)
+		if err != nil {
+			t.Fatalf("GetActivePieceCount(after existing-dataset upload): %v", err)
+		}
+		wantAfter := new(big.Int).Add(new(big.Int).Set(beforeCount), big.NewInt(1))
+		if afterCount == nil || afterCount.Cmp(wantAfter) != 0 {
+			t.Fatalf("active piece count after existing-dataset upload = %v, want %v", afterCount, wantAfter)
 		}
 	})
 

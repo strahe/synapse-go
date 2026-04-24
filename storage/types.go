@@ -126,8 +126,8 @@ type FailedAttempt struct {
 //	    log.Printf("partial upload: %d/%d copies", result.SuccessCount(), result.RequestedCopies)
 //	}
 type UploadResult struct {
-	PieceCID        cid.Cid
-	Size            int64 // raw (unpadded) byte count
+	PieceCID        cid.Cid // PieceCIDv2 of the stored data
+	Size            int64   // raw (unpadded) byte count
 	RequestedCopies int
 	// Complete is true when all RequestedCopies were committed on-chain.
 	// Equivalent to len(Copies) >= RequestedCopies.
