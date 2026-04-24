@@ -43,8 +43,8 @@ type CreateContextOptions struct {
 }
 
 // toUploadOptions maps CreateContextsOptions onto the resolver's
-// internal UploadOptions. PieceMetadata / PieceCID / OnProgress are
-// irrelevant at context-creation time and left unset.
+// internal UploadOptions. PieceMetadata, PieceCID, and upload lifecycle
+// callbacks are irrelevant at context-creation time and left unset.
 func (o *CreateContextsOptions) toUploadOptions() *UploadOptions {
 	if o == nil {
 		return &UploadOptions{}

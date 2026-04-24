@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/ipfs/go-cid"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 // Example demonstrates uploading a payload via a storage.Service. In practice
@@ -21,6 +23,12 @@ func Example() {
 	res, err := svc.Upload(ctx, payload, &storage.UploadOptions{
 		OnProgress: func(uploaded int64) {
 			log.Printf("uploaded %d bytes", uploaded)
+		},
+		OnStored: func(providerID types.ProviderID, pieceCID cid.Cid) {
+			log.Printf("stored %s on provider %d", pieceCID, providerID)
+		},
+		OnPiecesConfirmed: func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []storage.ConfirmedPiece) {
+			log.Printf("provider %d confirmed %d piece(s) in dataset %d", providerID, len(pieces), dataSetID)
 		},
 	})
 	if err != nil {

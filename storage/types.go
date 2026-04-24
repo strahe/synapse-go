@@ -32,6 +32,7 @@ type PullStatus string
 const (
 	PullStatusPending    PullStatus = "pending"
 	PullStatusInProgress PullStatus = "inProgress"
+	PullStatusRetrying   PullStatus = "retrying"
 	PullStatusComplete   PullStatus = "complete"
 	PullStatusFailed     PullStatus = "failed"
 )
@@ -53,6 +54,17 @@ type StoreResult struct {
 	Size     int64   // raw (unpadded) byte count
 }
 
+// SubmittedPiece carries the piece identity reported by an OnPiecesAdded callback.
+type SubmittedPiece struct {
+	PieceCID cid.Cid
+}
+
+// ConfirmedPiece carries the on-chain identity reported by an OnPiecesConfirmed callback.
+type ConfirmedPiece struct {
+	PieceID  types.PieceID
+	PieceCID cid.Cid
+}
+
 // PieceInput describes a single piece being committed on-chain.
 type PieceInput struct {
 	PieceCID      cid.Cid
@@ -64,6 +76,9 @@ type PullRequest struct {
 	Pieces    []cid.Cid
 	From      func(cid.Cid) string // returns the HTTPS URL for a given piece CID
 	ExtraData []byte               // EIP-712 signed payload authorising the pull
+	// OnProgress is invoked after each piece status update during the pull.
+	// It may be nil.
+	OnProgress func(pieceCID cid.Cid, status PullStatus)
 }
 
 // PullPieceResult is the per-piece outcome within a PullResult.
@@ -82,6 +97,10 @@ type PullResult struct {
 type CommitRequest struct {
 	Pieces    []PieceInput
 	ExtraData []byte // EIP-712 signed payload; nil for the primary (create-or-add path)
+	// OnSubmitted is invoked with the transaction hash immediately after the
+	// on-chain AddPieces transaction is submitted, before confirmation. It may
+	// be nil.
+	OnSubmitted func(txHash string)
 }
 
 // CommitResult is returned by a successful Commit call.
@@ -188,6 +207,11 @@ func (r *UploadResult) PartialSuccess() bool {
 }
 
 // UploadOptions configures an Upload call.
+//
+// Some lifecycle callbacks may be invoked from internal orchestration
+// goroutines. Callers that share mutable state across callbacks must keep their
+// handlers concurrency-safe. Callback panics are not recovered by the SDK, so
+// handlers must not panic.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. Zero means the resolver
 	// default: len(DataSetIDs) or len(ProviderIDs) when those are set, otherwise 2.
@@ -217,4 +241,31 @@ type UploadOptions struct {
 	// reader, with the cumulative bytes sent to the primary provider so
 	// far. It may be nil.
 	OnProgress func(bytesUploaded int64)
+	// OnStored is invoked once the primary provider has confirmed storage of
+	// the piece. It may be nil.
+	OnStored func(providerID types.ProviderID, pieceCID cid.Cid)
+	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
+	// submitted for a provider (primary or secondary), carrying the transaction
+	// hash and the batch of pieces included in that transaction. During
+	// [Service.Upload], different providers may invoke this callback
+	// concurrently when commitConcurrency > 1. It may be nil.
+	OnPiecesAdded func(txHash string, providerID types.ProviderID, pieces []SubmittedPiece)
+	// OnPiecesConfirmed is invoked after the on-chain AddPieces transaction is
+	// confirmed (CommitResult received) for a provider, carrying the assigned
+	// on-chain IDs for each piece. During [Service.Upload], this callback is
+	// invoked sequentially after all commit workers finish. It may be nil.
+	OnPiecesConfirmed func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece)
+	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
+	// completes successfully. It is not fired for the primary (which stores
+	// directly). It may be nil.
+	OnCopyComplete func(providerID types.ProviderID, pieceCID cid.Cid)
+	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy
+	// attempt fails. Presign failures are not copy attempts and still surface
+	// only through FailedAttempts with [CopyStagePresign]. Primary store/commit
+	// failures likewise surface through the Upload return value and
+	// FailedAttempts. It may be nil.
+	OnCopyFailed func(providerID types.ProviderID, pieceCID cid.Cid, err error)
+	// OnPullProgress is invoked for each piece status update during a
+	// secondary-provider pull. It may be nil.
+	OnPullProgress func(providerID types.ProviderID, pieceCID cid.Cid, status PullStatus)
 }

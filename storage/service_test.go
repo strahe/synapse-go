@@ -710,7 +710,8 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 }
 
 // TestManagerUpload_PresignFailureUsesPresignStage proves that a presign
-// error is recorded with CopyStagePresign, not CopyStageCommit.
+// error is recorded with CopyStagePresign, not CopyStageCommit, and does not
+// trigger OnCopyFailed because no SP-to-SP copy was attempted yet.
 func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	data := bytes.Repeat([]byte("ps"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -738,7 +739,12 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	copyFailedCalled := false
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
+		OnCopyFailed: func(types.ProviderID, cid.Cid, error) {
+			copyFailedCalled = true
+		},
+	})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -747,6 +753,9 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	}
 	if got.FailedAttempts[0].Stage != CopyStagePresign {
 		t.Fatalf("Stage=%s want %s", got.FailedAttempts[0].Stage, CopyStagePresign)
+	}
+	if copyFailedCalled {
+		t.Fatal("OnCopyFailed should not fire for presign failures")
 	}
 }
 

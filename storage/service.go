@@ -272,6 +272,10 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		}
 	}
 
+	if opts != nil && opts.OnStored != nil {
+		opts.OnStored(primary.ProviderID(), storeResult.PieceCID)
+	}
+
 	pieceInputs := []PieceInput{{
 		PieceCID:      storeResult.PieceCID,
 		PieceMetadata: cloneMetadata(opts),
@@ -298,12 +302,23 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			extraData, presignErr := current.PresignForCommit(ctx, pieceInputs)
 			if presignErr == nil {
+				var onProgress func(cid.Cid, PullStatus)
+				if opts != nil && opts.OnPullProgress != nil {
+					pullProviderID := current.ProviderID()
+					onProgress = func(pieceCID cid.Cid, status PullStatus) {
+						opts.OnPullProgress(pullProviderID, pieceCID, status)
+					}
+				}
 				pullResult, pullErr := current.Pull(ctx, PullRequest{
-					Pieces:    []cid.Cid{storeResult.PieceCID},
-					From:      primary.PieceURL,
-					ExtraData: extraData,
+					Pieces:     []cid.Cid{storeResult.PieceCID},
+					From:       primary.PieceURL,
+					ExtraData:  extraData,
+					OnProgress: onProgress,
 				})
 				if pullErr == nil && pullResult != nil && pullResult.Status == PullStatusComplete {
+					if opts != nil && opts.OnCopyComplete != nil {
+						opts.OnCopyComplete(current.ProviderID(), storeResult.PieceCID)
+					}
 					successfulSecondaries = append(successfulSecondaries, successfulSecondary{
 						ctx:       current,
 						extraData: append([]byte(nil), extraData...),
@@ -316,6 +331,9 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 					} else {
 						pullErr = fmt.Errorf("pull status %s", pullResult.Status)
 					}
+				}
+				if opts != nil && opts.OnCopyFailed != nil {
+					opts.OnCopyFailed(current.ProviderID(), storeResult.PieceCID, pullErr)
 				}
 				failedAttempts = append(failedAttempts, FailedAttempt{
 					ProviderID: current.ProviderID(),
@@ -398,9 +416,18 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 				outcomes[idx].err = err
 				return
 			}
+			var onSubmitted func(string)
+			if opts != nil && opts.OnPiecesAdded != nil {
+				commitProviderID := targets[idx].ctx.ProviderID()
+				commitPieceCID := storeResult.PieceCID
+				onSubmitted = func(txHash string) {
+					opts.OnPiecesAdded(txHash, commitProviderID, []SubmittedPiece{{PieceCID: commitPieceCID}})
+				}
+			}
 			outcomes[idx].result, outcomes[idx].err = targets[idx].ctx.Commit(ctx, CommitRequest{
-				Pieces:    pieceInputs,
-				ExtraData: targets[idx].extraData,
+				Pieces:      pieceInputs,
+				ExtraData:   targets[idx].extraData,
+				OnSubmitted: onSubmitted,
 			})
 		}(i)
 	}
@@ -457,6 +484,13 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			continue
 		}
 
+		if opts != nil && opts.OnPiecesConfirmed != nil {
+			confirmed := make([]ConfirmedPiece, len(outcome.result.PieceIDs))
+			for j, id := range outcome.result.PieceIDs {
+				confirmed[j] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
+			}
+			opts.OnPiecesConfirmed(outcome.result.DataSetID, target.ctx.ProviderID(), confirmed)
+		}
 		copies = append(copies, CopyResult{
 			ProviderID:   target.ctx.ProviderID(),
 			DataSetID:    outcome.result.DataSetID,

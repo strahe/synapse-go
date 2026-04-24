@@ -9,14 +9,18 @@ import (
 )
 
 // Upload stores a single copy of data on this context's provider and
-// commits it on-chain. Mirrors TS StorageContext.upload
-// (synapse-sdk/.../storage/context.ts:915-954): it is Store + Commit —
-// no fan-out, no Pull — and returns the canonical UploadResult shape
-// used elsewhere in the SDK.
+// commits it on-chain. It is Store + Commit — no fan-out, no Pull —
+// and returns the canonical UploadResult shape used elsewhere in the SDK.
 //
-// opts may be nil. PieceCID / OnProgress / PieceMetadata are honoured when
-// present; other UploadOptions fields are ignored
-// because this path does not touch provider selection.
+// opts may be nil. PieceCID, OnProgress, PieceMetadata, OnStored,
+// OnPiecesAdded, and OnPiecesConfirmed are honoured when present; other
+// UploadOptions fields related to provider selection are ignored because this
+// path does not touch provider selection.
+//
+// Lifecycle callbacks fired (when opts provides them):
+//   - OnStored after Store succeeds
+//   - OnPiecesAdded when the commit transaction is submitted
+//   - OnPiecesConfirmed after commit is confirmed
 func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
 	if r == nil {
 		return nil, fmt.Errorf("storage.Context.Upload: %w: nil reader", ErrInvalidArgument)
@@ -36,12 +40,25 @@ func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		}
 	}
 
+	if opts != nil && opts.OnStored != nil {
+		opts.OnStored(c.ProviderID(), storeResult.PieceCID)
+	}
+
 	pieceInputs := []PieceInput{{
 		PieceCID:      storeResult.PieceCID,
 		PieceMetadata: cloneMetadata(opts),
 	}}
 
-	commit, err := c.Commit(ctx, CommitRequest{Pieces: pieceInputs})
+	var onSubmitted func(string)
+	if opts != nil && opts.OnPiecesAdded != nil {
+		pieceCID := storeResult.PieceCID
+		providerID := c.ProviderID()
+		onSubmitted = func(txHash string) {
+			opts.OnPiecesAdded(txHash, providerID, []SubmittedPiece{{PieceCID: pieceCID}})
+		}
+	}
+
+	commit, err := c.Commit(ctx, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
 	if err != nil {
 		return nil, &CommitError{
 			ProviderID: c.ProviderID(),
@@ -52,6 +69,14 @@ func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 
 	if len(commit.PieceIDs) == 0 {
 		return nil, fmt.Errorf("storage.Context.Upload: commit returned no piece IDs")
+	}
+
+	if opts != nil && opts.OnPiecesConfirmed != nil {
+		confirmed := make([]ConfirmedPiece, len(commit.PieceIDs))
+		for i, id := range commit.PieceIDs {
+			confirmed[i] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
+		}
+		opts.OnPiecesConfirmed(commit.DataSetID, c.ProviderID(), confirmed)
 	}
 
 	copies := []CopyResult{{

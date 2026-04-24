@@ -475,15 +475,30 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 		pieceByString[pieceCID.String()] = pieceCID
 	}
 
-	res, err := c.client.WaitForPullComplete(ctx, curioReq, 0, nil)
+	res, err := c.client.WaitForPullComplete(ctx, curioReq, 0, func(snapshot *icurio.PullResult) {
+		if req.OnProgress == nil {
+			return
+		}
+		for _, pieceStatus := range snapshot.Pieces {
+			pieceCID, ok := pieceByString[pieceStatus.PieceCID]
+			if !ok {
+				continue
+			}
+			req.OnProgress(pieceCID, PullStatus(pieceStatus.Status))
+		}
+	})
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.Pull: %w", err)
 	}
 
 	out := &PullResult{Status: PullStatus(res.Status)}
 	for _, pieceStatus := range res.Pieces {
+		pieceCID, ok := pieceByString[pieceStatus.PieceCID]
+		if !ok {
+			continue
+		}
 		out.Pieces = append(out.Pieces, PullPieceResult{
-			PieceCID: pieceByString[pieceStatus.PieceCID],
+			PieceCID: pieceCID,
 			Status:   PullStatus(pieceStatus.Status),
 		})
 	}
@@ -537,6 +552,9 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: add pieces: %w", err)
 		}
+		if req.OnSubmitted != nil {
+			req.OnSubmitted(added.TxHash.Hex())
+		}
 		status, err := c.client.WaitForPiecesAdded(ctx, added.StatusURL, 0)
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: wait add pieces: %w", err)
@@ -565,6 +583,9 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	created, err := c.client.CreateDataSetAndAddPieces(ctx, recordKeeper, pieces, extraData)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.Commit: create and add pieces: %w", err)
+	}
+	if req.OnSubmitted != nil {
+		req.OnSubmitted(created.TxHash.Hex())
 	}
 	// Note: if WaitForCreateDataSetAndAddPieces fails here (e.g. timeout) after
 	// the transaction was already submitted on-chain, c.dataSetID will not be

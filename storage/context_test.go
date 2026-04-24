@@ -778,6 +778,7 @@ type fakeCurioClient struct {
 	downloadPieceFn       func(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	waitForPieceFn        func(context.Context, cid.Cid, time.Duration) error
 	pullPiecesFn          func(context.Context, icurio.PullRequest) (*icurio.PullResult, error)
+	pullPiecesFnWithCb    func(context.Context, icurio.PullRequest, func(*icurio.PullResult)) (*icurio.PullResult, error)
 	addPiecesFn           func(context.Context, uint64, []icurio.AddPieceInput, []byte) (*icurio.AddPiecesResult, error)
 	waitForAddedFn        func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
 	createAndAddFn        func(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
@@ -805,7 +806,10 @@ func (f *fakeCurioClient) WaitForPieceParked(ctx context.Context, pieceCID cid.C
 	return f.waitForPieceFn(ctx, pieceCID, pollInterval)
 }
 
-func (f *fakeCurioClient) WaitForPullComplete(ctx context.Context, req icurio.PullRequest, pollInterval time.Duration, _ func(*icurio.PullResult)) (*icurio.PullResult, error) {
+func (f *fakeCurioClient) WaitForPullComplete(ctx context.Context, req icurio.PullRequest, pollInterval time.Duration, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
+	if f.pullPiecesFnWithCb != nil {
+		return f.pullPiecesFnWithCb(ctx, req, cb)
+	}
 	return f.pullPiecesFn(ctx, req)
 }
 
@@ -1832,5 +1836,264 @@ func TestContextDownload_ClientError(t *testing.T) {
 	_, err = ctx.Download(context.Background(), info.CIDv2)
 	if err == nil {
 		t.Fatal("expected error for download failure")
+	}
+}
+
+// TestContextPull_OnProgress proves that PullRequest.OnProgress fires for each
+// piece status update delivered by WaitForPullComplete, with the caller-visible
+// cid.Cid value and the corresponding PullStatus. Unknown server-side piece IDs
+// must be silently ignored.
+func TestContextPull_OnProgress(t *testing.T) {
+	info := mustPieceInfo(t)
+
+	// The fake delivers two progress snapshots then the final result.
+	// The second snapshot includes an unknown piece ID that must be ignored.
+	fake := &fakeCurioClient{
+		pullPiecesFnWithCb: func(_ context.Context, req icurio.PullRequest, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
+			if cb != nil {
+				cb(&icurio.PullResult{
+					Status: icurio.PullStatusInProgress,
+					Pieces: []icurio.PullPieceStatus{
+						{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusInProgress},
+						{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: icurio.PullStatusInProgress},
+					},
+				})
+				cb(&icurio.PullResult{
+					Status: icurio.PullStatusComplete,
+					Pieces: []icurio.PullPieceStatus{
+						{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
+					},
+				})
+			}
+			return &icurio.PullResult{
+				Status: icurio.PullStatusComplete,
+				Pieces: []icurio.PullPieceStatus{
+					{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
+				},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithRecordKeeper(testRecordKeeper()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	type progressEvent struct {
+		pieceCID cid.Cid
+		status   PullStatus
+	}
+	var events []progressEvent
+
+	_, err = ctx.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{info.CIDv2},
+		From:   func(c cid.Cid) string { return "https://primary.example.com/piece/" + c.String() },
+		OnProgress: func(pieceCID cid.Cid, status PullStatus) {
+			events = append(events, progressEvent{pieceCID: pieceCID, status: status})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("got %d progress events, want 2", len(events))
+	}
+	if events[0].pieceCID != info.CIDv2 || events[0].status != PullStatusInProgress {
+		t.Errorf("event[0]={%s %s}, want {%s %s}", events[0].pieceCID, events[0].status, info.CIDv2, PullStatusInProgress)
+	}
+	if events[1].pieceCID != info.CIDv2 || events[1].status != PullStatusComplete {
+		t.Errorf("event[1]={%s %s}, want {%s %s}", events[1].pieceCID, events[1].status, info.CIDv2, PullStatusComplete)
+	}
+}
+
+// TestContextPull_ProgressStatusesStayAlignedWithCurio proves the public
+// PullStatus constants still cover every Curio status we forward through
+// PullRequest.OnProgress.
+func TestContextPull_ProgressStatusesStayAlignedWithCurio(t *testing.T) {
+	got := map[PullStatus]struct{}{
+		PullStatusPending:    {},
+		PullStatusInProgress: {},
+		PullStatusRetrying:   {},
+		PullStatusComplete:   {},
+		PullStatusFailed:     {},
+	}
+	want := []PullStatus{
+		PullStatus(icurio.PullStatusPending),
+		PullStatus(icurio.PullStatusInProgress),
+		PullStatus(icurio.PullStatusRetrying),
+		PullStatus(icurio.PullStatusComplete),
+		PullStatus(icurio.PullStatusFailed),
+	}
+
+	for _, status := range want {
+		if _, ok := got[status]; !ok {
+			t.Fatalf("missing exported PullStatus constant for %q", status)
+		}
+	}
+}
+
+// TestContextPull_IgnoresUnknownPieceIDsInResult proves that unknown server-side
+// piece IDs are filtered not only from progress callbacks but also from the final
+// caller-visible PullResult.
+func TestContextPull_IgnoresUnknownPieceIDsInResult(t *testing.T) {
+	info := mustPieceInfo(t)
+
+	fake := &fakeCurioClient{
+		pullPiecesFnWithCb: func(_ context.Context, req icurio.PullRequest, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
+			return &icurio.PullResult{
+				Status: icurio.PullStatusComplete,
+				Pieces: []icurio.PullPieceStatus{
+					{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
+					{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: icurio.PullStatusFailed},
+				},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithRecordKeeper(testRecordKeeper()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	got, err := ctx.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{info.CIDv2},
+		From:   func(c cid.Cid) string { return "https://primary.example.com/piece/" + c.String() },
+	})
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	if len(got.Pieces) != 1 {
+		t.Fatalf("got %d pieces, want 1", len(got.Pieces))
+	}
+	if got.Pieces[0].PieceCID != info.CIDv2 || got.Pieces[0].Status != PullStatusComplete {
+		t.Errorf("piece[0]={%s %s}, want {%s %s}", got.Pieces[0].PieceCID, got.Pieces[0].Status, info.CIDv2, PullStatusComplete)
+	}
+}
+
+// TestContextCommit_OnSubmittedExistingDataSet proves that CommitRequest.OnSubmitted
+// fires with the AddPieces tx hash immediately after submission and before
+// waiting for on-chain confirmation.
+func TestContextCommit_OnSubmittedExistingDataSet(t *testing.T) {
+	info := mustPieceInfo(t)
+	wantTxHash := "0x000000000000000000000000000000000000000000000000000000000000abcd"
+
+	var submittedHash string
+	var submittedBeforeWait bool
+	waitCalled := false
+
+	fake := &fakeCurioClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+			return &icurio.AddPiecesResult{
+				TxHash:    common.HexToHash("0xabcd"),
+				StatusURL: "https://sp.example.com/status",
+			}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			waitCalled = true
+			submittedBeforeWait = submittedHash != ""
+			return &icurio.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xabcd"),
+				DataSetID:         42,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(1)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+		OnSubmitted: func(txHash string) {
+			submittedHash = txHash
+		},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if !waitCalled {
+		t.Fatal("WaitForPiecesAdded was not called")
+	}
+	if submittedHash != wantTxHash {
+		t.Errorf("OnSubmitted txHash=%q, want %q", submittedHash, wantTxHash)
+	}
+	if !submittedBeforeWait {
+		t.Error("OnSubmitted must fire before WaitForPiecesAdded")
+	}
+}
+
+// TestContextCommit_OnSubmittedNewDataSet proves that CommitRequest.OnSubmitted
+// fires with the CreateDataSetAndAddPieces tx hash immediately after submission
+// and before waiting for on-chain confirmation.
+func TestContextCommit_OnSubmittedNewDataSet(t *testing.T) {
+	info := mustPieceInfo(t)
+	wantTxHash := "0x000000000000000000000000000000000000000000000000000000000000beef"
+
+	var submittedHash string
+	var submittedBeforeWait bool
+	waitCalled := false
+
+	fake := &fakeCurioClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+			return &icurio.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: "https://sp.example.com/status",
+			}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+			waitCalled = true
+			submittedBeforeWait = submittedHash != ""
+			return &icurio.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xbeef"),
+				DataSetID:         99,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(3)},
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+		OnSubmitted: func(txHash string) {
+			submittedHash = txHash
+		},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if !waitCalled {
+		t.Fatal("WaitForCreateDataSetAndAddPieces was not called")
+	}
+	if submittedHash != wantTxHash {
+		t.Errorf("OnSubmitted txHash=%q, want %q", submittedHash, wantTxHash)
+	}
+	if !submittedBeforeWait {
+		t.Error("OnSubmitted must fire before WaitForCreateDataSetAndAddPieces")
 	}
 }

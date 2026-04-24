@@ -45,9 +45,19 @@
 // URL-based Service.Download call via [Options.DownloadMaxBytes];
 // Context.Download (curio-backed) is not subject to this cap.
 //
-// Go currently exposes [UploadOptions.OnProgress] for the stream into the
-// primary provider. The TS StorageManager / StorageContext surface also exposes
-// additional lifecycle hooks around upload / pull / commit.
+// [UploadOptions] exposes per-upload lifecycle hooks covering the full
+// store → pull → commit pipeline:
+//
+//   - [UploadOptions.OnProgress] — bytes streamed to the primary provider.
+//   - [UploadOptions.OnStored] — primary provider confirmed storage.
+//   - [UploadOptions.OnPiecesAdded] — on-chain AddPieces transaction submitted
+//     (batch-shaped: carries a []SubmittedPiece per provider per commit).
+//   - [UploadOptions.OnPiecesConfirmed] — on-chain AddPieces transaction confirmed
+//     (batch-shaped: carries a []ConfirmedPiece with assigned on-chain IDs).
+//   - [UploadOptions.OnCopyComplete] — secondary SP-to-SP pull succeeded.
+//   - [UploadOptions.OnCopyFailed] — a secondary SP-to-SP copy attempt failed
+//     (presign failures remain FailedAttempts-only).
+//   - [UploadOptions.OnPullProgress] — per-piece status update during a secondary pull.
 //
 // [Context.Pull] checks that each requested piece resolves to a non-empty
 // source URL. Curio performs stricter source-URL validation before executing
