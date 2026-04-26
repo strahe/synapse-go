@@ -1,8 +1,19 @@
 # synapse-go
 
-Go SDK for Filecoin Onchain Cloud (FOC), ported from the [@filoz/synapse-sdk](https://github.com/FilOzone/synapse-sdk).
+[![CI](https://github.com/strahe/synapse-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/strahe/synapse-go/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/strahe/synapse-go)](https://github.com/strahe/synapse-go/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/strahe/synapse-go.svg)](https://pkg.go.dev/github.com/strahe/synapse-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/strahe/synapse-go)](https://goreportcard.com/report/github.com/strahe/synapse-go)
+[![License](https://img.shields.io/github/license/strahe/synapse-go)](LICENSE)
+[![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8)](go.mod)
 
-> **Status:** Alpha — API may change.
+Go SDK for Filecoin Onchain Cloud (FOC), ported from the
+[@filoz/synapse-sdk](https://github.com/FilOzone/synapse-sdk).
+
+> **Status:** Beta - API may change.
+
+**Docs:** [API reference](https://pkg.go.dev/github.com/strahe/synapse-go) |
+[examples](examples/)
 
 ## Install
 
@@ -17,56 +28,45 @@ Requires Go 1.25+.
 ```go
 client, err := synapse.New(ctx,
     synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
-    synapse.WithRPCURL(os.Getenv("RPC_URL")),
+    synapse.WithRPCURL(os.Getenv("SYNAPSE_RPC_URL")),
 )
 if err != nil { return err }
 defer func() { _ = client.Close() }()
 
-// file is any io.Reader
-result, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
+// file is any io.Reader.
+upload, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
+if err != nil { return err }
+
+fmt.Println("piece:", upload.PieceCID)
+fmt.Printf("copies: %d/%d\n", upload.SuccessCount(), upload.RequestedCopies)
+fmt.Println("retrieve:", upload.Copies[0].RetrievalURL)
 ```
 
-Chain is auto-detected from the RPC endpoint. See [`examples/`](examples/) for runnable programs.
-Full API documentation is available on [pkg.go.dev](https://pkg.go.dev/github.com/strahe/synapse-go).
+Set `SYNAPSE_PRIVATE_KEY` and `SYNAPSE_RPC_URL`; the chain is detected automatically.
 
-## Client options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `WithPrivateKey(k)` / `WithPrivateKeyHex(s)` | — | ECDSA signing key (required) |
-| `WithRPCURL(url)` / `WithEthClient(c)` | — | JSON-RPC endpoint (required) |
-| `WithChain(c)` | auto-detect | Skip chain-ID RPC call |
-| `WithLogger(l)` | discard | Structured logger for sub-services |
-| `WithHTTPClient(c)` | service default | HTTP client for filbeam, storage downloads, and curio upload/pull/RPC |
-| `WithSource(s)` | `""` | Dataset namespace tag |
-| `WithCDN(b)` | `false` | Client-wide CDN default for uploads/retrieval |
-| `WithAllowPrivateNetworks(b)` | `false` | Trusted private-network storage download opt-in |
-
-`WithAllowPrivateNetworks(true)` only affects URL-based `storage.Service.Download`.
-Use it only for trusted private infrastructure; it has no effect when
-`WithHTTPClient` is set, because the custom transport owns that policy.
-
-## Packages
+## Package Map
 
 | Package | Purpose |
 |---------|---------|
-| `synapse` | Root client — composes all services via `synapse.New()` |
-| `storage` | Multi-copy upload / download orchestration |
-| `payments` | USDFC balance, deposit, withdraw, ERC-20 approval |
-| `costs` | Upload cost estimation |
-| `warmstorage` | FWSS on-chain reads |
-| `spregistry` | Provider registry + selection |
-| `sessionkey` | Delegated session key management |
-| `chain` | Chain config, addresses, epoch utilities |
-| `signer` | Secp256k1 / BLS signing |
-| `piece` | PieceCID v1/v2 calculation and validation |
-| `filbeam` | FilBeam CDN statistics |
+| `synapse` | Root client that initializes chain config, contract addresses, and services |
+| `storage` | Multi-provider upload/download orchestration, dataset discovery, and prepare flows |
+| `payments` | USDFC balances, deposits, withdrawals, approvals, and Filecoin Pay rails |
+| `costs` | Storage pricing, lockup, runway, and funding cost calculations |
+| `warmstorage` | FWSS dataset management, pricing, approvals, and provider allocation |
+| `spregistry` | Storage provider registry discovery and provider/product management |
+| `sessionkey` | Delegated session key authorization for FWSS EIP-712 operations |
+| `chain` | Filecoin chain IDs, contract addresses, epochs, and token units |
+| `signer` | Secp256k1 and BLS signing abstractions |
+| `piece` | PieceCID v1/v2 calculation, parsing, and validation |
+| `filbeam` | FilBeam egress quota and usage stats for FWSS datasets |
 
 ## Testing
 
+CI covers build, vet, lint, tests, and govulncheck.
+
 ```bash
-make test                  # Unit tests
-make test-integration      # Full integration suite (Calibration)
+make test                   # Unit tests
+make test-integration       # Full integration suite (Calibration)
 make test-integration-cross # High-level cross-package flows
 ```
 
@@ -82,4 +82,4 @@ make check   # build + vet + lint + test
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)

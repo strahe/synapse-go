@@ -30,18 +30,6 @@ linters:
       - path: ^internal/contracts/cmd/
         linters:
           - forbidigo
-    paths:
-      - synapse-sdk
-      - go-synapse
-      - curio
-      - lotus
-
 formatters:
   enable:
     - gofumpt
-  exclusions:
-    paths:
-      - synapse-sdk
-      - go-synapse
-      - curio
-      - lotus

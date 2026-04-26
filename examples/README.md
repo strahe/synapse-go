@@ -5,7 +5,9 @@ Set the environment:
 ```bash
 export SYNAPSE_PRIVATE_KEY=0x...
 # Optional. Defaults to the public Calibration RPC endpoint.
-export RPC_URL=https://api.calibration.node.glif.io/rpc/v1
+export SYNAPSE_RPC_URL=https://api.calibration.node.glif.io/rpc/v1
+# Optional. Use calibration or mainnet. Empty means auto-detect from RPC.
+export SYNAPSE_CHAIN=calibration
 ```
 
 Examples default to allowing private / local network downloads so local proxy

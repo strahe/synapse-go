@@ -29,7 +29,7 @@ func TestLoadEnvNormalizesGlifRootRPCURL(t *testing.T) {
 		switch key {
 		case PrivateKeyEnvVar:
 			return "0xabc"
-		case "RPC_URL":
+		case RPCURLEnvVar:
 			return "https://api.calibration.node.glif.io/"
 		default:
 			return ""
@@ -40,6 +40,46 @@ func TestLoadEnvNormalizesGlifRootRPCURL(t *testing.T) {
 	}
 	if cfg.RPCURL != DefaultRPCURL {
 		t.Fatalf("RPCURL=%q want %q", cfg.RPCURL, DefaultRPCURL)
+	}
+}
+
+func TestLoadEnvAcceptsLegacyRPCURLFallback(t *testing.T) {
+	cfg, err := LoadEnv(func(key string) string {
+		switch key {
+		case PrivateKeyEnvVar:
+			return "0xabc"
+		case legacyRPCURLVar:
+			return "https://api.calibration.node.glif.io/"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadEnv: %v", err)
+	}
+	if cfg.RPCURL != DefaultRPCURL {
+		t.Fatalf("RPCURL=%q want %q", cfg.RPCURL, DefaultRPCURL)
+	}
+}
+
+func TestLoadEnvPrefersNamespacedRPCURL(t *testing.T) {
+	cfg, err := LoadEnv(func(key string) string {
+		switch key {
+		case PrivateKeyEnvVar:
+			return "0xabc"
+		case RPCURLEnvVar:
+			return "https://api.node.glif.io/"
+		case legacyRPCURLVar:
+			return "https://api.calibration.node.glif.io/"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadEnv: %v", err)
+	}
+	if cfg.RPCURL != "https://api.node.glif.io/rpc/v1" {
+		t.Fatalf("RPCURL=%q want mainnet GLIF RPC", cfg.RPCURL)
 	}
 }
 
@@ -81,6 +121,25 @@ func TestParseChain(t *testing.T) {
 	}
 	if got == nil || *got != chain.Calibration {
 		t.Fatalf("chain=%v want calibration", got)
+	}
+}
+
+func TestLoadEnvUsesNamespacedChain(t *testing.T) {
+	cfg, err := LoadEnv(func(key string) string {
+		switch key {
+		case PrivateKeyEnvVar:
+			return "0xabc"
+		case ChainEnvVar:
+			return "mainnet"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadEnv: %v", err)
+	}
+	if cfg.Chain == nil || *cfg.Chain != chain.Mainnet {
+		t.Fatalf("chain=%v want mainnet", cfg.Chain)
 	}
 }
 

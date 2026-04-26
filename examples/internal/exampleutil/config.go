@@ -23,7 +23,11 @@ const (
 	DefaultTimeout      = 30 * time.Minute
 	MinUploadBytes      = 127
 	PrivateKeyEnvVar    = "SYNAPSE_PRIVATE_KEY"
+	RPCURLEnvVar        = "SYNAPSE_RPC_URL"
+	ChainEnvVar         = "SYNAPSE_CHAIN"
 	legacyPrivateKeyVar = "PRIVATE_KEY"
+	legacyRPCURLVar     = "RPC_URL"
+	legacyChainVar      = "CHAIN"
 )
 
 // EnvConfig contains the common wallet/RPC settings shared by examples.
@@ -34,7 +38,7 @@ type EnvConfig struct {
 }
 
 // LoadEnv reads the standard example environment. SYNAPSE_PRIVATE_KEY is
-// required; RPC_URL defaults to the public Calibration endpoint.
+// required; SYNAPSE_RPC_URL defaults to the public Calibration endpoint.
 func LoadEnv(getenv func(string) string) (EnvConfig, error) {
 	privateKeyHex := strings.TrimSpace(getenv(PrivateKeyEnvVar))
 	if privateKeyHex == "" {
@@ -44,14 +48,14 @@ func LoadEnv(getenv func(string) string) (EnvConfig, error) {
 		return EnvConfig{}, fmt.Errorf("%s is required", PrivateKeyEnvVar)
 	}
 
-	rpcURL := strings.TrimSpace(getenv("RPC_URL"))
+	rpcURL := firstEnv(getenv, RPCURLEnvVar, legacyRPCURLVar)
 	if rpcURL == "" {
 		rpcURL = DefaultRPCURL
 	} else {
 		rpcURL = NormalizeRPCURL(rpcURL)
 	}
 
-	selectedChain, err := ParseChain(getenv("CHAIN"))
+	selectedChain, err := ParseChain(firstEnv(getenv, ChainEnvVar, legacyChainVar))
 	if err != nil {
 		return EnvConfig{}, err
 	}
@@ -61,6 +65,15 @@ func LoadEnv(getenv func(string) string) (EnvConfig, error) {
 		RPCURL:        rpcURL,
 		Chain:         selectedChain,
 	}, nil
+}
+
+func firstEnv(getenv func(string) string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // NormalizeRPCURL accepts the GLIF host-only URLs that older examples used and
@@ -77,7 +90,7 @@ func NormalizeRPCURL(raw string) string {
 	}
 }
 
-// ParseChain maps CHAIN to a known chain. Empty means auto-detect from RPC.
+// ParseChain maps SYNAPSE_CHAIN to a known chain. Empty means auto-detect from RPC.
 func ParseChain(raw string) (*chain.Chain, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
@@ -89,7 +102,7 @@ func ParseChain(raw string) (*chain.Chain, error) {
 		c := chain.Mainnet
 		return &c, nil
 	default:
-		return nil, fmt.Errorf("unsupported CHAIN %q (use calibration or mainnet)", raw)
+		return nil, fmt.Errorf("unsupported %s/%s %q (use calibration or mainnet)", ChainEnvVar, legacyChainVar, raw)
 	}
 }
 

@@ -7,7 +7,7 @@
 //
 //	client, err := synapse.New(ctx,
 //	    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
-//	    synapse.WithRPCURL(os.Getenv("RPC_URL")),
+//	    synapse.WithRPCURL(os.Getenv("SYNAPSE_RPC_URL")),
 //	)
 //	if err != nil { ... }
 //	defer client.Close()
