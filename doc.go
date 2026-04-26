@@ -6,7 +6,7 @@
 // contract addresses, and eagerly initialises all sub-services before returning.
 //
 //	client, err := synapse.New(ctx,
-//	    synapse.WithPrivateKeyHex(os.Getenv("PRIVATE_KEY")),
+//	    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
 //	    synapse.WithRPCURL(os.Getenv("RPC_URL")),
 //	)
 //	if err != nil { ... }

@@ -7,9 +7,12 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/internal/retry"
+	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -23,6 +26,13 @@ const selectorMetadataConcurrency = 8
 // selectorListPageSize mirrors warmstorage's IterateAll* page size so resolver
 // scans remain explicit after ListOptions started rejecting Limit==0.
 const selectorListPageSize = 100
+
+const selectorRetryInitialDelay = 200 * time.Millisecond
+
+type selectionResult struct {
+	selections []ResolvedUploadContext
+	explicit   bool
+}
 
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
 type PDPProviderSource interface {
@@ -98,10 +108,11 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 // the warmstorage-approved and active-PDP intersection. The second return value
 // is true when providers were explicitly specified by opts.
 func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
-	selections, explicit, err := r.resolveSelections(ctx, opts, nil)
+	resolved, err := r.resolveSelectionsWithRetry(ctx, opts, nil)
 	if err != nil {
 		return nil, false, err
 	}
+	selections := resolved.selections
 	contexts := make([]UploadContext, 0, len(selections))
 	for _, selection := range selections {
 		uploadCtx, err := r.newContext(selection, opts)
@@ -110,15 +121,16 @@ func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *Uploa
 		}
 		contexts = append(contexts, uploadCtx)
 	}
-	return contexts, explicit, nil
+	return contexts, resolved.explicit, nil
 }
 
 // SelectReplacement picks a single unused provider to replace a failed attempt.
 func (r *ServiceResolver) SelectReplacement(ctx context.Context, usedProviders map[types.ProviderID]struct{}, opts *UploadOptions) (UploadContext, error) {
-	selections, _, err := r.resolveSelections(ctx, withCopies(opts, 1), usedProviders)
+	resolved, err := r.resolveSelectionsWithRetry(ctx, withCopies(opts, 1), usedProviders)
 	if err != nil {
 		return nil, err
 	}
+	selections := resolved.selections
 	if len(selections) == 0 {
 		return nil, errors.New("storage.ServiceResolver.SelectReplacement: no remaining providers")
 	}
@@ -127,6 +139,21 @@ func (r *ServiceResolver) SelectReplacement(ctx context.Context, usedProviders m
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %d: %w", uint64(selections[0].Provider.ID), err)
 	}
 	return uploadCtx, nil
+}
+
+func (r *ServiceResolver) resolveSelectionsWithRetry(ctx context.Context, opts *UploadOptions, extraExcludes map[types.ProviderID]struct{}) (selectionResult, error) {
+	return retry.Do(ctx, func(ctx context.Context) (selectionResult, error) {
+		selections, explicit, err := r.resolveSelections(ctx, opts, extraExcludes)
+		if err != nil {
+			return selectionResult{}, err
+		}
+		return selectionResult{selections: selections, explicit: explicit}, nil
+	},
+		retry.WithMaxRetries(3),
+		retry.WithInitialDelay(selectorRetryInitialDelay),
+		retry.WithMaxDelay(2*time.Second),
+		retry.WithRetryIf(txutil.IsRetryableRPCError),
+	)
 }
 
 func (r *ServiceResolver) resolveSelections(ctx context.Context, opts *UploadOptions, extraExcludes map[types.ProviderID]struct{}) ([]ResolvedUploadContext, bool, error) {

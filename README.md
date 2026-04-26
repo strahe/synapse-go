@@ -16,7 +16,7 @@ Requires Go 1.25+.
 
 ```go
 client, err := synapse.New(ctx,
-    synapse.WithPrivateKeyHex(os.Getenv("PRIVATE_KEY")),
+    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
     synapse.WithRPCURL(os.Getenv("RPC_URL")),
 )
 if err != nil { return err }
@@ -27,6 +27,7 @@ result, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies:
 ```
 
 Chain is auto-detected from the RPC endpoint. See [`examples/`](examples/) for runnable programs.
+Full API documentation is available on [pkg.go.dev](https://pkg.go.dev/github.com/strahe/synapse-go).
 
 ## Client options
 

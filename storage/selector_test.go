@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -139,6 +140,43 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnershi
 	}
 }
 
+func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t *testing.T) {
+	fixture := serviceResolverFixture{
+		approvedProviderIDs: []types.ProviderID{1},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(1, "https://sp-1.example.com"),
+		},
+	}
+	catalog := &flakyClientDataSetsCatalog{
+		fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
+	}
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: catalog,
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+			return &fakeUploadContext{
+				id:       selection.Provider.ID,
+				endpoint: selection.Provider.ServiceURL,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	if len(contexts) != 1 {
+		t.Fatalf("contexts=%d want 1", len(contexts))
+	}
+	if attempts := catalog.attempts.Load(); attempts != 2 {
+		t.Fatalf("GetClientDataSets attempts=%d want 2", attempts)
+	}
+}
+
 type serviceResolverFixture struct {
 	approvedProviderIDs      []types.ProviderID
 	activeProviders          []spregistry.PDPProvider
@@ -206,6 +244,18 @@ func (f *fakePDPProviderSource) SelectActivePDPProviders(_ context.Context, filt
 
 type fakeDataSetCatalog struct {
 	fixture serviceResolverFixture
+}
+
+type flakyClientDataSetsCatalog struct {
+	fakeDataSetCatalog
+	attempts atomic.Int32
+}
+
+func (f *flakyClientDataSetsCatalog) GetClientDataSets(ctx context.Context, payer common.Address, opts types.ListOptions) ([]*warmstorage.DataSetInfo, error) {
+	if f.attempts.Add(1) == 1 {
+		return nil, fmt.Errorf("Post %q: EOF", "https://api.calibration.node.glif.io/rpc/v1")
+	}
+	return f.fakeDataSetCatalog.GetClientDataSets(ctx, payer, opts)
 }
 
 func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, opts types.ListOptions) ([]types.ProviderID, error) {
