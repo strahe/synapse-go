@@ -69,7 +69,6 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		ctx,
 		env,
 		synapse.WithSource(quickstartSource),
-		synapse.WithAllowPrivateNetworks(true),
 	)
 	if err != nil {
 		return err

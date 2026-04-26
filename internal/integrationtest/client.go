@@ -8,14 +8,18 @@ import (
 )
 
 // NewClient builds a synapse.Client using the supplied private key hex
-// and the shared RPC URL. The client is automatically closed via
-// t.Cleanup; a failed dial is reported with t.Fatalf so callers can
-// treat the returned value as non-nil.
+// and the shared RPC URL. Integration clients default to allowing private /
+// local network downloads so local proxy environments can exercise retrieval
+// flows. The SDK's public default remains private-network rejection.
+//
+// The client is automatically closed via t.Cleanup; a failed dial is reported
+// with t.Fatalf so callers can treat the returned value as non-nil.
 func NewClient(t *testing.T, ctx context.Context, privateKeyHex string) *synapse.Client {
 	t.Helper()
 	client, err := synapse.New(ctx,
 		synapse.WithPrivateKeyHex(privateKeyHex),
 		synapse.WithRPCURL(RPCURL()),
+		synapse.WithAllowPrivateNetworks(true),
 	)
 	if err != nil {
 		t.Fatalf("integrationtest: synapse.New: %v", err)

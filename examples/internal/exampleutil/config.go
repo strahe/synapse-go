@@ -98,6 +98,7 @@ func (c EnvConfig) ClientOptions(extra ...synapse.ClientOption) []synapse.Client
 	opts := []synapse.ClientOption{
 		synapse.WithPrivateKeyHex(c.PrivateKeyHex),
 		synapse.WithRPCURL(c.RPCURL),
+		synapse.WithAllowPrivateNetworks(true),
 	}
 	if c.Chain != nil {
 		opts = append(opts, synapse.WithChain(*c.Chain))

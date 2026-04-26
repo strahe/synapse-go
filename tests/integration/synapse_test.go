@@ -11,7 +11,6 @@ import (
 	"io"
 	"math/big"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ipfs/go-cid"
 
-	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/internal/integrationtest"
@@ -53,25 +51,8 @@ func isExecutionRevert(err error) bool {
 }
 
 func TestIntegration(t *testing.T) {
-	integrationtest.EnsureEnv(t)
-
-	privateKeyHex := os.Getenv(integrationtest.EnvPrivateKey)
-	if privateKeyHex == "" {
-		t.Skipf("%s not set; skipping integration tests", integrationtest.EnvPrivateKey)
-	}
-
-	rpcURL := integrationtest.RPCURL()
-
 	ctx := context.Background()
-
-	client, err := synapse.New(ctx,
-		synapse.WithPrivateKeyHex(privateKeyHex),
-		synapse.WithRPCURL(rpcURL),
-	)
-	if err != nil {
-		t.Fatalf("synapse.New: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
+	client := integrationtest.NewDefaultClient(t, ctx)
 
 	// Verify auto-detected chain is Calibration.
 	if got := client.Chain().ChainID(); got != calibrationChainID {

@@ -8,6 +8,10 @@ export SYNAPSE_PRIVATE_KEY=0x...
 export RPC_URL=https://api.calibration.node.glif.io/rpc/v1
 ```
 
+Examples default to allowing private / local network downloads so local proxy
+environments can run retrieval flows. The SDK's normal client default still
+rejects private-network downloads unless callers explicitly opt in.
+
 ## Quickstart
 
 Upload, download, and verify a small test payload:

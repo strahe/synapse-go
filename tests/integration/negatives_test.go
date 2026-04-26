@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"math/big"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -25,26 +24,9 @@ import (
 // All scenarios are gated on INTEGRATION_PRIVATE_KEY (calibration tFIL +
 // USDFC). When unset the function skips, mirroring TestIntegration.
 func TestIntegration_Negatives(t *testing.T) {
-	integrationtest.EnsureEnv(t)
-
-	privateKeyHex := os.Getenv(integrationtest.EnvPrivateKey)
-	if privateKeyHex == "" {
-		t.Skipf("%s not set; skipping negative integration tests", integrationtest.EnvPrivateKey)
-	}
-
-	rpcURL := integrationtest.RPCURL()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-
-	client, err := synapse.New(ctx,
-		synapse.WithPrivateKeyHex(privateKeyHex),
-		synapse.WithRPCURL(rpcURL),
-	)
-	if err != nil {
-		t.Fatalf("synapse.New: %v", err)
-	}
-	defer func() { _ = client.Close() }()
+	client := integrationtest.NewDefaultClient(t, ctx)
 
 	t.Run("InsufficientFundsDeposit", func(t *testing.T) {
 		testInsufficientFundsDeposit(ctx, t, client)
