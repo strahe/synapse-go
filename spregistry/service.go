@@ -29,7 +29,7 @@ type EthClient interface {
 
 // Backend extends EthClient with the surface required for sending
 // transactions (register/update/remove provider, add/update/remove product).
-// The full [*ethclient.Client] satisfies this interface.
+// The full *ethclient.Client satisfies this interface.
 type Backend interface {
 	bind.ContractBackend
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error)
@@ -38,8 +38,7 @@ type Backend interface {
 
 // Service provides read access to the ServiceProviderRegistry contract,
 // and (when constructed with a Signer + Backend) a small, typed set of
-// state-changing methods that mirror the public SP-registry surface of
-// `@filoz/synapse-sdk`.
+// state-changing provider-management methods.
 type Service struct {
 	caller      EthClient
 	backend     Backend
@@ -61,14 +60,13 @@ type Options struct {
 	// ChainID is required only when writes are used.
 	ChainID types.ChainID
 	// Backend provides a full RPC surface for writes. When nil Service is
-	// read-only; write methods return [ErrWriteNotConfigured].
+	// read-only; write methods return ErrWriteNotConfigured.
 	Backend Backend
 	// Signer signs write transactions. Optional.
 	Signer signer.EVMSigner
-	// NonceManager is optional. When nil, one is created from Backend if
-	// Signer is also provided. Services that share the same signer / EOA must
-	// also share the same NonceManager instance; otherwise concurrent writes
-	// can race on nonce allocation.
+	// NonceManager is optional. The root synapse Client injects a shared
+	// coordinator across all write-capable services; standalone callers may
+	// leave this nil to create one when Backend and Signer are both set.
 	NonceManager *txutil.NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
@@ -77,7 +75,7 @@ type Options struct {
 	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }
 
@@ -125,7 +123,7 @@ func New(opts Options) (*Service, error) {
 func (s *Service) Address() common.Address { return s.addr }
 
 // requireSigner returns ErrWriteNotConfigured unless the service was built
-// with a Signer, Backend, and NonceManager.
+// with the dependencies needed to submit transactions.
 func (s *Service) requireSigner() error {
 	if s.signer == nil || s.backend == nil || s.write == nil || s.nonces == nil {
 		return ErrWriteNotConfigured

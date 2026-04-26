@@ -9,9 +9,13 @@
 //	    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
 //	    synapse.WithRPCURL(os.Getenv("SYNAPSE_RPC_URL")),
 //	)
-//	if err != nil { ... }
-//	defer client.Close()
+//	if err != nil {
+//	    // handle error
+//	}
+//	defer func() { _ = client.Close() }()
 //
+//	// data must contain uploadable content; PieceCIDv2 requires at least
+//	// 127 raw bytes.
 //	result, err := client.Storage().Upload(ctx, data, nil)
 //
 // Sub-services are accessed via getters: [Client.Storage], [Client.Payments],
@@ -24,9 +28,9 @@
 // # Stability
 //
 // This SDK is in its 0.x phase. Public APIs may change between minor
-// releases; breaking changes are called out in PR descriptions and
-// release notes. Pin to a specific minor version in production. The
-// reference implementation is the TypeScript SDK at
-// https://github.com/FilOzone/synapse-sdk; behavioural divergences are
-// either flagged in package docs or considered bugs.
+// releases; breaking changes are called out in release notes. Pin to a
+// specific minor version in production. The implementation tracks the
+// Filecoin Onchain Cloud protocol and the upstream TypeScript SDK.
+//
+// [piece]: https://pkg.go.dev/github.com/strahe/synapse-go/piece
 package synapse

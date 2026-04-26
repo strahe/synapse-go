@@ -24,8 +24,8 @@ var ErrPDPVerifierNotConfigured = errors.New("warmstorage: PDPVerifier address n
 // Service that was constructed without a Backend / Signer.
 var ErrWriteNotConfigured = errors.New("warmstorage: write backend / signer not configured")
 
-// PDPConfig mirrors FWSSView.getPDPConfig() — parameters that govern
-// proving period scheduling. See synapse-sdk warm-storage service.ts.
+// PDPConfig contains the FWSS StateView parameters that govern proving
+// period scheduling.
 type PDPConfig struct {
 	MaxProvingPeriod         uint64
 	ChallengeWindowSize      *big.Int
@@ -46,9 +46,8 @@ type EnhancedDataSetInfo struct {
 }
 
 // ValidateDataSet verifies that the given data set is alive on the
-// PDPVerifier contract AND that its listener is this WarmStorage
-// contract. Returns nil on success. Mirrors synapse-sdk
-// warm-storage/service.ts:272 (validateDataSet).
+// PDPVerifier contract and that its listener is this WarmStorage contract.
+// Returns nil on success.
 func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.DataSetID) error {
 	if err := s.checkInit(); err != nil {
 		return err

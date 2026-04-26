@@ -16,8 +16,8 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// PieceStatus mirrors the TypeScript PieceStatus shape and captures the
-// current state of a piece relative to its data set's proving schedule.
+// PieceStatus captures the current state of a piece relative to its data
+// set's proving schedule.
 //
 // PieceID is zero when the piece is not present in the data set (Exists =
 // false); callers should treat (Exists == false) as the "null" TS return.
@@ -57,8 +57,7 @@ type PieceStatus struct {
 }
 
 // GetScheduledRemovals returns the list of piece ids that have been
-// scheduled for removal from this data set but have not yet been
-// processed. Matches TS StorageContext.getScheduledRemovals.
+// scheduled for removal from this data set but have not yet been processed.
 func (c *Context) GetScheduledRemovals(ctx context.Context) ([]uint64, error) {
 	if c.pdpCaller == nil {
 		return nil, errors.New("storage.Context.GetScheduledRemovals: PDPVerifier reader not configured")

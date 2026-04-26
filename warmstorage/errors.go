@@ -17,7 +17,7 @@ var ErrNotFound = errors.New("warmstorage: not found")
 var ErrUninitialized = errors.New("warmstorage: service not initialized; use warmstorage.New")
 
 // ErrClosed is returned when a method is called after the owning Client
-// has been closed. Alias of [internal/lifecycle.ErrClosed].
+// has been closed. It aliases the shared closed-client sentinel.
 var ErrClosed = lifecycle.ErrClosed
 
 // ErrInvalidArgument is returned, wrapped, when a caller passes an argument

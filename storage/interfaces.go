@@ -38,7 +38,7 @@ type FWSSTerminator interface {
 }
 
 // FWSSDataSetReader reads an existing data set's on-chain record from the
-// FWSSView contract. Used by [Service.CreateContext] / [Service.CreateContexts]
+// FWSSView contract. Used by Service.CreateContext / Service.CreateContexts
 // to auto-fetch the on-chain ClientDataSetID when the resolver path did not
 // already supply one. Satisfied by *warmstorage.Service (see GetDataSet).
 type FWSSDataSetReader interface {
@@ -46,21 +46,17 @@ type FWSSDataSetReader interface {
 }
 
 // DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
-// by *warmstorage.Service via GetClientDataSetsWithDetails. Mirrors TS
-// StorageManager.findDataSets.
+// by *warmstorage.Service via GetClientDataSetsWithDetails.
 type DataSetFinder interface {
 	FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*DataSetInfo, error)
 }
 
-// StorageInfoReader returns the chain-wide StorageInfo view for the
-// given client. Mirrors TS StorageManager.getStorageInfo.
+// StorageInfoReader returns the chain-wide StorageInfo view for the given client.
 type StorageInfoReader interface {
 	GetStorageInfo(ctx context.Context, client common.Address) (*StorageInfo, error)
 }
 
 // MultiCostOptions customises the multi-context cost calculation.
-// Mirrors the TS SDK `{extraRunwayEpochs, bufferEpochs, withCDN}`
-// knobs passed through from StorageManager.calculateMultiContextCosts.
 type MultiCostOptions struct {
 	// EnableCDN forces CDN pricing on every ref (in addition to any
 	// per-ref `WithCDN` flag) and governs whether the CDN-fixed lockup
@@ -76,14 +72,13 @@ type MultiCostOptions struct {
 }
 
 // MultiCostCalculator computes an upload-cost summary for a fan-out
-// across multiple prospective contexts. Mirrors TS
-// StorageManager.calculateMultiContextCosts.
+// across multiple prospective contexts.
 type MultiCostCalculator interface {
 	CalculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []ContextCostRef, opts MultiCostOptions) (*MultiContextCosts, error)
 }
 
 // DataSetSizeReader returns the current on-chain size (bytes) of an
-// existing data set, used by [Service.Prepare] to price lockup
+// existing data set, used by Service.Prepare to price lockup
 // accurately for add-pieces scenarios. Satisfied by an adapter around
 // PDPVerifier.getDataSetLeafCount (leafCount * 32).
 type DataSetSizeReader interface {
@@ -97,9 +92,7 @@ type PaymentsFunder interface {
 }
 
 // MultiContextCosts is the aggregate cost view across N upload targets.
-// Shape matches TS calculateMultiContextCosts return value — a flat
-// summary rather than per-context breakdown (TS computes per-context
-// locally but only exposes the aggregate).
+// It is a flat summary rather than a per-context breakdown.
 type MultiContextCosts struct {
 	RatePerEpoch         *big.Int
 	RatePerMonth         *big.Int

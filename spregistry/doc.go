@@ -18,8 +18,10 @@
 //
 // # Write surface
 //
-// When Options.Backend, Options.Signer, and Options.ChainID are supplied,
-// the following state-changing methods become available:
+// When Options.Backend, Options.Signer, and Options.ChainID are supplied, the
+// following state-changing methods become available. A nonce coordinator is
+// created automatically for standalone use; the root synapse Client injects a
+// shared coordinator across all write-capable services.
 //
 //   - RegisterProvider: declares the caller as a provider and, in the
 //     same transaction, registers a PDP product. Reads REGISTRATION_FEE
@@ -48,12 +50,11 @@
 //   - ErrInvalidOffering: returned by ValidatePDPOffering / write methods
 //     when a PDP offering fails structural validation.
 //   - ErrWriteNotConfigured: returned by write methods when Service was
-//     constructed without a Signer / Backend / NonceManager.
+//     constructed without write dependencies.
 //   - ErrTxFailed: returned by write methods when the broadcast
 //     transaction reverts on-chain.
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases. Mirrors the
-// TS SDK package at synapse-sdk/packages/synapse-sdk/src/sp-registry.
+// 0.x phase: public API may change between minor releases.
 package spregistry

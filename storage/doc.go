@@ -7,7 +7,7 @@
 //
 // # Manager-level operations
 //
-// [Service] also exposes the TS `StorageManager` surface:
+// [Service] also exposes manager-level operations:
 //
 //   - [Service.FindDataSets] — enumerate the caller's data sets.
 //   - [Service.GetStorageInfo] — aggregated pricing / providers / allowances view.
@@ -65,7 +65,5 @@
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases. Mirrors the
-// TS SDK package at synapse-sdk/packages/synapse-sdk/src/storage; any
-// intentional divergence is documented at the affected symbol.
+// 0.x phase: public API may change between minor releases.
 package storage

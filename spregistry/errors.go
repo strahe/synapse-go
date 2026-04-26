@@ -18,7 +18,7 @@ var ErrNotFound = errors.New("spregistry: not found")
 var ErrUninitialized = errors.New("spregistry: service not initialized; use spregistry.New")
 
 // ErrClosed is returned when a method is called after the owning Client
-// has been closed. Alias of [internal/lifecycle.ErrClosed].
+// has been closed. It aliases the shared closed-client sentinel.
 var ErrClosed = lifecycle.ErrClosed
 
 // ErrInvalidArgument is returned, wrapped, when a caller passes an argument
@@ -39,9 +39,8 @@ var ErrWriteNotConfigured = errors.New("spregistry: write operations not configu
 
 // ErrTxFailed is returned when a broadcast transaction is mined with
 // status == 0 (EVM revert). It is an alias of [types.ErrTxFailed]
-// (itself an alias of [internal/txutil.ErrTxFailed]) so that
-// errors.Is(err, types.ErrTxFailed) holds for every SDK-originated
-// transaction failure, matching the convention used by payments and
-// sessionkey. The [WriteResult.Receipt] is preserved alongside the
-// error for callers that need the full on-chain status.
+// so that errors.Is(err, types.ErrTxFailed) holds for every
+// SDK-originated transaction failure, matching the convention used by
+// payments and sessionkey. The [types.WriteResult.Receipt] is preserved
+// alongside the error for callers that need the full on-chain status.
 var ErrTxFailed = types.ErrTxFailed

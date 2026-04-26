@@ -67,12 +67,12 @@ type ProviderRegistrationInfo struct {
 	// Description is free-form provider metadata (stored on-chain).
 	Description string
 	// PDPOffering is the PDP product registered atomically with the
-	// provider. Must pass [ValidatePDPOffering].
+	// provider. Must pass ValidatePDPOffering.
 	PDPOffering PDPOffering
 	// Capabilities are extra product capability key/value pairs in
 	// addition to the canonical PDP keys. Values starting with "0x"
 	// are hex-decoded; empty values encode as the single byte 0x01
-	// (matching the TypeScript SDK).
+	// for compatibility with existing capability encoders.
 	Capabilities map[string]string
 }
 

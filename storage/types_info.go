@@ -13,12 +13,11 @@ import (
 // DataSetInfo aliases warmstorage.EnhancedDataSetInfo, the richer record
 // returned by Service.FindDataSets. Kept as an alias (not a copy) so that
 // callers that already hold *warmstorage.EnhancedDataSetInfo can pass
-// values through without conversion. Mirrors TS findDataSets().
+// values through without conversion.
 type DataSetInfo = warmstorage.EnhancedDataSetInfo
 
 // PricePerTiB holds the effective price per TiB for one provisioning
-// profile at three time granularities. Mirrors the TS noCDN/withCDN
-// nested object inside StorageInfo.pricing.
+// profile at three time granularities.
 type PricePerTiB struct {
 	PerMonth *big.Int
 	PerDay   *big.Int
@@ -44,8 +43,7 @@ type ServiceParameters struct {
 }
 
 // Allowances is the client-specific operator-approval view embedded in
-// StorageInfo. Nil when the caller has no wallet / lookup failed —
-// matching TS' `allowances | null`.
+// StorageInfo. Nil when the caller has no wallet or the lookup failed.
 type Allowances struct {
 	Service         common.Address
 	IsApproved      bool
@@ -57,7 +55,7 @@ type Allowances struct {
 }
 
 // StorageInfo aggregates the chain-wide storage view a client needs
-// before authoring an upload. Mirrors TS types.ts StorageInfo.
+// before authoring an upload.
 type StorageInfo struct {
 	Pricing           PricingInfo
 	Providers         []spregistry.PDPProvider

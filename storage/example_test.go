@@ -14,11 +14,14 @@ import (
 // Example demonstrates uploading a payload via a storage.Service. In practice
 // a Service is obtained from [synapse.Client.Storage] after calling
 // [synapse.New]; this example assumes svc is already wired.
+//
+// [synapse.Client.Storage]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.Storage
+// [synapse.New]: https://pkg.go.dev/github.com/strahe/synapse-go#New
 func Example() {
 	var svc *storage.Service // obtained from synapse.Client.Storage()
 
 	ctx := context.Background()
-	payload := bytes.NewReader([]byte("hello"))
+	payload := bytes.NewReader(bytes.Repeat([]byte("data"), 64))
 
 	res, err := svc.Upload(ctx, payload, &storage.UploadOptions{
 		OnProgress: func(uploaded int64) {

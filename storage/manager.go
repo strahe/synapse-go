@@ -19,13 +19,12 @@ type FindDataSetsOptions struct {
 	// signer configured via Options.SignerAddress".
 	Payer common.Address
 	// OnlyManaged restricts the returned set to data sets whose
-	// record-keeper is the configured FWSS contract (matches TS
-	// `onlyManaged` flag on getClientDataSetsWithDetails).
+	// record-keeper is the configured FWSS contract.
 	OnlyManaged bool
 }
 
-// FindDataSets returns the enriched list of data sets owned by the
-// caller (or the payer in opts). Mirrors TS StorageManager.findDataSets.
+// FindDataSets returns the enriched list of data sets owned by the caller
+// or by the payer in opts.
 func (s *Service) FindDataSets(ctx context.Context, opts *FindDataSetsOptions) ([]*DataSetInfo, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -56,8 +55,8 @@ type GetStorageInfoOptions struct {
 	Client common.Address
 }
 
-// GetStorageInfo returns the comprehensive chain-wide storage view
-// needed to author an upload. Mirrors TS StorageManager.getStorageInfo.
+// GetStorageInfo returns the comprehensive chain-wide storage view needed
+// to author an upload.
 func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOptions) (*StorageInfo, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -78,8 +77,7 @@ type TerminateDataSetOptions struct {
 	WriteOptions []warmstorage.WriteOption
 }
 
-// TerminateDataSet terminates an FWSS-managed data set by ID. Mirrors
-// TS StorageManager.terminateDataSet.
+// TerminateDataSet terminates an FWSS-managed data set by ID.
 func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.DataSetID, opts *TerminateDataSetOptions) (*types.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -97,9 +95,8 @@ func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.DataSetI
 	return s.terminator.TerminateDataSet(ctx, dataSetID, writeOpts...)
 }
 
-// CalculateMultiContextCosts fans out the cost calculation across the
-// given refs and returns an aggregate result. Mirrors TS
-// StorageManager.calculateMultiContextCosts.
+// CalculateMultiContextCosts fans out the cost calculation across the given
+// refs and returns an aggregate result.
 func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err

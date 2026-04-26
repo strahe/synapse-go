@@ -12,6 +12,8 @@ import (
 
 // Example shows reading an account balance via payments.Service. In practice
 // a Service is obtained from [synapse.Client.Payments].
+//
+// [synapse.Client.Payments]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.Payments
 func Example() {
 	var svc *payments.Service // obtained from synapse.Client.Payments()
 

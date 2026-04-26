@@ -40,6 +40,5 @@
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases. Mirrors the
-// TS SDK piece utilities at synapse-sdk/packages/synapse-sdk/src/piece.
+// 0.x phase: public API may change between minor releases.
 package piece

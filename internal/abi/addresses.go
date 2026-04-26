@@ -36,9 +36,8 @@ type ResolvedAddresses struct {
 }
 
 // ResolveAddresses reads address pointers directly from the FWSS contract.
-// FWSS is the "root of trust" in the TS SDK — every other address is
-// derived from it. fwssAddr must be non-zero; callers that want a registry
-// fallback should use ResolvedAddressesFromChain separately.
+// fwssAddr must be non-zero; callers that want a registry fallback should use
+// ResolvedAddressesFromChain separately.
 //
 // On any RPC/call failure the function returns an error; callers may choose
 // to fall back to ResolvedAddressesFromChain.

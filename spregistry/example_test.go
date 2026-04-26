@@ -12,6 +12,8 @@ import (
 // Example demonstrates looking up a storage provider by ID via
 // spregistry.Service. In practice a Service is obtained from
 // [synapse.Client.SPRegistry].
+//
+// [synapse.Client.SPRegistry]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.SPRegistry
 func Example() {
 	var svc *spregistry.Service // obtained from synapse.Client.SPRegistry()
 

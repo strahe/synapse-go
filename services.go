@@ -225,24 +225,20 @@ func (c *Client) FilBeam() *filbeam.Service {
 // Storage returns the [storage.Service].
 //
 // The service is wired with a [storage.ServiceResolver] that uses
-// [WarmStorage] and [SPRegistry]. A per-provider curio client is
+// [Client.WarmStorage] and [Client.SPRegistry]. A per-provider curio client is
 // created inside the [storage.ContextFactory] closure on each upload.
 func (c *Client) Storage() *storage.Service {
 	return c.storage
 }
 
-// GetProviderInfoByID looks up a storage provider on [SPRegistry] by its
+// GetProviderInfoByID looks up a storage provider on [Client.SPRegistry] by its
 // numeric [types.ProviderID].
-//
-// Mirrors the TS synapse.getProviderInfo(id) call path.
 func (c *Client) GetProviderInfoByID(ctx context.Context, id types.ProviderID) (*spregistry.ProviderInfo, error) {
 	return c.spRegistry.GetProvider(ctx, id)
 }
 
-// GetProviderInfoByAddress looks up a storage provider on [SPRegistry] by
+// GetProviderInfoByAddress looks up a storage provider on [Client.SPRegistry] by
 // its service-provider [common.Address].
-//
-// Mirrors the TS synapse.getProviderInfo(address) call path.
 func (c *Client) GetProviderInfoByAddress(ctx context.Context, addr common.Address) (*spregistry.ProviderInfo, error) {
 	return c.spRegistry.GetProviderByAddress(ctx, addr)
 }

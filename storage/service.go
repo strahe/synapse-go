@@ -97,9 +97,9 @@ type Options struct {
 	Source string
 
 	// DefaultWithCDN is the Client-level CDN default applied when an
-	// [UploadOptions.WithCDN] / [CreateContextsOptions.WithCDN] /
-	// [CreateContextOptions.WithCDN] field is nil. Ignored when the
-	// per-op field is non-nil. Mirrors TS Synapse.create({ withCDN }).
+	// UploadOptions.WithCDN / CreateContextsOptions.WithCDN /
+	// CreateContextOptions.WithCDN field is nil. Ignored when the
+	// per-op field is non-nil.
 	DefaultWithCDN bool
 
 	// MaxSecondaryAttempts caps the number of provider candidates tried for
@@ -115,20 +115,20 @@ type Options struct {
 	// AllowPrivateNetworks disables the default SSRF protection applied to
 	// URL-based Service.Download calls. When false (the default), the
 	// built-in HTTP client refuses to dial loopback / link-local / RFC1918 /
-	// ULA / multicast / unspecified addresses and returns [ErrPrivateNetwork].
+	// ULA / multicast / unspecified addresses and returns ErrPrivateNetwork.
 	// Set to true only when you knowingly need to download from a private
 	// network (e.g. in-cluster storage). Ignored when HTTPClient is set.
 	AllowPrivateNetworks bool
 
 	// DownloadMaxBytes caps the number of bytes a single URL-based
 	// Service.Download will return. Zero (the default) disables the cap.
-	// Exceeding it returns [ErrMaxBytesExceeded] either eagerly (via
+	// Exceeding it returns ErrMaxBytesExceeded either eagerly (via
 	// Content-Length) or at the terminal Read of the returned reader.
 	DownloadMaxBytes int64
 
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 
 	// DataSetFinder backs Service.FindDataSets. Optional; when nil the
@@ -149,14 +149,14 @@ type Options struct {
 	PaymentsFunder PaymentsFunder
 
 	// DataSetSizeReader backs the per-dataset size lookup performed by
-	// [Service.Prepare] for existing-dataset contexts. Optional; when
+	// Service.Prepare for existing-dataset contexts. Optional; when
 	// nil, Prepare falls back to zero sizes (floor-price lockup). For
 	// accurate add-pieces pricing, wire an implementation backed by
 	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
 	DataSetSizeReader DataSetSizeReader
 
-	// FWSSDataSetReader is used by [Service.CreateContext] /
-	// [Service.CreateContexts] to auto-fetch the on-chain
+	// FWSSDataSetReader is used by Service.CreateContext /
+	// Service.CreateContexts to auto-fetch the on-chain
 	// ClientDataSetID when a context resolves with a pinned dataSetID
 	// but the resolver did not already populate clientDataSetID. When
 	// nil, the safety net is skipped (existing behaviour).

@@ -33,7 +33,7 @@ type Backend interface {
 // plus convenience wrappers around ERC20 allowance management.
 //
 // It is safe for concurrent use. All state-changing calls return a
-// [types.WriteResult] whose Receipt is only populated when WithWait is
+// [sdktypes.WriteResult] whose Receipt is only populated when WithWait is
 // supplied.
 type Service struct {
 	backend     Backend
@@ -73,10 +73,9 @@ type Options struct {
 	Signer signer.EVMSigner
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
-	// NonceManager is optional. When nil, one is created from Backend.
-	// Services that share the same signer / EOA must also share the same
-	// NonceManager instance; otherwise concurrent writes can race on nonce
-	// allocation.
+	// NonceManager is optional. The root synapse Client injects a shared
+	// coordinator across all write-capable services; standalone callers may
+	// leave this nil to create one for this Service.
 	NonceManager *txutil.NonceManager
 	// ReceiptWait overrides the default receipt polling timeout used by
 	// WithConfirmations when the call waits for a receipt but does not
@@ -85,7 +84,7 @@ type Options struct {
 	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed] without touching the RPC backend. Nil is allowed for
+	// ErrClosed without touching the RPC backend. Nil is allowed for
 	// standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }

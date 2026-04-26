@@ -11,6 +11,8 @@ import (
 
 // Example demonstrates fetching an account summary via costs.Service. In
 // practice a Service is obtained from [synapse.Client.Costs].
+//
+// [synapse.Client.Costs]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.Costs
 func Example() {
 	var svc *costs.Service // obtained from synapse.Client.Costs()
 

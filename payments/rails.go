@@ -9,11 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// RailView is the flattened view of a payment rail, mirroring
-// `FilecoinPayV1RailView` from the FilPay contract.
-//
-// Mirrors synapse-core (pay/get-rail.ts) and synapse-sdk/src/payments/
-// service.ts RailInfo.
+// RailView is the flattened view of FilecoinPayV1RailView from the FilPay
+// contract.
 type RailView struct {
 	Token               common.Address
 	From                common.Address
@@ -46,8 +43,6 @@ type RailPage struct {
 }
 
 // GetRail returns the full view of a single rail by id.
-//
-// Mirrors synapse-core/src/pay/get-rail.ts.
 func (s *Service) GetRail(ctx context.Context, railID *big.Int) (*RailView, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -115,16 +110,12 @@ func resolveListConfig(opts []ListOption) listConfig {
 
 // GetRailsAsPayer lists rails where `payer` is the account being charged
 // for `token`. Callers may paginate with WithListOffset / WithListLimit.
-//
-// Mirrors synapse-core/src/pay/rails.ts (getRailsForPayerAndToken).
 func (s *Service) GetRailsAsPayer(ctx context.Context, payer, token common.Address, opts ...ListOption) (*RailPage, error) {
 	return s.listRails(ctx, payer, token, true, opts)
 }
 
 // GetRailsAsPayee lists rails where `payee` is the account being paid
 // on `token`. Callers may paginate with WithListOffset / WithListLimit.
-//
-// Mirrors synapse-core/src/pay/rails.ts (getRailsForPayeeAndToken).
 func (s *Service) GetRailsAsPayee(ctx context.Context, payee, token common.Address, opts ...ListOption) (*RailPage, error) {
 	return s.listRails(ctx, payee, token, false, opts)
 }

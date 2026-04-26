@@ -32,7 +32,7 @@ import (
 
 // Client is the root entry point for the Filecoin Onchain Cloud SDK.
 // It composes all sub-services, all of which are initialised eagerly by [New].
-// Create with [New]; release resources with [Close].
+// Create with [New]; release resources with [Client.Close].
 //
 // All methods are safe for concurrent use.
 type Client struct {
@@ -125,8 +125,8 @@ func WithLogger(l *slog.Logger) ClientOption {
 //
 //   - filbeam.Service (stats API)
 //   - storage.Service (URL-based downloads via Service.HTTPClient)
-//   - internal/curio.Client (piece uploads, pull / RPC, constructed per
-//     UploadContext inside the storage resolver)
+//   - provider HTTP clients constructed by the storage resolver for upload,
+//     pull, and provider RPC calls
 //
 // Services communicating over Ethereum JSON-RPC (payments, sessionkey,
 // warmstorage, spregistry, costs) reuse the chain client instead and are not
@@ -138,14 +138,13 @@ func WithHTTPClient(c *http.Client) ClientOption {
 // WithSource sets the application-level source identifier used for
 // dataset namespace isolation. Datasets with different source values
 // are treated as distinct namespaces; reuse only occurs within the
-// same source. Mirrors the TS SDK's Synapse.create({ source }) option.
+// same source.
 func WithSource(s string) ClientOption {
 	return func(cfg *clientConfig) { cfg.source = s }
 }
 
 // WithCDN sets the Client-wide default for CDN-accelerated retrieval
 // and the withCDN dataset-metadata flag used during provider selection.
-// Mirrors the TS SDK's Synapse.create({ withCDN }) option.
 //
 // This is a default only: each [storage.UploadOptions] and
 // [storage.CreateContextsOptions] carries its own *bool WithCDN that

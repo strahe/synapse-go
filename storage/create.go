@@ -7,8 +7,7 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-// CreateContextsOptions configures Service.CreateContexts and mirrors the
-// TS CreateContextsOptions shape (synapse-sdk .../types.ts:331-394).
+// CreateContextsOptions configures Service.CreateContexts.
 //
 // Copies controls how many provider copies to create. When zero, the
 // resolver uses its default (two copies when no explicit providers or
@@ -20,6 +19,8 @@ import (
 //
 //	b := true
 //	opts := &storage.CreateContextsOptions{WithCDN: &b}
+//
+// [synapse.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go#WithCDN
 type CreateContextsOptions struct {
 	Copies             int
 	ProviderIDs        []types.ProviderID
@@ -34,6 +35,8 @@ type CreateContextsOptions struct {
 //
 // WithCDN follows the same tri-state convention as
 // [CreateContextsOptions.WithCDN].
+//
+// [CreateContextsOptions.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go/storage#CreateContextsOptions.WithCDN
 type CreateContextOptions struct {
 	ProviderIDs        []types.ProviderID
 	DataSetIDs         []types.DataSetID
@@ -74,11 +77,9 @@ func (o *CreateContextOptions) toUploadOptions() *UploadOptions {
 }
 
 // CreateContexts provisions one or more concrete storage contexts without
-// uploading. Mirrors TS StorageManager.createContexts
-// (synapse-sdk/.../manager.ts:843-957): picks providers / reuses or
-// creates data sets according to opts and returns the resulting
-// contexts. When opts is nil or opts.Copies is zero the resolver
-// default (two copies in auto-select) applies.
+// uploading. It picks providers, reuses or creates data sets according to
+// opts, and returns the resulting contexts. When opts is nil or opts.Copies
+// is zero the resolver default (two copies in auto-select) applies.
 func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOptions) ([]*Context, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -109,8 +110,7 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 	return out, nil
 }
 
-// CreateContext is the single-copy convenience wrapper around
-// CreateContexts. Mirrors TS StorageManager.createContext.
+// CreateContext is the single-copy convenience wrapper around CreateContexts.
 func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions) (*Context, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -220,8 +220,8 @@ func (s *Service) populateClientDataSetIDsFromInterfaces(ctx context.Context, co
 	return s.populateClientDataSetIDs(ctx, concretes)
 }
 
-// GetDefaultContext returns a single auto-selected context using
-// resolver defaults. Mirrors TS StorageManager.getDefaultContext.
+// GetDefaultContext returns a single auto-selected context using resolver
+// defaults.
 func (s *Service) GetDefaultContext(ctx context.Context) (*Context, error) {
 	return s.CreateContext(ctx, nil)
 }

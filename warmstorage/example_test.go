@@ -12,6 +12,8 @@ import (
 
 // Example demonstrates listing a client's data sets via warmstorage.Service.
 // In practice a Service is obtained from [synapse.Client.WarmStorage].
+//
+// [synapse.Client.WarmStorage]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.WarmStorage
 func Example() {
 	var svc *warmstorage.Service // obtained from synapse.Client.WarmStorage()
 

@@ -20,7 +20,7 @@ var ErrTxFailed = types.ErrTxFailed
 var ErrUninitialized = errors.New("payments: service not initialized; use payments.New")
 
 // ErrClosed is returned when a method is called after the owning Client
-// has been closed. Alias of [internal/lifecycle.ErrClosed] so
+// has been closed. It aliases the shared closed-client sentinel, so
 // errors.Is(err, payments.ErrClosed) matches either sentinel.
 var ErrClosed = lifecycle.ErrClosed
 

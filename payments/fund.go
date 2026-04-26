@@ -13,8 +13,8 @@ import (
 )
 
 // LockupPeriodEpochs is the default client-operator max lockup period
-// granted when Fund auto-approves the WarmStorage operator. Mirrors
-// synapse-core `LOCKUP_PERIOD` = 30 days * 2880 epochs/day.
+// granted when Fund auto-approves the WarmStorage operator: 30 days at
+// 2880 epochs per day.
 var LockupPeriodEpochs = big.NewInt(30 * 2880)
 
 // maxUint256 is the ERC-2612-style "unlimited" allowance used by Fund.
@@ -48,8 +48,6 @@ var ErrNothingToFund = errors.New("payments: nothing to fund (already approved a
 //
 // Pass [WithFundNeedsFwssApproval] to reuse a previously computed approval
 // decision instead of re-reading on-chain state.
-//
-// Mirrors synapse-core/src/pay/fund.ts:72.
 func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -106,8 +104,6 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 // FundSync runs Fund and waits for the transaction to be mined. It is
 // equivalent to Fund(..., WithWait(timeout)) with a sensible default
 // timeout when the caller did not supply one.
-//
-// Mirrors synapse-core/src/pay/fund.ts:144 (fundSync).
 func (s *Service) FundSync(ctx context.Context, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	// Append a default-wait fallback; runs last so explicit user-supplied
 	// WithWait continues to take precedence.
@@ -116,9 +112,9 @@ func (s *Service) FundSync(ctx context.Context, amount *big.Int, opts ...WriteOp
 }
 
 // waitIfUnset sets a 5-minute wait timeout when the caller omitted WithWait
-// or supplied a non-positive timeout. FundSync mirrors the TS sync helper and
-// always waits for a receipt, so zero/negative values fall back to the default
-// wait instead of disabling waiting.
+// or supplied a non-positive timeout. FundSync always waits for a receipt, so
+// zero/negative values fall back to the default wait instead of disabling
+// waiting.
 var waitIfUnset WriteOption = func(c *writeConfig) {
 	if c.waitTimeout <= 0 {
 		c.waitTimeout = 5 * time.Minute
@@ -126,11 +122,7 @@ var waitIfUnset WriteOption = func(c *writeConfig) {
 }
 
 // isFwssMaxApproved reports whether WarmStorage holds sufficient operator
-// allowances to skip the approve-step of Fund. Matches the TS logic which
-// checks isApproved + rateAllowance == maxUint256 +
-// lockupAllowance >= maxUint256/2 + maxLockupPeriod >= LOCKUP_PERIOD.
-//
-// Mirrors synapse-core/src/pay/is-fwss-max-approved.ts.
+// allowances to skip the approve-step of Fund.
 func (s *Service) isFwssMaxApproved(ctx context.Context) (bool, error) {
 	approval, err := s.ServiceApproval(ctx, s.usdfcToken, s.signer.EVMAddress(), s.warmStorage)
 	if err != nil {

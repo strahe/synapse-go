@@ -47,8 +47,8 @@ const (
 	maxPieceMetadataKeys   = 5
 )
 
-// PDPClient is the curio HTTP API surface required by Context.
-// Satisfied by *internal/curio.Client; injectable for testing.
+// PDPClient is the provider HTTP API surface required by Context.
+// It is injectable for tests and alternate provider clients.
 type PDPClient interface {
 	UploadPieceStreaming(context.Context, io.Reader, icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)

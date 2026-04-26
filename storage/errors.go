@@ -15,7 +15,7 @@ import (
 var ErrUninitialized = errors.New("storage: service not initialized; use storage.New")
 
 // ErrClosed is returned when a method is called after the owning Client
-// has been closed. Alias of [internal/lifecycle.ErrClosed].
+// has been closed. It aliases the shared closed-client sentinel.
 var ErrClosed = lifecycle.ErrClosed
 
 // ErrInvalidArgument is returned, wrapped via fmt.Errorf with %w, when a

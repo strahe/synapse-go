@@ -27,14 +27,14 @@ type Service struct {
 
 // Options configures a [Service].
 type Options struct {
-	// Chain selects the FilBeam environment. Only [chain.Mainnet] and
-	// [chain.Calibration] are supported; any other value causes [New] to
-	// return an error wrapping [chain.ErrUnknownChain].
-	// Zero value is [chain.Mainnet].
+	// Chain selects the FilBeam environment. Only chain.Mainnet and
+	// chain.Calibration are supported; any other value causes New to
+	// return an error wrapping chain.ErrUnknownChain.
+	// Zero value is chain.Mainnet.
 	Chain chain.Chain
 
 	// HTTPClient is the HTTP client used for API requests.
-	// If nil, [http.DefaultClient] is used.
+	// If nil, http.DefaultClient is used.
 	HTTPClient *http.Client
 
 	// Logger is the structured logger. If nil, logging is silent.
@@ -42,7 +42,7 @@ type Options struct {
 
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }
 
@@ -90,7 +90,7 @@ type statsResponse struct {
 // Returns ErrDataSetNotFound when the data set does not exist on FilBeam.
 //
 // Transient failures (most transport errors and HTTP 5xx) are retried with
-// jittered exponential backoff via internal/retry. Errors matching
+// jittered exponential backoff. Errors matching
 // [context.Canceled] or [context.DeadlineExceeded] are returned immediately;
 // non-transient statuses (4xx other than 404) and decode errors are also
 // returned without retry.

@@ -33,7 +33,7 @@ client, err := synapse.New(ctx,
 if err != nil { return err }
 defer func() { _ = client.Close() }()
 
-// file is any io.Reader.
+// file is an io.Reader over the payload to upload.
 upload, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
 if err != nil { return err }
 

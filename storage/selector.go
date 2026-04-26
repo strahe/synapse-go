@@ -20,7 +20,7 @@ import (
 
 // selectorMetadataConcurrency caps fan-out of parallel
 // GetAllDataSetMetadata calls made by ServiceResolver. Kept small because
-// each call hits a public RPC endpoint; aligns with TS SDK BATCH_SIZE.
+// each call hits a public RPC endpoint.
 const selectorMetadataConcurrency = 8
 
 // selectorListPageSize mirrors warmstorage's IterateAll* page size so resolver

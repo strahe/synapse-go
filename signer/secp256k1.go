@@ -19,9 +19,9 @@ import (
 // transactions (keccak256 hash) from a single key.
 //
 // Private-key lifecycle is the caller's responsibility: the SDK does not
-// provide an in-place wipe primitive (matching the TS SDK). To bound the
-// in-memory exposure of the key, hold the signer for as short a lifetime
-// as the workload allows and let it be garbage-collected.
+// provide an in-place wipe primitive. To bound the in-memory exposure of the
+// key, hold the signer for as short a lifetime as the workload allows and let
+// it be garbage-collected.
 type Secp256k1Signer struct {
 	ecdsaKey *ecdsa.PrivateKey
 	filAddr  address.Address

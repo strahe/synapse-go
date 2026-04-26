@@ -190,8 +190,7 @@ func CalculateDepositNeeded(
 	return new(big.Int).Add(raw, buffer)
 }
 
-// isFWSSMaxApproved returns true when all FWSS approval conditions are met,
-// matching synapse-sdk is-fwss-max-approved.ts semantics.
+// isFWSSMaxApproved returns true when all FWSS approval conditions are met.
 // Nil *big.Int fields are treated as zero (not approved).
 func isFWSSMaxApproved(approved bool, rateAllowance, lockAllowance, maxLockPeriod *big.Int) bool {
 	if !approved {

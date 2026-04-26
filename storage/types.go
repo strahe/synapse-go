@@ -227,7 +227,7 @@ type UploadOptions struct {
 	// ExcludeProviderIDs skips these providers during auto-selection.
 	ExcludeProviderIDs []types.ProviderID
 	// WithCDN is tri-state: nil inherits the Client-level default
-	// configured via [synapse.WithCDN]; non-nil explicitly overrides
+	// configured via synapse.WithCDN; non-nil explicitly overrides
 	// for this upload. Declare a local variable to take its address:
 	//
 	//	b := true
@@ -247,12 +247,12 @@ type UploadOptions struct {
 	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
 	// submitted for a provider (primary or secondary), carrying the transaction
 	// hash and the batch of pieces included in that transaction. During
-	// [Service.Upload], different providers may invoke this callback
+	// Service.Upload, different providers may invoke this callback
 	// concurrently when commitConcurrency > 1. It may be nil.
 	OnPiecesAdded func(txHash string, providerID types.ProviderID, pieces []SubmittedPiece)
 	// OnPiecesConfirmed is invoked after the on-chain AddPieces transaction is
 	// confirmed (CommitResult received) for a provider, carrying the assigned
-	// on-chain IDs for each piece. During [Service.Upload], this callback is
+	// on-chain IDs for each piece. During Service.Upload, this callback is
 	// invoked sequentially after all commit workers finish. It may be nil.
 	OnPiecesConfirmed func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece)
 	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
@@ -261,7 +261,7 @@ type UploadOptions struct {
 	OnCopyComplete func(providerID types.ProviderID, pieceCID cid.Cid)
 	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy
 	// attempt fails. Presign failures are not copy attempts and still surface
-	// only through FailedAttempts with [CopyStagePresign]. Primary store/commit
+	// only through FailedAttempts with CopyStagePresign. Primary store/commit
 	// failures likewise surface through the Upload return value and
 	// FailedAttempts. It may be nil.
 	OnCopyFailed func(providerID types.ProviderID, pieceCID cid.Cid, err error)

@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// DefaultExtraRunwayEpochs matches synapse-sdk: no extra runway above lockup period.
+	// DefaultExtraRunwayEpochs adds no runway above the lockup period.
 	DefaultExtraRunwayEpochs int64 = 0
 	// DefaultBufferEpochs is a 5-epoch deposit cushion for transaction execution latency.
 	DefaultBufferEpochs int64 = 5

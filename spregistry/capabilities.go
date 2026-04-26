@@ -60,14 +60,14 @@ func CapabilitiesListToMap(keys []string, values [][]byte) map[string][]byte {
 
 // DecodePDPOffering decodes the capability map into a typed PDPOffering.
 //
-// Semantics (aligned with filecoin-services spec and the TS SDK):
+// Semantics:
 //   - Required numeric fields (sizes, price, proving period) are big-endian
 //     unsigned integers; missing entries decode to 0.
 //   - Boolean flags (ipniPiece/ipniIpfs) are true only when the value is
 //     exactly 0x01 — presence alone is not sufficient.
 //   - paymentTokenAddress is the last 20 bytes of the value; if the value
 //     has fewer than 20 bytes it is left-padded (common.BytesToAddress).
-//   - ipniPeerId is base58btc-encoded for display (matches TS SDK).
+//   - ipniPeerId is base58btc-encoded for display.
 //     The uppercase legacy key "IPNIPeerID" is accepted for read only.
 //
 // Missing required fields do NOT produce an error; they are zero-valued.
@@ -175,8 +175,7 @@ func ValidatePDPOffering(o PDPOffering) error {
 // expected by the ServiceProviderRegistry contract's registerProvider,
 // addProduct, and updateProduct methods.
 //
-// Canonical layout (positions 1-9) mirrors the TypeScript reference
-// implementation in synapse-sdk/packages/synapse-core/src/utils/pdp-capabilities.ts:
+// Canonical layout (positions 1-9):
 //
 //  1. serviceURL               (UTF-8 bytes)
 //  2. minPieceSizeInBytes      (big-endian minimal; zero encodes as 0x00)
@@ -188,23 +187,19 @@ func ValidatePDPOffering(o PDPOffering) error {
 //  8. location                 (UTF-8 bytes)
 //  9. paymentTokenAddress      (20 bytes)
 //
-// 10. any entries in extras (intentionally DIVERGES from TS: see below)
+// 10. any entries in extras, sorted by key for deterministic output.
 //
-// Note: ipniPeerId is intentionally NOT emitted; the TS encoder also omits
-// it even though the decoder accepts it for backwards compatibility.
+// Note: ipniPeerId is intentionally NOT emitted even though the decoder
+// accepts it for backwards compatibility.
 //
 // For extras values:
-//   - an empty string encodes as the single byte 0x01 (matching TS);
+//   - an empty string encodes as the single byte 0x01;
 //   - a "0x"-prefixed string is hex-decoded;
 //   - otherwise the raw UTF-8 bytes are used.
 //
-// DIVERGENCE from the TS encoder: TS preserves Object.entries insertion
-// order for extras, Go map iteration is randomised. This SDK therefore
-// sorts extras keys alphabetically to guarantee deterministic output.
-// On-chain storage is a (key => value) mapping so this ordering
-// difference is not observable to the contract. Callers performing
-// byte-level cross-SDK diffing / hashing / replay must normalise by
-// sorting both sides first.
+// Extras keys are sorted alphabetically to guarantee deterministic output.
+// On-chain storage is a key/value mapping, so this ordering is not observable
+// to the contract.
 //
 // Attempting to set a canonical PDP key through extras returns
 // ErrInvalidOffering: doing so would either duplicate or shadow the
@@ -267,10 +262,8 @@ func bigIntBytes(v *big.Int) []byte {
 		return nil
 	}
 	if v.Sign() == 0 {
-		// Match the TS reference (`numberToBytes(0n) -> Uint8Array([0])`):
-		// big.Int.Bytes() returns an empty slice for zero which would
-		// diverge from the on-chain / TS wire format and cause readers
-		// calling BigInt('0x') to throw.
+		// big.Int.Bytes() returns an empty slice for zero, but the on-chain
+		// capability wire format uses a single zero byte.
 		return []byte{0x00}
 	}
 	return v.Bytes()

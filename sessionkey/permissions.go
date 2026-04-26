@@ -46,7 +46,7 @@ var DeleteDataSetPermission = mustPermission("b5d6b3fc97881f05e96958136ac09d7e0b
 
 // DefaultFWSSPermissions contains all four standard FWSS permissions.
 // This is the default set used by Login when no explicit permissions
-// are provided, matching the TS SDK's DefaultFwssPermissions.
+// are provided.
 var DefaultFWSSPermissions = []Permission{
 	CreateDataSetPermission,
 	AddPiecesPermission,

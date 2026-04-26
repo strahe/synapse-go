@@ -12,6 +12,8 @@ import (
 // Example shows querying session-key authorization expirations for a set of
 // permissions. In practice a Service is obtained from
 // [synapse.Client.SessionKey].
+//
+// [synapse.Client.SessionKey]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.SessionKey
 func Example() {
 	var svc *sessionkey.Service // obtained from synapse.Client.SessionKey()
 

@@ -15,8 +15,6 @@ import (
 // Maintained separately from the global FWSS Types because the token domain
 // (name/version/verifyingContract) is per-token and the only primary type
 // used is Permit.
-//
-// Mirrors synapse-core/src/typed-data/type-definitions.ts (EIP712Types).
 var permitTypes = apitypes.Types{
 	"EIP712Domain": {
 		{Name: "name", Type: "string"},
@@ -49,8 +47,6 @@ func NewERC20PermitDomain(chainID *big.Int, tokenName, tokenVersion string, toke
 // SignERC20Permit signs an ERC-2612 Permit message and returns v/r/s suitable
 // for direct use with Solidity `permit(owner, spender, value, deadline, v, r, s)`
 // or Filecoin Pay `depositWithPermit(token, to, amount, deadline, v, r, s)`.
-//
-// Ports synapse-core/src/typed-data/sign-erc20-permit.ts.
 func SignERC20Permit(
 	signHash func([]byte) ([]byte, error),
 	domain apitypes.TypedDataDomain,

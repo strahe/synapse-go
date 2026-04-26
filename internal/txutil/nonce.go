@@ -22,10 +22,9 @@ type NonceProvider interface {
 // the attempt. Until release is called no other goroutine can acquire a
 // nonce.
 //
-// This mirrors the TS SDK / viem behavior: every transaction round-trips the
-// node for its nonce, with no client-side cache. The added serialization is
-// the cost of guaranteeing monotonically-increasing nonces across concurrent
-// goroutines.
+// Each transaction round-trips to the node for its nonce, with no client-side
+// cache. The added serialization is the cost of guaranteeing monotonically
+// increasing nonces across concurrent goroutines.
 type NonceManager struct {
 	mu      sync.Mutex
 	client  NonceProvider

@@ -33,7 +33,7 @@ type Backend interface {
 // contract. It handles login (authorization), revocation, and expiry queries.
 //
 // It is safe for concurrent use. All state-changing calls return a
-// [types.WriteResult] whose Receipt is only populated when WithWait is
+// [sdktypes.WriteResult] whose Receipt is only populated when WithWait is
 // supplied.
 type Service struct {
 	backend      Backend
@@ -61,13 +61,15 @@ type Options struct {
 	Signer signer.EVMSigner
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
-	// NonceManager is optional. When nil, one is created from Backend.
+	// NonceManager is optional. The root synapse Client injects a shared
+	// coordinator across all write-capable services; standalone callers may
+	// leave this nil to create one for this Service.
 	NonceManager *txutil.NonceManager
 	// ReceiptWait overrides the default receipt polling timeout.
 	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }
 
@@ -277,9 +279,8 @@ func (s *Service) IsExpired(ctx context.Context, rootAddr, sessionKeyAddr common
 // back to per-permission sequential reads if the transport-level batch call
 // fails.
 //
-// BREAKING (pre-v1): prior versions silently swallowed per-permission
-// lookup errors. GetExpirations now returns the best-effort partial
-// [Expirations] together with [errors.Join] of every per-permission error.
+// GetExpirations returns the best-effort partial [Expirations] together
+// with [errors.Join] of every per-permission lookup error.
 // Expiry values of 0 mean "not authorized" or "revoked" — these are valid
 // state, not errors, and are not reflected in the returned error.
 //

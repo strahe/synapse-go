@@ -51,7 +51,7 @@ type Service struct {
 // Options configures a [Service].
 type Options struct {
 	// Chain selects the network whose contract addresses are used.
-	// Zero value is [chain.Mainnet].
+	// Zero value is chain.Mainnet.
 	Chain chain.Chain
 
 	// WarmStorage reads on-chain service pricing. Required.
@@ -68,7 +68,7 @@ type Options struct {
 
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }
 

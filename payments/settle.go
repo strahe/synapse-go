@@ -14,8 +14,6 @@ import (
 )
 
 // SettlementResult is the decoded return tuple of FilPay.settleRail.
-//
-// Mirrors synapse-sdk/src/payments/service.ts:620 (SettlementResult).
 type SettlementResult struct {
 	TotalSettledAmount      *big.Int
 	TotalNetPayeeAmount     *big.Int
@@ -27,9 +25,6 @@ type SettlementResult struct {
 
 // Settle triggers a rail settlement up to `untilEpoch`. When `untilEpoch`
 // is nil or zero, the current block number is used.
-//
-// Mirrors synapse-core/src/pay/settle-rail.ts and
-// synapse-sdk/src/payments/service.ts:589.
 func (s *Service) Settle(ctx context.Context, railID, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -61,8 +56,6 @@ func (s *Service) Settle(ctx context.Context, railID, untilEpoch *big.Int, opts 
 // terminated rail. This bypasses the operator validator and pays in full;
 // it can only be called by the client after the max settlement epoch has
 // passed.
-//
-// Mirrors synapse-sdk/src/payments/service.ts:647 (settleTerminatedRail).
 func (s *Service) SettleTerminatedRail(ctx context.Context, railID *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -89,8 +82,6 @@ func (s *Service) SettleTerminatedRail(ctx context.Context, railID *big.Int, opt
 // SettleAuto inspects the rail state and routes to Settle or
 // SettleTerminatedRail automatically — terminated rails (endEpoch > 0) go
 // through the emergency path, active rails through the standard path.
-//
-// Mirrors synapse-sdk/src/payments/service.ts:697 (settleAuto).
 func (s *Service) SettleAuto(ctx context.Context, railID, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -122,9 +113,6 @@ var filPayStaticABI = func() abi.ABI {
 // GetSettlementAmounts simulates FilPay.settleRail via eth_call and decodes
 // the resulting amounts without broadcasting a transaction. Use it to
 // preview how much would be settled to the payee / operator / network.
-//
-// Mirrors synapse-sdk/src/payments/service.ts:601 (getSettlementAmounts),
-// which uses simulateContract for the same effect on viem.
 func (s *Service) GetSettlementAmounts(ctx context.Context, railID, untilEpoch *big.Int) (*SettlementResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err

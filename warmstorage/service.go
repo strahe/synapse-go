@@ -28,7 +28,7 @@ type EthClient interface {
 }
 
 // Backend extends EthClient with the surface required for sending
-// transactions (TopUpCDNPaymentRails). The full [ethclient.Client] satisfies
+// transactions (TopUpCDNPaymentRails). The full ethclient.Client satisfies
 // this interface.
 type Backend interface {
 	bind.ContractBackend
@@ -75,14 +75,13 @@ type Options struct {
 	// ChainID is required only when writes are used (TopUpCDNPaymentRails).
 	ChainID types.ChainID
 	// Backend provides a full RPC surface for writes. When nil Service is
-	// read-only; write methods return [ErrInvalidArgument].
+	// read-only; write methods return ErrWriteNotConfigured.
 	Backend Backend
 	// Signer signs write transactions. Optional.
 	Signer signer.EVMSigner
-	// NonceManager is optional. When nil, one is created from Backend if
-	// Signer is also provided. Services that share the same signer / EOA must
-	// also share the same NonceManager instance; otherwise concurrent writes
-	// can race on nonce allocation.
+	// NonceManager is optional. The root synapse Client injects a shared
+	// coordinator across all write-capable services; standalone callers may
+	// leave this nil to create one when Backend and Signer are both set.
 	NonceManager *txutil.NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
@@ -91,12 +90,13 @@ type Options struct {
 	ReceiptWait time.Duration
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
-	// [ErrClosed]. Nil is allowed for standalone use.
+	// ErrClosed. Nil is allowed for standalone use.
 	Lifecycle *lifecycle.Lifecycle
 }
 
-// New creates a Service. Both FWSS and ViewContract addresses are required;
-// use internal/abi.ResolveAddresses to obtain them from chain data.
+// New creates a Service. Both FWSS and ViewContract addresses are required.
+// The root synapse Client supplies the canonical chain addresses; low-level
+// callers must provide the addresses they want this Service to use.
 func New(opts Options) (*Service, error) {
 	if opts.Client == nil {
 		return nil, fmt.Errorf("warmstorage.New: %w: nil Client", ErrInvalidArgument)
@@ -160,8 +160,8 @@ func (s *Service) ViewAddress() common.Address { return s.viewAddr }
 // the Service was constructed without a PDPVerifier.
 func (s *Service) PDPVerifierAddress() common.Address { return s.pdpVerifierAdr }
 
-// ServicePrice mirrors FilecoinWarmStorageServiceServicePricing. All amounts
-// are in base units of the payment token.
+// ServicePrice is the FWSS pricing view. All amounts are in base units of
+// the payment token.
 type ServicePrice struct {
 	PricePerTiBPerMonthNoCDN   *big.Int
 	PricePerTiBCdnEgress       *big.Int
@@ -190,7 +190,7 @@ func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
 	}, nil
 }
 
-// DataSetInfo mirrors FilecoinWarmStorageServiceDataSetInfoView.
+// DataSetInfo is the FWSS StateView record for one data set.
 type DataSetInfo struct {
 	DataSetID       types.DataSetID
 	PDPRailID       types.RailID // payment rail for PDP proofs

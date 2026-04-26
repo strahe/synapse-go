@@ -35,9 +35,8 @@ type MultiContextRef struct {
 }
 
 // MultiContextCosts is the aggregate cost view across multiple upload
-// targets. Mirrors TS calculateMultiContextCosts (manager.ts:703-819):
-// a single DepositNeeded / NeedsFWSSMaxApproval / Ready, plus summed
-// RatePerEpoch / RatePerMonth covering all refs.
+// targets: a single DepositNeeded / NeedsFWSSMaxApproval / Ready, plus
+// summed RatePerEpoch / RatePerMonth covering all refs.
 type MultiContextCosts struct {
 	// RatePerEpoch is the sum of per-context effective rates (post-upload).
 	RatePerEpoch *big.Int
@@ -55,9 +54,8 @@ type MultiContextCosts struct {
 // CalculateMultiContextCosts aggregates upload costs across multiple
 // prospective contexts for a single uploaded payload of dataSizeBytes.
 //
-// Each ref contributes its own lockup; debt, runway and buffer are
-// computed once from the payer's account state. Mirrors TS
-// StorageManager.calculateMultiContextCosts.
+// Each ref contributes its own lockup; debt, runway and buffer are computed
+// once from the payer's account state.
 //
 // Default buffer/runway follow DefaultBufferEpochs / DefaultExtraRunwayEpochs
 // when the corresponding opts field is zero.
@@ -206,8 +204,7 @@ func (s *Service) CalculateMultiContextCosts(
 		currentRate = new(big.Int)
 	}
 
-	// Skip buffer when no existing rails drain *and* all refs are new
-	// datasets. Mirrors TS manager.ts:792-793.
+	// Skip buffer when no existing rails drain and all refs are new datasets.
 	isNewForBuffer := currentRate.Sign() == 0 && allNewDataSets
 
 	depositNeeded := CalculateDepositNeeded(

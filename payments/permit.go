@@ -19,8 +19,7 @@ import (
 
 // PermitDeadlineDuration is the default validity window appended to the
 // current wall-clock time when the caller does not provide an explicit
-// permit deadline. Mirrors synapse-core `PERMIT_DEADLINE_DURATION`
-// (1 hour; utils/constants.ts:34).
+// permit deadline.
 const PermitDeadlineDuration = time.Hour
 
 // permitERC20ABI is the subset of the ERC-2612 / OpenZeppelin ERC20Permit
@@ -57,9 +56,8 @@ type permitInputs struct {
 // token contract so the caller can assemble an ERC-2612 EIP-712 domain
 // and message.
 //
-// Mirrors synapse-core/src/erc20/index.ts:127 (balanceForPermit) except it
-// does not co-fetch the balance — callers that need a pre-check can use
-// [Service.WalletBalance] instead.
+// This helper does not co-fetch the balance; callers that need a pre-check
+// can use [Service.WalletBalance] instead.
 func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Address) (*permitInputs, error) {
 	bound := bind.NewBoundContract(token, permitERC20ABI, s.backend, nil, nil)
 	call := &bind.CallOpts{Context: ctx}
@@ -109,8 +107,6 @@ type permitConfig struct{}
 // `deadline` is the permit expiry (unix seconds); when nil, now +
 // [PermitDeadlineDuration] is used. `token` must be an ERC-2612 /
 // ERC20Permit-compliant token (e.g. USDFC).
-//
-// Mirrors synapse-core/src/pay/deposit-with-permit.ts:78 (depositWithPermit).
 func (s *Service) DepositWithPermit(
 	ctx context.Context,
 	token, to common.Address,
@@ -124,8 +120,6 @@ func (s *Service) DepositWithPermit(
 // SetOperatorApproval in the same transaction. Use this to onboard a new
 // client: deposit + grant WarmStorage (or another operator) the allowances
 // it needs in a single click.
-//
-// Mirrors synapse-core/src/pay/payments.ts:73 (depositAndApprove).
 func (s *Service) DepositWithPermitAndApproveOperator(
 	ctx context.Context,
 	token, to common.Address,

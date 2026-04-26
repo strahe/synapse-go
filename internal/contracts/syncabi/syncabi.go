@@ -28,7 +28,7 @@ type Config struct {
 const (
 	// DefaultRepo is the upstream ABI source of truth for generated bindings.
 	DefaultRepo = "FilOzone/filecoin-services"
-	// DefaultRef must track synapse-sdk/packages/synapse-core/wagmi.config.ts.
+	// DefaultRef pins the upstream ABI commit used to regenerate bindings.
 	// Upgrade flow: update this ref, run `make generate-contracts`, then commit abi.json and bindings.go.
 	DefaultRef = "ed85348ebad54196b5bfefc5cb0dbe7e8bfd6f7c"
 )

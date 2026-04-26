@@ -17,19 +17,17 @@ import (
 )
 
 // DeletePiece schedules removal of the piece identified by pieceCID from
-// this context's data set. It matches
-// packages/synapse-sdk/src/storage/context.ts:1070 deletePiece().
+// this context's data set.
 //
 // The implementation:
 //  1. Resolves the on-chain pieceID via PDPVerifier.findPieceIdsByCid.
 //  2. Signs an EIP-712 SchedulePieceRemovals message over (clientDataSetID,
-//     [pieceID]) and ABI-encodes the signature as bytes (matching TS
-//     signSchedulePieceRemovals).
+//     pieceID) and ABI-encodes the signature as bytes.
 //  3. Calls the provider's DELETE /pdp/data-sets/{id}/pieces/{pieceId}
 //     endpoint via PDPClient.SchedulePieceDeletion.
 //
 // The returned WriteResult carries only the transaction hash; there is no
-// on-chain wait (mirroring TS which returns a bare Hash).
+// on-chain wait.
 func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
 	if c.pdpCaller == nil {
 		return nil, errors.New("storage.Context.DeletePiece: PDPVerifier reader not configured")
@@ -99,9 +97,8 @@ func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.
 // must have supplied the on-chain clientDataSetId explicitly via
 // [WithClientDataSetID] — FWSS reconstructs the EIP-712 hash with the
 // value it stored at create time, so a random value would yield a
-// signature that the contract rejects. For new-dataset contexts a
-// random 256-bit value is generated on first use and reused thereafter,
-// matching the TS SDK's `randU256()` behaviour at create time.
+// signature that the contract rejects. For new-dataset contexts a random
+// 256-bit value is generated on first use and reused thereafter.
 func (c *Context) ensureClientDataSetID() (*big.Int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -123,8 +120,7 @@ func (c *Context) ensureClientDataSetID() (*big.Int, error) {
 }
 
 // encodeSignatureExtraData wraps a raw 65-byte signature as
-// abi.encode(["bytes"], [sig]), mirroring the TS helper used by
-// signSchedulePieceRemovals.
+// abi.encode(["bytes"], [sig]).
 func encodeSignatureExtraData(sig []byte) ([]byte, error) {
 	args := abi.Arguments{{Type: contextBytesType}}
 	out, err := args.Pack(sig)

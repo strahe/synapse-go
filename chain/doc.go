@@ -1,5 +1,5 @@
 // Package chain defines chain identifiers, contract addresses, and epoch
-// utilities for Filecoin networks (Mainnet, Calibration, Devnet).
+// utilities for supported Filecoin networks (Mainnet and Calibration).
 //
 // This is a leaf package with no dependencies on other synapse-go packages.
 // All chain-specific constants (chain IDs, contract addresses, genesis

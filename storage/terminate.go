@@ -12,8 +12,7 @@ import (
 // Terminate schedules termination of this context's data set via the
 // FWSS terminateService entry point. On success the provider stops
 // proving the data set and all contained pieces will be removed
-// on-chain. Mirrors packages/synapse-sdk/src/storage/context.ts:1210
-// StorageContext.terminate.
+// on-chain.
 //
 // opts are forwarded to warmstorage.Service.TerminateDataSet (wait /
 // confirmations / etc.).

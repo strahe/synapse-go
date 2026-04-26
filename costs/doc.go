@@ -37,7 +37,5 @@
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases. Cost
-// formulas mirror the TS SDK at
-// synapse-sdk/packages/synapse-sdk/src/utils/calculate-storage-cost.ts.
+// 0.x phase: public API may change between minor releases.
 package costs

@@ -14,6 +14,5 @@
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases. Mirrors the
-// TS SDK at synapse-sdk/packages/synapse-sdk/src/filbeam.
+// 0.x phase: public API may change between minor releases.
 package filbeam
