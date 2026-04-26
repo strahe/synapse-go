@@ -187,127 +187,40 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		o(&cfg)
 	}
 
-	// --- resolve private key ---
-	if cfg.privateKey == nil && cfg.privateKeyHex != "" {
-		key, err := parsePrivateKeyHex(cfg.privateKeyHex)
-		if err != nil {
-			return nil, fmt.Errorf("synapse.New: %w", err)
-		}
-		cfg.privateKey = key
-		// Zero the intermediate key's D scalar when New returns; the signer
-		// deep-copies D, so this does not affect the created signer.
-		// SetBytes overwrites the backing []Word array with zeros; SetInt64
-		// then truncates the slice length. Both steps are required — SetInt64
-		// alone only truncates without writing, leaving key bits in the heap.
-		defer func() {
-			if cfg.privateKey != nil && cfg.privateKey.D != nil {
-				cfg.privateKey.D.SetBytes(make([]byte, 32))
-				cfg.privateKey.D.SetInt64(0)
-			}
-		}()
-	}
-	if cfg.privateKey == nil {
-		return nil, errors.New("synapse.New: missing private key (use WithPrivateKey or WithPrivateKeyHex)")
-	}
-
-	// --- resolve ethclient ---
-	var (
-		ec         *ethclient.Client
-		ownsClient bool
-	)
-	switch {
-	case cfg.ethClient != nil:
-		ec = cfg.ethClient
-	case cfg.rpcURL != "":
-		c, err := ethclient.DialContext(ctx, cfg.rpcURL)
-		if err != nil {
-			return nil, fmt.Errorf("synapse.New: dial RPC: %w", err)
-		}
-		ec = c
-		ownsClient = true
-	default:
-		return nil, errors.New("synapse.New: missing RPC source (use WithRPCURL or WithEthClient)")
-	}
-
-	// --- resolve chain ---
-	var selectedChain chain.Chain
-	if cfg.chain != nil {
-		selectedChain = *cfg.chain
-	} else {
-		chainID, err := ec.ChainID(ctx)
-		if err != nil {
-			if ownsClient {
-				ec.Close()
-			}
-			return nil, fmt.Errorf("synapse.New: detect chain: %w", err)
-		}
-		if !chainID.IsInt64() {
-			if ownsClient {
-				ec.Close()
-			}
-			return nil, fmt.Errorf("synapse.New: chain ID %s exceeds int64 range", chainID)
-		}
-		detected, err := chain.FromID(chainID.Int64())
-		if err != nil {
-			if ownsClient {
-				ec.Close()
-			}
-			return nil, fmt.Errorf("synapse.New: unsupported chain %d: %w", chainID.Int64(), err)
-		}
-		selectedChain = detected
-	}
-
-	// --- validate chain addresses ---
-	addresses := iabi.ResolvedAddressesFromChain(selectedChain)
-	zeroAddr := common.Address{}
-	for name, addr := range map[string]common.Address{
-		"FWSS":               addresses.FWSS,
-		"Payments":           addresses.Payments,
-		"PDPVerifier":        addresses.PDPVerifier,
-		"SPRegistry":         addresses.SPRegistry,
-		"USDFC":              addresses.USDFC,
-		"ViewContract":       addresses.ViewContract,
-		"SessionKeyRegistry": addresses.SessionKeyRegistry,
-	} {
-		if addr == zeroAddr {
-			if ownsClient {
-				ec.Close()
-			}
-			return nil, fmt.Errorf("synapse.New: no %s address for chain %s", name, selectedChain)
-		}
-	}
-
-	// --- build signer + nonce manager ---
-	evmSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
+	cleanup, err := resolvePrivateKey(&cfg)
 	if err != nil {
-		if ownsClient {
-			ec.Close()
-		}
-		return nil, fmt.Errorf("synapse.New: create signer: %w", err)
-	}
-	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
-
-	c := &Client{
-		ethClient:            ec,
-		ownsClient:           ownsClient,
-		evmSigner:            evmSigner,
-		selectedChain:        selectedChain,
-		addresses:            addresses,
-		nonces:               nonces,
-		logger:               cfg.logger,
-		httpClient:           cfg.httpClient,
-		source:               cfg.source,
-		withCDN:              cfg.withCDN,
-		allowPrivateNetworks: cfg.allowPrivateNetworks,
-		lifecycle:            lifecycle.New(),
-	}
-	if err := c.initServices(); err != nil {
-		if ownsClient {
-			ec.Close()
-		}
 		return nil, fmt.Errorf("synapse.New: %w", err)
 	}
-	return c, nil
+	defer cleanup()
+
+	ec, ownsClient, err := resolveEthClient(ctx, &cfg)
+	if err != nil {
+		return nil, fmt.Errorf("synapse.New: %w", err)
+	}
+
+	success := false
+	defer func() {
+		if !success && ownsClient {
+			ec.Close()
+		}
+	}()
+
+	selectedChain, err := resolveChain(ctx, ec, &cfg)
+	if err != nil {
+		return nil, fmt.Errorf("synapse.New: %w", err)
+	}
+
+	addresses, err := resolveAddresses(selectedChain)
+	if err != nil {
+		return nil, fmt.Errorf("synapse.New: %w", err)
+	}
+
+	client, err := newClient(&cfg, ec, ownsClient, selectedChain, addresses)
+	if err != nil {
+		return nil, fmt.Errorf("synapse.New: %w", err)
+	}
+	success = true
+	return client, nil
 }
 
 // Close releases resources held by the Client. If the ethclient was
@@ -355,4 +268,112 @@ func parsePrivateKeyHex(raw string) (*ecdsa.PrivateKey, error) {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 	return key, nil
+}
+
+func resolvePrivateKey(cfg *clientConfig) (func(), error) {
+	if cfg.privateKey == nil && cfg.privateKeyHex != "" {
+		key, err := parsePrivateKeyHex(cfg.privateKeyHex)
+		if err != nil {
+			return nil, err
+		}
+		cfg.privateKey = key
+		// Return a cleanup that zeros only this intermediate key.
+		return func() { zeroPrivateKey(cfg.privateKey) }, nil
+	}
+	if cfg.privateKey == nil {
+		return nil, errors.New("missing private key (use WithPrivateKey or WithPrivateKeyHex)")
+	}
+	// No cleanup for user-provided key.
+	return func() {}, nil
+}
+
+// zeroPrivateKey clears the private key D scalar. The signer deep-copies D,
+// so this does not affect the created signer. SetBytes overwrites the backing
+// []Word array with zeros; SetInt64 then truncates the slice length. Both steps
+// are required — SetInt64 alone only truncates without writing, leaving key
+// bits in the heap.
+func zeroPrivateKey(key *ecdsa.PrivateKey) {
+	if key != nil && key.D != nil {
+		key.D.SetBytes(make([]byte, 32))
+		key.D.SetInt64(0)
+	}
+}
+
+func resolveEthClient(ctx context.Context, cfg *clientConfig) (*ethclient.Client, bool, error) {
+	switch {
+	case cfg.ethClient != nil:
+		return cfg.ethClient, false, nil
+	case cfg.rpcURL != "":
+		c, err := ethclient.DialContext(ctx, cfg.rpcURL)
+		if err != nil {
+			return nil, false, fmt.Errorf("dial RPC: %w", err)
+		}
+		return c, true, nil
+	default:
+		return nil, false, errors.New("missing RPC source (use WithRPCURL or WithEthClient)")
+	}
+}
+
+func resolveChain(ctx context.Context, ec *ethclient.Client, cfg *clientConfig) (chain.Chain, error) {
+	if cfg.chain != nil {
+		return *cfg.chain, nil
+	}
+	chainID, err := ec.ChainID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("detect chain: %w", err)
+	}
+	if !chainID.IsInt64() {
+		return 0, fmt.Errorf("chain ID %s exceeds int64 range", chainID)
+	}
+	detected, err := chain.FromID(chainID.Int64())
+	if err != nil {
+		return 0, fmt.Errorf("unsupported chain %d: %w", chainID.Int64(), err)
+	}
+	return detected, nil
+}
+
+func resolveAddresses(c chain.Chain) (iabi.ResolvedAddresses, error) {
+	addresses := iabi.ResolvedAddressesFromChain(c)
+	zeroAddr := common.Address{}
+	for name, addr := range map[string]common.Address{
+		"FWSS":               addresses.FWSS,
+		"Payments":           addresses.Payments,
+		"PDPVerifier":        addresses.PDPVerifier,
+		"SPRegistry":         addresses.SPRegistry,
+		"USDFC":              addresses.USDFC,
+		"ViewContract":       addresses.ViewContract,
+		"SessionKeyRegistry": addresses.SessionKeyRegistry,
+	} {
+		if addr == zeroAddr {
+			return iabi.ResolvedAddresses{}, fmt.Errorf("no %s address for chain %s", name, c)
+		}
+	}
+	return addresses, nil
+}
+
+func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses iabi.ResolvedAddresses) (*Client, error) {
+	evmSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("create signer: %w", err)
+	}
+	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
+
+	c := &Client{
+		ethClient:            ec,
+		ownsClient:           ownsClient,
+		evmSigner:            evmSigner,
+		selectedChain:        selectedChain,
+		addresses:            addresses,
+		nonces:               nonces,
+		logger:               cfg.logger,
+		httpClient:           cfg.httpClient,
+		source:               cfg.source,
+		withCDN:              cfg.withCDN,
+		allowPrivateNetworks: cfg.allowPrivateNetworks,
+		lifecycle:            lifecycle.New(),
+	}
+	if err := c.initServices(); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
