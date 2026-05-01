@@ -43,6 +43,14 @@ func (*fakePDPProviderClient) WaitForPiecesAdded(context.Context, string, time.D
 	return nil, nil
 }
 
+func (*fakePDPProviderClient) CreateDataSet(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error) {
+	return nil, nil
+}
+
+func (*fakePDPProviderClient) WaitForDataSetCreated(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
+	return nil, nil
+}
+
 func (*fakePDPProviderClient) CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
 	return nil, nil
 }

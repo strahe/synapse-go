@@ -63,6 +63,12 @@
 // source URL. The PDP provider performs stricter source-URL validation before executing
 // the provider-to-provider pull.
 //
+// Callers that need restartable staged uploads can split secondary creation
+// from piece registration: build a context with [Service.CreateContext], call
+// [Context.CreateDataSet], persist the [CreateDataSetSubmission] from
+// [CreateDataSetOptions.OnSubmitted], resume with [Context.WaitForDataSetCreated]
+// if needed, then run [Context.Pull] and [Context.Commit].
+//
 // # Stability
 //
 // 0.x phase: public API may change between minor releases.

@@ -111,6 +111,28 @@ type CommitResult struct {
 	IsNewDataSet  bool // true when a new data set was created by this commit
 }
 
+// CreateDataSetOptions configures [Context.CreateDataSet].
+type CreateDataSetOptions struct {
+	// OnSubmitted is invoked after the create transaction is submitted and
+	// before waiting for confirmation. It may be nil.
+	OnSubmitted func(CreateDataSetSubmission)
+}
+
+// CreateDataSetSubmission identifies a submitted create-dataset transaction.
+// Persist and restore all fields together; incomplete submissions are rejected.
+type CreateDataSetSubmission struct {
+	TransactionID   string
+	StatusURL       string
+	ClientDataSetID types.ClientDataSetID
+}
+
+// CreateDataSetResult is returned after standalone dataset creation confirms.
+type CreateDataSetResult struct {
+	TransactionID   string
+	DataSetID       types.DataSetID
+	ClientDataSetID types.ClientDataSetID
+}
+
 // CopyResult describes one successfully committed copy.
 type CopyResult struct {
 	ProviderID   types.ProviderID

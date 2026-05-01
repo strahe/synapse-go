@@ -56,6 +56,8 @@ type PDPProviderClient interface {
 	WaitForPullComplete(context.Context, pdp.PullRequest, time.Duration, func(*pdp.PullResult)) (*pdp.PullResult, error)
 	AddPieces(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	WaitForPiecesAdded(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
+	CreateDataSet(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error)
+	WaitForDataSetCreated(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error)
 	CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error)
@@ -93,6 +95,8 @@ type Context struct {
 	dataSetID       *types.DataSetID
 	clientDataSetID types.ClientDataSetID
 	dataSetMetadata map[string]string
+	createInFlight  bool
+	pendingCreate   *CreateDataSetSubmission
 	presignedKinds  map[[32]byte]commitExtraDataKind
 
 	// Optional read/write collaborators used by TS-parity lifecycle
@@ -340,6 +344,10 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	// prevents PresignForCommit from blocking concurrent read accessors
 	// (DataSetID, ProviderID, ...) while signing hundreds of pieces.
 	c.mu.Lock()
+	if c.createInFlight || c.pendingCreate != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
+	}
 	if c.clientDataSetID == nil {
 		if c.dataSetID != nil {
 			c.mu.Unlock()
@@ -451,7 +459,11 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	c.mu.RLock()
 	dataSetID := c.dataSetID
 	recordKeeper := c.recordKeeper
+	pendingCreate := c.createInFlight || c.pendingCreate != nil
 	c.mu.RUnlock()
+	if pendingCreate {
+		return nil, fmt.Errorf("storage.Context.Pull: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
+	}
 
 	// RecordKeeper is required by the provider for both new and existing datasets.
 	pdpReq.RecordKeeper = recordKeeper
@@ -512,6 +524,12 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	if len(req.Pieces) == 0 {
 		return nil, fmt.Errorf("storage.Context.Commit: %w: no pieces provided", ErrInvalidArgument)
 	}
+	c.mu.RLock()
+	pendingCreate := c.createInFlight || c.pendingCreate != nil
+	c.mu.RUnlock()
+	if pendingCreate {
+		return nil, fmt.Errorf("storage.Context.Commit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
+	}
 
 	// Serialise all Commit calls to prevent a TOCTOU race: the create-vs-add
 	// decision is made in PresignForCommit (which reads c.dataSetID) and then
@@ -520,6 +538,13 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	// dataset, corrupting the on-chain state.
 	c.commitMu.Lock()
 	defer c.commitMu.Unlock()
+
+	c.mu.RLock()
+	pendingCreate = c.createInFlight || c.pendingCreate != nil
+	c.mu.RUnlock()
+	if pendingCreate {
+		return nil, fmt.Errorf("storage.Context.Commit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
+	}
 
 	extraData := append([]byte(nil), req.ExtraData...)
 	var err error

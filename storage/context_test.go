@@ -452,6 +452,717 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	}
 }
 
+func TestContextCreateDataSet_SubmitsWaitsAndBinds(t *testing.T) {
+	wantClientID := big.NewInt(99)
+	statusURL := "https://sp.example.com/pdp/data-sets/created/0xbeef"
+	wantTx := common.HexToHash("0xbeef").Hex()
+	var submitted *CreateDataSetSubmission
+	var submittedBeforeWait bool
+	createCalls := 0
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, recordKeeper common.Address, extraData []byte) (*pdp.CreateDataSetResult, error) {
+			createCalls++
+			if recordKeeper != testRecordKeeper() {
+				t.Fatalf("recordKeeper=%s want %s", recordKeeper, testRecordKeeper())
+			}
+			if len(extraData) == 0 {
+				t.Fatal("extraData should be signed")
+			}
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: statusURL,
+			}, nil
+		},
+		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			if gotStatusURL != statusURL {
+				t.Fatalf("statusURL=%q want %q", gotStatusURL, statusURL)
+			}
+			submittedBeforeWait = submitted != nil
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(wantClientID),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	result, err := ctx.CreateDataSet(context.Background(), &CreateDataSetOptions{
+		OnSubmitted: func(got CreateDataSetSubmission) {
+			submitted = &got
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateDataSet: %v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("CreateDataSet calls=%d want 1", createCalls)
+	}
+	if !submittedBeforeWait {
+		t.Fatal("OnSubmitted must fire before WaitForDataSetCreated")
+	}
+	if submitted == nil {
+		t.Fatal("OnSubmitted was not called")
+	}
+	if submitted.TransactionID != wantTx || submitted.StatusURL != statusURL {
+		t.Fatalf("submitted=%+v want tx=%s statusURL=%s", submitted, wantTx, statusURL)
+	}
+	if submitted.ClientDataSetID == nil || submitted.ClientDataSetID.Cmp(wantClientID) != 0 {
+		t.Fatalf("submitted ClientDataSetID=%v want %s", submitted.ClientDataSetID, wantClientID)
+	}
+	if result.TransactionID != wantTx || result.DataSetID != 77 {
+		t.Fatalf("result=%+v want tx=%s dataSetID=77", result, wantTx)
+	}
+	if result.ClientDataSetID == nil || result.ClientDataSetID.Cmp(wantClientID) != 0 {
+		t.Fatalf("result ClientDataSetID=%v want %s", result.ClientDataSetID, wantClientID)
+	}
+	if id := ctx.DataSetID(); id == nil || *id != 77 {
+		t.Fatalf("context DataSetID=%v want 77", id)
+	}
+}
+
+func TestContextCreateDataSetThenCommitUsesAddPieces(t *testing.T) {
+	info := mustPieceInfo(t)
+	createCalls := 0
+	addCalls := 0
+	createAndAddCalls := 0
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			createCalls++
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0x01"),
+				StatusURL: "https://sp.example.com/pdp/data-sets/created/0x01",
+			}, nil
+		},
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0x01"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+		addPiecesFn: func(_ context.Context, dataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+			addCalls++
+			if dataSetID != 77 {
+				t.Fatalf("dataSetID=%d want 77", dataSetID)
+			}
+			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
+				t.Fatalf("pieces=%+v want %s", pieces, info.CIDv2)
+			}
+			if len(extraData) == 0 {
+				t.Fatal("extraData should be signed")
+			}
+			return &pdp.AddPiecesResult{
+				TxHash:    common.HexToHash("0x02"),
+				StatusURL: "https://sp.example.com/pdp/data-sets/77/pieces/added/0x02",
+			}, nil
+		},
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            common.HexToHash("0x02"),
+				DataSetID:         77,
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+			}, nil
+		},
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			createAndAddCalls++
+			return nil, errors.New("create and add should not be called after CreateDataSet")
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.CreateDataSet(context.Background(), nil); err != nil {
+		t.Fatalf("CreateDataSet: %v", err)
+	}
+	commit, err := ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if createCalls != 1 || addCalls != 1 || createAndAddCalls != 0 {
+		t.Fatalf("calls create=%d add=%d createAndAdd=%d", createCalls, addCalls, createAndAddCalls)
+	}
+	if commit.DataSetID != 77 || len(commit.PieceIDs) != 1 || commit.PieceIDs[0] != 8 || commit.IsNewDataSet {
+		t.Fatalf("commit=%+v want existing dataset 77 piece 8", commit)
+	}
+}
+
+func TestContextCreateDataSetRejectsIncompleteProviderSubmission(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *pdp.CreateDataSetResult
+	}{
+		{
+			name: "zero transaction",
+			result: &pdp.CreateDataSetResult{
+				StatusURL: "https://sp.example.com/pdp/data-sets/created/0xbeef",
+			},
+		},
+		{
+			name: "empty status url",
+			result: &pdp.CreateDataSetResult{
+				TxHash: common.HexToHash("0xbeef"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waitCalls := 0
+			fake := &fakePDPProviderClient{
+				createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+					return tt.result, nil
+				},
+				waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+					waitCalls++
+					return nil, errors.New("wait should not be called")
+				},
+			}
+			ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+				WithPayer(testPayer()),
+				WithRecordKeeper(testRecordKeeper()),
+				WithChainID(types.ChainID(314159)),
+				WithClientDataSetID(big.NewInt(99)),
+			)
+			if err != nil {
+				t.Fatalf("NewContext: %v", err)
+			}
+
+			if _, err := ctx.CreateDataSet(context.Background(), nil); err == nil {
+				t.Fatal("CreateDataSet returned nil error")
+			}
+			if waitCalls != 0 {
+				t.Fatalf("WaitForDataSetCreated calls=%d want 0", waitCalls)
+			}
+			if ctx.pendingCreate != nil || ctx.createInFlight {
+				t.Fatalf("pendingCreate=%v createInFlight=%v want cleared", ctx.pendingCreate, ctx.createInFlight)
+			}
+		})
+	}
+}
+
+func TestContextCreateDataSetRejectsExistingDataSet(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.CreateDataSet(context.Background(), nil)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("CreateDataSet error=%v want ErrInvalidArgument", err)
+	}
+}
+
+func TestContextCreateDataSetRetryWaitsForPendingSubmission(t *testing.T) {
+	waitErr := errors.New("wait failed")
+	statusURL := "https://sp.example.com/pdp/data-sets/created/0xbeef"
+	createCalls := 0
+	waitCalls := 0
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			createCalls++
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: statusURL,
+			}, nil
+		},
+		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			if gotStatusURL != statusURL {
+				t.Fatalf("statusURL=%q want %q", gotStatusURL, statusURL)
+			}
+			waitCalls++
+			if waitCalls == 1 {
+				return nil, waitErr
+			}
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	if _, err := ctx.CreateDataSet(context.Background(), nil); !errors.Is(err, waitErr) {
+		t.Fatalf("first CreateDataSet error=%v want waitErr", err)
+	}
+	result, err := ctx.CreateDataSet(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("second CreateDataSet: %v", err)
+	}
+	if createCalls != 1 || waitCalls != 2 {
+		t.Fatalf("calls create=%d wait=%d want create=1 wait=2", createCalls, waitCalls)
+	}
+	if result.DataSetID != 77 {
+		t.Fatalf("DataSetID=%d want 77", result.DataSetID)
+	}
+}
+
+func TestContextCreateDataSetRejectedSubmissionCanRetry(t *testing.T) {
+	statusURL1 := "https://sp.example.com/pdp/data-sets/created/0xbeef"
+	statusURL2 := "https://sp.example.com/pdp/data-sets/created/0xcafe"
+	createCalls := 0
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			createCalls++
+			switch createCalls {
+			case 1:
+				return &pdp.CreateDataSetResult{
+					TxHash:    common.HexToHash("0xbeef"),
+					StatusURL: statusURL1,
+				}, nil
+			case 2:
+				return &pdp.CreateDataSetResult{
+					TxHash:    common.HexToHash("0xcafe"),
+					StatusURL: statusURL2,
+				}, nil
+			default:
+				t.Fatalf("unexpected CreateDataSet call %d", createCalls)
+				return nil, nil
+			}
+		},
+		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			switch gotStatusURL {
+			case statusURL1:
+				return nil, pdp.ErrTxRejected
+			case statusURL2:
+				return &pdp.CreateDataSetStatus{
+					CreateMessageHash: common.HexToHash("0xcafe"),
+					TxStatus:          "confirmed",
+					DataSetCreated:    true,
+					DataSetID:         big.NewInt(77),
+				}, nil
+			default:
+				t.Fatalf("unexpected statusURL %q", gotStatusURL)
+				return nil, nil
+			}
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	if _, err := ctx.CreateDataSet(context.Background(), nil); !errors.Is(err, pdp.ErrTxRejected) {
+		t.Fatalf("first CreateDataSet error=%v want ErrTxRejected", err)
+	}
+	result, err := ctx.CreateDataSet(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("second CreateDataSet: %v", err)
+	}
+	if createCalls != 2 {
+		t.Fatalf("CreateDataSet calls=%d want 2", createCalls)
+	}
+	if result.TransactionID != common.HexToHash("0xcafe").Hex() || result.DataSetID != 77 {
+		t.Fatalf("result=%+v want tx=0xcafe dataSetID=77", result)
+	}
+}
+
+func TestContextCreateDataSetInFlightBlocksPresignAndPull(t *testing.T) {
+	info := mustPieceInfo(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCreate := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseCreate()
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(ctx context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: "https://sp.example.com/pdp/data-sets/created/0xbeef",
+			}, nil
+		},
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctx.CreateDataSet(context.Background(), nil)
+		done <- err
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("CreateDataSet did not enter provider call")
+	}
+	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("PresignForCommit error=%v want ErrInvalidArgument", err)
+	}
+	if _, err := ctx.Pull(context.Background(), PullRequest{
+		Pieces:    []cid.Cid{info.CIDv2},
+		From:      func(cid.Cid) string { return "https://primary.example.com/piece" },
+		ExtraData: []byte{0x01},
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Pull error=%v want ErrInvalidArgument", err)
+	}
+	if _, err := ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Commit error=%v want ErrInvalidArgument", err)
+	}
+
+	releaseCreate()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CreateDataSet: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CreateDataSet did not finish")
+	}
+}
+
+func TestContextCreateDataSetWaitDoesNotBlockCommit(t *testing.T) {
+	info := mustPieceInfo(t)
+	waiting := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWait := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseWait()
+
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: "https://sp.example.com/pdp/data-sets/created/0xbeef",
+			}, nil
+		},
+		waitForCreatedFn: func(ctx context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			close(waiting)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctx.CreateDataSet(context.Background(), nil)
+		done <- err
+	}()
+
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		t.Fatal("CreateDataSet did not enter wait")
+	}
+
+	commitDone := make(chan error, 1)
+	go func() {
+		_, err := ctx.Commit(context.Background(), CommitRequest{
+			Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+		})
+		commitDone <- err
+	}()
+	select {
+	case err := <-commitDone:
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("Commit error=%v want ErrInvalidArgument", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Commit blocked while CreateDataSet was waiting")
+	}
+
+	releaseWait()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CreateDataSet: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CreateDataSet did not finish")
+	}
+}
+
+func TestContextPendingCreateBlocksOtherWritePaths(t *testing.T) {
+	info := mustPieceInfo(t)
+	fake := &fakePDPProviderClient{
+		createDataSetFn: func(_ context.Context, _ common.Address, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xbeef"),
+				StatusURL: "https://sp.example.com/pdp/data-sets/created/0xbeef",
+			}, nil
+		},
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			return nil, errors.New("wait failed")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.CreateDataSet(context.Background(), nil); err == nil {
+		t.Fatal("expected initial CreateDataSet wait error")
+	}
+
+	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("PresignForCommit error=%v want ErrInvalidArgument", err)
+	}
+	if _, err := ctx.Pull(context.Background(), PullRequest{
+		Pieces:    []cid.Cid{info.CIDv2},
+		From:      func(cid.Cid) string { return "https://primary.example.com/piece" },
+		ExtraData: []byte{0x01},
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Pull error=%v want ErrInvalidArgument", err)
+	}
+	if _, err := ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Commit error=%v want ErrInvalidArgument", err)
+	}
+}
+
+func TestContextWaitForDataSetCreatedBindsSubmission(t *testing.T) {
+	wantClientID := big.NewInt(99)
+	submission := CreateDataSetSubmission{
+		TransactionID:   common.HexToHash("0xbeef").Hex(),
+		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
+		ClientDataSetID: wantClientID,
+	}
+	fake := &fakePDPProviderClient{
+		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			if gotStatusURL != submission.StatusURL {
+				t.Fatalf("statusURL=%q want %q", gotStatusURL, submission.StatusURL)
+			}
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	result, err := ctx.WaitForDataSetCreated(context.Background(), submission)
+	if err != nil {
+		t.Fatalf("WaitForDataSetCreated: %v", err)
+	}
+	if result.TransactionID != submission.TransactionID || result.DataSetID != 77 {
+		t.Fatalf("result=%+v want tx=%s dataSetID=77", result, submission.TransactionID)
+	}
+	if result.ClientDataSetID == nil || result.ClientDataSetID.Cmp(wantClientID) != 0 {
+		t.Fatalf("ClientDataSetID=%v want %s", result.ClientDataSetID, wantClientID)
+	}
+	if id := ctx.DataSetID(); id == nil || *id != 77 {
+		t.Fatalf("context DataSetID=%v want 77", id)
+	}
+}
+
+func TestContextWaitForDataSetCreatedRejectsInvalidTransactionID(t *testing.T) {
+	tests := []struct {
+		name          string
+		transactionID string
+	}{
+		{name: "empty", transactionID: ""},
+		{name: "short", transactionID: "0xbeef"},
+		{name: "zero", transactionID: common.Hash{}.Hex()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waitCalls := 0
+			fake := &fakePDPProviderClient{
+				waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+					waitCalls++
+					return nil, errors.New("wait should not be called")
+				},
+			}
+			ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+				WithPayer(testPayer()),
+				WithRecordKeeper(testRecordKeeper()),
+				WithChainID(types.ChainID(314159)),
+				WithClientDataSetID(big.NewInt(99)),
+			)
+			if err != nil {
+				t.Fatalf("NewContext: %v", err)
+			}
+
+			_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+				TransactionID:   tt.transactionID,
+				StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
+				ClientDataSetID: big.NewInt(99),
+			})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
+			}
+			if waitCalls != 0 {
+				t.Fatalf("WaitForDataSetCreated wait calls=%d want 0", waitCalls)
+			}
+		})
+	}
+}
+
+func TestContextWaitForDataSetCreatedRejectsMismatchedExistingDataSet(t *testing.T) {
+	fake := &fakePDPProviderClient{
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xbeef"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.DataSetID(42)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+		TransactionID:   common.HexToHash("0xbeef").Hex(),
+		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
+		ClientDataSetID: big.NewInt(99),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
+	}
+}
+
+func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionID(t *testing.T) {
+	fake := &fakePDPProviderClient{
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			return &pdp.CreateDataSetStatus{
+				CreateMessageHash: common.HexToHash("0xcafe"),
+				TxStatus:          "confirmed",
+				DataSetCreated:    true,
+				DataSetID:         big.NewInt(77),
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithClientDataSetID(big.NewInt(99)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+		TransactionID:   common.HexToHash("0xbeef").Hex(),
+		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
+		ClientDataSetID: big.NewInt(99),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
+	}
+	if id := ctx.DataSetID(); id != nil {
+		t.Fatalf("context DataSetID=%v want nil", id)
+	}
+}
+
 func TestContextCommit_NewDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.T) {
 	info := mustPieceInfo(t)
 
@@ -781,6 +1492,8 @@ type fakePDPProviderClient struct {
 	pullPiecesFnWithCb    func(context.Context, pdp.PullRequest, func(*pdp.PullResult)) (*pdp.PullResult, error)
 	addPiecesFn           func(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	waitForAddedFn        func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
+	createDataSetFn       func(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error)
+	waitForCreatedFn      func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error)
 	createAndAddFn        func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	scheduleDeletionFn    func(context.Context, uint64, uint64, []byte) (common.Hash, error)
@@ -819,6 +1532,14 @@ func (f *fakePDPProviderClient) AddPieces(ctx context.Context, dataSetID uint64,
 
 func (f *fakePDPProviderClient) WaitForPiecesAdded(ctx context.Context, statusURL string, pollInterval time.Duration) (*pdp.AddPiecesStatus, error) {
 	return f.waitForAddedFn(ctx, statusURL, pollInterval)
+}
+
+func (f *fakePDPProviderClient) CreateDataSet(ctx context.Context, recordKeeper common.Address, extraData []byte) (*pdp.CreateDataSetResult, error) {
+	return f.createDataSetFn(ctx, recordKeeper, extraData)
+}
+
+func (f *fakePDPProviderClient) WaitForDataSetCreated(ctx context.Context, statusURL string, pollInterval time.Duration) (*pdp.CreateDataSetStatus, error) {
+	return f.waitForCreatedFn(ctx, statusURL, pollInterval)
 }
 
 func (f *fakePDPProviderClient) CreateDataSetAndAddPieces(ctx context.Context, recordKeeper common.Address, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.CreateDataSetResult, error) {
