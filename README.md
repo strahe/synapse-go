@@ -12,7 +12,8 @@ Go SDK for Filecoin Onchain Cloud (FOC), ported from the
 
 > **Status:** Beta - API may change.
 
-**Docs:** [API reference](https://pkg.go.dev/github.com/strahe/synapse-go) |
+**Docs:** [getting started](docs/GETTING_STARTED.md) |
+[API reference](https://pkg.go.dev/github.com/strahe/synapse-go) |
 [examples](examples/)
 
 ## Install
@@ -27,11 +28,12 @@ Requires Go 1.25+.
 
 ```go
 client, err := synapse.New(ctx,
-    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
-    synapse.WithRPCURL(os.Getenv("SYNAPSE_RPC_URL")),
+    synapse.WithPrivateKeyHex("0x..."),
+    synapse.WithRPCURL("https://api.calibration.node.glif.io/rpc/v1"),
+    synapse.WithSource("my-app"),
 )
 if err != nil { return err }
-defer func() { _ = client.Close() }()
+defer client.Close()
 
 // file is an io.Reader over the payload to upload.
 upload, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
@@ -42,7 +44,8 @@ fmt.Printf("copies: %d/%d\n", upload.SuccessCount(), upload.RequestedCopies)
 fmt.Println("retrieve:", upload.Copies[0].RetrievalURL)
 ```
 
-Set `SYNAPSE_PRIVATE_KEY` and `SYNAPSE_RPC_URL`; the chain is detected automatically.
+Use real values from your config or secret manager. The chain is detected
+automatically.
 
 ## Package Map
 
@@ -59,6 +62,7 @@ Set `SYNAPSE_PRIVATE_KEY` and `SYNAPSE_RPC_URL`; the chain is detected automatic
 | `signer` | Secp256k1 and BLS signing abstractions |
 | `piece` | PieceCID v1/v2 calculation, parsing, and validation |
 | `filbeam` | FilBeam egress quota and usage stats for FWSS datasets |
+| `pdp` | Low-level Curio-compatible PDP provider HTTP client |
 
 ## Testing
 

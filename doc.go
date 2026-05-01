@@ -6,13 +6,14 @@
 // contract addresses, and eagerly initialises all sub-services before returning.
 //
 //	client, err := synapse.New(ctx,
-//	    synapse.WithPrivateKeyHex(os.Getenv("SYNAPSE_PRIVATE_KEY")),
-//	    synapse.WithRPCURL(os.Getenv("SYNAPSE_RPC_URL")),
+//	    synapse.WithPrivateKeyHex("0x..."),
+//	    synapse.WithRPCURL("https://api.calibration.node.glif.io/rpc/v1"),
+//	    synapse.WithSource("my-app"),
 //	)
 //	if err != nil {
 //	    // handle error
 //	}
-//	defer func() { _ = client.Close() }()
+//	defer client.Close()
 //
 //	// data must contain uploadable content; PieceCIDv2 requires at least
 //	// 127 raw bytes.
