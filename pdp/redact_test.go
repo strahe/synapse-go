@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"net/url"
@@ -15,18 +15,18 @@ func TestRedactURL(t *testing.T) {
 	}{
 		{
 			name: "plain URL is unchanged",
-			in:   "https://curio.example.com/pdp/pieces",
-			want: "https://curio.example.com/pdp/pieces",
+			in:   "https://pdp.example.com/pdp/pieces",
+			want: "https://pdp.example.com/pdp/pieces",
 		},
 		{
 			name: "userinfo is stripped",
-			in:   "https://alice:secret@curio.example.com/pdp",
-			want: "https://curio.example.com/pdp",
+			in:   "https://alice:secret@pdp.example.com/pdp",
+			want: "https://pdp.example.com/pdp",
 		},
 		{
 			name: "sensitive query values are masked",
-			in:   "https://curio.example.com/pdp?token=abc&region=us",
-			want: "https://curio.example.com/pdp?token=***&region=us",
+			in:   "https://pdp.example.com/pdp?token=abc&region=us",
+			want: "https://pdp.example.com/pdp?token=***&region=us",
 		},
 		{
 			name: "multiple sensitive params masked, ordinary preserved",

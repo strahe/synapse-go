@@ -11,7 +11,7 @@ import (
 func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
 	svc := newTestService()
 	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
 func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
 	svc := newTestService()
 	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
 
 func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 	svc := newTestService()
-	want, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -102,11 +102,11 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 
 func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	svc := newTestService()
-	ctx1, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx1, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext #1: %v", err)
 	}
-	ctx2, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx2, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext #2: %v", err)
 	}

@@ -13,7 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	icurio "github.com/strahe/synapse-go/internal/curio"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
@@ -117,20 +117,20 @@ func TestContextUpload_Callbacks(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			_, _ = io.Copy(io.Discard, r)
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
 				TxHash:    common.HexToHash("0xabc"),
 				StatusURL: "https://sp.example.com/status",
 			}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabc"),
 				DataSetID:         55,
 				PiecesAdded:       true,
@@ -223,20 +223,20 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			_, _ = io.Copy(io.Discard, r)
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
 				TxHash:    common.HexToHash("0xabc"),
 				StatusURL: "https://sp.example.com/status",
 			}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabc"),
 				DataSetID:         55,
 				PiecesAdded:       true,

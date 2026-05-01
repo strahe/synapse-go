@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import "github.com/ipfs/go-cid"
 

@@ -25,7 +25,7 @@ func (f *fakeFWSSDataSetReader) GetDataSet(_ context.Context, id types.DataSetID
 
 func newAutoFetchContext(t *testing.T, dataSetID types.DataSetID) *Context {
 	t.Helper()
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithDataSetID(dataSetID))
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithDataSetID(dataSetID))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestCreateContext_PrefersExplicitClientDataSetID(t *testing.T) {
 	reader := &fakeFWSSDataSetReader{
 		info: &warmstorage.DataSetInfo{ClientDataSetID: big.NewInt(0xDEAD)},
 	}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithDataSetID(dsID), WithClientDataSetID(explicit))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)

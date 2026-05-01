@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"bytes"
@@ -20,7 +20,7 @@ import (
 )
 
 // DefaultUserAgent is set on every outgoing request unless overridden.
-const DefaultUserAgent = "synapse-go/curio"
+const DefaultUserAgent = "synapse-go/pdp"
 
 // DefaultHTTPTimeout applies to simple JSON operations. Streaming uploads
 // use a separate, longer timeout (or none at all) negotiated per call.
@@ -31,13 +31,13 @@ const DefaultHTTPTimeout = 30 * time.Second
 const DefaultMaxRetries = 3
 
 // MaxControlResponseBytes caps the size of control-plane JSON response bodies
-// read fully into memory. Curio's control-plane endpoints return small JSON
+// read fully into memory. PDP provider control-plane endpoints return small JSON
 // documents (dataset status, piece IDs, etc.); anything larger indicates a
 // buggy or hostile server and should not be allowed to exhaust client memory.
 // Streaming endpoints (piece download) bypass this limit.
 const MaxControlResponseBytes = 16 << 20 // 16 MiB
 
-// Client is a thin HTTP client for a single Curio PDP service URL.
+// Client is a thin HTTP client for a single PDP provider service URL.
 // Safe for concurrent use.
 type Client struct {
 	baseURL      *url.URL
@@ -91,14 +91,14 @@ func WithLogger(l *slog.Logger) Option {
 // https://pdp.example.com).
 func New(serviceURL string, opts ...Option) (*Client, error) {
 	if serviceURL == "" {
-		return nil, errors.New("curio.New: empty serviceURL")
+		return nil, errors.New("pdp.New: empty serviceURL")
 	}
 	u, err := url.Parse(serviceURL)
 	if err != nil {
-		return nil, fmt.Errorf("curio.New: parse serviceURL: %w", err)
+		return nil, fmt.Errorf("pdp.New: parse serviceURL: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("curio.New: unsupported scheme %q", u.Scheme)
+		return nil, fmt.Errorf("pdp.New: unsupported scheme %q", u.Scheme)
 	}
 	// Ensure path ends with "/" so relative resolutions append cleanly.
 	if !strings.HasSuffix(u.Path, "/") {
@@ -144,11 +144,11 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("curio request", "method", req.Method, "url", redactURL(req.URL))
+		c.logger.Debug("pdp request", "method", req.Method, "url", redactURL(req.URL))
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: %s %s: %w", req.Method, req.URL.Path, err)
+		return nil, nil, fmt.Errorf("pdp: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -158,10 +158,10 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 	limited := io.LimitReader(resp.Body, MaxControlResponseBytes+1)
 	body, readErr := io.ReadAll(limited)
 	if readErr != nil {
-		return resp, nil, fmt.Errorf("curio: read body: %w", readErr)
+		return resp, nil, fmt.Errorf("pdp: read body: %w", readErr)
 	}
 	if int64(len(body)) > MaxControlResponseBytes {
-		return resp, nil, fmt.Errorf("curio: %s %s: response body exceeds %d bytes (MaxControlResponseBytes)", req.Method, req.URL.Path, MaxControlResponseBytes)
+		return resp, nil, fmt.Errorf("pdp: %s %s: response body exceeds %d bytes (MaxControlResponseBytes)", req.Method, req.URL.Path, MaxControlResponseBytes)
 	}
 
 	if len(expectStatuses) == 0 {
@@ -307,7 +307,7 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 			return resp, body, err
 		}
 		if c.logger != nil {
-			c.logger.Debug("curio retry", "attempt", attempt+1, "maxRetries", maxRetries, "error", err)
+			c.logger.Debug("pdp retry", "attempt", attempt+1, "maxRetries", maxRetries, "error", err)
 		}
 		delayFn := c.retryDelayFn
 		if delayFn == nil {
@@ -324,7 +324,7 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 	// the last iteration, and the `maxRetries < 0 → 0` guard ensures the
 	// loop runs at least once. Returning a sentinel error here keeps the
 	// function total without using panic in library code.
-	return nil, nil, fmt.Errorf("curio: doRetryable: retry loop exited without result")
+	return nil, nil, fmt.Errorf("pdp: doRetryable: retry loop exited without result")
 }
 
 // postJSON builds a POST request with a JSON-encoded body and executes it
@@ -335,15 +335,15 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 func (c *Client) postJSON(ctx context.Context, path string, payload any, expect ...int) (*http.Response, []byte, error) {
 	u, err := c.resolve(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: resolve %s: %w", path, err)
+		return nil, nil, fmt.Errorf("pdp: resolve %s: %w", path, err)
 	}
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: marshal %s: %w", path, err)
+		return nil, nil, fmt.Errorf("pdp: marshal %s: %w", path, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: build POST %s: %w", path, err)
+		return nil, nil, fmt.Errorf("pdp: build POST %s: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return c.do(req, expect...)
@@ -366,15 +366,15 @@ func (c *Client) longClient() *http.Client {
 func (c *Client) postJSONLong(ctx context.Context, pth string, payload any, expect ...int) (*http.Response, []byte, error) {
 	u, err := c.resolve(pth)
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: resolve %s: %w", pth, err)
+		return nil, nil, fmt.Errorf("pdp: resolve %s: %w", pth, err)
 	}
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: marshal %s: %w", pth, err)
+		return nil, nil, fmt.Errorf("pdp: marshal %s: %w", pth, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
 	if err != nil {
-		return nil, nil, fmt.Errorf("curio: build POST %s: %w", pth, err)
+		return nil, nil, fmt.Errorf("pdp: build POST %s: %w", pth, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return c.doWithClient(c.longClient(), req, expect...)
@@ -385,12 +385,12 @@ func (c *Client) postJSONLong(ctx context.Context, pth string, payload any, expe
 func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 	u, err := c.resolve(path)
 	if err != nil {
-		return fmt.Errorf("curio: resolve %s: %w", path, err)
+		return fmt.Errorf("pdp: resolve %s: %w", path, err)
 	}
 	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
-			return nil, fmt.Errorf("curio: build GET %s: %w", path, err)
+			return nil, fmt.Errorf("pdp: build GET %s: %w", path, err)
 		}
 		req.Header.Set("Accept", "application/json")
 		return req, nil
@@ -402,7 +402,7 @@ func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 		return nil
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
-		return fmt.Errorf("curio: decode %s: %w", path, err)
+		return fmt.Errorf("pdp: decode %s: %w", path, err)
 	}
 	return nil
 }
@@ -415,14 +415,14 @@ func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) error {
 	u, err := c.resolve(path)
 	if err != nil {
-		return fmt.Errorf("curio: resolve %s: %w", path, err)
+		return fmt.Errorf("pdp: resolve %s: %w", path, err)
 	}
 	var buf []byte
 	if payload != nil {
 		var err error
 		buf, err = json.Marshal(payload)
 		if err != nil {
-			return fmt.Errorf("curio: marshal %s: %w", path, err)
+			return fmt.Errorf("pdp: marshal %s: %w", path, err)
 		}
 	}
 	var body io.Reader
@@ -431,7 +431,7 @@ func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), body)
 	if err != nil {
-		return fmt.Errorf("curio: build DELETE %s: %w", path, err)
+		return fmt.Errorf("pdp: build DELETE %s: %w", path, err)
 	}
 	if buf != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -445,7 +445,7 @@ func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) 
 		return nil
 	}
 	if err := json.Unmarshal(respBody, dst); err != nil {
-		return fmt.Errorf("curio: decode %s: %w", path, err)
+		return fmt.Errorf("pdp: decode %s: %w", path, err)
 	}
 	return nil
 }

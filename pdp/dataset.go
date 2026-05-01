@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -29,15 +29,14 @@ type CreateDataSetResult struct {
 	StatusURL string
 }
 
-// CreateDataSet calls POST /pdp/data-sets. extraData must be a hex-encoded
-// EIP-712 signed blob produced by the internal/typeddata signer (the same
-// format viem's encodeAbiParameters emits on the TS side).
+// CreateDataSet calls POST /pdp/data-sets. extraData must be an EIP-712
+// signed blob encoded as the PDP provider expects.
 func (c *Client) CreateDataSet(ctx context.Context, recordKeeper common.Address, extraData []byte) (*CreateDataSetResult, error) {
 	if (recordKeeper == common.Address{}) {
-		return nil, errors.New("curio.CreateDataSet: zero recordKeeper")
+		return nil, errors.New("pdp.CreateDataSet: zero recordKeeper")
 	}
 	if len(extraData) == 0 {
-		return nil, errors.New("curio.CreateDataSet: empty extraData")
+		return nil, errors.New("pdp.CreateDataSet: empty extraData")
 	}
 	payload := CreateDataSetRequest{
 		RecordKeeper: recordKeeper,
@@ -62,15 +61,13 @@ func (c *Client) CreateDataSet(ctx context.Context, recordKeeper common.Address,
 	}
 	statusURL, err := c.resolve(loc)
 	if err != nil {
-		return nil, fmt.Errorf("curio.CreateDataSet: resolve status URL: %w", err)
+		return nil, fmt.Errorf("pdp.CreateDataSet: resolve status URL: %w", err)
 	}
 	return &CreateDataSetResult{TxHash: tx, StatusURL: statusURL.String()}, nil
 }
 
-// CreateDataSetStatus mirrors GET /pdp/data-sets/created/{txHash}. Fields
-// match the discriminated-union variants on the TS side:
-// pending/confirmed/rejected (see CreateDataSet{Pending,Rejected,Success}Schema
-// in synapse-core/src/sp/create-dataset.ts).
+// CreateDataSetStatus mirrors GET /pdp/data-sets/created/{txHash}.
+// TxStatus reports pending, confirmed, or rejected.
 type CreateDataSetStatus struct {
 	CreateMessageHash common.Hash `json:"createMessageHash"`
 	Service           string      `json:"service"`
@@ -94,7 +91,7 @@ type rawCreateDataSetStatus struct {
 // GetDataSetCreationStatus polls the status URL once.
 func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string) (*CreateDataSetStatus, error) {
 	if statusURL == "" {
-		return nil, errors.New("curio.GetDataSetCreationStatus: empty statusURL")
+		return nil, errors.New("pdp.GetDataSetCreationStatus: empty statusURL")
 	}
 	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
@@ -109,7 +106,7 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 	}
 	var raw rawCreateDataSetStatus
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("curio.GetDataSetCreationStatus: decode: %w", err)
+		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: decode: %w", err)
 	}
 	out := &CreateDataSetStatus{
 		CreateMessageHash: common.HexToHash(raw.CreateMessageHash),
@@ -121,7 +118,7 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 	if raw.DataSetID != "" {
 		id, ok := new(big.Int).SetString(raw.DataSetID.String(), 10)
 		if !ok {
-			return nil, fmt.Errorf("curio.GetDataSetCreationStatus: bad dataSetId %q", raw.DataSetID)
+			return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: bad dataSetId %q", raw.DataSetID)
 		}
 		out.DataSetID = id
 	}
@@ -131,8 +128,7 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 // WaitForDataSetCreated polls until the server reports txStatus=confirmed
 // with dataSetCreated=true (success) or txStatus=rejected (ErrTxRejected).
 // Transport errors, including HTTP 404s from the status URL, are returned
-// immediately rather than retried. pollInterval defaults to 4s (matching
-// the TS SDK's DELAY_TIME).
+// immediately rather than retried. pollInterval defaults to 4 seconds.
 func (c *Client) WaitForDataSetCreated(ctx context.Context, statusURL string, pollInterval time.Duration) (*CreateDataSetStatus, error) {
 	if pollInterval <= 0 {
 		pollInterval = 4 * time.Second

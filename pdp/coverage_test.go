@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"bytes"
@@ -66,7 +66,7 @@ func TestWithLogger(t *testing.T) {
 	if err := c.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "curio request") {
+	if !strings.Contains(buf.String(), "pdp request") {
 		t.Errorf("expected log output, got %q", buf.String())
 	}
 }
@@ -775,7 +775,7 @@ func TestDownloadPiece_WithLogger(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = body.Close() }()
-	if !strings.Contains(buf.String(), "curio request") {
+	if !strings.Contains(buf.String(), "pdp request") {
 		t.Errorf("expected log, got %q", buf.String())
 	}
 	data, _ := io.ReadAll(body)

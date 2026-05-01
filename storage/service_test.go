@@ -17,7 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	icurio "github.com/strahe/synapse-go/internal/curio"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -386,20 +386,20 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 	}
 
 	const dsID types.DataSetID = 404
-	replacementClient := &fakeCurioClient{
-		pullPiecesFn: func(_ context.Context, req icurio.PullRequest) (*icurio.PullResult, error) {
+	replacementClient := &fakePDPProviderClient{
+		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			if req.DataSetID != uint64(dsID) {
 				t.Fatalf("pull dataSetID=%d want %d", req.DataSetID, uint64(dsID))
 			}
 			if len(req.ExtraData) == 0 {
 				t.Fatal("pull extraData should be populated for replacement existing dataset")
 			}
-			return &icurio.PullResult{
-				Status: icurio.PullStatusComplete,
-				Pieces: []icurio.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete}},
+			return &pdp.PullResult{
+				Status: pdp.PullStatusComplete,
+				Pieces: []pdp.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete}},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 			if gotDataSetID != uint64(dsID) {
 				t.Fatalf("commit dataSetID=%d want %d", gotDataSetID, uint64(dsID))
 			}
@@ -409,13 +409,13 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 			if len(extraData) == 0 {
 				t.Fatal("commit extraData should be populated for replacement existing dataset")
 			}
-			return &icurio.AddPiecesResult{TxHash: common.HexToHash("0x02"), StatusURL: "https://secondary-b.example.com/status"}, nil
+			return &pdp.AddPiecesResult{TxHash: common.HexToHash("0x02"), StatusURL: "https://secondary-b.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, statusURL string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForAddedFn: func(_ context.Context, statusURL string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			if statusURL == "" {
 				t.Fatal("empty statusURL")
 			}
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
 				DataSetID:         uint64(dsID),
 				PieceCount:        1,
@@ -489,7 +489,7 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 
 	replacementProvider := testProvider()
 	replacementProvider.ID = types.ProviderID(404)
-	replacementCtx, err := NewContext(replacementProvider, &fakeCurioClient{}, mustTestSigner(t),
+	replacementCtx, err := NewContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),

@@ -54,7 +54,7 @@ func (f *fakePDPConfigReader) GetPDPConfig(_ context.Context) (*warmstorage.PDPC
 
 func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfigReader) *Context {
 	t.Helper()
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -82,7 +82,7 @@ func TestContext_GetScheduledRemovals(t *testing.T) {
 }
 
 func TestContext_GetScheduledRemovals_WithoutDataSetReturnsEmpty(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -104,7 +104,7 @@ func TestContext_GetScheduledRemovals_WithoutDataSetReturnsEmpty(t *testing.T) {
 }
 
 func TestContext_GetScheduledRemovals_NotConfigured(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -198,7 +198,7 @@ func TestContext_PieceStatus_MainnetPopulatesProofTimes(t *testing.T) {
 		blockNumber:   110,
 	}
 	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 20, ChallengeWindowSize: big.NewInt(60)}}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314)),
@@ -243,7 +243,7 @@ func TestContext_PieceStatus_TypedNilPDPConfigReaderTreatedAsUnset(t *testing.T)
 	}
 	var cfg *fakePDPConfigReader
 
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),

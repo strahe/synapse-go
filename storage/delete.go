@@ -24,7 +24,7 @@ import (
 //  2. Signs an EIP-712 SchedulePieceRemovals message over (clientDataSetID,
 //     pieceID) and ABI-encodes the signature as bytes.
 //  3. Calls the provider's DELETE /pdp/data-sets/{id}/pieces/{pieceId}
-//     endpoint via PDPClient.SchedulePieceDeletion.
+//     endpoint via PDPProviderClient.SchedulePieceDeletion.
 //
 // The returned WriteResult carries only the transaction hash; there is no
 // on-chain wait.

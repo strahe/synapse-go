@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -43,7 +43,7 @@ type UploadStreamingResult struct {
 	Size int64
 }
 
-// UploadPieceStreaming uploads a piece using Curio's CommP-last 3-step
+// UploadPieceStreaming uploads a piece using the CommP-last 3-step
 // streaming protocol. This is the preferred upload path: data is streamed
 // to the server in a single pass while the PieceCID is computed inline
 // (either by the client via TeeReader or by the caller in advance).
@@ -59,21 +59,19 @@ type UploadStreamingResult struct {
 // The PUT clears the default Client timeout so large transfers are not
 // capped at DefaultHTTPTimeout. Callers needing stricter limits should
 // pass a context deadline or use a custom HTTP client.
-//
-// Mirrors TS synapse-core sp/upload-streaming.ts::uploadPieceStreaming.
 func (c *Client) UploadPieceStreaming(
 	ctx context.Context,
 	data io.Reader,
 	opts UploadPieceStreamingOptions,
 ) (*UploadStreamingResult, error) {
 	if data == nil {
-		return nil, errors.New("curio.UploadPieceStreaming: nil data reader")
+		return nil, errors.New("pdp.UploadPieceStreaming: nil data reader")
 	}
 	if opts.Size > 0 && opts.Size > chain.MaxUploadSize {
-		return nil, fmt.Errorf("curio.UploadPieceStreaming: payload size %d exceeds maximum %d bytes", opts.Size, chain.MaxUploadSize)
+		return nil, fmt.Errorf("pdp.UploadPieceStreaming: payload size %d exceeds maximum %d bytes", opts.Size, chain.MaxUploadSize)
 	}
 	if opts.PieceCID.Defined() {
-		if err := validatePieceCIDV2("curio.UploadPieceStreaming", opts.PieceCID); err != nil {
+		if err := validatePieceCIDV2("pdp.UploadPieceStreaming", opts.PieceCID); err != nil {
 			return nil, err
 		}
 	}
@@ -129,10 +127,10 @@ func (c *Client) UploadPieceStreaming(
 		putClient = &cloned
 	}
 	if _, _, err := c.doWithClient(putClient, putReq, http.StatusNoContent); err != nil {
-		return nil, fmt.Errorf("curio.UploadPieceStreaming: PUT: %w", err)
+		return nil, fmt.Errorf("pdp.UploadPieceStreaming: PUT: %w", err)
 	}
 	// Note: if the PUT fails, the upload session is left on the server.
-	// Curio has no HTTP DELETE endpoint for sessions; orphaned sessions are
+	// The provider has no HTTP DELETE endpoint for sessions; orphaned sessions are
 	// cleaned up by the server's background maintenance tasks.
 
 	// Step 3: finalize with the PieceCID.
@@ -142,10 +140,10 @@ func (c *Client) UploadPieceStreaming(
 	} else {
 		info, err := pw.Sum()
 		if err != nil {
-			return nil, fmt.Errorf("curio.UploadPieceStreaming: compute piece: %w", err)
+			return nil, fmt.Errorf("pdp.UploadPieceStreaming: compute piece: %w", err)
 		}
 		if !info.CIDv2.Defined() {
-			return nil, fmt.Errorf("curio.UploadPieceStreaming: payload too small for PieceCIDv2 (%d bytes)", info.RawSize)
+			return nil, fmt.Errorf("pdp.UploadPieceStreaming: payload too small for PieceCIDv2 (%d bytes)", info.RawSize)
 		}
 		pieceCID = info.CIDv2
 	}
@@ -161,7 +159,7 @@ func (c *Client) UploadPieceStreaming(
 		return nil, err
 	}
 	if _, _, err := c.do(finalizeReq, http.StatusOK, http.StatusNoContent); err != nil {
-		return nil, fmt.Errorf("curio.UploadPieceStreaming: finalize: %w", err)
+		return nil, fmt.Errorf("pdp.UploadPieceStreaming: finalize: %w", err)
 	}
 
 	return &UploadStreamingResult{PieceCID: pieceCID, Size: counted.n}, nil
@@ -182,7 +180,7 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		cr.n += int64(n)
 		if cr.max > 0 && cr.n > cr.max {
-			return 0, fmt.Errorf("curio.UploadPieceStreaming: payload exceeds maximum size %d bytes", cr.max)
+			return 0, fmt.Errorf("pdp.UploadPieceStreaming: payload exceeds maximum size %d bytes", cr.max)
 		}
 		if cr.onProgress != nil {
 			cr.onProgress(cr.n)
@@ -200,7 +198,7 @@ type FindPieceResult struct {
 // for HTTP 404 and ErrPieceProcessing for HTTP 202 while the SP is still
 // parking the piece.
 func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceResult, error) {
-	if err := validatePieceCIDV2("curio.FindPiece", pieceCID); err != nil {
+	if err := validatePieceCIDV2("pdp.FindPiece", pieceCID); err != nil {
 		return nil, err
 	}
 	u, err := c.resolve("pdp/piece")
@@ -239,7 +237,7 @@ func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceRes
 // context is cancelled / timeout is reached. A zero pollInterval defaults
 // to one second.
 func (c *Client) WaitForPieceParked(ctx context.Context, pieceCID cid.Cid, pollInterval time.Duration) error {
-	if err := validatePieceCIDV2("curio.WaitForPieceParked", pieceCID); err != nil {
+	if err := validatePieceCIDV2("pdp.WaitForPieceParked", pieceCID); err != nil {
 		return err
 	}
 	if pollInterval <= 0 {

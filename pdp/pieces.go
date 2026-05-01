@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 )
 
 // AddPieceInput mirrors one entry of the pieces array for
-// POST /pdp/data-sets/{id}/pieces. The TS SDK always uses the piece CID
-// as its own single sub-piece; we preserve that shape.
+// POST /pdp/data-sets/{id}/pieces. The wire format uses the piece CID
+// as its own single sub-piece.
 type AddPieceInput struct {
 	PieceCID cid.Cid
 }
@@ -44,22 +44,21 @@ type AddPiecesResult struct {
 	StatusURL string
 }
 
-// AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData is a
-// hex-encoded signed blob (EIP-712 AddPieces schema) — produced by the
-// typed-data signer — NOT a generic opaque payload.
+// AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData must be
+// caller-provided EIP-712 signed data encoded as the PDP provider expects.
 func (c *Client) AddPieces(ctx context.Context, dataSetID uint64, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
 	if len(pieces) == 0 {
-		return nil, errors.New("curio.AddPieces: no pieces provided")
+		return nil, errors.New("pdp.AddPieces: no pieces provided")
 	}
 	if len(extraData) == 0 {
-		return nil, errors.New("curio.AddPieces: empty extraData")
+		return nil, errors.New("pdp.AddPieces: empty extraData")
 	}
 	wire := addPiecesRequest{
 		ExtraData: "0x" + hex.EncodeToString(extraData),
 	}
 	for _, p := range pieces {
 		if !p.PieceCID.Defined() {
-			return nil, errors.New("curio.AddPieces: undefined pieceCID in input")
+			return nil, errors.New("pdp.AddPieces: undefined pieceCID in input")
 		}
 		s := p.PieceCID.String()
 		wire.Pieces = append(wire.Pieces, addPiecesRequestPiece{
@@ -87,13 +86,13 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID uint64, pieces []AddPi
 	}
 	statusURL, err := c.resolve(loc)
 	if err != nil {
-		return nil, fmt.Errorf("curio.AddPieces: resolve status URL: %w", err)
+		return nil, fmt.Errorf("pdp.AddPieces: resolve status URL: %w", err)
 	}
 	return &AddPiecesResult{TxHash: tx, StatusURL: statusURL.String()}, nil
 }
 
 // AddPiecesStatus mirrors GET /pdp/data-sets/{id}/pieces/added/{txHash}.
-// Matches synapse-core's AddPieces{Pending,Rejected,Success}Schema.
+// TxStatus reports pending, confirmed, or rejected.
 type AddPiecesStatus struct {
 	TxHash            common.Hash `json:"-"`
 	TxStatus          string      `json:"txStatus"` // pending | confirmed | rejected
@@ -117,7 +116,7 @@ type rawAddPiecesStatus struct {
 // GetAddPiecesStatus polls the status URL once.
 func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*AddPiecesStatus, error) {
 	if statusURL == "" {
-		return nil, errors.New("curio.GetAddPiecesStatus: empty statusURL")
+		return nil, errors.New("pdp.GetAddPiecesStatus: empty statusURL")
 	}
 	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
@@ -132,7 +131,7 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	}
 	var raw rawAddPiecesStatus
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("curio.GetAddPiecesStatus: decode: %w", err)
+		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: decode: %w", err)
 	}
 	out := &AddPiecesStatus{
 		TxHash:       common.HexToHash(raw.TxHash),
@@ -144,14 +143,14 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	if raw.DataSetID != "" {
 		id, ok := new(big.Int).SetString(raw.DataSetID.String(), 10)
 		if !ok || !id.IsUint64() {
-			return nil, fmt.Errorf("curio.GetAddPiecesStatus: bad dataSetId %q", raw.DataSetID)
+			return nil, fmt.Errorf("pdp.GetAddPiecesStatus: bad dataSetId %q", raw.DataSetID)
 		}
 		out.DataSetID = id.Uint64()
 	}
 	for _, n := range raw.ConfirmedPieceIDs {
 		b, ok := new(big.Int).SetString(n.String(), 10)
 		if !ok {
-			return nil, fmt.Errorf("curio.GetAddPiecesStatus: bad confirmedPieceId %q", n)
+			return nil, fmt.Errorf("pdp.GetAddPiecesStatus: bad confirmedPieceId %q", n)
 		}
 		out.ConfirmedPieceIDs = append(out.ConfirmedPieceIDs, b)
 	}
@@ -192,7 +191,7 @@ func (c *Client) WaitForPiecesAdded(ctx context.Context, statusURL string, pollI
 // with the provided EIP-712 signed extraData.
 func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
 	if len(extraData) == 0 {
-		return common.Hash{}, errors.New("curio.SchedulePieceDeletion: empty extraData")
+		return common.Hash{}, errors.New("pdp.SchedulePieceDeletion: empty extraData")
 	}
 	payload := struct {
 		ExtraData string `json:"extraData"`
@@ -207,7 +206,7 @@ func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID u
 	}
 	h := common.HexToHash(out.TxHash)
 	if h == (common.Hash{}) {
-		return common.Hash{}, fmt.Errorf("curio.SchedulePieceDeletion: empty txHash in response")
+		return common.Hash{}, fmt.Errorf("pdp.SchedulePieceDeletion: empty txHash in response")
 	}
 	return h, nil
 }

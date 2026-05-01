@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// PullStatus mirrors the status values used by the Curio pull endpoint.
+// PullStatus mirrors the status values used by the PDP pull endpoint.
 type PullStatus string
 
 const (
@@ -26,7 +26,7 @@ const (
 
 // ErrPullFailed is returned by WaitForPullComplete when the server reports
 // that the overall pull status is "failed".
-var ErrPullFailed = errors.New("curio: pull failed")
+var ErrPullFailed = errors.New("pdp: pull failed")
 
 // PullPieceInput is one entry in a pull request.
 type PullPieceInput struct {
@@ -38,10 +38,10 @@ type PullPieceInput struct {
 
 // PullRequest carries all parameters for POST /pdp/piece/pull.
 type PullRequest struct {
-	// RecordKeeper is the record-keeper contract address (e.g. FWSS). Curio's
+	// RecordKeeper is the record-keeper contract address (e.g. FWSS). The
 	// pull request body always carries it, even when reusing an existing dataset.
 	RecordKeeper common.Address
-	// ExtraData is the EIP-712 signed blob produced by the typeddata signer.
+	// ExtraData is caller-provided EIP-712 signed data encoded as the provider expects.
 	ExtraData []byte
 	// DataSetID is the target dataset.  0 (or unset) means create a new dataset.
 	DataSetID uint64
@@ -80,18 +80,16 @@ type pullPieceWireItem struct {
 // The endpoint is idempotent: calling again with the same extraData returns
 // the status of the existing pull request rather than creating a duplicate.
 // This makes it safe to poll for status using repeated calls.
-//
-// Mirrors TS synapse-core sp/pull-pieces.ts::pullPiecesApiRequest.
 func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, error) {
 	if len(req.Pieces) == 0 {
-		return nil, errors.New("curio.PullPieces: no pieces provided")
+		return nil, errors.New("pdp.PullPieces: no pieces provided")
 	}
 	if len(req.ExtraData) == 0 {
-		return nil, errors.New("curio.PullPieces: empty extraData")
+		return nil, errors.New("pdp.PullPieces: empty extraData")
 	}
 
 	if req.RecordKeeper == (common.Address{}) {
-		return nil, errors.New("curio.PullPieces: recordKeeper is required")
+		return nil, errors.New("pdp.PullPieces: recordKeeper is required")
 	}
 
 	wire := pullPiecesWire{
@@ -106,11 +104,11 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 	}
 
 	for _, p := range req.Pieces {
-		if err := validatePieceCIDV2("curio.PullPieces", p.PieceCID); err != nil {
+		if err := validatePieceCIDV2("pdp.PullPieces", p.PieceCID); err != nil {
 			return nil, err
 		}
 		if p.SourceURL == "" {
-			return nil, errors.New("curio.PullPieces: empty sourceURL in input")
+			return nil, errors.New("pdp.PullPieces: empty sourceURL in input")
 		}
 		wire.Pieces = append(wire.Pieces, pullPieceWireItem{
 			PieceCid:  p.PieceCID.String(),
@@ -125,7 +123,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 
 	var out PullResult
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("curio.PullPieces: decode response: %w", err)
+		return nil, fmt.Errorf("pdp.PullPieces: decode response: %w", err)
 	}
 	return &out, nil
 }
@@ -135,9 +133,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 // callers can inspect the per-piece statuses.
 //
 // onStatus is invoked after each poll (may be nil). A zero pollInterval
-// defaults to 4 s (matching the TS SDK DELAY_TIME constant).
-//
-// Mirrors TS synapse-core sp/pull-pieces.ts::waitForPullPiecesApiRequest.
+// defaults to 4 seconds.
 func (c *Client) WaitForPullComplete(
 	ctx context.Context,
 	req PullRequest,

@@ -22,9 +22,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	icurio "github.com/strahe/synapse-go/internal/curio"
 	"github.com/strahe/synapse-go/internal/idconv"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -47,24 +47,24 @@ const (
 	maxPieceMetadataKeys   = 5
 )
 
-// PDPClient is the provider HTTP API surface required by Context.
+// PDPProviderClient is the provider HTTP API surface required by Context.
 // It is injectable for tests and alternate provider clients.
-type PDPClient interface {
-	UploadPieceStreaming(context.Context, io.Reader, icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error)
+type PDPProviderClient interface {
+	UploadPieceStreaming(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	WaitForPieceParked(context.Context, cid.Cid, time.Duration) error
-	WaitForPullComplete(context.Context, icurio.PullRequest, time.Duration, func(*icurio.PullResult)) (*icurio.PullResult, error)
-	AddPieces(context.Context, uint64, []icurio.AddPieceInput, []byte) (*icurio.AddPiecesResult, error)
-	WaitForPiecesAdded(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
-	CreateDataSetAndAddPieces(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
-	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
+	WaitForPullComplete(context.Context, pdp.PullRequest, time.Duration, func(*pdp.PullResult)) (*pdp.PullResult, error)
+	AddPieces(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
+	WaitForPiecesAdded(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
+	CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
+	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error)
 }
 
 // Provider holds the on-chain identity of a storage provider.
 type Provider struct {
 	ID              types.ProviderID // numeric provider ID from SPRegistry
-	ServiceURL      string           // base URL of the provider's curio HTTP API
+	ServiceURL      string           // base URL of the provider's PDP HTTP API
 	ServiceProvider common.Address   // provider's EVM address
 	Payee           common.Address   // address that receives payments
 }
@@ -77,13 +77,13 @@ type ContextOption func(*Context)
 // It is safe for concurrent use.
 type Context struct {
 	// commitMu serialises Commit calls so the create-vs-add path decision
-	// made in PresignForCommit and the subsequent curio API call are
+	// made in PresignForCommit and the subsequent PDP API call are
 	// always consistent under concurrent use.
 	commitMu sync.Mutex
 	mu       sync.RWMutex
 
 	provider     Provider
-	client       PDPClient
+	client       PDPProviderClient
 	signer       signer.EVMSigner
 	payer        common.Address
 	chainID      types.ChainID
@@ -117,7 +117,7 @@ const (
 // prerequisites (such as a non-nil signer plus chain/payer/record-keeper
 // options) are validated by the write paths that need them, e.g.
 // PresignForCommit.
-func NewContext(provider Provider, client PDPClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
+func NewContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
 	if provider.ID == 0 {
 		return nil, fmt.Errorf("storage.NewContext: %w: zero provider ID", ErrInvalidArgument)
 	}
@@ -159,7 +159,7 @@ func WithChainID(chainID types.ChainID) ContextOption {
 }
 
 // WithRecordKeeper sets the FWSS contract address (record-keeper) used for
-// EIP-712 signing and passed to Curio for Pull and CreateDataSet operations.
+// EIP-712 signing and passed to the PDP provider for Pull and dataset creation.
 func WithRecordKeeper(addr common.Address) ContextOption {
 	return func(c *Context) { c.recordKeeper = addr }
 }
@@ -233,7 +233,7 @@ func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*
 		}
 	}
 	size := detectSize(r, opts.PieceCID)
-	res, err := c.client.UploadPieceStreaming(ctx, r, icurio.UploadPieceStreamingOptions{
+	res, err := c.client.UploadPieceStreaming(ctx, r, pdp.UploadPieceStreamingOptions{
 		Size:       size,
 		PieceCID:   opts.PieceCID,
 		OnProgress: opts.OnProgress,
@@ -444,7 +444,7 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	if req.From == nil {
 		return nil, fmt.Errorf("storage.Context.Pull: %w: nil source resolver", ErrInvalidArgument)
 	}
-	curioReq := icurio.PullRequest{
+	pdpReq := pdp.PullRequest{
 		ExtraData: append([]byte(nil), req.ExtraData...),
 	}
 
@@ -453,10 +453,10 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	recordKeeper := c.recordKeeper
 	c.mu.RUnlock()
 
-	// RecordKeeper is required by curio for both new and existing datasets.
-	curioReq.RecordKeeper = recordKeeper
+	// RecordKeeper is required by the provider for both new and existing datasets.
+	pdpReq.RecordKeeper = recordKeeper
 	if dataSetID != nil {
-		curioReq.DataSetID = uint64(*dataSetID)
+		pdpReq.DataSetID = uint64(*dataSetID)
 	}
 
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
@@ -468,14 +468,14 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 		if sourceURL == "" {
 			return nil, fmt.Errorf("storage.Context.Pull: %w: empty source URL", ErrInvalidArgument)
 		}
-		curioReq.Pieces = append(curioReq.Pieces, icurio.PullPieceInput{
+		pdpReq.Pieces = append(pdpReq.Pieces, pdp.PullPieceInput{
 			PieceCID:  pieceCID,
 			SourceURL: sourceURL,
 		})
 		pieceByString[pieceCID.String()] = pieceCID
 	}
 
-	res, err := c.client.WaitForPullComplete(ctx, curioReq, 0, func(snapshot *icurio.PullResult) {
+	res, err := c.client.WaitForPullComplete(ctx, pdpReq, 0, func(snapshot *pdp.PullResult) {
 		if req.OnProgress == nil {
 			return
 		}
@@ -536,15 +536,15 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	defer c.forgetPresignedExtraData(extraData)
 
 	// Snapshot create-vs-add decision under the data lock after any required
-	// re-signing so the chosen curio API matches the payload we are sending.
+	// re-signing so the chosen PDP API matches the payload we are sending.
 	c.mu.RLock()
 	dataSetID := c.dataSetID
 	recordKeeper := c.recordKeeper
 	c.mu.RUnlock()
 
-	pieces := make([]icurio.AddPieceInput, 0, len(req.Pieces))
+	pieces := make([]pdp.AddPieceInput, 0, len(req.Pieces))
 	for _, p := range req.Pieces {
-		pieces = append(pieces, icurio.AddPieceInput{PieceCID: p.PieceCID})
+		pieces = append(pieces, pdp.AddPieceInput{PieceCID: p.PieceCID})
 	}
 
 	if dataSetID != nil {
@@ -641,7 +641,7 @@ func (c *Context) GetProviderInfo() Provider {
 	}
 }
 
-// ServiceURL returns the base URL of the provider's curio HTTP API.
+// ServiceURL returns the base URL of the provider's PDP HTTP API.
 func (c *Context) ServiceURL() string {
 	return c.provider.ServiceURL
 }

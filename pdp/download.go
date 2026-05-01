@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -16,22 +16,19 @@ import (
 //
 // The download bypasses the client's default JSON timeout so large pieces
 // are not cut off; callers can enforce a deadline via the context.
-//
-// Mirrors go-synapse/pdp/server.go::DownloadPiece and the pdptool
-// GET /piece/{cid} call pattern.
 func (c *Client) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
-	if err := validatePieceCIDV2("curio.DownloadPiece", pieceCID); err != nil {
+	if err := validatePieceCIDV2("pdp.DownloadPiece", pieceCID); err != nil {
 		return nil, 0, err
 	}
 
 	u, err := c.resolve(path.Join("piece", pieceCID.String()))
 	if err != nil {
-		return nil, 0, fmt.Errorf("curio.DownloadPiece: resolve: %w", err)
+		return nil, 0, fmt.Errorf("pdp.DownloadPiece: resolve: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("curio.DownloadPiece: build request: %w", err)
+		return nil, 0, fmt.Errorf("pdp.DownloadPiece: build request: %w", err)
 	}
 
 	// Build a no-timeout HTTP client for streaming so the transport-level
@@ -48,12 +45,12 @@ func (c *Client) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCl
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("curio request", "method", req.Method, "url", redactURL(req.URL))
+		c.logger.Debug("pdp request", "method", req.Method, "url", redactURL(req.URL))
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("curio: GET %s: %w", req.URL.Path, err)
+		return nil, 0, fmt.Errorf("pdp: GET %s: %w", req.URL.Path, err)
 	}
 
 	if resp.StatusCode == http.StatusNotFound {

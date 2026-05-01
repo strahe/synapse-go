@@ -18,7 +18,7 @@ import (
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ipfs/go-cid"
 
-	icurio "github.com/strahe/synapse-go/internal/curio"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -31,8 +31,8 @@ func TestContextStore_UploadsAndWaits(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("read: %v", err)
@@ -43,7 +43,7 @@ func TestContextStore_UploadsAndWaits(t *testing.T) {
 			if opts.Size != int64(len(data)) {
 				t.Fatalf("size=%d want %d", opts.Size, len(data))
 			}
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(got))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(got))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, pieceCID cid.Cid, _ time.Duration) error {
 			if pieceCID != info.CIDv2 {
@@ -81,8 +81,8 @@ func TestContextStore_RejectsNonV2PieceCID(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("read: %v", err)
@@ -93,7 +93,7 @@ func TestContextStore_RejectsNonV2PieceCID(t *testing.T) {
 			if opts.Size != int64(len(data)) {
 				t.Fatalf("size=%d want %d", opts.Size, len(data))
 			}
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv1, Size: int64(len(got))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv1, Size: int64(len(got))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error {
 			t.Fatal("WaitForPieceParked should not be called for non-v2 PieceCID")
@@ -120,7 +120,7 @@ func TestContextStore_RejectsNonV2PieceCID(t *testing.T) {
 }
 
 func TestNewContext_RejectsZeroDataSetID(t *testing.T) {
-	_, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithDataSetID(0))
+	_, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithDataSetID(0))
 	if err == nil {
 		t.Fatal("expected error for zero dataSetID")
 	}
@@ -128,7 +128,7 @@ func TestNewContext_RejectsZeroDataSetID(t *testing.T) {
 
 func TestNewContext_AllowsZeroClientDataSetID(t *testing.T) {
 	zero := big.NewInt(0)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t), WithClientDataSetID(zero))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithClientDataSetID(zero))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestContextPresignForCommit_GeneratesFullWidthClientDataSetID(t *testing.T)
 	randReader = bytes.NewReader(append(fullWidth, nonce...))
 	defer func() { randReader = prev }()
 
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -174,7 +174,7 @@ func TestContextPresignForCommit_RandomFailureReturnsError(t *testing.T) {
 	randReader = failingReader{err: errors.New("rng down")}
 	defer func() { randReader = prev }()
 
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -192,8 +192,8 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 	recordKeeper := testRecordKeeper()
 	primaryURL := "https://primary.example.com/piece/" + info.CIDv2.String()
 
-	fake := &fakeCurioClient{
-		pullPiecesFn: func(_ context.Context, req icurio.PullRequest) (*icurio.PullResult, error) {
+	fake := &fakePDPProviderClient{
+		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			if req.DataSetID != 0 {
 				t.Fatalf("dataSetID=%d want 0", req.DataSetID)
 			}
@@ -203,9 +203,9 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 			if len(req.Pieces) != 1 || req.Pieces[0].SourceURL != primaryURL {
 				t.Fatalf("unexpected pull pieces: %+v", req.Pieces)
 			}
-			return &icurio.PullResult{
-				Status: icurio.PullStatusComplete,
-				Pieces: []icurio.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete}},
+			return &pdp.PullResult{
+				Status: pdp.PullStatusComplete,
+				Pieces: []pdp.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete}},
 			}, nil
 		},
 	}
@@ -236,8 +236,8 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	info := mustPieceInfo(t)
 	dataSetID := types.DataSetID(42)
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 			if gotDataSetID != uint64(dataSetID) {
 				t.Fatalf("dataSetID=%d want %d", gotDataSetID, uint64(dataSetID))
 			}
@@ -247,13 +247,13 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 			if !bytes.Equal(extraData, []byte{0x01}) {
 				t.Fatalf("extraData=%x want 01", extraData)
 			}
-			return &icurio.AddPiecesResult{TxHash: common.HexToHash("0x01"), StatusURL: "https://sp.example.com/status"}, nil
+			return &pdp.AddPiecesResult{TxHash: common.HexToHash("0x01"), StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, statusURL string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForAddedFn: func(_ context.Context, statusURL string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			if statusURL == "" {
 				t.Fatal("empty statusURL")
 			}
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x01"),
 				DataSetID:         uint64(dataSetID),
 				PieceCount:        1,
@@ -292,12 +292,12 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) {
 	info := mustPieceInfo(t)
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         0,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
@@ -328,12 +328,12 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testi
 	info := mustPieceInfo(t)
 	expected := types.DataSetID(42)
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         43,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
@@ -363,12 +363,12 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testi
 func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.T) {
 	info := mustPieceInfo(t)
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         42,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
@@ -401,8 +401,8 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *tes
 func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	info := mustPieceInfo(t)
 
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, recordKeeper common.Address, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.CreateDataSetResult, error) {
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, recordKeeper common.Address, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.CreateDataSetResult, error) {
 			if recordKeeper != testRecordKeeper() {
 				t.Fatalf("recordKeeper=%s want %s", recordKeeper, testRecordKeeper())
 			}
@@ -412,13 +412,13 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 			if !bytes.Equal(extraData, []byte{0x02}) {
 				t.Fatalf("extraData=%x want 02", extraData)
 			}
-			return &icurio.CreateDataSetResult{TxHash: common.HexToHash("0x02"), StatusURL: "https://sp.example.com/status"}, nil
+			return &pdp.CreateDataSetResult{TxHash: common.HexToHash("0x02"), StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, statusURL string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForCreateAndAddFn: func(_ context.Context, statusURL string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			if statusURL == "" {
 				t.Fatal("empty statusURL")
 			}
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
 				DataSetID:         55,
 				PieceCount:        1,
@@ -455,12 +455,12 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 func TestContextCommit_NewDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.T) {
 	info := mustPieceInfo(t)
 
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         55,
 				PieceCount:        2,
 				PiecesAdded:       true,
@@ -493,7 +493,7 @@ func TestContextPresignForCommit_NewDataSetCombinedEncoding(t *testing.T) {
 	info := mustPieceInfo(t)
 	signer := mustTestSigner(t)
 
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, signer,
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, signer,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -579,7 +579,7 @@ func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) 
 	info := mustPieceInfo(t)
 	signer := mustTestSigner(t)
 
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, signer,
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, signer,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -631,7 +631,7 @@ func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) 
 
 func TestContextPresignForCommit_CtxCancelled(t *testing.T) {
 	info := mustPieceInfo(t)
-	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	sctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -648,7 +648,7 @@ func TestContextPresignForCommit_CtxCancelled(t *testing.T) {
 }
 
 func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.T) {
-	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	sctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -673,7 +673,7 @@ func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.
 // the verifier rejects.
 func TestContextPresignForCommit_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
 	info := mustPieceInfo(t)
-	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	sctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -698,7 +698,7 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 	ws := &wrappedSigner{mustTestSigner(t)}
 
 	// Existing-dataset path
-	sctx, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
+	sctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, ws,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -717,7 +717,7 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 	}
 
 	// New-dataset path
-	sctx2, err := NewContext(testProvider(), &fakeCurioClient{}, ws,
+	sctx2, err := NewContext(testProvider(), &fakePDPProviderClient{}, ws,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -773,16 +773,16 @@ func testRecordKeeper() common.Address {
 	return common.HexToAddress("0x4004")
 }
 
-type fakeCurioClient struct {
-	uploadStreamingFn     func(context.Context, io.Reader, icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error)
+type fakePDPProviderClient struct {
+	uploadStreamingFn     func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
 	downloadPieceFn       func(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	waitForPieceFn        func(context.Context, cid.Cid, time.Duration) error
-	pullPiecesFn          func(context.Context, icurio.PullRequest) (*icurio.PullResult, error)
-	pullPiecesFnWithCb    func(context.Context, icurio.PullRequest, func(*icurio.PullResult)) (*icurio.PullResult, error)
-	addPiecesFn           func(context.Context, uint64, []icurio.AddPieceInput, []byte) (*icurio.AddPiecesResult, error)
-	waitForAddedFn        func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
-	createAndAddFn        func(context.Context, common.Address, []icurio.AddPieceInput, []byte) (*icurio.CreateDataSetResult, error)
-	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*icurio.AddPiecesStatus, error)
+	pullPiecesFn          func(context.Context, pdp.PullRequest) (*pdp.PullResult, error)
+	pullPiecesFnWithCb    func(context.Context, pdp.PullRequest, func(*pdp.PullResult)) (*pdp.PullResult, error)
+	addPiecesFn           func(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
+	waitForAddedFn        func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
+	createAndAddFn        func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
+	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	scheduleDeletionFn    func(context.Context, uint64, uint64, []byte) (common.Hash, error)
 }
 
@@ -794,62 +794,62 @@ func (r failingReader) Read(_ []byte) (int, error) {
 	return 0, r.err
 }
 
-func (f *fakeCurioClient) UploadPieceStreaming(ctx context.Context, r io.Reader, opts icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+func (f *fakePDPProviderClient) UploadPieceStreaming(ctx context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 	return f.uploadStreamingFn(ctx, r, opts)
 }
 
-func (f *fakeCurioClient) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
+func (f *fakePDPProviderClient) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
 	return f.downloadPieceFn(ctx, pieceCID)
 }
 
-func (f *fakeCurioClient) WaitForPieceParked(ctx context.Context, pieceCID cid.Cid, pollInterval time.Duration) error {
+func (f *fakePDPProviderClient) WaitForPieceParked(ctx context.Context, pieceCID cid.Cid, pollInterval time.Duration) error {
 	return f.waitForPieceFn(ctx, pieceCID, pollInterval)
 }
 
-func (f *fakeCurioClient) WaitForPullComplete(ctx context.Context, req icurio.PullRequest, pollInterval time.Duration, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
+func (f *fakePDPProviderClient) WaitForPullComplete(ctx context.Context, req pdp.PullRequest, pollInterval time.Duration, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
 	if f.pullPiecesFnWithCb != nil {
 		return f.pullPiecesFnWithCb(ctx, req, cb)
 	}
 	return f.pullPiecesFn(ctx, req)
 }
 
-func (f *fakeCurioClient) AddPieces(ctx context.Context, dataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+func (f *fakePDPProviderClient) AddPieces(ctx context.Context, dataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 	return f.addPiecesFn(ctx, dataSetID, pieces, extraData)
 }
 
-func (f *fakeCurioClient) WaitForPiecesAdded(ctx context.Context, statusURL string, pollInterval time.Duration) (*icurio.AddPiecesStatus, error) {
+func (f *fakePDPProviderClient) WaitForPiecesAdded(ctx context.Context, statusURL string, pollInterval time.Duration) (*pdp.AddPiecesStatus, error) {
 	return f.waitForAddedFn(ctx, statusURL, pollInterval)
 }
 
-func (f *fakeCurioClient) CreateDataSetAndAddPieces(ctx context.Context, recordKeeper common.Address, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.CreateDataSetResult, error) {
+func (f *fakePDPProviderClient) CreateDataSetAndAddPieces(ctx context.Context, recordKeeper common.Address, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.CreateDataSetResult, error) {
 	return f.createAndAddFn(ctx, recordKeeper, pieces, extraData)
 }
 
-func (f *fakeCurioClient) WaitForCreateDataSetAndAddPieces(ctx context.Context, statusURL string, pollInterval time.Duration) (*icurio.AddPiecesStatus, error) {
+func (f *fakePDPProviderClient) WaitForCreateDataSetAndAddPieces(ctx context.Context, statusURL string, pollInterval time.Duration) (*pdp.AddPiecesStatus, error) {
 	return f.waitForCreateAndAddFn(ctx, statusURL, pollInterval)
 }
 
-func (f *fakeCurioClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
+func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
 	if f.scheduleDeletionFn == nil {
-		return common.Hash{}, fmt.Errorf("fakeCurioClient.SchedulePieceDeletion: not configured")
+		return common.Hash{}, fmt.Errorf("fakePDPProviderClient.SchedulePieceDeletion: not configured")
 	}
 	return f.scheduleDeletionFn(ctx, dataSetID, pieceID, extraData)
 }
 
 // TestContextCommit_ExistingDataSet_LargeIDPreserved proves that a DataSetID
 // with the high bit set (value > math.MaxInt64) is not truncated when moved
-// through the curio/context boundary.
+// through the PDP/context boundary.
 func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	info := mustPieceInfo(t)
 	largeID := uint64(1) << 63
 	expected := types.DataSetID(largeID)
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         largeID,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
@@ -886,12 +886,12 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	largeID := uint64(math.MaxUint64) // all bits set; int64 cast gives -1
 	expected := types.DataSetID(largeID)
 
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         largeID,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(2)},
@@ -925,17 +925,17 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 
 // TestContextPull_ExistingDataSetCarriesRecordKeeper proves that Pull always
 // includes RecordKeeper even when a dataSetID is already known, because
-// internal/curio.PullPieces requires RecordKeeper in all cases.
+// pdp.PullPieces requires RecordKeeper in all cases.
 func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
 	dataSetID := types.DataSetID(42)
 	rk := testRecordKeeper()
 
-	var capturedReq icurio.PullRequest
-	fake := &fakeCurioClient{
-		pullPiecesFn: func(_ context.Context, req icurio.PullRequest) (*icurio.PullResult, error) {
+	var capturedReq pdp.PullRequest
+	fake := &fakePDPProviderClient{
+		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			capturedReq = req
-			return &icurio.PullResult{Status: "complete"}, nil
+			return &pdp.PullResult{Status: "complete"}, nil
 		},
 	}
 
@@ -963,11 +963,11 @@ func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 }
 
 // TestContextDownload_RequiresPieceCIDv2 proves that the provider-backed
-// download path rejects PieceCIDv1 at the storage boundary (curio only
-// accepts v2; raw-size is unavailable here so v1->v2 cannot be normalised).
+// download path rejects PieceCIDv1 at the storage boundary because the PDP
+// provider only accepts v2 and raw size is unavailable here.
 func TestContextDownload_RequiresPieceCIDv2(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -987,28 +987,28 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 	createCalls := 0
 	addCalls := 0
 
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
 			mu.Lock()
 			createCalls++
 			mu.Unlock()
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         99,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			mu.Lock()
 			addCalls++
 			mu.Unlock()
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status2"}, nil
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status2"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         99,
 				PiecesAdded:       true,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
@@ -1055,7 +1055,7 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 }
 
 func TestContextPieceURL(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{
 		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
 	}, mustTestSigner(t))
 	if err != nil {
@@ -1071,7 +1071,7 @@ func TestContextPieceURL(t *testing.T) {
 }
 
 func TestContextProviderID(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{
 		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
 	}, mustTestSigner(t))
 	if err != nil {
@@ -1085,7 +1085,7 @@ func TestContextProviderID(t *testing.T) {
 }
 
 func TestContextServiceURL(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{
 		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
 	}, mustTestSigner(t))
 	if err != nil {
@@ -1117,19 +1117,19 @@ func TestContextNewContext_ValidationErrors(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider Provider
-		client   PDPClient
+		client   PDPProviderClient
 		wantErr  string
 	}{
 		{
 			name:     "nil provider ID",
 			provider: Provider{ServiceURL: "https://sp.example.com"},
-			client:   &fakeCurioClient{},
+			client:   &fakePDPProviderClient{},
 			wantErr:  "zero provider ID",
 		},
 		{
 			name:     "empty service URL",
 			provider: Provider{ID: types.ProviderID(1)},
-			client:   &fakeCurioClient{},
+			client:   &fakePDPProviderClient{},
 			wantErr:  "empty provider service URL",
 		},
 		{
@@ -1153,7 +1153,7 @@ func TestContextNewContext_ValidationErrors(t *testing.T) {
 }
 
 func TestContextStore_NilReader(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1164,7 +1164,7 @@ func TestContextStore_NilReader(t *testing.T) {
 }
 
 func TestContextPresignForCommit_NilSigner(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, nil,
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, nil,
 		WithChainID(types.ChainID(1)),
 		WithRecordKeeper(testRecordKeeper()),
 		WithPayer(testPayer()),
@@ -1180,7 +1180,7 @@ func TestContextPresignForCommit_NilSigner(t *testing.T) {
 }
 
 func TestContextPresignForCommit_NilChainID(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithRecordKeeper(testRecordKeeper()),
 		WithPayer(testPayer()),
 	)
@@ -1195,7 +1195,7 @@ func TestContextPresignForCommit_NilChainID(t *testing.T) {
 }
 
 func TestContextPresignForCommit_NoPieces(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1206,7 +1206,7 @@ func TestContextPresignForCommit_NoPieces(t *testing.T) {
 }
 
 func TestContextCommit_NoPieces(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1217,7 +1217,7 @@ func TestContextCommit_NoPieces(t *testing.T) {
 }
 
 func TestContextPull_NoPieces(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1229,7 +1229,7 @@ func TestContextPull_NoPieces(t *testing.T) {
 
 func TestContextPull_NilFrom(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1241,12 +1241,12 @@ func TestContextPull_NilFrom(t *testing.T) {
 
 func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{DataSetID: 0, ConfirmedPieceIDs: []*big.Int{big.NewInt(1)}}, nil
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{DataSetID: 0, ConfirmedPieceIDs: []*big.Int{big.NewInt(1)}}, nil
 		},
 	}
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
@@ -1267,7 +1267,7 @@ func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
 }
 
 func TestContextPresignForCommit_ZeroRecordKeeper(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithChainID(types.ChainID(1)),
 		WithPayer(testPayer()),
 	)
@@ -1282,7 +1282,7 @@ func TestContextPresignForCommit_ZeroRecordKeeper(t *testing.T) {
 }
 
 func TestContextPresignForCommit_ZeroPayer(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithChainID(types.ChainID(1)),
 		WithRecordKeeper(testRecordKeeper()),
 	)
@@ -1329,8 +1329,8 @@ func TestContextStore_UploadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, _ io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, _ io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			return nil, errors.New("upload failed")
 		},
 	}
@@ -1350,10 +1350,10 @@ func TestContextStore_WaitError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			_, _ = io.Copy(io.Discard, r)
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error {
 			return errors.New("wait failed")
@@ -1375,17 +1375,17 @@ func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	fake := &fakeCurioClient{
-		uploadStreamingFn: func(_ context.Context, r io.Reader, _ icurio.UploadPieceStreamingOptions) (*icurio.UploadStreamingResult, error) {
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			_, _ = io.Copy(io.Discard, r)
-			return &icurio.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				DataSetID:         42,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(0)},
 				TxHash:            common.HexToHash("0x1234"),
@@ -1415,7 +1415,7 @@ func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
 
 func TestContextPull_EmptySourceURL(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1429,7 +1429,7 @@ func TestContextPull_EmptySourceURL(t *testing.T) {
 }
 
 func TestContextPull_UndefinedPieceCID(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -1444,7 +1444,7 @@ func TestContextPull_UndefinedPieceCID(t *testing.T) {
 
 func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -1469,7 +1469,7 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 
 func TestContextPresignForCommit_ExistingDataSet_TracksAddOnlyPayload(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -1492,7 +1492,7 @@ func TestContextPresignForCommit_ExistingDataSet_TracksAddOnlyPayload(t *testing
 }
 
 func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -1508,8 +1508,8 @@ func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
 
 func TestContextCommit_AddPiecesError(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return nil, errors.New("add pieces failed")
 		},
 	}
@@ -1540,15 +1540,15 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 	}
 
 	var staleExtra []byte
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.CreateDataSetResult, error) {
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.CreateDataSetResult, error) {
 			if len(pieces) != 1 || pieces[0].PieceCID != info1.CIDv2 {
 				t.Fatalf("unexpected create pieces: %+v", pieces)
 			}
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/create"}, nil
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/create"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x01"),
 				DataSetID:         55,
 				PieceCount:        1,
@@ -1556,7 +1556,7 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []icurio.AddPieceInput, extraData []byte) (*icurio.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 			if gotDataSetID != 55 {
 				t.Fatalf("dataSetID=%d want 55", gotDataSetID)
 			}
@@ -1566,10 +1566,10 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 			if bytes.Equal(extraData, staleExtra) {
 				return nil, errors.New("stale extraData used")
 			}
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/add"}, nil
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/add"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
-			return &icurio.AddPiecesStatus{
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
 				DataSetID:         55,
 				PieceCount:        1,
@@ -1625,7 +1625,7 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 // must not race with signing. Run under -race to validate.
 func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
 	info := mustPieceInfo(t)
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -1685,13 +1685,13 @@ func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
 func TestContextDataSetID_ConcurrentWithCommit(t *testing.T) {
 	info := mustPieceInfo(t)
 	releaseCreate := make(chan struct{})
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			<-releaseCreate
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				DataSetID:         42,
 				ConfirmedPieceIDs: []*big.Int{big.NewInt(11)},
 				TxHash:            common.HexToHash("0x1234"),
@@ -1744,11 +1744,11 @@ func TestContextDataSetID_ConcurrentWithCommit(t *testing.T) {
 
 func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return nil, errors.New("wait failed")
 		},
 	}
@@ -1773,8 +1773,8 @@ func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 
 func TestContextCommit_CreateAndAddError(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
 			return nil, errors.New("create failed")
 		},
 	}
@@ -1797,11 +1797,11 @@ func TestContextCommit_CreateAndAddError(t *testing.T) {
 
 func TestContextCommit_WaitCreateAndAddError(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return nil, errors.New("wait create failed")
 		},
 	}
@@ -1824,7 +1824,7 @@ func TestContextCommit_WaitCreateAndAddError(t *testing.T) {
 
 func TestContextDownload_ClientError(t *testing.T) {
 	info := mustPieceInfo(t)
-	fake := &fakeCurioClient{
+	fake := &fakePDPProviderClient{
 		downloadPieceFn: func(_ context.Context, _ cid.Cid) (io.ReadCloser, int64, error) {
 			return nil, 0, errors.New("download failed")
 		},
@@ -1848,27 +1848,27 @@ func TestContextPull_OnProgress(t *testing.T) {
 
 	// The fake delivers two progress snapshots then the final result.
 	// The second snapshot includes an unknown piece ID that must be ignored.
-	fake := &fakeCurioClient{
-		pullPiecesFnWithCb: func(_ context.Context, req icurio.PullRequest, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
+	fake := &fakePDPProviderClient{
+		pullPiecesFnWithCb: func(_ context.Context, req pdp.PullRequest, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
 			if cb != nil {
-				cb(&icurio.PullResult{
-					Status: icurio.PullStatusInProgress,
-					Pieces: []icurio.PullPieceStatus{
-						{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusInProgress},
-						{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: icurio.PullStatusInProgress},
+				cb(&pdp.PullResult{
+					Status: pdp.PullStatusInProgress,
+					Pieces: []pdp.PullPieceStatus{
+						{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusInProgress},
+						{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: pdp.PullStatusInProgress},
 					},
 				})
-				cb(&icurio.PullResult{
-					Status: icurio.PullStatusComplete,
-					Pieces: []icurio.PullPieceStatus{
-						{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
+				cb(&pdp.PullResult{
+					Status: pdp.PullStatusComplete,
+					Pieces: []pdp.PullPieceStatus{
+						{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete},
 					},
 				})
 			}
-			return &icurio.PullResult{
-				Status: icurio.PullStatusComplete,
-				Pieces: []icurio.PullPieceStatus{
-					{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
+			return &pdp.PullResult{
+				Status: pdp.PullStatusComplete,
+				Pieces: []pdp.PullPieceStatus{
+					{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete},
 				},
 			}, nil
 		},
@@ -1909,10 +1909,10 @@ func TestContextPull_OnProgress(t *testing.T) {
 	}
 }
 
-// TestContextPull_ProgressStatusesStayAlignedWithCurio proves the public
-// PullStatus constants still cover every Curio status we forward through
+// TestContextPull_ProgressStatusesStayAlignedWithPDP proves the public
+// PullStatus constants still cover every PDP provider status we forward through
 // PullRequest.OnProgress.
-func TestContextPull_ProgressStatusesStayAlignedWithCurio(t *testing.T) {
+func TestContextPull_ProgressStatusesStayAlignedWithPDP(t *testing.T) {
 	got := map[PullStatus]struct{}{
 		PullStatusPending:    {},
 		PullStatusInProgress: {},
@@ -1921,11 +1921,11 @@ func TestContextPull_ProgressStatusesStayAlignedWithCurio(t *testing.T) {
 		PullStatusFailed:     {},
 	}
 	want := []PullStatus{
-		PullStatus(icurio.PullStatusPending),
-		PullStatus(icurio.PullStatusInProgress),
-		PullStatus(icurio.PullStatusRetrying),
-		PullStatus(icurio.PullStatusComplete),
-		PullStatus(icurio.PullStatusFailed),
+		PullStatus(pdp.PullStatusPending),
+		PullStatus(pdp.PullStatusInProgress),
+		PullStatus(pdp.PullStatusRetrying),
+		PullStatus(pdp.PullStatusComplete),
+		PullStatus(pdp.PullStatusFailed),
 	}
 
 	for _, status := range want {
@@ -1941,13 +1941,13 @@ func TestContextPull_ProgressStatusesStayAlignedWithCurio(t *testing.T) {
 func TestContextPull_IgnoresUnknownPieceIDsInResult(t *testing.T) {
 	info := mustPieceInfo(t)
 
-	fake := &fakeCurioClient{
-		pullPiecesFnWithCb: func(_ context.Context, req icurio.PullRequest, cb func(*icurio.PullResult)) (*icurio.PullResult, error) {
-			return &icurio.PullResult{
-				Status: icurio.PullStatusComplete,
-				Pieces: []icurio.PullPieceStatus{
-					{PieceCID: info.CIDv2.String(), Status: icurio.PullStatusComplete},
-					{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: icurio.PullStatusFailed},
+	fake := &fakePDPProviderClient{
+		pullPiecesFnWithCb: func(_ context.Context, req pdp.PullRequest, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
+			return &pdp.PullResult{
+				Status: pdp.PullStatusComplete,
+				Pieces: []pdp.PullPieceStatus{
+					{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete},
+					{PieceCID: "baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urpi6rvmslce6hre5ioksjwq", Status: pdp.PullStatusFailed},
 				},
 			}, nil
 		},
@@ -1987,17 +1987,17 @@ func TestContextCommit_OnSubmittedExistingDataSet(t *testing.T) {
 	var submittedBeforeWait bool
 	waitCalled := false
 
-	fake := &fakeCurioClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []icurio.AddPieceInput, _ []byte) (*icurio.AddPiecesResult, error) {
-			return &icurio.AddPiecesResult{
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			return &pdp.AddPiecesResult{
 				TxHash:    common.HexToHash("0xabcd"),
 				StatusURL: "https://sp.example.com/status",
 			}, nil
 		},
-		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			waitCalled = true
 			submittedBeforeWait = submittedHash != ""
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabcd"),
 				DataSetID:         42,
 				PiecesAdded:       true,
@@ -2049,17 +2049,17 @@ func TestContextCommit_OnSubmittedNewDataSet(t *testing.T) {
 	var submittedBeforeWait bool
 	waitCalled := false
 
-	fake := &fakeCurioClient{
-		createAndAddFn: func(_ context.Context, _ common.Address, _ []icurio.AddPieceInput, _ []byte) (*icurio.CreateDataSetResult, error) {
-			return &icurio.CreateDataSetResult{
+	fake := &fakePDPProviderClient{
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
 				TxHash:    common.HexToHash("0xbeef"),
 				StatusURL: "https://sp.example.com/status",
 			}, nil
 		},
-		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*icurio.AddPiecesStatus, error) {
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			waitCalled = true
 			submittedBeforeWait = submittedHash != ""
-			return &icurio.AddPiecesStatus{
+			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xbeef"),
 				DataSetID:         99,
 				PiecesAdded:       true,

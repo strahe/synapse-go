@@ -16,14 +16,14 @@ import (
 	"github.com/strahe/synapse-go/piece"
 )
 
-func TestContextDownload_UsesCurioClientAndValidatesPiece(t *testing.T) {
+func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
 	data := bytes.Repeat([]byte("dl"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
+	fake := &fakePDPProviderClient{
 		downloadPieceFn: func(_ context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
 			if pieceCID != info.CIDv2 {
 				t.Fatalf("pieceCID=%s want %s", pieceCID, info.CIDv2)
@@ -59,7 +59,7 @@ func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	fake := &fakeCurioClient{
+	fake := &fakePDPProviderClient{
 		downloadPieceFn: func(_ context.Context, _ cid.Cid) (io.ReadCloser, int64, error) {
 			return io.NopCloser(bytes.NewReader(bad)), int64(len(bad)), nil
 		},
@@ -212,8 +212,8 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 // TestContextDownload_RejectsPieceCIDv1 proves that Context.Download requires
-// PieceCIDv2 because curio only accepts v2.  Raw size is unavailable here so
-// transparent v1→v2 normalisation is not possible.  The URL-based path in
+// PieceCIDv2 because the PDP provider only accepts v2. Raw size is unavailable
+// here so transparent v1→v2 normalisation is not possible. The URL-based path in
 // Manager.Download still accepts both forms.
 func TestContextDownload_RejectsPieceCIDv1(t *testing.T) {
 	data := bytes.Repeat([]byte("v1dl"), 128)
@@ -221,7 +221,7 @@ func TestContextDownload_RejectsPieceCIDv1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -276,13 +276,13 @@ func TestManagerDownload_RejectsNonPieceCID(t *testing.T) {
 }
 
 // TestContextDownload_RejectsNonPieceCID proves the same boundary check for
-// the curio-backed path.
+// the PDP-backed path.
 func TestContextDownload_RejectsNonPieceCID(t *testing.T) {
 	nonPiece, err := cid.Parse("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
 	if err != nil {
 		t.Fatalf("cid.Parse: %v", err)
 	}
-	ctx, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t))
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}

@@ -43,7 +43,7 @@
 // connecting to trusted private infrastructure, or provide [Options.HTTPClient]
 // if you need explicit proxy control. Bound the number of bytes accepted per
 // URL-based Service.Download call via [Options.DownloadMaxBytes];
-// Context.Download (curio-backed) is not subject to this cap.
+// Context.Download (PDP-backed) is not subject to this cap.
 //
 // [UploadOptions] exposes per-upload lifecycle hooks covering the full
 // store → pull → commit pipeline:
@@ -60,7 +60,7 @@
 //   - [UploadOptions.OnPullProgress] — per-piece status update during a secondary pull.
 //
 // [Context.Pull] checks that each requested piece resolves to a non-empty
-// source URL. Curio performs stricter source-URL validation before executing
+// source URL. The PDP provider performs stricter source-URL validation before executing
 // the provider-to-provider pull.
 //
 // # Stability

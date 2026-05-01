@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"bytes"
@@ -100,7 +100,7 @@ func TestPing_Error(t *testing.T) {
 	}
 }
 
-// streamingUploadHandler is a reusable httptest handler implementing Curio's
+// streamingUploadHandler is a reusable httptest handler implementing the
 // CommP-last 3-step streaming upload protocol for client-side unit tests.
 //
 // The three endpoints are:

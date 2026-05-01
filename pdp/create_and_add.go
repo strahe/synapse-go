@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"context"
@@ -22,9 +22,9 @@ type createAndAddPiecesRequest struct {
 
 // CreateDataSetAndAddPieces calls POST /pdp/data-sets/create-and-add.
 //
-// The Curio server creates a dataset and immediately submits the add-pieces
-// transaction using the same signed extraData blob the TS SDK generates for
-// the combined create+add flow.
+// The provider creates a dataset and immediately submits the add-pieces
+// transaction using the caller-provided EIP-712 signed extraData for the
+// combined create+add flow.
 func (c *Client) CreateDataSetAndAddPieces(
 	ctx context.Context,
 	recordKeeper common.Address,
@@ -32,13 +32,13 @@ func (c *Client) CreateDataSetAndAddPieces(
 	extraData []byte,
 ) (*CreateDataSetResult, error) {
 	if (recordKeeper == common.Address{}) {
-		return nil, errors.New("curio.CreateDataSetAndAddPieces: zero recordKeeper")
+		return nil, errors.New("pdp.CreateDataSetAndAddPieces: zero recordKeeper")
 	}
 	if len(pieces) == 0 {
-		return nil, errors.New("curio.CreateDataSetAndAddPieces: no pieces provided")
+		return nil, errors.New("pdp.CreateDataSetAndAddPieces: no pieces provided")
 	}
 	if len(extraData) == 0 {
-		return nil, errors.New("curio.CreateDataSetAndAddPieces: empty extraData")
+		return nil, errors.New("pdp.CreateDataSetAndAddPieces: empty extraData")
 	}
 
 	wire := createAndAddPiecesRequest{
@@ -47,7 +47,7 @@ func (c *Client) CreateDataSetAndAddPieces(
 	}
 	for _, p := range pieces {
 		if !p.PieceCID.Defined() {
-			return nil, errors.New("curio.CreateDataSetAndAddPieces: undefined pieceCID in input")
+			return nil, errors.New("pdp.CreateDataSetAndAddPieces: undefined pieceCID in input")
 		}
 		s := p.PieceCID.String()
 		wire.Pieces = append(wire.Pieces, addPiecesRequestPiece{
@@ -75,7 +75,7 @@ func (c *Client) CreateDataSetAndAddPieces(
 	}
 	statusURL, err := c.resolve(loc)
 	if err != nil {
-		return nil, fmt.Errorf("curio.CreateDataSetAndAddPieces: resolve status URL: %w", err)
+		return nil, fmt.Errorf("pdp.CreateDataSetAndAddPieces: resolve status URL: %w", err)
 	}
 	return &CreateDataSetResult{TxHash: tx, StatusURL: statusURL.String()}, nil
 }
@@ -92,10 +92,10 @@ func (c *Client) WaitForCreateDataSetAndAddPieces(
 		return nil, err
 	}
 	if createStatus.DataSetID == nil || !createStatus.DataSetID.IsUint64() {
-		return nil, errors.New("curio.WaitForCreateDataSetAndAddPieces: missing dataSetId in create status")
+		return nil, errors.New("pdp.WaitForCreateDataSetAndAddPieces: missing dataSetId in create status")
 	}
 	if createStatus.CreateMessageHash == (common.Hash{}) {
-		return nil, errors.New("curio.WaitForCreateDataSetAndAddPieces: server returned zero CreateMessageHash")
+		return nil, errors.New("pdp.WaitForCreateDataSetAndAddPieces: server returned zero CreateMessageHash")
 	}
 
 	addStatusURL, err := c.resolve(path.Join(
@@ -105,7 +105,7 @@ func (c *Client) WaitForCreateDataSetAndAddPieces(
 		createStatus.CreateMessageHash.Hex(),
 	))
 	if err != nil {
-		return nil, fmt.Errorf("curio.WaitForCreateDataSetAndAddPieces: resolve add status URL: %w", err)
+		return nil, fmt.Errorf("pdp.WaitForCreateDataSetAndAddPieces: resolve add status URL: %w", err)
 	}
 	return c.WaitForPiecesAdded(ctx, addStatusURL.String(), pollInterval)
 }

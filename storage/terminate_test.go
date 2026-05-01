@@ -26,7 +26,7 @@ func (f *fakeFWSSTerminator) TerminateDataSet(_ context.Context, id types.DataSe
 }
 
 func TestContext_Terminate_NotConfigured(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -42,7 +42,7 @@ func TestContext_Terminate_NotConfigured(t *testing.T) {
 
 func TestContext_Terminate_Passthrough(t *testing.T) {
 	term := &fakeFWSSTerminator{res: &types.WriteResult{Hash: common.HexToHash("0xdead")}}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -66,7 +66,7 @@ func TestContext_Terminate_Passthrough(t *testing.T) {
 
 func TestContext_Terminate_PropagatesError(t *testing.T) {
 	term := &fakeFWSSTerminator{err: errors.New("terminate failed")}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -84,7 +84,7 @@ func TestContext_Terminate_PropagatesError(t *testing.T) {
 func TestContext_Terminate_TypedNilTerminatorTreatedAsUnset(t *testing.T) {
 	var term *fakeFWSSTerminator
 
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),

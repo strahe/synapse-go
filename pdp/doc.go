@@ -1,10 +1,8 @@
-// Package curio provides an HTTP client for the Curio storage provider
-// PDP API consumed by Filecoin Warm Storage clients.
+// Package pdp provides a Curio-compatible PDP provider HTTP client.
 //
-// The SDK side is unauthenticated at the HTTP layer (curio uses NullAuth
-// for public PDP endpoints); authorization for state-changing calls is
-// carried inside the request body as an EIP-712 signed extraData blob,
-// produced by internal/typeddata and warmstorage/payments.
+// PDP endpoints are unauthenticated at the HTTP layer. Authorization for
+// state-changing calls is carried inside the request body as caller-provided
+// EIP-712 signed extraData.
 //
 // # Retry policy
 //
@@ -35,13 +33,15 @@
 //
 //   - GET    /piece/{pieceCid}                              (download bytes)
 //   - GET    /pdp/ping
-//   - POST   /pdp/piece                                    (pre-register)
-//   - PUT    /pdp/piece/upload/{uploadUUID}                (upload bytes)
+//   - POST   /pdp/piece/uploads                           (create upload)
+//   - PUT    /pdp/piece/uploads/{uploadUUID}               (upload bytes)
+//   - POST   /pdp/piece/uploads/{uploadUUID}               (finalize upload)
 //   - GET    /pdp/piece?pieceCid=...                       (find)
+//   - POST   /pdp/piece/pull                              (pull pieces)
 //   - POST   /pdp/data-sets                                (create)
 //   - GET    /pdp/data-sets/created/{txHash}               (poll create)
 //   - GET    /pdp/data-sets/{id}                           (read)
 //   - POST   /pdp/data-sets/{id}/pieces                    (add pieces)
 //   - GET    /pdp/data-sets/{id}/pieces/added/{txHash}     (poll add)
 //   - DELETE /pdp/data-sets/{id}/pieces/{pieceId}          (schedule remove)
-package curio
+package pdp

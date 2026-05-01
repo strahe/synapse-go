@@ -10,8 +10,8 @@ import (
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/internal/adapters"
 	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
-	icurio "github.com/strahe/synapse-go/internal/curio"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
@@ -122,16 +122,16 @@ func (c *Client) initServices() error {
 		SPRegistry:  spReg,
 		WarmStorage: ws,
 		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (storage.UploadContext, error) {
-			var curioOpts []icurio.Option
+			var pdpOpts []pdp.Option
 			if c.logger != nil {
-				curioOpts = append(curioOpts, icurio.WithLogger(c.logger))
+				pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
 			}
 			if c.httpClient != nil {
-				curioOpts = append(curioOpts, icurio.WithHTTPClient(c.httpClient))
+				pdpOpts = append(pdpOpts, pdp.WithHTTPClient(c.httpClient))
 			}
-			curioClient, err := icurio.New(sel.Provider.ServiceURL, curioOpts...)
+			pdpClient, err := pdp.New(sel.Provider.ServiceURL, pdpOpts...)
 			if err != nil {
-				return nil, fmt.Errorf("create curio client for %s: %w", sel.Provider.ServiceURL, err)
+				return nil, fmt.Errorf("create PDP client for %s: %w", sel.Provider.ServiceURL, err)
 			}
 			effectiveCDN := c.withCDN
 			if opts != nil && opts.WithCDN != nil {
@@ -155,7 +155,7 @@ func (c *Client) initServices() error {
 			}
 			return storage.NewContext(
 				sel.Provider,
-				curioClient,
+				pdpClient,
 				c.evmSigner,
 				ctxOpts...,
 			)
@@ -225,7 +225,7 @@ func (c *Client) FilBeam() *filbeam.Service {
 // Storage returns the [storage.Service].
 //
 // The service is wired with a [storage.ServiceResolver] that uses
-// [Client.WarmStorage] and [Client.SPRegistry]. A per-provider curio client is
+// [Client.WarmStorage] and [Client.SPRegistry]. A per-provider PDP client is
 // created inside the [storage.ContextFactory] closure on each upload.
 func (c *Client) Storage() *storage.Service {
 	return c.storage

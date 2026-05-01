@@ -85,7 +85,7 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 // terminal error returned by the last Read (or io.ReadAll).
 //
 // pieceCID must be a PieceCIDv2.  PieceCIDv1 is not accepted on this path
-// because curio only accepts v2 and the raw size needed to normalise v1→v2 is
+// because PDP provider only accepts v2 and the raw size needed to normalise v1→v2 is
 // not available here.  Use Service.Download with a URL if you only have v1.
 func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	if _, err := piece.ParseV2(pieceCID); err != nil {

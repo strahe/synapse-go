@@ -1,4 +1,4 @@
-package curio
+package pdp
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// HTTPError wraps a non-success response from the Curio API.
+// HTTPError wraps a non-success response from the PDP provider API.
 //
 // The URL field is always pre-redacted: userinfo is stripped and sensitive
 // query parameters (see sensitiveQueryKeys in redact.go) are masked as
@@ -70,27 +70,27 @@ func (e *HTTPError) RedactedURL() string {
 // Error implements the error interface using the pre-redacted URL.
 func (e *HTTPError) Error() string {
 	if e.Body == "" {
-		return fmt.Sprintf("curio: %s %s: HTTP %d", e.Method, e.URL, e.StatusCode)
+		return fmt.Sprintf("pdp: %s %s: HTTP %d", e.Method, e.URL, e.StatusCode)
 	}
-	return fmt.Sprintf("curio: %s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
+	return fmt.Sprintf("pdp: %s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
 }
 
 // ErrLocationHeader is returned when the server responds successfully but
 // the expected Location header is missing or malformed.
-var ErrLocationHeader = errors.New("curio: missing or invalid Location header")
+var ErrLocationHeader = errors.New("pdp: missing or invalid Location header")
 
 // ErrPieceNotFound is returned when GET /pdp/piece returns 404.
-var ErrPieceNotFound = errors.New("curio: piece not found")
+var ErrPieceNotFound = errors.New("pdp: piece not found")
 
 // ErrPieceProcessing is returned when GET /pdp/piece returns 202, meaning
 // the piece is known but not yet parked and queryable.
-var ErrPieceProcessing = errors.New("curio: piece still processing")
+var ErrPieceProcessing = errors.New("pdp: piece still processing")
 
 // ErrStillPending is returned by status-polling helpers when the server
 // reports the transaction is still pending. It is the sentinel callers
 // should loop on while waiting.
-var ErrStillPending = errors.New("curio: still pending")
+var ErrStillPending = errors.New("pdp: still pending")
 
 // ErrTxRejected is returned when an on-chain operation posted by the SP
 // was rejected by the network.
-var ErrTxRejected = errors.New("curio: transaction rejected")
+var ErrTxRejected = errors.New("pdp: transaction rejected")

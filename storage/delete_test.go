@@ -19,7 +19,7 @@ import (
 func TestContext_DeletePiece_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findIDs: []uint64{42}}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -43,7 +43,7 @@ func TestContext_DeletePiece_Success(t *testing.T) {
 	pdp := &fakePDPReader{findIDs: []uint64{42}}
 	var gotDataSetID, gotPieceID uint64
 	var gotExtraData []byte
-	fake := &fakeCurioClient{
+	fake := &fakePDPProviderClient{
 		scheduleDeletionFn: func(_ context.Context, dsID, pID uint64, extraData []byte) (common.Hash, error) {
 			gotDataSetID = dsID
 			gotPieceID = pID
@@ -80,7 +80,7 @@ func TestContext_DeletePiece_Success(t *testing.T) {
 func TestContext_DeletePiece_PieceNotFound(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findIDs: nil}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -99,7 +99,7 @@ func TestContext_DeletePiece_PieceNotFound(t *testing.T) {
 func TestContext_DeletePiece_FindError(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findErr: errors.New("rpc boom")}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -117,7 +117,7 @@ func TestContext_DeletePiece_FindError(t *testing.T) {
 
 func TestContext_DeletePiece_InvalidCID(t *testing.T) {
 	pdp := &fakePDPReader{}
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -136,7 +136,7 @@ func TestContext_DeletePiece_InvalidCID(t *testing.T) {
 func TestContext_DeletePiece_RejectsZeroRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findIDs: []uint64{42}}
-	fake := &fakeCurioClient{
+	fake := &fakePDPProviderClient{
 		scheduleDeletionFn: func(context.Context, uint64, uint64, []byte) (common.Hash, error) {
 			t.Fatal("SchedulePieceDeletion should not be called with zero recordKeeper")
 			return common.Hash{}, nil
@@ -165,7 +165,7 @@ func TestContext_DeletePiece_TypedNilPDPReaderTreatedAsUnset(t *testing.T) {
 	info := mustPieceInfo(t)
 	var pdp *fakePDPReader
 
-	c, err := NewContext(testProvider(), &fakeCurioClient{}, mustTestSigner(t),
+	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
