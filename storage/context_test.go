@@ -1129,9 +1129,17 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedExistingDataSet(t *testing
 	}
 }
 
-func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionID(t *testing.T) {
+func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionIDWithoutPoisoningContext(t *testing.T) {
+	waitCalls := 0
 	fake := &fakePDPProviderClient{
-		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+		waitForCreatedFn: func(_ context.Context, statusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			waitCalls++
+			switch statusURL {
+			case "https://sp.example.com/pdp/data-sets/created/0xbeef":
+			case "https://sp.example.com/pdp/data-sets/created/0xcafe":
+			default:
+				t.Fatalf("statusURL=%q", statusURL)
+			}
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xcafe"),
 				TxStatus:          "confirmed",
@@ -1144,7 +1152,6 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionID(t *testing.T
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1160,6 +1167,21 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionID(t *testing.T
 	}
 	if id := ctx.DataSetID(); id != nil {
 		t.Fatalf("context DataSetID=%v want nil", id)
+	}
+
+	result, err := ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+		TransactionID:   common.HexToHash("0xcafe").Hex(),
+		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xcafe",
+		ClientDataSetID: big.NewInt(100),
+	})
+	if err != nil {
+		t.Fatalf("WaitForDataSetCreated retry: %v", err)
+	}
+	if result.DataSetID != 77 {
+		t.Fatalf("retry DataSetID=%d want 77", result.DataSetID)
+	}
+	if waitCalls != 2 {
+		t.Fatalf("wait calls=%d want 2", waitCalls)
 	}
 }
 

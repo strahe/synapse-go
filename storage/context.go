@@ -92,12 +92,13 @@ type Context struct {
 	recordKeeper common.Address
 	withCDN      bool
 
-	dataSetID       *types.DataSetID
-	clientDataSetID types.ClientDataSetID
-	dataSetMetadata map[string]string
-	createInFlight  bool
-	pendingCreate   *CreateDataSetSubmission
-	presignedKinds  map[[32]byte]commitExtraDataKind
+	dataSetID           *types.DataSetID
+	clientDataSetID     types.ClientDataSetID
+	dataSetMetadata     map[string]string
+	createInFlight      bool
+	pendingCreate       *CreateDataSetSubmission
+	clientIDFromPending bool
+	presignedKinds      map[[32]byte]commitExtraDataKind
 
 	// Optional read/write collaborators used by TS-parity lifecycle
 	// methods (GetScheduledRemovals, PieceStatus, DeletePiece, Terminate).

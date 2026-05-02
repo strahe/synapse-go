@@ -180,38 +180,40 @@ func (c *Context) waitForDataSetCreated(ctx context.Context, op string, submissi
 	status, err := c.client.WaitForDataSetCreated(ctx, submission.StatusURL, 0)
 	if err != nil {
 		if errors.Is(err, pdp.ErrTxRejected) {
-			c.mu.Lock()
-			if c.pendingCreate != nil && sameCreateDataSetSubmission(*c.pendingCreate, submission) {
-				c.pendingCreate = nil
-			}
-			c.mu.Unlock()
+			c.forgetPendingDataSetCreation(submission)
 		}
 		return nil, fmt.Errorf("%s: wait dataset created: %w", op, err)
 	}
 	if status == nil {
+		c.forgetPendingDataSetCreation(submission)
 		return nil, errors.New(op + ": wait dataset created returned nil status")
 	}
 	dataSetID, err := idconv.Safe[types.DataSetID]("dataSetID", status.DataSetID)
 	if err != nil {
+		c.forgetPendingDataSetCreation(submission)
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if dataSetID == 0 {
+		c.forgetPendingDataSetCreation(submission)
 		return nil, errors.New(op + ": server returned zero dataSetID")
 	}
 	transactionID := submission.TransactionID
 	wantTransactionID := common.HexToHash(submission.TransactionID)
 	if got := status.CreateMessageHash; got != wantTransactionID {
+		c.forgetPendingDataSetCreation(submission)
 		return nil, fmt.Errorf("%s: %w: server returned mismatched transactionID: got %s want %s", op, ErrInvalidArgument, got.Hex(), wantTransactionID.Hex())
 	}
 
 	c.mu.Lock()
 	if c.dataSetID != nil && *c.dataSetID != dataSetID {
+		existingID := *c.dataSetID
 		c.mu.Unlock()
-		return nil, fmt.Errorf("%s: %w: server returned mismatched dataSetID: got %d want %d", op, ErrInvalidArgument, dataSetID, *c.dataSetID)
+		return nil, fmt.Errorf("%s: %w: server returned mismatched dataSetID: got %d want %d", op, ErrInvalidArgument, dataSetID, existingID)
 	}
 	newID := dataSetID
 	c.dataSetID = &newID
 	c.clientDataSetID = copyClientDataSetID(submission.ClientDataSetID)
+	c.clientIDFromPending = false
 	c.pendingCreate = nil
 	c.mu.Unlock()
 
@@ -255,6 +257,7 @@ func (c *Context) rememberPendingDataSetCreation(op string, submission CreateDat
 		c.pendingCreate = cloneCreateDataSetSubmissionPtr(submission)
 		if c.clientDataSetID == nil {
 			c.clientDataSetID = copyClientDataSetID(submission.ClientDataSetID)
+			c.clientIDFromPending = true
 		}
 	}
 	c.mu.Unlock()
@@ -264,6 +267,18 @@ func (c *Context) rememberPendingDataSetCreation(op string, submission CreateDat
 func (c *Context) clearCreateInFlight() {
 	c.mu.Lock()
 	c.createInFlight = false
+	c.mu.Unlock()
+}
+
+func (c *Context) forgetPendingDataSetCreation(submission CreateDataSetSubmission) {
+	c.mu.Lock()
+	if c.pendingCreate != nil && sameCreateDataSetSubmission(*c.pendingCreate, submission) {
+		c.pendingCreate = nil
+		if c.clientIDFromPending && sameClientDataSetID(c.clientDataSetID, submission.ClientDataSetID) {
+			c.clientDataSetID = nil
+			c.clientIDFromPending = false
+		}
+	}
 	c.mu.Unlock()
 }
 
@@ -282,12 +297,16 @@ func sameCreateDataSetSubmission(a, b CreateDataSetSubmission) bool {
 	if a.TransactionID != b.TransactionID || a.StatusURL != b.StatusURL {
 		return false
 	}
+	return sameClientDataSetID(a.ClientDataSetID, b.ClientDataSetID)
+}
+
+func sameClientDataSetID(a, b types.ClientDataSetID) bool {
 	switch {
-	case a.ClientDataSetID == nil && b.ClientDataSetID == nil:
+	case a == nil && b == nil:
 		return true
-	case a.ClientDataSetID == nil || b.ClientDataSetID == nil:
+	case a == nil || b == nil:
 		return false
 	default:
-		return a.ClientDataSetID.Cmp(b.ClientDataSetID) == 0
+		return a.Cmp(b) == 0
 	}
 }
