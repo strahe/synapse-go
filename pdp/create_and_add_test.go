@@ -3,8 +3,10 @@ package pdp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -75,6 +77,43 @@ func TestCreateDataSetAndAddPieces_OK(t *testing.T) {
 	if want := c.BaseURL().ResolveReference(&url.URL{Path: "/pdp/data-sets/created/" + txHash}).String(); res.StatusURL != want {
 		t.Fatalf("statusURL=%q want %q", res.StatusURL, want)
 	}
+}
+
+func TestCreateDataSetAndAddPieces_RespectsHTTPClientTimeout(t *testing.T) {
+	info, err := piece.CalculateFromBytes(make([]byte, 256))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	recordKeeper := common.HexToAddress("0xabc")
+	txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/pdp/data-sets/create-and-add" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Location", "/pdp/data-sets/created/"+txHash)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(srv.URL, WithHTTPClient(&http.Client{Timeout: 10 * time.Millisecond}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = c.CreateDataSetAndAddPieces(context.Background(), recordKeeper, []AddPieceInput{{PieceCID: info.CIDv2}}, []byte{0xde, 0xad})
+	if err == nil {
+		t.Fatal("expected CreateDataSetAndAddPieces to respect the configured HTTP timeout")
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.Fatalf("expected timeout error, got %v", err)
 }
 
 func TestWaitForCreateDataSetAndAddPieces_OK(t *testing.T) {

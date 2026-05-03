@@ -55,7 +55,7 @@ func (c *Client) CreateDataSetAndAddPieces(
 		})
 	}
 
-	resp, body, err := c.postJSONLong(ctx, "pdp/data-sets/create-and-add", wire,
+	resp, body, err := c.postJSON(ctx, "pdp/data-sets/create-and-add", wire,
 		http.StatusCreated, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
