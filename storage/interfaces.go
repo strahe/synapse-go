@@ -15,13 +15,13 @@ import (
 // PDPVerifierReader is the read-only PDPVerifier surface required by
 // [Context] for piece lifecycle queries (scheduled removals, id lookup,
 // next challenge epoch) and by [PieceStatus] for proving-window
-// calculations. Implementations convert between [sdktypes.DataSetID]
-// / [cid.Cid] / uint64 and the abigen-native types (`*big.Int`,
+// calculations. Implementations convert between [sdktypes.BigInt]
+// / [cid.Cid] and the abigen-native types (`*big.Int`,
 // `pdpverifier.CidsCid`).
 type PDPVerifierReader interface {
-	FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.DataSetID, pieceCID cid.Cid, start, limit uint64) ([]uint64, error)
-	GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.DataSetID) ([]uint64, error)
-	GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.DataSetID) (*big.Int, error)
+	FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error)
+	GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.BigInt) ([]sdktypes.BigInt, error)
+	GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
@@ -34,7 +34,7 @@ type PDPConfigReader interface {
 // FWSSTerminator terminates an on-chain data set via FWSS.TerminateService.
 // Satisfied by *warmstorage.Service (see TerminateDataSet).
 type FWSSTerminator interface {
-	TerminateDataSet(ctx context.Context, dataSetID sdktypes.DataSetID, opts ...warmstorage.WriteOption) (*sdktypes.WriteResult, error)
+	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts ...warmstorage.WriteOption) (*sdktypes.WriteResult, error)
 }
 
 // FWSSDataSetReader reads an existing data set's on-chain record from the
@@ -42,7 +42,7 @@ type FWSSTerminator interface {
 // to auto-fetch the on-chain ClientDataSetID when the resolver path did not
 // already supply one. Satisfied by *warmstorage.Service (see GetDataSet).
 type FWSSDataSetReader interface {
-	GetDataSet(ctx context.Context, dataSetID sdktypes.DataSetID) (*warmstorage.DataSetInfo, error)
+	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }
 
 // DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
@@ -82,7 +82,7 @@ type MultiCostCalculator interface {
 // accurately for add-pieces scenarios. Satisfied by an adapter around
 // PDPVerifier.getDataSetLeafCount (leafCount * 32).
 type DataSetSizeReader interface {
-	GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.DataSetID) (*big.Int, error)
+	GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 }
 
 // PaymentsFunder tops up the Payments contract for an upload. Narrow

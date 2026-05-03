@@ -56,7 +56,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	primary := contexts[0]
 	secondary := contexts[1]
 
-	var cleanupIDs []types.DataSetID
+	var cleanupIDs []types.BigInt
 	t.Cleanup(func() {
 		for _, id := range cleanupIDs {
 			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -104,7 +104,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("primary Upload copies = %d, want 1", len(primaryUpload.Copies))
 	}
 	primaryCopy := primaryUpload.Copies[0]
-	if primaryCopy.DataSetID == 0 {
+	if primaryCopy.DataSetID.IsZero() {
 		t.Fatal("primary Upload returned zero DataSetID")
 	}
 	if primaryCopy.RetrievalURL == "" {
@@ -133,12 +133,12 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if submission.StatusURL == "" {
 		t.Fatal("CreateDataSet submission missing StatusURL")
 	}
-	if submission.ClientDataSetID == nil {
+	if submission.ClientDataSetID == nil || submission.ClientDataSetID.IsZero() {
 		t.Fatal("CreateDataSet submission missing ClientDataSetID")
 	}
 
 	recovered, err := sm.CreateContext(ctx, &storage.CreateContextOptions{
-		ProviderIDs:     []types.ProviderID{secondary.ProviderID()},
+		ProviderIDs:     []types.BigInt{secondary.ProviderID()},
 		DataSetMetadata: metadata,
 		WithCDN:         &withCDN,
 	})
@@ -149,13 +149,13 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
-	if created.DataSetID == 0 {
+	if created.DataSetID.IsZero() {
 		t.Fatal("WaitForDataSetCreated returned zero DataSetID")
 	}
-	if created.ClientDataSetID == nil || created.ClientDataSetID.Cmp(submission.ClientDataSetID) != 0 {
+	if !created.ClientDataSetID.Equal(*submission.ClientDataSetID) {
 		t.Fatalf("ClientDataSetID mismatch: got %v want %v", created.ClientDataSetID, submission.ClientDataSetID)
 	}
-	if got := recovered.DataSetID(); got == nil || *got != created.DataSetID {
+	if got := recovered.DataSetID(); got == nil || !got.Equal(created.DataSetID) {
 		t.Fatalf("recovered DataSetID = %v, want %d", got, created.DataSetID)
 	}
 	cleanupIDs = append(cleanupIDs, created.DataSetID)
@@ -197,7 +197,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if commit.DataSetID != created.DataSetID {
+	if !commit.DataSetID.Equal(created.DataSetID) {
 		t.Fatalf("Commit DataSetID = %d, want %d", commit.DataSetID, created.DataSetID)
 	}
 	if commit.IsNewDataSet {

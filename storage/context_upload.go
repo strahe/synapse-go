@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-
-	"github.com/strahe/synapse-go/types"
 )
 
 // Upload stores a single copy of data on this context's provider and
@@ -96,6 +94,3 @@ func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		Copies:          copies,
 	}, nil
 }
-
-// ensure types import is used even if future refactors drop it.
-var _ = types.DataSetID(0)

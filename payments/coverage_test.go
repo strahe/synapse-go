@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // ------------------------------------------------------------------
@@ -32,7 +33,7 @@ func TestGetRail_HappyPath(t *testing.T) {
 		ServiceFeeRecipient: common.Address{},
 	})
 
-	view, err := s.GetRail(context.Background(), big.NewInt(7))
+	view, err := s.GetRail(context.Background(), sdktypes.NewBigInt(7))
 	if err != nil {
 		t.Fatalf("GetRail: %v", err)
 	}
@@ -46,11 +47,8 @@ func TestGetRail_HappyPath(t *testing.T) {
 
 func TestGetRail_InvalidRailID(t *testing.T) {
 	s, _ := newTestService(t)
-	if _, err := s.GetRail(context.Background(), big.NewInt(0)); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.GetRail(context.Background(), sdktypes.NewBigInt(0)); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("GetRail(0) err=%v, want ErrInvalidArgument", err)
-	}
-	if _, err := s.GetRail(context.Background(), nil); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("GetRail(nil) err=%v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -99,7 +97,7 @@ func TestGetRailsAsPayee_ZeroAccountRejected(t *testing.T) {
 
 func TestSettle_HappyPath(t *testing.T) {
 	s, mb := newTestService(t)
-	if _, err := s.Settle(context.Background(), big.NewInt(7), big.NewInt(100)); err != nil {
+	if _, err := s.Settle(context.Background(), sdktypes.NewBigInt(7), big.NewInt(100)); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 	if len(mb.sent) != 1 {
@@ -119,7 +117,7 @@ func TestSettle_HappyPath(t *testing.T) {
 
 func TestSettle_InvalidRailID(t *testing.T) {
 	s, _ := newTestService(t)
-	if _, err := s.Settle(context.Background(), big.NewInt(0), nil); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.Settle(context.Background(), sdktypes.NewBigInt(0), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Settle(0) err=%v, want ErrInvalidArgument", err)
 	}
 }
@@ -128,7 +126,7 @@ func TestSettle_DefaultUntilEpochUsesBlockNumber(t *testing.T) {
 	s, mb := newTestService(t)
 	// blockFn default in mockBackend returns 10. resolveUntilEpoch should
 	// substitute that when untilEpoch is nil or zero.
-	if _, err := s.Settle(context.Background(), big.NewInt(1), nil); err != nil {
+	if _, err := s.Settle(context.Background(), sdktypes.NewBigInt(1), nil); err != nil {
 		t.Fatalf("Settle default epoch: %v", err)
 	}
 	if len(mb.sent) != 1 {
@@ -150,7 +148,7 @@ func TestSettle_DefaultUntilEpochUsesBlockNumber(t *testing.T) {
 
 func TestSettleTerminatedRail_HappyAndInvalid(t *testing.T) {
 	s, mb := newTestService(t)
-	if _, err := s.SettleTerminatedRail(context.Background(), big.NewInt(7)); err != nil {
+	if _, err := s.SettleTerminatedRail(context.Background(), sdktypes.NewBigInt(7)); err != nil {
 		t.Fatalf("SettleTerminatedRail: %v", err)
 	}
 	if len(mb.sent) != 1 {
@@ -163,7 +161,7 @@ func TestSettleTerminatedRail_HappyAndInvalid(t *testing.T) {
 	if got := args[0].(*big.Int); got.Cmp(big.NewInt(7)) != 0 {
 		t.Fatalf("railId arg = %s, want 7", got)
 	}
-	if _, err := s.SettleTerminatedRail(context.Background(), big.NewInt(0)); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.SettleTerminatedRail(context.Background(), sdktypes.NewBigInt(0)); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("SettleTerminatedRail(0) err=%v, want ErrInvalidArgument", err)
 	}
 }
@@ -180,7 +178,7 @@ func TestGetSettlementAmounts_DecodesTuple(t *testing.T) {
 		big.NewInt(100), big.NewInt(90), big.NewInt(5), big.NewInt(5),
 		big.NewInt(50), "ok",
 	)
-	res, err := s.GetSettlementAmounts(context.Background(), big.NewInt(3), big.NewInt(50))
+	res, err := s.GetSettlementAmounts(context.Background(), sdktypes.NewBigInt(3), big.NewInt(50))
 	if err != nil {
 		t.Fatalf("GetSettlementAmounts: %v", err)
 	}
@@ -194,7 +192,7 @@ func TestGetSettlementAmounts_DecodesTuple(t *testing.T) {
 
 func TestGetSettlementAmounts_InvalidRailID(t *testing.T) {
 	s, _ := newTestService(t)
-	if _, err := s.GetSettlementAmounts(context.Background(), big.NewInt(0), nil); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := s.GetSettlementAmounts(context.Background(), sdktypes.NewBigInt(0), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("GetSettlementAmounts(0) err=%v, want ErrInvalidArgument", err)
 	}
 }

@@ -26,7 +26,7 @@ func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOpti
 	return nil, false, ctx.Err()
 }
 
-func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[types.ProviderID]struct{}, _ *UploadOptions) (UploadContext, error) {
+func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]types.BigInt, _ *UploadOptions) (UploadContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -72,17 +72,17 @@ func TestServiceCreateContexts_Cancellation(t *testing.T) {
 // PieceStatus's parallel goroutines surface ctx.Err() from errgroup.Wait.
 type ctxAwarePDPReader struct{}
 
-func (ctxAwarePDPReader) GetScheduledRemovals(ctx context.Context, _ types.DataSetID) ([]uint64, error) {
+func (ctxAwarePDPReader) GetScheduledRemovals(ctx context.Context, _ types.BigInt) ([]types.BigInt, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (ctxAwarePDPReader) FindPieceIdsByCid(ctx context.Context, _ types.DataSetID, _ cid.Cid, _, _ uint64) ([]uint64, error) {
+func (ctxAwarePDPReader) FindPieceIdsByCid(ctx context.Context, _ types.BigInt, _ cid.Cid, _, _ uint64) ([]types.BigInt, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (ctxAwarePDPReader) GetNextChallengeEpoch(ctx context.Context, _ types.DataSetID) (*big.Int, error) {
+func (ctxAwarePDPReader) GetNextChallengeEpoch(ctx context.Context, _ types.BigInt) (*big.Int, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

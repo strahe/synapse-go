@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math/big"
 	"sync"
 	"testing"
 	"time"
@@ -19,30 +18,30 @@ import (
 )
 
 type submittedEvent struct {
-	providerID types.ProviderID
+	providerID types.BigInt
 	txHash     string
 	pieces     []SubmittedPiece
 }
 
 type confirmedEvent struct {
-	providerID types.ProviderID
-	dataSetID  types.DataSetID
+	providerID types.BigInt
+	dataSetID  types.BigInt
 	pieces     []ConfirmedPiece
 }
 
 type copyEvent struct {
-	providerID types.ProviderID
+	providerID types.BigInt
 	pieceCID   cid.Cid
 }
 
 type copyFailureEvent struct {
-	providerID types.ProviderID
+	providerID types.BigInt
 	pieceCID   cid.Cid
 	err        error
 }
 
 type pullProgressEvent struct {
-	providerID types.ProviderID
+	providerID types.BigInt
 	pieceCID   cid.Cid
 	status     PullStatus
 }
@@ -64,7 +63,7 @@ func confirmedPiecesEqual(got, want []ConfirmedPiece) bool {
 		return false
 	}
 	for i := range got {
-		if got[i].PieceID != want[i].PieceID || got[i].PieceCID != want[i].PieceCID {
+		if !got[i].PieceID.Equal(want[i].PieceID) || got[i].PieceCID != want[i].PieceCID {
 			return false
 		}
 	}
@@ -73,7 +72,7 @@ func confirmedPiecesEqual(got, want []ConfirmedPiece) bool {
 
 func hasSubmittedEvent(events []submittedEvent, want submittedEvent) bool {
 	for _, got := range events {
-		if got.providerID == want.providerID && got.txHash == want.txHash && submittedPiecesEqual(got.pieces, want.pieces) {
+		if got.providerID.Equal(want.providerID) && got.txHash == want.txHash && submittedPiecesEqual(got.pieces, want.pieces) {
 			return true
 		}
 	}
@@ -82,7 +81,7 @@ func hasSubmittedEvent(events []submittedEvent, want submittedEvent) bool {
 
 func hasConfirmedEvent(events []confirmedEvent, want confirmedEvent) bool {
 	for _, got := range events {
-		if got.providerID == want.providerID && got.dataSetID == want.dataSetID && confirmedPiecesEqual(got.pieces, want.pieces) {
+		if got.providerID.Equal(want.providerID) && got.dataSetID.Equal(want.dataSetID) && confirmedPiecesEqual(got.pieces, want.pieces) {
 			return true
 		}
 	}
@@ -91,7 +90,7 @@ func hasConfirmedEvent(events []confirmedEvent, want confirmedEvent) bool {
 
 func hasCopyEvent(events []copyEvent, want copyEvent) bool {
 	for _, got := range events {
-		if got == want {
+		if got.providerID.Equal(want.providerID) && got.pieceCID == want.pieceCID {
 			return true
 		}
 	}
@@ -100,7 +99,7 @@ func hasCopyEvent(events []copyEvent, want copyEvent) bool {
 
 func hasPullProgressEvent(events []pullProgressEvent, want pullProgressEvent) bool {
 	for _, got := range events {
-		if got == want {
+		if got.providerID.Equal(want.providerID) && got.pieceCID == want.pieceCID && got.status == want.status {
 			return true
 		}
 	}
@@ -132,9 +131,9 @@ func TestContextUpload_Callbacks(t *testing.T) {
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabc"),
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(77)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(77)},
 			}, nil
 		},
 	}
@@ -150,27 +149,27 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	}
 
 	var (
-		storedProviderID        types.ProviderID
+		storedProviderID        types.BigInt
 		storedPieceCID          cid.Cid
 		piecesAddedTxHash       string
-		piecesAddedProviderID   types.ProviderID
+		piecesAddedProviderID   types.BigInt
 		piecesAddedPieces       []SubmittedPiece
-		piecesConfirmedDSID     types.DataSetID
-		piecesConfirmedProvider types.ProviderID
+		piecesConfirmedDSID     types.BigInt
+		piecesConfirmedProvider types.BigInt
 		piecesConfirmedPieces   []ConfirmedPiece
 	)
 
 	opts := &UploadOptions{
-		OnStored: func(providerID types.ProviderID, pieceCID cid.Cid) {
+		OnStored: func(providerID types.BigInt, pieceCID cid.Cid) {
 			storedProviderID = providerID
 			storedPieceCID = pieceCID
 		},
-		OnPiecesAdded: func(txHash string, providerID types.ProviderID, pieces []SubmittedPiece) {
+		OnPiecesAdded: func(txHash string, providerID types.BigInt, pieces []SubmittedPiece) {
 			piecesAddedTxHash = txHash
 			piecesAddedProviderID = providerID
 			piecesAddedPieces = append([]SubmittedPiece(nil), pieces...)
 		},
-		OnPiecesConfirmed: func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
 			piecesConfirmedDSID = dataSetID
 			piecesConfirmedProvider = providerID
 			piecesConfirmedPieces = append([]ConfirmedPiece(nil), pieces...)
@@ -185,8 +184,8 @@ func TestContextUpload_Callbacks(t *testing.T) {
 		t.Fatalf("SuccessCount=%d, want 1", result.SuccessCount())
 	}
 
-	if storedProviderID != provider.ID {
-		t.Errorf("OnStored providerID=%d, want %d", storedProviderID, provider.ID)
+	if !storedProviderID.Equal(provider.ID) {
+		t.Errorf("OnStored providerID=%s, want %s", storedProviderID.String(), provider.ID.String())
 	}
 	if storedPieceCID != info.CIDv2 {
 		t.Errorf("OnStored pieceCID=%s, want %s", storedPieceCID, info.CIDv2)
@@ -196,20 +195,20 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	if piecesAddedTxHash != wantTxHash {
 		t.Errorf("OnPiecesAdded txHash=%q, want %q", piecesAddedTxHash, wantTxHash)
 	}
-	if piecesAddedProviderID != provider.ID {
-		t.Errorf("OnPiecesAdded providerID=%d, want %d", piecesAddedProviderID, provider.ID)
+	if !piecesAddedProviderID.Equal(provider.ID) {
+		t.Errorf("OnPiecesAdded providerID=%s, want %s", piecesAddedProviderID.String(), provider.ID.String())
 	}
 	if !submittedPiecesEqual(piecesAddedPieces, []SubmittedPiece{{PieceCID: info.CIDv2}}) {
 		t.Errorf("OnPiecesAdded pieces=%v, want [{%s}]", piecesAddedPieces, info.CIDv2)
 	}
-	if piecesConfirmedDSID != types.DataSetID(55) {
-		t.Errorf("OnPiecesConfirmed dataSetID=%d, want 55", piecesConfirmedDSID)
+	if !piecesConfirmedDSID.Equal(types.NewBigInt(55)) {
+		t.Errorf("OnPiecesConfirmed dataSetID=%s, want 55", piecesConfirmedDSID.String())
 	}
-	if piecesConfirmedProvider != provider.ID {
-		t.Errorf("OnPiecesConfirmed providerID=%d, want %d", piecesConfirmedProvider, provider.ID)
+	if !piecesConfirmedProvider.Equal(provider.ID) {
+		t.Errorf("OnPiecesConfirmed providerID=%s, want %s", piecesConfirmedProvider.String(), provider.ID.String())
 	}
 	if !confirmedPiecesEqual(piecesConfirmedPieces, []ConfirmedPiece{{
-		PieceID:  types.PieceID(77),
+		PieceID:  types.NewBigInt(77),
 		PieceCID: info.CIDv2,
 	}}) {
 		t.Errorf("OnPiecesConfirmed pieces=%v, want [{77 %s}]", piecesConfirmedPieces, info.CIDv2)
@@ -238,9 +237,9 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabc"),
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(0)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(0)},
 			}, nil
 		},
 	}
@@ -256,7 +255,7 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 
 	var confirmed []ConfirmedPiece
 	opts := &UploadOptions{
-		OnPiecesConfirmed: func(_ types.DataSetID, _ types.ProviderID, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(_ types.BigInt, _ types.BigInt, pieces []ConfirmedPiece) {
 			confirmed = append([]ConfirmedPiece(nil), pieces...)
 		},
 	}
@@ -265,7 +264,7 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 	if !confirmedPiecesEqual(confirmed, []ConfirmedPiece{{
-		PieceID:  0,
+		PieceID:  types.NewBigInt(0),
 		PieceCID: info.CIDv2,
 	}}) {
 		t.Fatalf("OnPiecesConfirmed pieces=%v, want [{0 %s}]", confirmed, info.CIDv2)
@@ -283,7 +282,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -296,15 +295,15 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xprimary",
-				DataSetID:     types.DataSetID(1001),
-				PieceIDs:      []types.PieceID{types.PieceID(2001)},
+				DataSetID:     types.NewBigInt(1001),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
 				IsNewDataSet:  true,
 			}, nil
 		},
 	}
 
 	failedSecondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary-a.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -315,7 +314,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 
 	replacement := &fakeUploadContext{
-		id:       types.ProviderID(303),
+		id:       types.NewBigInt(303),
 		endpoint: "https://secondary-b.example.com",
 		pieceURL: "https://secondary-b.example.com/piece/" + info.CIDv2.String(),
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
@@ -336,8 +335,8 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xreplacement",
-				DataSetID:     types.DataSetID(1002),
-				PieceIDs:      []types.PieceID{types.PieceID(2002)},
+				DataSetID:     types.NewBigInt(1002),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
 			}, nil
 		},
 	}
@@ -359,12 +358,12 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	)
 
 	opts := &UploadOptions{
-		OnStored: func(providerID types.ProviderID, pieceCID cid.Cid) {
+		OnStored: func(providerID types.BigInt, pieceCID cid.Cid) {
 			mu.Lock()
 			defer mu.Unlock()
 			storedEvents = append(storedEvents, copyEvent{providerID: providerID, pieceCID: pieceCID})
 		},
-		OnPiecesAdded: func(txHash string, providerID types.ProviderID, pieces []SubmittedPiece) {
+		OnPiecesAdded: func(txHash string, providerID types.BigInt, pieces []SubmittedPiece) {
 			mu.Lock()
 			defer mu.Unlock()
 			piecesAddedEvents = append(piecesAddedEvents, submittedEvent{
@@ -373,7 +372,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 				pieces:     append([]SubmittedPiece(nil), pieces...),
 			})
 		},
-		OnPiecesConfirmed: func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
 			mu.Lock()
 			defer mu.Unlock()
 			piecesConfirmedEvt = append(piecesConfirmedEvt, confirmedEvent{
@@ -382,17 +381,17 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 				pieces:     append([]ConfirmedPiece(nil), pieces...),
 			})
 		},
-		OnCopyComplete: func(providerID types.ProviderID, pieceCID cid.Cid) {
+		OnCopyComplete: func(providerID types.BigInt, pieceCID cid.Cid) {
 			mu.Lock()
 			defer mu.Unlock()
 			copyCompleteEvents = append(copyCompleteEvents, copyEvent{providerID: providerID, pieceCID: pieceCID})
 		},
-		OnCopyFailed: func(providerID types.ProviderID, pieceCID cid.Cid, err error) {
+		OnCopyFailed: func(providerID types.BigInt, pieceCID cid.Cid, err error) {
 			mu.Lock()
 			defer mu.Unlock()
 			copyFailedEvents = append(copyFailedEvents, copyFailureEvent{providerID: providerID, pieceCID: pieceCID, err: err})
 		},
-		OnPullProgress: func(providerID types.ProviderID, pieceCID cid.Cid, status PullStatus) {
+		OnPullProgress: func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus) {
 			mu.Lock()
 			defer mu.Unlock()
 			pullProgressEvents = append(pullProgressEvents, pullProgressEvent{
@@ -432,8 +431,8 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 
 	wantConfirmed := []confirmedEvent{
-		{providerID: primary.id, dataSetID: types.DataSetID(1001), pieces: []ConfirmedPiece{{PieceID: types.PieceID(2001), PieceCID: info.CIDv2}}},
-		{providerID: replacement.id, dataSetID: types.DataSetID(1002), pieces: []ConfirmedPiece{{PieceID: types.PieceID(2002), PieceCID: info.CIDv2}}},
+		{providerID: primary.id, dataSetID: types.NewBigInt(1001), pieces: []ConfirmedPiece{{PieceID: types.NewBigInt(2001), PieceCID: info.CIDv2}}},
+		{providerID: replacement.id, dataSetID: types.NewBigInt(1002), pieces: []ConfirmedPiece{{PieceID: types.NewBigInt(2002), PieceCID: info.CIDv2}}},
 	}
 	if len(piecesConfirmedEvt) != len(wantConfirmed) {
 		t.Errorf("OnPiecesConfirmed: got %d events, want %d", len(piecesConfirmedEvt), len(wantConfirmed))
@@ -477,7 +476,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -487,8 +486,8 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xprimary",
-				DataSetID:     types.DataSetID(1001),
-				PieceIDs:      []types.PieceID{0},
+				DataSetID:     types.NewBigInt(1001),
+				PieceIDs:      []types.BigInt{types.NewBigInt(0)},
 				IsNewDataSet:  true,
 			}, nil
 		},
@@ -498,7 +497,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	var confirmed []confirmedEvent
 	opts := &UploadOptions{
 		Copies: 1,
-		OnPiecesConfirmed: func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
 			confirmed = append(confirmed, confirmedEvent{
 				providerID: providerID,
 				dataSetID:  dataSetID,
@@ -512,8 +511,8 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	}
 	want := []confirmedEvent{{
 		providerID: primary.id,
-		dataSetID:  types.DataSetID(1001),
-		pieces:     []ConfirmedPiece{{PieceID: 0, PieceCID: info.CIDv2}},
+		dataSetID:  types.NewBigInt(1001),
+		pieces:     []ConfirmedPiece{{PieceID: types.NewBigInt(0), PieceCID: info.CIDv2}},
 	}}
 	if len(confirmed) != 1 || !hasConfirmedEvent(confirmed, want[0]) {
 		t.Fatalf("OnPiecesConfirmed=%v, want %v", confirmed, want)

@@ -133,7 +133,7 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 // assertion to *Context. All public SDK context producers return values
 // that satisfy this interface.
 type prepareContext interface {
-	DataSetID() *types.DataSetID
+	DataSetID() *types.BigInt
 	GetProviderInfo() Provider
 	WithCDN() bool
 }
@@ -162,7 +162,7 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 	refs := make([]ContextCostRef, len(contexts))
 	type sizeJob struct {
 		idx int
-		id  types.DataSetID
+		id  types.BigInt
 	}
 	var jobs []sizeJob
 	for i, uc := range contexts {

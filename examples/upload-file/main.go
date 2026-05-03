@@ -147,7 +147,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 				callbackErr = exampleutil.WriteKV(stdout, "uploadedBytes", uploaded)
 			}
 		},
-		OnStored: func(providerID types.ProviderID, _ cid.Cid) {
+		OnStored: func(providerID types.BigInt, _ cid.Cid) {
 			if callbackErr == nil {
 				callbackErr = exampleutil.WriteKV(stdout, "storedProviderID", providerID)
 			}

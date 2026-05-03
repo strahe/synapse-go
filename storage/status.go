@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -27,7 +28,7 @@ type PieceStatus struct {
 
 	// PieceID is the piece's on-chain numeric id. Only meaningful when
 	// Exists is true.
-	PieceID uint64
+	PieceID types.BigInt
 
 	// DataSetLastProven is the wall-clock time of the most recent
 	// proof submission for the enclosing data set. Zero time indicates
@@ -58,12 +59,12 @@ type PieceStatus struct {
 
 // GetScheduledRemovals returns the list of piece ids that have been
 // scheduled for removal from this data set but have not yet been processed.
-func (c *Context) GetScheduledRemovals(ctx context.Context) ([]uint64, error) {
+func (c *Context) GetScheduledRemovals(ctx context.Context) ([]types.BigInt, error) {
 	if c.pdpCaller == nil {
 		return nil, errors.New("storage.Context.GetScheduledRemovals: PDPVerifier reader not configured")
 	}
 	if c.dataSetID == nil {
-		return []uint64{}, nil
+		return []types.BigInt{}, nil
 	}
 	ids, err := c.pdpCaller.GetScheduledRemovals(ctx, *c.dataSetID)
 	if err != nil {
@@ -92,7 +93,7 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 	}
 
 	var (
-		pieceIDs           []uint64
+		pieceIDs           []types.BigInt
 		nextChallengeEpoch *big.Int
 		currentEpoch       uint64
 		pdpConfig          *warmstorage.PDPConfig

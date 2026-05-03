@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/strahe/synapse-go/types"
 )
 
 // CreateDataSetRequest is the body of POST /pdp/data-sets.
@@ -69,12 +69,12 @@ func (c *Client) CreateDataSet(ctx context.Context, recordKeeper common.Address,
 // CreateDataSetStatus mirrors GET /pdp/data-sets/created/{txHash}.
 // TxStatus reports pending, confirmed, or rejected.
 type CreateDataSetStatus struct {
-	CreateMessageHash common.Hash `json:"createMessageHash"`
-	Service           string      `json:"service"`
-	TxStatus          string      `json:"txStatus"` // pending | confirmed | rejected
-	DataSetCreated    bool        `json:"dataSetCreated"`
-	OK                *bool       `json:"ok"`
-	DataSetID         *big.Int    `json:"-"`
+	CreateMessageHash common.Hash   `json:"createMessageHash"`
+	Service           string        `json:"service"`
+	TxStatus          string        `json:"txStatus"` // pending | confirmed | rejected
+	DataSetCreated    bool          `json:"dataSetCreated"`
+	OK                *bool         `json:"ok"`
+	DataSetID         *types.BigInt `json:"-"`
 }
 
 // rawCreateDataSetStatus mirrors the JSON wire format; DataSetID comes as
@@ -116,11 +116,11 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 		OK:                raw.OK,
 	}
 	if raw.DataSetID != "" {
-		id, ok := new(big.Int).SetString(raw.DataSetID.String(), 10)
-		if !ok {
-			return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: bad dataSetId %q", raw.DataSetID)
+		id, err := parseBigIntNumber("pdp.GetDataSetCreationStatus", "dataSetId", raw.DataSetID)
+		if err != nil {
+			return nil, err
 		}
-		out.DataSetID = id
+		out.DataSetID = &id
 	}
 	return out, nil
 }
@@ -157,24 +157,126 @@ func (c *Client) WaitForDataSetCreated(ctx context.Context, statusURL string, po
 
 // DataSetPiece mirrors a piece entry returned by GET /pdp/data-sets/{id}.
 type DataSetPiece struct {
-	PieceCID       string `json:"pieceCid"`
-	PieceID        uint64 `json:"pieceId"`
-	SubPieceCID    string `json:"subPieceCid"`
-	SubPieceOffset uint64 `json:"subPieceOffset"`
+	PieceCID       string       `json:"pieceCid"`
+	PieceID        types.BigInt `json:"-"`
+	SubPieceCID    string       `json:"subPieceCid"`
+	SubPieceOffset uint64       `json:"subPieceOffset"`
 }
 
 // DataSet mirrors the JSON returned by GET /pdp/data-sets/{id}.
 type DataSet struct {
-	ID                 uint64         `json:"id"`
+	ID                 types.BigInt   `json:"-"`
 	NextChallengeEpoch int64          `json:"nextChallengeEpoch"`
 	Pieces             []DataSetPiece `json:"pieces"`
 }
 
+type rawDataSetPiece struct {
+	PieceCID       string      `json:"pieceCid"`
+	PieceID        json.Number `json:"pieceId"`
+	SubPieceCID    string      `json:"subPieceCid"`
+	SubPieceOffset uint64      `json:"subPieceOffset"`
+}
+
+type rawDataSet struct {
+	ID                 json.Number       `json:"id"`
+	NextChallengeEpoch int64             `json:"nextChallengeEpoch"`
+	Pieces             []rawDataSetPiece `json:"pieces"`
+}
+
+func (p DataSetPiece) MarshalJSON() ([]byte, error) {
+	return json.Marshal(rawDataSetPiece{
+		PieceCID:       p.PieceCID,
+		PieceID:        json.Number(p.PieceID.String()),
+		SubPieceCID:    p.SubPieceCID,
+		SubPieceOffset: p.SubPieceOffset,
+	})
+}
+
+func (p *DataSetPiece) UnmarshalJSON(data []byte) error {
+	var raw rawDataSetPiece
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	piece, err := dataSetPieceFromRaw("pdp.DataSetPiece.UnmarshalJSON", raw)
+	if err != nil {
+		return err
+	}
+	*p = piece
+	return nil
+}
+
+func (d DataSet) MarshalJSON() ([]byte, error) {
+	raw := rawDataSet{
+		ID:                 json.Number(d.ID.String()),
+		NextChallengeEpoch: d.NextChallengeEpoch,
+		Pieces:             make([]rawDataSetPiece, len(d.Pieces)),
+	}
+	for i, p := range d.Pieces {
+		raw.Pieces[i] = rawDataSetPiece{
+			PieceCID:       p.PieceCID,
+			PieceID:        json.Number(p.PieceID.String()),
+			SubPieceCID:    p.SubPieceCID,
+			SubPieceOffset: p.SubPieceOffset,
+		}
+	}
+	return json.Marshal(raw)
+}
+
+func (d *DataSet) UnmarshalJSON(data []byte) error {
+	var raw rawDataSet
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out, err := dataSetFromRaw("pdp.DataSet.UnmarshalJSON", raw)
+	if err != nil {
+		return err
+	}
+	*d = out
+	return nil
+}
+
 // GetDataSet calls GET /pdp/data-sets/{dataSetId}.
-func (c *Client) GetDataSet(ctx context.Context, dataSetID uint64) (*DataSet, error) {
-	var out DataSet
-	if err := c.getJSON(ctx, path.Join("pdp/data-sets", fmt.Sprint(dataSetID)), &out); err != nil {
+func (c *Client) GetDataSet(ctx context.Context, dataSetID types.BigInt) (*DataSet, error) {
+	var raw rawDataSet
+	if err := c.getJSON(ctx, path.Join("pdp/data-sets", dataSetID.String()), &raw); err != nil {
+		return nil, err
+	}
+	out, err := dataSetFromRaw("pdp.GetDataSet", raw)
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+func dataSetFromRaw(op string, raw rawDataSet) (DataSet, error) {
+	id, err := parseBigIntNumber(op, "id", raw.ID)
+	if err != nil {
+		return DataSet{}, err
+	}
+	out := DataSet{
+		ID:                 id,
+		NextChallengeEpoch: raw.NextChallengeEpoch,
+		Pieces:             make([]DataSetPiece, 0, len(raw.Pieces)),
+	}
+	for _, p := range raw.Pieces {
+		piece, err := dataSetPieceFromRaw(op, p)
+		if err != nil {
+			return DataSet{}, err
+		}
+		out.Pieces = append(out.Pieces, piece)
+	}
+	return out, nil
+}
+
+func dataSetPieceFromRaw(op string, raw rawDataSetPiece) (DataSetPiece, error) {
+	pieceID, err := parseBigIntNumber(op, "pieceId", raw.PieceID)
+	if err != nil {
+		return DataSetPiece{}, err
+	}
+	return DataSetPiece{
+		PieceCID:       raw.PieceCID,
+		PieceID:        pieceID,
+		SubPieceCID:    raw.SubPieceCID,
+		SubPieceOffset: raw.SubPieceOffset,
+	}, nil
 }

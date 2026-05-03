@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"net/url"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
 
 type createAndAddBody struct {
@@ -79,17 +79,17 @@ func TestCreateDataSetAndAddPieces_OK(t *testing.T) {
 
 func TestWaitForCreateDataSetAndAddPieces_OK(t *testing.T) {
 	txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
-	dataSetID := uint64(42)
-	pieceID := big.NewInt(7)
+	dataSetID := types.NewBigInt(42)
+	pieceID := types.NewBigInt(7)
 
 	c, srv := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/pdp/data-sets/created/" + txHash:
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":%d}`, txHash, dataSetID)
-		case fmt.Sprintf("/pdp/data-sets/%d/pieces/added/%s", dataSetID, txHash):
+			_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":%s}`, txHash, dataSetID.String())
+		case fmt.Sprintf("/pdp/data-sets/%s/pieces/added/%s", dataSetID.String(), txHash):
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":%d,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[%s]}`, txHash, dataSetID, pieceID.String())
+			_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":%s,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[%s]}`, txHash, dataSetID.String(), pieceID.String())
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -102,10 +102,10 @@ func TestWaitForCreateDataSetAndAddPieces_OK(t *testing.T) {
 	if status.TxHash != common.HexToHash(txHash) {
 		t.Fatalf("txHash=%s want %s", status.TxHash, txHash)
 	}
-	if status.DataSetID != dataSetID {
-		t.Fatalf("dataSetID=%d want %d", status.DataSetID, dataSetID)
+	if !status.DataSetID.Equal(dataSetID) {
+		t.Fatalf("dataSetID=%s want %s", status.DataSetID.String(), dataSetID.String())
 	}
-	if len(status.ConfirmedPieceIDs) != 1 || status.ConfirmedPieceIDs[0].Cmp(pieceID) != 0 {
-		t.Fatalf("confirmedPieceIDs=%v want [%s]", status.ConfirmedPieceIDs, pieceID)
+	if len(status.ConfirmedPieceIDs) != 1 || !status.ConfirmedPieceIDs[0].Equal(pieceID) {
+		t.Fatalf("confirmedPieceIDs=%v want [%s]", status.ConfirmedPieceIDs, pieceID.String())
 	}
 }

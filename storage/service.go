@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/types"
 )
@@ -28,7 +29,7 @@ const defaultDownloadTimeout = 24 * time.Hour
 // UploadContext abstracts a single provider's upload operations.
 // Implementations are returned by UploadResolver and are safe for concurrent use.
 type UploadContext interface {
-	ProviderID() types.ProviderID
+	ProviderID() types.BigInt
 	ServiceURL() string
 	PieceURL(cid.Cid) string
 	Store(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
@@ -41,7 +42,7 @@ type UploadContext interface {
 // replacement candidates when a secondary provider fails.
 type UploadResolver interface {
 	ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
-	SelectReplacement(context.Context, map[types.ProviderID]struct{}, *UploadOptions) (UploadContext, error)
+	SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
 }
 
 // Service orchestrates multi-copy uploads and downloads.
@@ -281,9 +282,10 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		PieceMetadata: cloneMetadata(opts),
 	}}
 
-	usedProviders := make(map[types.ProviderID]struct{}, len(contexts))
+	usedProviders := make(map[string]types.BigInt, len(contexts))
 	for _, c := range contexts {
-		usedProviders[c.ProviderID()] = struct{}{}
+		id := c.ProviderID()
+		usedProviders[idconv.Key(id)] = id
 	}
 
 	type successfulSecondary struct {
@@ -360,7 +362,8 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 				break
 			}
 			current = replacement
-			usedProviders[replacement.ProviderID()] = struct{}{}
+			id := replacement.ProviderID()
+			usedProviders[idconv.Key(id)] = id
 			if err := s.populateClientDataSetIDsFromInterfaces(ctx, []UploadContext{replacement}); err != nil {
 				failedAttempts = append(failedAttempts, FailedAttempt{
 					ProviderID: replacement.ProviderID(),
@@ -450,12 +453,12 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 			})
 			continue
 		}
-		if outcome.result == nil || outcome.result.DataSetID == 0 {
+		if outcome.result == nil || outcome.result.DataSetID.IsZero() {
 			var err error
 			switch {
 			case outcome.result == nil:
 				err = errors.New("commit result missing confirmed identifiers: nil result")
-			case outcome.result.DataSetID == 0:
+			case outcome.result.DataSetID.IsZero():
 				err = errors.New("commit result missing confirmed identifiers: zero dataSetID")
 			}
 			if target.role == CopyRolePrimary {
@@ -585,7 +588,7 @@ func (s *Service) resolveWithCDN(opts *UploadOptions) *UploadOptions {
 	return &cloned
 }
 
-func validateConfirmedPieceIDs(ids []types.PieceID, want int) error {
+func validateConfirmedPieceIDs(ids []types.BigInt, want int) error {
 	if len(ids) != want {
 		return fmt.Errorf("commit result missing confirmed identifiers: got %d pieceIDs want %d", len(ids), want)
 	}

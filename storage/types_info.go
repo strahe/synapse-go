@@ -70,7 +70,7 @@ type StorageInfo struct {
 // the current size handy and wants the floor-price rate. WithCDN
 // determines whether the CDN-fixed lockup is included for this ref.
 type ContextCostRef struct {
-	DataSetID               *types.DataSetID
+	DataSetID               *types.BigInt
 	Provider                Provider
 	CurrentDataSetSizeBytes *big.Int
 	WithCDN                 bool

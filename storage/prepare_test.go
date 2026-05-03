@@ -47,11 +47,11 @@ func newTestService() *Service {
 	}
 }
 
-func (c *fakeUploadContext) DataSetID() *sdktypes.DataSetID { return c.dataSetID }
+func (c *fakeUploadContext) DataSetID() *sdktypes.BigInt { return c.dataSetID }
 
 func (c *fakeUploadContext) GetProviderInfo() Provider {
 	p := testProvider()
-	if c.id != 0 {
+	if !c.id.IsZero() {
 		p.ID = c.id
 	}
 	return p
@@ -124,7 +124,7 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize: 128,
-		Contexts: []UploadContext{&fakeUploadContext{id: 1}},
+		Contexts: []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Prepare error = %v, want ErrInvalidArgument", err)
@@ -141,7 +141,7 @@ func TestPrepare_IgnoresEnableCDNWhenContextsSupplied(t *testing.T) {
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize:     128,
 		EnableCDN:    &cdn,
-		Contexts:     []UploadContext{&fakeUploadContext{id: 1}},
+		Contexts:     []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 		BufferEpochs: 9,
 	})
 	if err != nil {

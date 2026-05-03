@@ -22,6 +22,7 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -559,7 +560,7 @@ func TestWaitForDataSetCreated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.DataSetID == nil || status.DataSetID.Int64() != 42 {
+	if status.DataSetID == nil || !status.DataSetID.Equal(types.NewBigInt(42)) {
 		t.Fatalf("id=%v", status.DataSetID)
 	}
 }
@@ -582,7 +583,7 @@ func TestWaitForDataSetCreated_ConfirmedFalseStillPending(t *testing.T) {
 	if calls < 2 {
 		t.Fatalf("expected multiple polls, got %d", calls)
 	}
-	if status.DataSetID == nil || status.DataSetID.Int64() != 42 {
+	if status.DataSetID == nil || !status.DataSetID.Equal(types.NewBigInt(42)) {
 		t.Fatalf("id=%v", status.DataSetID)
 	}
 }
@@ -620,12 +621,33 @@ func TestGetDataSet(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"id":7,"nextChallengeEpoch":1000,"pieces":[{"pieceCid":"bafy","pieceId":1,"subPieceCid":"bafy","subPieceOffset":0}]}`)
 	}))
-	ds, err := c.GetDataSet(context.Background(), 7)
+	ds, err := c.GetDataSet(context.Background(), types.NewBigInt(7))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ds.ID != 7 || len(ds.Pieces) != 1 {
+	if !ds.ID.Equal(types.NewBigInt(7)) || len(ds.Pieces) != 1 {
 		t.Fatalf("%+v", ds)
+	}
+}
+
+func TestDataSetJSONPreservesIDNumbers(t *testing.T) {
+	raw := []byte(`{"id":7,"nextChallengeEpoch":1000,"pieces":[{"pieceCid":"bafy","pieceId":1,"subPieceCid":"bafy","subPieceOffset":0}]}`)
+	var ds DataSet
+	if err := json.Unmarshal(raw, &ds); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !ds.ID.Equal(types.NewBigInt(7)) || len(ds.Pieces) != 1 || !ds.Pieces[0].PieceID.Equal(types.NewBigInt(1)) {
+		t.Fatalf("decoded dataset=%+v", ds)
+	}
+	out, err := json.Marshal(ds)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"id":7`)) || !bytes.Contains(out, []byte(`"pieceId":1`)) {
+		t.Fatalf("json=%s", out)
+	}
+	if bytes.Contains(out, []byte(`"id":"7"`)) || bytes.Contains(out, []byte(`"pieceId":"1"`)) {
+		t.Fatalf("ids should marshal as JSON numbers: %s", out)
 	}
 }
 
@@ -639,7 +661,7 @@ func TestAddPieces(t *testing.T) {
 	}))
 	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
 	pc := pcInfo.CIDv1
-	res, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
+	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +687,7 @@ func TestAddPieces_RootRelativeLocationPreservesBaseOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
+	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,8 +763,12 @@ func TestGetAddPiecesStatus_LargeUint64DataSetID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.DataSetID != 9223372036854775808 {
-		t.Fatalf("DataSetID = %d", status.DataSetID)
+	want, err := types.ParseBigInt("9223372036854775808")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.DataSetID.Equal(want) {
+		t.Fatalf("DataSetID = %s", status.DataSetID.String())
 	}
 }
 
@@ -754,7 +780,7 @@ func TestSchedulePieceDeletion(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0xabc0000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
-	h, err := c.SchedulePieceDeletion(context.Background(), 5, 9, []byte{1})
+	h, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
 	if err != nil {
 		t.Fatal(err)
 	}

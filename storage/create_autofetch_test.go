@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"math/big"
 	"testing"
 
 	"github.com/strahe/synapse-go/types"
@@ -12,18 +11,18 @@ import (
 
 type fakeFWSSDataSetReader struct {
 	calls   int
-	gotID   types.DataSetID
+	gotID   types.BigInt
 	info    *warmstorage.DataSetInfo
 	infoErr error
 }
 
-func (f *fakeFWSSDataSetReader) GetDataSet(_ context.Context, id types.DataSetID) (*warmstorage.DataSetInfo, error) {
+func (f *fakeFWSSDataSetReader) GetDataSet(_ context.Context, id types.BigInt) (*warmstorage.DataSetInfo, error) {
 	f.calls++
 	f.gotID = id
 	return f.info, f.infoErr
 }
 
-func newAutoFetchContext(t *testing.T, dataSetID types.DataSetID) *Context {
+func newAutoFetchContext(t *testing.T, dataSetID types.BigInt) *Context {
 	t.Helper()
 	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithDataSetID(dataSetID))
 	if err != nil {
@@ -33,11 +32,11 @@ func newAutoFetchContext(t *testing.T, dataSetID types.DataSetID) *Context {
 }
 
 func TestCreateContext_AutoFetchesClientDataSetID(t *testing.T) {
-	const dsID types.DataSetID = 42
-	wantClient := big.NewInt(0xC0FFEE)
+	dsID := types.NewBigInt(42)
+	wantClient := types.NewBigInt(0xC0FFEE)
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: new(big.Int).Set(wantClient)},
+		info: &warmstorage.DataSetInfo{ClientDataSetID: wantClient},
 	}
 	svc := newTestService()
 	svc.dsReader = reader
@@ -50,11 +49,11 @@ func TestCreateContext_AutoFetchesClientDataSetID(t *testing.T) {
 	if reader.calls != 1 {
 		t.Fatalf("reader.calls=%d want 1", reader.calls)
 	}
-	if reader.gotID != dsID {
-		t.Fatalf("reader.gotID=%d want %d", reader.gotID, dsID)
+	if !reader.gotID.Equal(dsID) {
+		t.Fatalf("reader.gotID=%s want %s", reader.gotID.String(), dsID.String())
 	}
-	if got.clientDataSetID == nil || got.clientDataSetID.Cmp(wantClient) != 0 {
-		t.Fatalf("clientDataSetID=%v want %v", got.clientDataSetID, wantClient)
+	if got.clientDataSetID == nil || !got.clientDataSetID.Equal(wantClient) {
+		t.Fatalf("clientDataSetID=%v want %s", got.clientDataSetID, wantClient.String())
 	}
 }
 
@@ -63,7 +62,7 @@ func TestCreateContext_AutoFetchTransientErrorIsSurfacedUnwrapped(t *testing.T) 
 	reader := &fakeFWSSDataSetReader{infoErr: boom}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, 7)}}
+	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, types.NewBigInt(7))}}
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
@@ -78,10 +77,10 @@ func TestCreateContext_AutoFetchTransientErrorIsSurfacedUnwrapped(t *testing.T) 
 }
 
 func TestCreateContext_AutoFetchEmptyResultIsInvalidArgument(t *testing.T) {
-	reader := &fakeFWSSDataSetReader{info: &warmstorage.DataSetInfo{ClientDataSetID: nil}}
+	reader := &fakeFWSSDataSetReader{}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, 7)}}
+	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, types.NewBigInt(7))}}
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
@@ -93,11 +92,11 @@ func TestCreateContext_AutoFetchEmptyResultIsInvalidArgument(t *testing.T) {
 }
 
 func TestCreateContext_PrefersExplicitClientDataSetID(t *testing.T) {
-	const dsID types.DataSetID = 11
-	explicit := big.NewInt(0xABCD)
+	dsID := types.NewBigInt(11)
+	explicit := types.NewBigInt(0xABCD)
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: big.NewInt(0xDEAD)},
+		info: &warmstorage.DataSetInfo{ClientDataSetID: types.NewBigInt(0xDEAD)},
 	}
 	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithDataSetID(dsID), WithClientDataSetID(explicit))
@@ -115,17 +114,17 @@ func TestCreateContext_PrefersExplicitClientDataSetID(t *testing.T) {
 	if reader.calls != 0 {
 		t.Fatalf("reader.calls=%d want 0 (explicit value should win)", reader.calls)
 	}
-	if got.clientDataSetID == nil || got.clientDataSetID.Cmp(explicit) != 0 {
-		t.Fatalf("clientDataSetID=%v want %v", got.clientDataSetID, explicit)
+	if got.clientDataSetID == nil || !got.clientDataSetID.Equal(explicit) {
+		t.Fatalf("clientDataSetID=%v want %s", got.clientDataSetID, explicit.String())
 	}
 }
 
 func TestCreateContexts_AutoFetchCachesByDataSetID(t *testing.T) {
-	const dsID types.DataSetID = 77
-	wantClient := big.NewInt(0xCAFE)
+	dsID := types.NewBigInt(77)
+	wantClient := types.NewBigInt(0xCAFE)
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: new(big.Int).Set(wantClient)},
+		info: &warmstorage.DataSetInfo{ClientDataSetID: wantClient},
 	}
 	svc := newTestService()
 	svc.dsReader = reader
@@ -147,8 +146,8 @@ func TestCreateContexts_AutoFetchCachesByDataSetID(t *testing.T) {
 		t.Fatalf("len(got)=%d want 2", len(got))
 	}
 	for i, ctx := range got {
-		if ctx.clientDataSetID == nil || ctx.clientDataSetID.Cmp(wantClient) != 0 {
-			t.Fatalf("got[%d].clientDataSetID=%v want %v", i, ctx.clientDataSetID, wantClient)
+		if ctx.clientDataSetID == nil || !ctx.clientDataSetID.Equal(wantClient) {
+			t.Fatalf("got[%d].clientDataSetID=%v want %s", i, ctx.clientDataSetID, wantClient.String())
 		}
 	}
 }
@@ -159,11 +158,11 @@ func TestCreateContexts_AutoFetchCachesByDataSetID(t *testing.T) {
 // concrete contexts. Non-*Context implementations are skipped silently
 // so custom resolvers do not break.
 func TestPopulateClientDataSetIDsFromInterfaces_UploadPathParity(t *testing.T) {
-	const dsID types.DataSetID = 99
-	wantClient := big.NewInt(0xBEEF)
+	dsID := types.NewBigInt(99)
+	wantClient := types.NewBigInt(0xBEEF)
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: new(big.Int).Set(wantClient)},
+		info: &warmstorage.DataSetInfo{ClientDataSetID: wantClient},
 	}
 	svc := newTestService()
 	svc.dsReader = reader
@@ -177,7 +176,7 @@ func TestPopulateClientDataSetIDsFromInterfaces_UploadPathParity(t *testing.T) {
 	if reader.calls != 1 {
 		t.Fatalf("reader.calls=%d want 1 (only the *Context should trigger a fetch)", reader.calls)
 	}
-	if concrete.clientDataSetID == nil || concrete.clientDataSetID.Cmp(wantClient) != 0 {
-		t.Fatalf("clientDataSetID=%v want %v", concrete.clientDataSetID, wantClient)
+	if concrete.clientDataSetID == nil || !concrete.clientDataSetID.Equal(wantClient) {
+		t.Fatalf("clientDataSetID=%v want %s", concrete.clientDataSetID, wantClient.String())
 	}
 }

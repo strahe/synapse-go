@@ -101,7 +101,7 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 				opts.OnProgress(int64(len(data)))
 			}
 			if opts.OnStored != nil {
-				opts.OnStored(types.ProviderID(7), info.CIDv2)
+				opts.OnStored(types.NewBigInt(7), info.CIDv2)
 			}
 			return &storage.UploadResult{
 				PieceCID:        info.CIDv2,
@@ -110,9 +110,9 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 				Complete:        true,
 				Copies: []storage.CopyResult{
 					{
-						ProviderID:   types.ProviderID(7),
-						DataSetID:    types.DataSetID(8),
-						PieceID:      types.PieceID(9),
+						ProviderID:   types.NewBigInt(7),
+						DataSetID:    types.NewBigInt(8),
+						PieceID:      types.NewBigInt(9),
 						Role:         storage.CopyRolePrimary,
 						RetrievalURL: "https://provider.example/piece/" + info.CIDv2.String(),
 					},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -23,9 +24,9 @@ import (
 // [synapse.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go#WithCDN
 type CreateContextsOptions struct {
 	Copies             int
-	ProviderIDs        []types.ProviderID
-	DataSetIDs         []types.DataSetID
-	ExcludeProviderIDs []types.ProviderID
+	ProviderIDs        []types.BigInt
+	DataSetIDs         []types.BigInt
+	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
 }
@@ -38,9 +39,9 @@ type CreateContextsOptions struct {
 //
 // [CreateContextsOptions.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go/storage#CreateContextsOptions.WithCDN
 type CreateContextOptions struct {
-	ProviderIDs        []types.ProviderID
-	DataSetIDs         []types.DataSetID
-	ExcludeProviderIDs []types.ProviderID
+	ProviderIDs        []types.BigInt
+	DataSetIDs         []types.BigInt
+	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
 }
@@ -150,21 +151,20 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 // Errors are surfaced unwrapped so callers can route transient
 // failures (context.Canceled, RPC timeouts, contract reverts) without
 // misclassifying them as ErrInvalidArgument. Only the genuinely-empty
-// FWSS result (info == nil || ClientDataSetID == nil) is wrapped as
-// ErrInvalidArgument because that indicates the dataSetID does not
-// resolve to a valid record.
+// FWSS result (info == nil) is wrapped as ErrInvalidArgument because
+// that indicates the dataSetID does not resolve to a valid record.
 func (s *Service) populateClientDataSetIDs(ctx context.Context, contexts []*Context) error {
 	if s.dsReader == nil {
 		return nil
 	}
-	cache := make(map[types.DataSetID]types.ClientDataSetID)
+	cache := make(map[string]types.BigInt)
 	for _, c := range contexts {
 		if c == nil {
 			continue
 		}
 		c.mu.Lock()
 		needsFetch := c.dataSetID != nil && c.clientDataSetID == nil
-		var dsID types.DataSetID
+		var dsID types.BigInt
 		if needsFetch {
 			dsID = *c.dataSetID
 		}
@@ -172,27 +172,28 @@ func (s *Service) populateClientDataSetIDs(ctx context.Context, contexts []*Cont
 		if !needsFetch {
 			continue
 		}
-		if cachedID, ok := cache[dsID]; ok {
+		key := idconv.Key(dsID)
+		if cachedID, ok := cache[key]; ok {
 			c.mu.Lock()
 			if c.clientDataSetID == nil {
-				c.clientDataSetID = copyClientDataSetID(cachedID)
+				c.clientDataSetID = copyClientDataSetIDPtr(cachedID)
 			}
 			c.mu.Unlock()
 			continue
 		}
 		info, err := s.dsReader.GetDataSet(ctx, dsID)
 		if err != nil {
-			return fmt.Errorf("fetch ClientDataSetID for dataSetID %d: %w", uint64(dsID), err)
+			return fmt.Errorf("fetch ClientDataSetID for dataSetID %s: %w", dsID.String(), err)
 		}
-		if info == nil || info.ClientDataSetID == nil {
-			return fmt.Errorf("%w: FWSS returned no ClientDataSetID for dataSetID %d", ErrInvalidArgument, uint64(dsID))
+		if info == nil {
+			return fmt.Errorf("%w: FWSS returned no ClientDataSetID for dataSetID %s", ErrInvalidArgument, dsID.String())
 		}
-		cache[dsID] = copyClientDataSetID(info.ClientDataSetID)
+		cache[key] = copyClientDataSetID(info.ClientDataSetID)
 		c.mu.Lock()
 		// Re-check under lock in case a concurrent setter populated it
 		// between the unlocked read above and this point.
 		if c.clientDataSetID == nil {
-			c.clientDataSetID = copyClientDataSetID(cache[dsID])
+			c.clientDataSetID = copyClientDataSetIDPtr(cache[key])
 		}
 		c.mu.Unlock()
 	}

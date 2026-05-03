@@ -57,7 +57,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		t.Skip("no active PDP providers on calibration; cannot exercise per-provider reads")
 	}
 	first := page.Providers[0]
-	if first.Info.ID == 0 {
+	if first.Info.ID.IsZero() {
 		t.Fatalf("GetPDPProviders returned provider with zero ID")
 	}
 
@@ -71,7 +71,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 	}
 	// Sorted ascending by ID (documented invariant).
 	for i := 1; i < len(selected); i++ {
-		if selected[i-1].Info.ID >= selected[i].Info.ID {
+		if selected[i-1].Info.ID.Cmp(selected[i].Info.ID) >= 0 {
 			t.Errorf("SelectActivePDPProviders not sorted ascending: %d >= %d",
 				selected[i-1].Info.ID, selected[i].Info.ID)
 			break
@@ -127,22 +127,22 @@ func TestIntegration_SPRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderIDByAddress(unreg): %v", err)
 	}
-	if unreg != 0 {
+	if !unreg.IsZero() {
 		t.Errorf("GetProviderIDByAddress(unreg) = %d, want 0", unreg)
 	}
 
 	// Batch lookup including one valid ID and one sentinel invalid. Base
 	// the invalid ID on the live total so we don't assume calibration has
 	// fewer than 2^30 registrations.
-	bogusID := types.ProviderID(total.Uint64() + 1_000_000)
-	batch, err := reg.GetProvidersByIDs(ctx, []types.ProviderID{info.ID, bogusID})
+	bogusID := types.NewBigInt(total.Uint64() + 1_000_000)
+	batch, err := reg.GetProvidersByIDs(ctx, []types.BigInt{info.ID, bogusID})
 	if err != nil {
 		t.Fatalf("GetProvidersByIDs: %v", err)
 	}
 	if len(batch) != 2 {
 		t.Fatalf("GetProvidersByIDs len = %d, want 2", len(batch))
 	}
-	if batch[0] == nil || batch[0].ID != info.ID {
+	if batch[0] == nil || !batch[0].ID.Equal(info.ID) {
 		t.Errorf("GetProvidersByIDs[0] ID mismatch: %+v", batch[0])
 	}
 	if batch[1] != nil {
@@ -155,7 +155,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IterateAllPDPProviders: %v", err)
 		}
-		if p.Info.ID == 0 {
+		if p.Info.ID.IsZero() {
 			t.Fatal("iterator yielded zero-ID provider")
 		}
 		iterCount++

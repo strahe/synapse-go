@@ -7,6 +7,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/internal/idconv"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // RailView is the flattened view of FilecoinPayV1RailView from the FilPay
@@ -30,7 +33,7 @@ type RailView struct {
 // GetRailsAsPayee; it corresponds to `FilecoinPayV1RailInfo` on the
 // contract side.
 type RailListItem struct {
-	RailID       *big.Int
+	RailID       sdktypes.BigInt
 	IsTerminated bool
 	EndEpoch     *big.Int
 }
@@ -43,14 +46,14 @@ type RailPage struct {
 }
 
 // GetRail returns the full view of a single rail by id.
-func (s *Service) GetRail(ctx context.Context, railID *big.Int) (*RailView, error) {
+func (s *Service) GetRail(ctx context.Context, railID sdktypes.BigInt) (*RailView, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if railID == nil || railID.Sign() <= 0 {
+	if railID.IsZero() {
 		return nil, fmt.Errorf("payments.GetRail: %w: railID must be > 0", ErrInvalidArgument)
 	}
-	v, err := s.filPayCall.GetRail(&bind.CallOpts{Context: ctx}, railID)
+	v, err := s.filPayCall.GetRail(&bind.CallOpts{Context: ctx}, railID.Big())
 	if err != nil {
 		return nil, fmt.Errorf("payments.GetRail: %w", err)
 	}
@@ -146,8 +149,12 @@ func (s *Service) listRails(ctx context.Context, account, token common.Address, 
 		}
 		nextOffset, total = copyBig(out.NextOffset), copyBig(out.Total)
 		for _, r := range out.Results {
+			railID, err := idconv.FromBig("railID", r.RailId)
+			if err != nil {
+				return nil, fmt.Errorf("payments.%s: %w", method, err)
+			}
 			items = append(items, RailListItem{
-				RailID:       copyBig(r.RailId),
+				RailID:       railID,
 				IsTerminated: r.IsTerminated,
 				EndEpoch:     copyBig(r.EndEpoch),
 			})
@@ -159,8 +166,12 @@ func (s *Service) listRails(ctx context.Context, account, token common.Address, 
 		}
 		nextOffset, total = copyBig(out.NextOffset), copyBig(out.Total)
 		for _, r := range out.Results {
+			railID, err := idconv.FromBig("railID", r.RailId)
+			if err != nil {
+				return nil, fmt.Errorf("payments.%s: %w", method, err)
+			}
 			items = append(items, RailListItem{
-				RailID:       copyBig(r.RailId),
+				RailID:       railID,
 				IsTerminated: r.IsTerminated,
 				EndEpoch:     copyBig(r.EndEpoch),
 			})

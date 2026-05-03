@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/strahe/synapse-go/internal/idconv"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
@@ -13,7 +12,7 @@ import (
 //
 // See FilecoinWarmStorageService.sol and the TS
 // warmStorage.terminateService for semantics.
-func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.DataSetID, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -23,7 +22,7 @@ func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.DataS
 	if !s.chainID.IsValid() {
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w: invalid ChainID", ErrInvalidArgument)
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	txOpts, release, err := s.newTransactOpts(ctx)
@@ -31,7 +30,7 @@ func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.DataS
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w", err)
 	}
 	defer release()
-	tx, err := s.fwssWrite.TerminateService(txOpts, idconv.Big(dataSetID))
+	tx, err := s.fwssWrite.TerminateService(txOpts, dataSetID.Big())
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w", err)

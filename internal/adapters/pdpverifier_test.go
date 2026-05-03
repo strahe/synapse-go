@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	pdpverifierbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestPDPVerifierReader_GetScheduledRemovals_Dedupes(t *testing.T) {
@@ -20,11 +21,11 @@ func TestPDPVerifierReader_GetScheduledRemovals_Dedupes(t *testing.T) {
 		t.Fatalf("NewPDPVerifierCaller: %v", err)
 	}
 
-	got, err := (&pdpVerifierReader{caller: caller}).GetScheduledRemovals(context.Background(), 42)
+	got, err := (&pdpVerifierReader{caller: caller}).GetScheduledRemovals(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatalf("GetScheduledRemovals: %v", err)
 	}
-	if len(got) != 2 || got[0] != 2 || got[1] != 5 {
+	if len(got) != 2 || !got[0].Equal(types.NewBigInt(2)) || !got[1].Equal(types.NewBigInt(5)) {
 		t.Fatalf("scheduled removals=%v want [2 5]", got)
 	}
 }
@@ -38,7 +39,7 @@ func TestPDPVerifierReader_GetScheduledRemovals_DataSetNotLiveReturnsEmpty(t *te
 		t.Fatalf("NewPDPVerifierCaller: %v", err)
 	}
 
-	got, err := (&pdpVerifierReader{caller: caller}).GetScheduledRemovals(context.Background(), 42)
+	got, err := (&pdpVerifierReader{caller: caller}).GetScheduledRemovals(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatalf("GetScheduledRemovals: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestPDPVerifierReader_GetNextChallengeEpoch_ReturnsNilForUnavailableEpoch(t
 			t.Fatalf("NewPDPVerifierCaller: %v", err)
 		}
 
-		got, err := (&pdpVerifierReader{caller: caller}).GetNextChallengeEpoch(context.Background(), 42)
+		got, err := (&pdpVerifierReader{caller: caller}).GetNextChallengeEpoch(context.Background(), types.NewBigInt(42))
 		if err != nil {
 			t.Fatalf("GetNextChallengeEpoch: %v", err)
 		}
@@ -75,7 +76,7 @@ func TestPDPVerifierReader_GetNextChallengeEpoch_ReturnsNilForUnavailableEpoch(t
 			t.Fatalf("NewPDPVerifierCaller: %v", err)
 		}
 
-		got, err := (&pdpVerifierReader{caller: caller}).GetNextChallengeEpoch(context.Background(), 42)
+		got, err := (&pdpVerifierReader{caller: caller}).GetNextChallengeEpoch(context.Background(), types.NewBigInt(42))
 		if err != nil {
 			t.Fatalf("GetNextChallengeEpoch: %v", err)
 		}

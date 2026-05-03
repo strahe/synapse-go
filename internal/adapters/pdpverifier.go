@@ -28,7 +28,7 @@ type PDPReader interface {
 
 // pdpVerifierReader adapts the abigen PDPVerifierCaller plus an
 // ethclient into [PDPReader], converting between Go-friendly types
-// (sdktypes.DataSetID / cid.Cid / uint64) and the abigen-native types
+// (sdktypes.BigInt / cid.Cid) and the abigen-native types
 // (*big.Int / pdpverifier.CidsCid).
 type pdpVerifierReader struct {
 	caller  *pdpverifier.PDPVerifierCaller
@@ -46,11 +46,11 @@ func NewPDPVerifierReader(caller *pdpverifier.PDPVerifierCaller, backend *ethcli
 	return &pdpVerifierReader{caller: caller, backend: backend}
 }
 
-func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.DataSetID, pieceCID cid.Cid, start, limit uint64) ([]uint64, error) {
+func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error) {
 	opts := &bind.CallOpts{Context: ctx}
 	raw, err := a.caller.FindPieceIdsByCid(
 		opts,
-		idconv.Big(dataSetID),
+		dataSetID.Big(),
 		iabi.EncodePieceCID(pieceCID),
 		new(big.Int).SetUint64(start),
 		new(big.Int).SetUint64(limit),
@@ -58,30 +58,30 @@ func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdk
 	if err != nil {
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", err)
 	}
-	out, err := idconv.SafeSlice[uint64]("pieceID", raw)
+	out, err := idconv.FromBigSlice("pieceID", raw)
 	if err != nil {
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", err)
 	}
 	return out, nil
 }
 
-func (a *pdpVerifierReader) GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.DataSetID) ([]uint64, error) {
-	raw, err := a.caller.GetScheduledRemovals(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
+func (a *pdpVerifierReader) GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.BigInt) ([]sdktypes.BigInt, error) {
+	raw, err := a.caller.GetScheduledRemovals(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if isDataSetNotLive(err) {
-			return []uint64{}, nil
+			return []sdktypes.BigInt{}, nil
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetScheduledRemovals: %w", err)
 	}
-	out, err := idconv.SafeSlice[uint64]("pieceID", raw)
+	out, err := idconv.FromBigSlice("pieceID", raw)
 	if err != nil {
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetScheduledRemovals: %w", err)
 	}
-	return dedupeUint64s(out), nil
+	return dedupeBigInts(out), nil
 }
 
-func (a *pdpVerifierReader) GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.DataSetID) (*big.Int, error) {
-	v, err := a.caller.GetNextChallengeEpoch(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
+func (a *pdpVerifierReader) GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
+	v, err := a.caller.GetNextChallengeEpoch(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if isDataSetNotLive(err) {
 			return nil, nil
@@ -106,8 +106,8 @@ func (a *pdpVerifierReader) BlockNumber(ctx context.Context) (uint64, error) {
 // already been terminated. Treat it as size 0 instead of propagating the
 // error so Service.Prepare can still compute floor-priced costs for
 // recently-terminated contexts.
-func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.DataSetID) (*big.Int, error) {
-	leafCount, err := a.caller.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
+func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
+	leafCount, err := a.caller.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if isDataSetNotLive(err) {
 			return new(big.Int), nil
@@ -130,17 +130,18 @@ func isDataSetNotLive(err error) bool {
 	return strings.Contains(err.Error(), "Data set not live")
 }
 
-func dedupeUint64s(values []uint64) []uint64 {
+func dedupeBigInts(values []sdktypes.BigInt) []sdktypes.BigInt {
 	if len(values) == 0 {
 		return values
 	}
-	out := make([]uint64, 0, len(values))
-	seen := make(map[uint64]struct{}, len(values))
+	out := make([]sdktypes.BigInt, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if _, ok := seen[value]; ok {
+		key := idconv.Key(value)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[value] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, value)
 	}
 	return out

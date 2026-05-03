@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
 	"path"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/strahe/synapse-go/types"
 )
 
 // AddPieceInput mirrors one entry of the pieces array for
@@ -46,7 +46,7 @@ type AddPiecesResult struct {
 
 // AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData must be
 // caller-provided EIP-712 signed data encoded as the PDP provider expects.
-func (c *Client) AddPieces(ctx context.Context, dataSetID uint64, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
+func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
 	if len(pieces) == 0 {
 		return nil, errors.New("pdp.AddPieces: no pieces provided")
 	}
@@ -66,7 +66,7 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID uint64, pieces []AddPi
 			SubPieces: []addPiecesSubPiece{{SubPieceCID: s}},
 		})
 	}
-	urlPath := path.Join("pdp/data-sets", fmt.Sprint(dataSetID), "pieces")
+	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces")
 	resp, body, err := c.postJSON(ctx, urlPath, wire,
 		http.StatusCreated, http.StatusOK, http.StatusAccepted)
 	if err != nil {
@@ -94,13 +94,13 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID uint64, pieces []AddPi
 // AddPiecesStatus mirrors GET /pdp/data-sets/{id}/pieces/added/{txHash}.
 // TxStatus reports pending, confirmed, or rejected.
 type AddPiecesStatus struct {
-	TxHash            common.Hash `json:"-"`
-	TxStatus          string      `json:"txStatus"` // pending | confirmed | rejected
-	DataSetID         uint64      `json:"-"`
-	PieceCount        int         `json:"pieceCount"`
-	AddMessageOK      *bool       `json:"addMessageOk"`
-	PiecesAdded       bool        `json:"piecesAdded"`
-	ConfirmedPieceIDs []*big.Int  `json:"-"`
+	TxHash            common.Hash    `json:"-"`
+	TxStatus          string         `json:"txStatus"` // pending | confirmed | rejected
+	DataSetID         types.BigInt   `json:"-"`
+	PieceCount        int            `json:"pieceCount"`
+	AddMessageOK      *bool          `json:"addMessageOk"`
+	PiecesAdded       bool           `json:"piecesAdded"`
+	ConfirmedPieceIDs []types.BigInt `json:"-"`
 }
 
 type rawAddPiecesStatus struct {
@@ -141,18 +141,18 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 		PiecesAdded:  raw.PiecesAdded,
 	}
 	if raw.DataSetID != "" {
-		id, ok := new(big.Int).SetString(raw.DataSetID.String(), 10)
-		if !ok || !id.IsUint64() {
-			return nil, fmt.Errorf("pdp.GetAddPiecesStatus: bad dataSetId %q", raw.DataSetID)
+		id, err := parseBigIntNumber("pdp.GetAddPiecesStatus", "dataSetId", raw.DataSetID)
+		if err != nil {
+			return nil, err
 		}
-		out.DataSetID = id.Uint64()
+		out.DataSetID = id
 	}
 	for _, n := range raw.ConfirmedPieceIDs {
-		b, ok := new(big.Int).SetString(n.String(), 10)
-		if !ok {
-			return nil, fmt.Errorf("pdp.GetAddPiecesStatus: bad confirmedPieceId %q", n)
+		id, err := parseBigIntNumber("pdp.GetAddPiecesStatus", "confirmedPieceId", n)
+		if err != nil {
+			return nil, err
 		}
-		out.ConfirmedPieceIDs = append(out.ConfirmedPieceIDs, b)
+		out.ConfirmedPieceIDs = append(out.ConfirmedPieceIDs, id)
 	}
 	return out, nil
 }
@@ -189,7 +189,7 @@ func (c *Client) WaitForPiecesAdded(ctx context.Context, statusURL string, pollI
 
 // SchedulePieceDeletion issues DELETE /pdp/data-sets/{id}/pieces/{pieceId}
 // with the provided EIP-712 signed extraData.
-func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
+func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
 	if len(extraData) == 0 {
 		return common.Hash{}, errors.New("pdp.SchedulePieceDeletion: empty extraData")
 	}
@@ -200,7 +200,7 @@ func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID u
 	var out struct {
 		TxHash string `json:"txHash"`
 	}
-	urlPath := path.Join("pdp/data-sets", fmt.Sprint(dataSetID), "pieces", fmt.Sprint(pieceID))
+	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces", pieceID.String())
 	if err := c.deleteJSON(ctx, urlPath, payload, &out); err != nil {
 		return common.Hash{}, err
 	}

@@ -22,7 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	"github.com/strahe/synapse-go/internal/idconv"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
@@ -54,21 +53,21 @@ type PDPProviderClient interface {
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	WaitForPieceParked(context.Context, cid.Cid, time.Duration) error
 	WaitForPullComplete(context.Context, pdp.PullRequest, time.Duration, func(*pdp.PullResult)) (*pdp.PullResult, error)
-	AddPieces(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
+	AddPieces(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	WaitForPiecesAdded(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	CreateDataSet(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error)
 	WaitForDataSetCreated(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error)
 	CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
-	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error)
+	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error)
 }
 
 // Provider holds the on-chain identity of a storage provider.
 type Provider struct {
-	ID              types.ProviderID // numeric provider ID from SPRegistry
-	ServiceURL      string           // base URL of the provider's PDP HTTP API
-	ServiceProvider common.Address   // provider's EVM address
-	Payee           common.Address   // address that receives payments
+	ID              types.BigInt   // provider ID from SPRegistry
+	ServiceURL      string         // base URL of the provider's PDP HTTP API
+	ServiceProvider common.Address // provider's EVM address
+	Payee           common.Address // address that receives payments
 }
 
 // ContextOption configures a Context.
@@ -92,8 +91,8 @@ type Context struct {
 	recordKeeper common.Address
 	withCDN      bool
 
-	dataSetID           *types.DataSetID
-	clientDataSetID     types.ClientDataSetID
+	dataSetID           *types.BigInt
+	clientDataSetID     *types.BigInt
 	dataSetMetadata     map[string]string
 	createInFlight      bool
 	pendingCreate       *CreateDataSetSubmission
@@ -123,7 +122,7 @@ const (
 // options) are validated by the write paths that need them, e.g.
 // PresignForCommit.
 func NewContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
-	if provider.ID == 0 {
+	if provider.ID.IsZero() {
 		return nil, fmt.Errorf("storage.NewContext: %w: zero provider ID", ErrInvalidArgument)
 	}
 	if provider.ServiceURL == "" {
@@ -147,7 +146,7 @@ func NewContext(provider Provider, client PDPProviderClient, evmSigner signer.EV
 			opt(c)
 		}
 	}
-	if c.dataSetID != nil && *c.dataSetID == 0 {
+	if c.dataSetID != nil && c.dataSetID.IsZero() {
 		return nil, fmt.Errorf("storage.NewContext: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	return c, nil
@@ -171,9 +170,9 @@ func WithRecordKeeper(addr common.Address) ContextOption {
 
 // WithDataSetID pins the context to an existing on-chain data set.
 // When set, Commit issues an AddPieces call instead of CreateDataSet+AddPieces.
-func WithDataSetID(id types.DataSetID) ContextOption {
+func WithDataSetID(id types.BigInt) ContextOption {
 	return func(c *Context) {
-		v := id
+		v := copyBigInt(id)
 		c.dataSetID = &v
 	}
 }
@@ -181,13 +180,10 @@ func WithDataSetID(id types.DataSetID) ContextOption {
 // WithClientDataSetID sets a caller-chosen data-set identifier included in
 // EIP-712 messages. If not provided, a random value is generated on the
 // first PresignForCommit call and reused for the lifetime of this Context.
-func WithClientDataSetID(id types.ClientDataSetID) ContextOption {
+func WithClientDataSetID(id types.BigInt) ContextOption {
 	return func(c *Context) {
-		if id == nil {
-			c.clientDataSetID = nil
-			return
-		}
-		c.clientDataSetID = new(big.Int).Set(id)
+		v := copyBigInt(id)
+		c.clientDataSetID = &v
 	}
 }
 
@@ -363,10 +359,10 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 			c.mu.Unlock()
 			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
 		}
-		c.clientDataSetID = v
+		c.clientDataSetID = &v
 	}
-	clientDataSetID := new(big.Int).Set(c.clientDataSetID)
-	var dataSetIDSnap *types.DataSetID
+	clientDataSetID := c.clientDataSetID.Big()
+	var dataSetIDSnap *types.BigInt
 	if c.dataSetID != nil {
 		id := *c.dataSetID
 		dataSetIDSnap = &id
@@ -469,7 +465,8 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	// RecordKeeper is required by the provider for both new and existing datasets.
 	pdpReq.RecordKeeper = recordKeeper
 	if dataSetID != nil {
-		pdpReq.DataSetID = uint64(*dataSetID)
+		id := copyBigInt(*dataSetID)
+		pdpReq.DataSetID = &id
 	}
 
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
@@ -574,7 +571,7 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	}
 
 	if dataSetID != nil {
-		added, err := c.client.AddPieces(ctx, uint64(*dataSetID), pieces, extraData)
+		added, err := c.client.AddPieces(ctx, *dataSetID, pieces, extraData)
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: add pieces: %w", err)
 		}
@@ -585,23 +582,19 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		if err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: wait add pieces: %w", err)
 		}
-		if status.DataSetID == 0 {
+		if status.DataSetID.IsZero() {
 			return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
 		}
-		if got := types.DataSetID(status.DataSetID); got != *dataSetID {
-			return nil, fmt.Errorf("storage.Context.Commit: server returned mismatched dataSetID: got %d want %d", got, *dataSetID)
+		if !status.DataSetID.Equal(*dataSetID) {
+			return nil, fmt.Errorf("storage.Context.Commit: server returned mismatched dataSetID: got %s want %s", status.DataSetID.String(), dataSetID.String())
 		}
-		pieceIDs, err := idconv.SafeSlice[types.PieceID]("pieceID", status.ConfirmedPieceIDs)
-		if err != nil {
-			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
-		}
-		if err := validateConfirmedPieceIDs(pieceIDs, len(req.Pieces)); err != nil {
+		if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
 			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
 		}
 		return &CommitResult{
 			TransactionID: status.TxHash.Hex(),
-			DataSetID:     types.DataSetID(status.DataSetID),
-			PieceIDs:      pieceIDs,
+			DataSetID:     status.DataSetID,
+			PieceIDs:      append([]types.BigInt(nil), status.ConfirmedPieceIDs...),
 			IsNewDataSet:  false,
 		}, nil
 	}
@@ -622,20 +615,16 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.Commit: wait create and add pieces: %w", err)
 	}
-	if status.DataSetID == 0 {
+	if status.DataSetID.IsZero() {
 		return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
 	}
-	pieceIDs, err := idconv.SafeSlice[types.PieceID]("pieceID", status.ConfirmedPieceIDs)
-	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
-	}
-	if err := validateConfirmedPieceIDs(pieceIDs, len(req.Pieces)); err != nil {
+	if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
 		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
 	}
 	result := &CommitResult{
 		TransactionID: status.TxHash.Hex(),
-		DataSetID:     types.DataSetID(status.DataSetID),
-		PieceIDs:      pieceIDs,
+		DataSetID:     status.DataSetID,
+		PieceIDs:      append([]types.BigInt(nil), status.ConfirmedPieceIDs...),
 		IsNewDataSet:  true,
 	}
 	newID := result.DataSetID
@@ -651,7 +640,7 @@ func (c *Context) PieceURL(pieceCID cid.Cid) string {
 }
 
 // ProviderID returns the provider's numeric ID.
-func (c *Context) ProviderID() types.ProviderID {
+func (c *Context) ProviderID() types.BigInt {
 	return c.provider.ID
 }
 
@@ -675,7 +664,7 @@ func (c *Context) ServiceURL() string {
 // DataSetID returns the Context's bound data set ID, or nil if the
 // Context targets a data set that does not yet exist (will be created
 // on first upload).
-func (c *Context) DataSetID() *types.DataSetID {
+func (c *Context) DataSetID() *types.BigInt {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.dataSetID == nil {
@@ -819,12 +808,16 @@ func randomUint256() (*big.Int, error) {
 	return new(big.Int).SetBytes(buf[:]), nil
 }
 
-func randomClientDataSetID() (types.ClientDataSetID, error) {
+func randomClientDataSetID() (types.BigInt, error) {
 	v, err := randomUint256()
 	if err != nil {
-		return nil, fmt.Errorf("read random clientDataSetID: %w", err)
+		return types.BigInt{}, fmt.Errorf("read random clientDataSetID: %w", err)
 	}
-	return v, nil
+	id, err := types.BigIntFromBig(v)
+	if err != nil {
+		return types.BigInt{}, fmt.Errorf("read random clientDataSetID: %w", err)
+	}
+	return id, nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

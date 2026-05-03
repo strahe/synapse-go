@@ -332,7 +332,7 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	if _, err := client.Costs().GetServicePrice(ctx); !errors.Is(err, ErrClosed) {
 		t.Errorf("Costs.GetServicePrice: got %v, want ErrClosed", err)
 	}
-	if _, err := client.FilBeam().GetDataSetStats(ctx, types.DataSetID(1)); !errors.Is(err, ErrClosed) {
+	if _, err := client.FilBeam().GetDataSetStats(ctx, types.NewBigInt(1)); !errors.Is(err, ErrClosed) {
 		t.Errorf("FilBeam.GetDataSetStats: got %v, want ErrClosed", err)
 	}
 	if _, err := client.Storage().Download(ctx, cid.Undef, nil); !errors.Is(err, ErrClosed) {
@@ -623,7 +623,7 @@ func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	stats, err := client.FilBeam().GetDataSetStats(context.Background(), types.DataSetID(123))
+	stats, err := client.FilBeam().GetDataSetStats(context.Background(), types.NewBigInt(123))
 	if err != nil {
 		t.Fatalf("GetDataSetStats: %v", err)
 	}

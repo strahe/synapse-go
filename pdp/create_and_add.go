@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -91,7 +90,7 @@ func (c *Client) WaitForCreateDataSetAndAddPieces(
 	if err != nil {
 		return nil, err
 	}
-	if createStatus.DataSetID == nil || !createStatus.DataSetID.IsUint64() {
+	if createStatus.DataSetID == nil {
 		return nil, errors.New("pdp.WaitForCreateDataSetAndAddPieces: missing dataSetId in create status")
 	}
 	if createStatus.CreateMessageHash == (common.Hash{}) {
@@ -100,7 +99,7 @@ func (c *Client) WaitForCreateDataSetAndAddPieces(
 
 	addStatusURL, err := c.resolve(path.Join(
 		"pdp/data-sets",
-		strconv.FormatUint(createStatus.DataSetID.Uint64(), 10),
+		createStatus.DataSetID.String(),
 		"pieces/added",
 		createStatus.CreateMessageHash.Hex(),
 	))

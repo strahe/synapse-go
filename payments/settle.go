@@ -25,14 +25,14 @@ type SettlementResult struct {
 
 // Settle triggers a rail settlement up to `untilEpoch`. When `untilEpoch`
 // is nil or zero, the current block number is used.
-func (s *Service) Settle(ctx context.Context, railID, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+func (s *Service) Settle(ctx context.Context, railID sdktypes.BigInt, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
 	if err := s.requireSigner("Settle"); err != nil {
 		return nil, err
 	}
-	if railID == nil || railID.Sign() <= 0 {
+	if railID.IsZero() {
 		return nil, fmt.Errorf("payments.Settle: %w: railID must be > 0", ErrInvalidArgument)
 	}
 	resolved, err := s.resolveUntilEpoch(ctx, untilEpoch)
@@ -44,7 +44,7 @@ func (s *Service) Settle(ctx context.Context, railID, untilEpoch *big.Int, opts 
 		return nil, fmt.Errorf("payments.Settle: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SettleRail(txOpts, railID, resolved)
+	tx, err := s.filPayWrite.SettleRail(txOpts, railID.Big(), resolved)
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.Settle: %w", err)
@@ -56,14 +56,14 @@ func (s *Service) Settle(ctx context.Context, railID, untilEpoch *big.Int, opts 
 // terminated rail. This bypasses the operator validator and pays in full;
 // it can only be called by the client after the max settlement epoch has
 // passed.
-func (s *Service) SettleTerminatedRail(ctx context.Context, railID *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+func (s *Service) SettleTerminatedRail(ctx context.Context, railID sdktypes.BigInt, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
 	if err := s.requireSigner("SettleTerminatedRail"); err != nil {
 		return nil, err
 	}
-	if railID == nil || railID.Sign() <= 0 {
+	if railID.IsZero() {
 		return nil, fmt.Errorf("payments.SettleTerminatedRail: %w: railID must be > 0", ErrInvalidArgument)
 	}
 	txOpts, release, err := s.newTransactOpts(ctx)
@@ -71,7 +71,7 @@ func (s *Service) SettleTerminatedRail(ctx context.Context, railID *big.Int, opt
 		return nil, fmt.Errorf("payments.SettleTerminatedRail: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SettleTerminatedRailWithoutValidation(txOpts, railID)
+	tx, err := s.filPayWrite.SettleTerminatedRailWithoutValidation(txOpts, railID.Big())
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.SettleTerminatedRail: %w", err)
@@ -82,7 +82,7 @@ func (s *Service) SettleTerminatedRail(ctx context.Context, railID *big.Int, opt
 // SettleAuto inspects the rail state and routes to Settle or
 // SettleTerminatedRail automatically — terminated rails (endEpoch > 0) go
 // through the emergency path, active rails through the standard path.
-func (s *Service) SettleAuto(ctx context.Context, railID, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+func (s *Service) SettleAuto(ctx context.Context, railID sdktypes.BigInt, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -113,11 +113,11 @@ var filPayStaticABI = func() abi.ABI {
 // GetSettlementAmounts simulates FilPay.settleRail via eth_call and decodes
 // the resulting amounts without broadcasting a transaction. Use it to
 // preview how much would be settled to the payee / operator / network.
-func (s *Service) GetSettlementAmounts(ctx context.Context, railID, untilEpoch *big.Int) (*SettlementResult, error) {
+func (s *Service) GetSettlementAmounts(ctx context.Context, railID sdktypes.BigInt, untilEpoch *big.Int) (*SettlementResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if railID == nil || railID.Sign() <= 0 {
+	if railID.IsZero() {
 		return nil, fmt.Errorf("payments.GetSettlementAmounts: %w: railID must be > 0", ErrInvalidArgument)
 	}
 	resolved, err := s.resolveUntilEpoch(ctx, untilEpoch)
@@ -126,7 +126,7 @@ func (s *Service) GetSettlementAmounts(ctx context.Context, railID, untilEpoch *
 	}
 	bound := bind.NewBoundContract(s.filPayAddr, filPayStaticABI, s.backend, nil, nil)
 	var out []interface{}
-	if err := bound.Call(&bind.CallOpts{Context: ctx}, &out, "settleRail", railID, resolved); err != nil {
+	if err := bound.Call(&bind.CallOpts{Context: ctx}, &out, "settleRail", railID.Big(), resolved); err != nil {
 		return nil, fmt.Errorf("payments.GetSettlementAmounts: static call: %w", err)
 	}
 	if len(out) < 6 {

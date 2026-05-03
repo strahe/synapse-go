@@ -17,7 +17,7 @@ func Example() {
 	var svc *filbeam.Service // obtained from synapse.Client.FilBeam()
 
 	ctx := context.Background()
-	stats, err := svc.GetDataSetStats(ctx, types.DataSetID(42))
+	stats, err := svc.GetDataSetStats(ctx, types.NewBigInt(42))
 	if err != nil {
 		log.Fatal(err)
 	}

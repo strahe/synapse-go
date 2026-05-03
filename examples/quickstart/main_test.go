@@ -130,9 +130,9 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				Complete:        true,
 				Copies: []storage.CopyResult{
 					{
-						ProviderID:   types.ProviderID(101),
-						DataSetID:    types.DataSetID(202),
-						PieceID:      types.PieceID(303),
+						ProviderID:   types.NewBigInt(101),
+						DataSetID:    types.NewBigInt(202),
+						PieceID:      types.NewBigInt(303),
 						Role:         storage.CopyRolePrimary,
 						RetrievalURL: "https://provider.example/piece/" + info.CIDv2.String(),
 					},

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/strahe/synapse-go/types"
 )
 
 // PullStatus mirrors the status values used by the PDP pull endpoint.
@@ -43,8 +44,8 @@ type PullRequest struct {
 	RecordKeeper common.Address
 	// ExtraData is caller-provided EIP-712 signed data encoded as the provider expects.
 	ExtraData []byte
-	// DataSetID is the target dataset.  0 (or unset) means create a new dataset.
-	DataSetID uint64
+	// DataSetID is the target dataset. Nil means create a new dataset.
+	DataSetID *types.BigInt
 	// Pieces are the pieces to pull with their source URLs.
 	Pieces []PullPieceInput
 }
@@ -65,7 +66,7 @@ type PullResult struct {
 type pullPiecesWire struct {
 	ExtraData    string              `json:"extraData"`
 	RecordKeeper string              `json:"recordKeeper,omitempty"`
-	DataSetID    *uint64             `json:"dataSetId,omitempty"`
+	DataSetID    *json.Number        `json:"dataSetId,omitempty"`
 	Pieces       []pullPieceWireItem `json:"pieces"`
 }
 
@@ -98,8 +99,11 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 		Pieces:       make([]pullPieceWireItem, 0, len(req.Pieces)),
 	}
 
-	if req.DataSetID != 0 {
-		ds := req.DataSetID
+	if req.DataSetID != nil {
+		if req.DataSetID.IsZero() {
+			return nil, errors.New("pdp.PullPieces: zero dataSetID")
+		}
+		ds := json.Number(req.DataSetID.String())
 		wire.DataSetID = &ds
 	}
 

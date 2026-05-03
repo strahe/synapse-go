@@ -151,7 +151,7 @@ func (c *Client) initServices() error {
 				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))
 			}
 			if sel.ClientDataSetID != nil {
-				ctxOpts = append(ctxOpts, storage.WithClientDataSetID(sel.ClientDataSetID))
+				ctxOpts = append(ctxOpts, storage.WithClientDataSetID(*sel.ClientDataSetID))
 			}
 			return storage.NewContext(
 				sel.Provider,
@@ -232,8 +232,8 @@ func (c *Client) Storage() *storage.Service {
 }
 
 // GetProviderInfoByID looks up a storage provider on [Client.SPRegistry] by its
-// numeric [types.ProviderID].
-func (c *Client) GetProviderInfoByID(ctx context.Context, id types.ProviderID) (*spregistry.ProviderInfo, error) {
+// numeric [types.BigInt] id.
+func (c *Client) GetProviderInfoByID(ctx context.Context, id types.BigInt) (*spregistry.ProviderInfo, error) {
 	return c.spRegistry.GetProvider(ctx, id)
 }
 

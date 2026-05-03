@@ -10,7 +10,7 @@
 //	if err != nil {
 //		// handle error (e.g. unsupported chain)
 //	}
-//	stats, err := svc.GetDataSetStats(ctx, types.DataSetID(12345))
+//	stats, err := svc.GetDataSetStats(ctx, types.NewBigInt(12345))
 //
 // # Stability
 //

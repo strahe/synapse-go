@@ -16,6 +16,7 @@ import (
 
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestGetClientDataSetsWithDetails_PropagatesEnrichmentFailure(t *testing.T) {
@@ -74,7 +75,7 @@ func TestGetClientDataSetsWithDetails_PropagatesEnrichmentFailure(t *testing.T) 
 func TestTopUpCDNPaymentRails_RejectsDoubleZeroTopUp(t *testing.T) {
 	s, backend := newWriteTestService(t)
 
-	got, err := s.TopUpCDNPaymentRails(context.Background(), 1, big.NewInt(0), big.NewInt(0))
+	got, err := s.TopUpCDNPaymentRails(context.Background(), types.NewBigInt(1), big.NewInt(0), big.NewInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("TopUpCDNPaymentRails double zero err=%v result=%+v, want ErrInvalidArgument", err, got)
 	}
@@ -117,7 +118,11 @@ func TestGetClientDataSetsWithDetails_IncludesParityMetadata(t *testing.T) {
 
 	val := reflect.ValueOf(*got[0])
 	pdpID := val.FieldByName("PDPVerifierDataSetID")
-	if !pdpID.IsValid() || pdpID.Uint() != 42 {
+	if !pdpID.IsValid() {
+		t.Fatalf("PDPVerifierDataSetID missing or wrong: %v", pdpID)
+	}
+	gotPDPID, ok := pdpID.Interface().(types.BigInt)
+	if !ok || !gotPDPID.Equal(types.NewBigInt(42)) {
 		t.Fatalf("PDPVerifierDataSetID missing or wrong: %v", pdpID)
 	}
 	withCDN := val.FieldByName("WithCDN")

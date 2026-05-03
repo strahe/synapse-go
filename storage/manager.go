@@ -78,14 +78,14 @@ type TerminateDataSetOptions struct {
 }
 
 // TerminateDataSet terminates an FWSS-managed data set by ID.
-func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.DataSetID, opts *TerminateDataSetOptions) (*types.WriteResult, error) {
+func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.BigInt, opts *TerminateDataSetOptions) (*types.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
 	if s.terminator == nil {
 		return nil, fmt.Errorf("storage.Service.TerminateDataSet: %w: no DataSetTerminator configured", ErrUninitialized)
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("storage.Service.TerminateDataSet: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	var writeOpts []warmstorage.WriteOption

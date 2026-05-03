@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
 
@@ -18,12 +17,12 @@ import (
 // ClientDataSetID. See ensureClientDataSetID in storage/delete.go.
 func TestContext_DeletePiece_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
 	info := mustPieceInfo(t)
-	pdp := &fakePDPReader{findIDs: []uint64{42}}
+	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42)}}
 	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
+		WithDataSetID(types.NewBigInt(77)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -40,11 +39,11 @@ func TestContext_DeletePiece_ExistingDataSetRequiresClientDataSetID(t *testing.T
 
 func TestContext_DeletePiece_Success(t *testing.T) {
 	info := mustPieceInfo(t)
-	pdp := &fakePDPReader{findIDs: []uint64{42}}
-	var gotDataSetID, gotPieceID uint64
+	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42)}}
+	var gotDataSetID, gotPieceID types.BigInt
 	var gotExtraData []byte
 	fake := &fakePDPProviderClient{
-		scheduleDeletionFn: func(_ context.Context, dsID, pID uint64, extraData []byte) (common.Hash, error) {
+		scheduleDeletionFn: func(_ context.Context, dsID, pID types.BigInt, extraData []byte) (common.Hash, error) {
 			gotDataSetID = dsID
 			gotPieceID = pID
 			gotExtraData = extraData
@@ -55,8 +54,8 @@ func TestContext_DeletePiece_Success(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -69,8 +68,8 @@ func TestContext_DeletePiece_Success(t *testing.T) {
 	if res.Hash == (common.Hash{}) {
 		t.Fatal("expected non-zero hash")
 	}
-	if gotDataSetID != 77 || gotPieceID != 42 {
-		t.Fatalf("unexpected (dataSetID, pieceID) = (%d, %d)", gotDataSetID, gotPieceID)
+	if !gotDataSetID.Equal(types.NewBigInt(77)) || !gotPieceID.Equal(types.NewBigInt(42)) {
+		t.Fatalf("unexpected (dataSetID, pieceID) = (%s, %s)", gotDataSetID.String(), gotPieceID.String())
 	}
 	if len(gotExtraData) == 0 {
 		t.Fatal("expected non-empty extraData")
@@ -84,8 +83,8 @@ func TestContext_DeletePiece_PieceNotFound(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -103,8 +102,8 @@ func TestContext_DeletePiece_FindError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -121,8 +120,8 @@ func TestContext_DeletePiece_InvalidCID(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -135,9 +134,9 @@ func TestContext_DeletePiece_InvalidCID(t *testing.T) {
 
 func TestContext_DeletePiece_RejectsZeroRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
-	pdp := &fakePDPReader{findIDs: []uint64{42}}
+	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42)}}
 	fake := &fakePDPProviderClient{
-		scheduleDeletionFn: func(context.Context, uint64, uint64, []byte) (common.Hash, error) {
+		scheduleDeletionFn: func(context.Context, types.BigInt, types.BigInt, []byte) (common.Hash, error) {
 			t.Fatal("SchedulePieceDeletion should not be called with zero recordKeeper")
 			return common.Hash{}, nil
 		},
@@ -145,8 +144,8 @@ func TestContext_DeletePiece_RejectsZeroRecordKeeper(t *testing.T) {
 	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {
@@ -169,8 +168,8 @@ func TestContext_DeletePiece_TypedNilPDPReaderTreatedAsUnset(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(77)),
-		WithClientDataSetID(big.NewInt(3)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
 	if err != nil {

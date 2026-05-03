@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,7 +46,7 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 		callsMu.Unlock()
 	}
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -67,8 +66,8 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("primary commit should not receive secondary extraData")
 			}
 			return &CommitResult{
-				DataSetID:     types.DataSetID(1001),
-				PieceIDs:      []types.PieceID{types.PieceID(2001)},
+				DataSetID:     types.NewBigInt(1001),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
 				IsNewDataSet:  true,
 				TransactionID: "0xprimary",
 			}, nil
@@ -77,7 +76,7 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 
 	secondaryExtra := []byte{0xde, 0xad, 0xbe, 0xef}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary.example.com",
 		pieceURL: "https://secondary.example.com/piece/" + info.CIDv2.String(),
 		presignFn: func(_ context.Context, pieces []PieceInput) ([]byte, error) {
@@ -106,8 +105,8 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("commit extraData=%x want %x", req.ExtraData, secondaryExtra)
 			}
 			return &CommitResult{
-				DataSetID:     types.DataSetID(1002),
-				PieceIDs:      []types.PieceID{types.PieceID(2002)},
+				DataSetID:     types.NewBigInt(1002),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
 				IsNewDataSet:  true,
 				TransactionID: "0xsecondary",
 			}, nil
@@ -143,7 +142,7 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	want := errors.New("store failed")
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return nil, want
@@ -163,8 +162,8 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	if !errors.As(err, &got) {
 		t.Fatalf("want StoreError, got %T", err)
 	}
-	if got.ProviderID != primary.id {
-		t.Fatalf("providerID=%d want %d", got.ProviderID, primary.id)
+	if !got.ProviderID.Equal(primary.id) {
+		t.Fatalf("providerID=%s want %s", got.ProviderID.String(), primary.id.String())
 	}
 	if !errors.Is(err, want) {
 		t.Fatalf("error should wrap original cause: %v", err)
@@ -179,18 +178,18 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -245,7 +244,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -256,7 +255,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -282,8 +281,8 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	if !errors.As(err, &got) {
 		t.Fatalf("want CommitError, got %T", err)
 	}
-	if got.ProviderID != primary.id {
-		t.Fatalf("providerID=%d want %d", got.ProviderID, primary.id)
+	if !got.ProviderID.Equal(primary.id) {
+		t.Fatalf("providerID=%s want %s", got.ProviderID.String(), primary.id.String())
 	}
 }
 
@@ -295,18 +294,18 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary-a.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -316,7 +315,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 		},
 	}
 	replacement := &fakeUploadContext{
-		id:       types.ProviderID(303),
+		id:       types.NewBigInt(303),
 		endpoint: "https://secondary-b.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x02}, nil
@@ -328,7 +327,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 			}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1002), PieceIDs: []types.PieceID{types.PieceID(2002)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
 		},
 	}
 
@@ -351,8 +350,8 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	if resolver.replacementCalls != 1 {
 		t.Fatalf("replacementCalls=%d want 1", resolver.replacementCalls)
 	}
-	if got.Copies[1].ProviderID != replacement.id {
-		t.Fatalf("replacement provider=%d want %d", got.Copies[1].ProviderID, replacement.id)
+	if !got.Copies[1].ProviderID.Equal(replacement.id) {
+		t.Fatalf("replacement provider=%s want %s", got.Copies[1].ProviderID.String(), replacement.id.String())
 	}
 }
 
@@ -364,18 +363,18 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary-a.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -385,11 +384,11 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 		},
 	}
 
-	const dsID types.DataSetID = 404
+	dsID := types.NewBigInt(404)
 	replacementClient := &fakePDPProviderClient{
 		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
-			if req.DataSetID != uint64(dsID) {
-				t.Fatalf("pull dataSetID=%d want %d", req.DataSetID, uint64(dsID))
+			if req.DataSetID == nil || !req.DataSetID.Equal(dsID) {
+				t.Fatalf("pull dataSetID=%v want %s", req.DataSetID, dsID.String())
 			}
 			if len(req.ExtraData) == 0 {
 				t.Fatal("pull extraData should be populated for replacement existing dataset")
@@ -399,9 +398,9 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 				Pieces: []pdp.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusComplete}},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
-			if gotDataSetID != uint64(dsID) {
-				t.Fatalf("commit dataSetID=%d want %d", gotDataSetID, uint64(dsID))
+		addPiecesFn: func(_ context.Context, gotDataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+			if !gotDataSetID.Equal(dsID) {
+				t.Fatalf("commit dataSetID=%s want %s", gotDataSetID.String(), dsID.String())
 			}
 			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
 				t.Fatalf("unexpected pieces: %+v", pieces)
@@ -417,10 +416,10 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 			}
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
-				DataSetID:         uint64(dsID),
+				DataSetID:         dsID,
 				PieceCount:        1,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(2002)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(2002)},
 			}, nil
 		},
 	}
@@ -435,7 +434,7 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 	}
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: big.NewInt(0xFEED)},
+		info: &warmstorage.DataSetInfo{ClientDataSetID: types.NewBigInt(0xFEED)},
 	}
 	resolver := &fakeResolver{
 		contexts:     []UploadContext{primary, failedSecondary},
@@ -453,7 +452,7 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 	if replacement.clientDataSetID == nil {
 		t.Fatal("replacement clientDataSetID should be backfilled")
 	}
-	if len(got.Copies) != 2 || got.Copies[1].ProviderID != replacement.ProviderID() {
+	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement.ProviderID()) {
 		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement.ProviderID())
 	}
 }
@@ -466,18 +465,18 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(101),
+		id:       types.NewBigInt(101),
 		endpoint: "https://primary.example.com",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1001), PieceIDs: []types.PieceID{types.PieceID(2001)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
-		id:       types.ProviderID(202),
+		id:       types.NewBigInt(202),
 		endpoint: "https://secondary-a.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -488,18 +487,18 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 	}
 
 	replacementProvider := testProvider()
-	replacementProvider.ID = types.ProviderID(404)
+	replacementProvider.ID = types.NewBigInt(404)
 	replacementCtx, err := NewContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(404)),
+		WithDataSetID(types.NewBigInt(404)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
 	replacement2 := &fakeUploadContext{
-		id:       types.ProviderID(303),
+		id:       types.NewBigInt(303),
 		endpoint: "https://secondary-b.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x02}, nil
@@ -511,7 +510,7 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 			}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1002), PieceIDs: []types.PieceID{types.PieceID(2002)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
 		},
 	}
 
@@ -530,13 +529,13 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if len(got.Copies) != 2 || got.Copies[1].ProviderID != replacement2.id {
+	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement2.id) {
 		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement2.id)
 	}
 	if len(got.FailedAttempts) != 3 {
 		t.Fatalf("FailedAttempts=%+v want 3 entries", got.FailedAttempts)
 	}
-	if got.FailedAttempts[2].ProviderID != replacementProvider.ID {
+	if !got.FailedAttempts[2].ProviderID.Equal(replacementProvider.ID) {
 		t.Fatalf("last failed provider=%d want replacement provider %d (retry should advance to replacement after populate failure)", got.FailedAttempts[2].ProviderID, replacementProvider.ID)
 	}
 }
@@ -556,7 +555,7 @@ func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOpti
 	return r.contexts, r.explicit, nil
 }
 
-func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[types.ProviderID]struct{}, _ *UploadOptions) (UploadContext, error) {
+func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.BigInt, _ *UploadOptions) (UploadContext, error) {
 	r.replacementCalls++
 	if len(r.replacements) == 0 {
 		return nil, errors.New("no replacement")
@@ -567,11 +566,11 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[types.Provider
 }
 
 type fakeUploadContext struct {
-	id              types.ProviderID
+	id              types.BigInt
 	endpoint        string
 	pieceURL        string
-	dataSetID       *types.DataSetID
-	clientDataSetID types.ClientDataSetID
+	dataSetID       *types.BigInt
+	clientDataSetID *types.BigInt
 	dataSetMetadata map[string]string
 	storeFn         func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
 	presignFn       func(context.Context, []PieceInput) ([]byte, error)
@@ -579,9 +578,9 @@ type fakeUploadContext struct {
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
 }
 
-func (c *fakeUploadContext) ProviderID() types.ProviderID { return c.id }
-func (c *fakeUploadContext) ServiceURL() string           { return c.endpoint }
-func (c *fakeUploadContext) PieceURL(_ cid.Cid) string    { return c.pieceURL }
+func (c *fakeUploadContext) ProviderID() types.BigInt  { return c.id }
+func (c *fakeUploadContext) ServiceURL() string        { return c.endpoint }
+func (c *fakeUploadContext) PieceURL(_ cid.Cid) string { return c.pieceURL }
 
 func (c *fakeUploadContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if c.storeFn == nil {
@@ -632,13 +631,13 @@ func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 
@@ -673,17 +672,17 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(2),
+		id:       types.NewBigInt(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil
@@ -720,17 +719,17 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(2),
+		id:       types.NewBigInt(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return nil, errors.New("presign failed: no signer")
@@ -741,7 +740,7 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 
 	copyFailedCalled := false
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
-		OnCopyFailed: func(types.ProviderID, cid.Cid, error) {
+		OnCopyFailed: func(types.BigInt, cid.Cid, error) {
 			copyFailedCalled = true
 		},
 	})
@@ -770,7 +769,7 @@ func TestManagerUpload_NilReader(t *testing.T) {
 func TestManagerUpload_ReadError(t *testing.T) {
 	readErr := errors.New("read boom")
 	ctx := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			_, err := io.ReadAll(r)
@@ -798,7 +797,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			got, err := io.ReadAll(r)
@@ -811,7 +810,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -840,7 +839,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 
 	var read int64
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			n, err := io.Copy(io.Discard, r)
@@ -851,7 +850,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: n}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -874,7 +873,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 	}
 	var gotPC cid.Cid
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 			_, _ = io.Copy(io.Discard, r)
@@ -884,7 +883,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -907,7 +906,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 	}
 	var cbSeen bool
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 			_, _ = io.Copy(io.Discard, r)
@@ -917,7 +916,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -954,7 +953,7 @@ func TestManagerUpload_CtxCancelSkipsQueuedCommits(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		pieceURL: "https://p.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
@@ -966,7 +965,7 @@ func TestManagerUpload_CtxCancelSkipsQueuedCommits(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	newSecondary := func(id types.ProviderID, name string) *fakeUploadContext {
+	newSecondary := func(id types.BigInt, name string) *fakeUploadContext {
 		return &fakeUploadContext{
 			id:       id,
 			endpoint: "https://s.example.com",
@@ -988,7 +987,7 @@ func TestManagerUpload_CtxCancelSkipsQueuedCommits(t *testing.T) {
 	}
 
 	mgr := mustNewService(t, Options{
-		Resolver:          &fakeResolver{contexts: []UploadContext{primary, newSecondary(2, "secondary-1"), newSecondary(3, "secondary-2")}},
+		Resolver:          &fakeResolver{contexts: []UploadContext{primary, newSecondary(types.NewBigInt(2), "secondary-1"), newSecondary(types.NewBigInt(3), "secondary-2")}},
 		CommitConcurrency: 1,
 	})
 
@@ -1191,10 +1190,10 @@ func TestRequestedCopiesForUpload(t *testing.T) {
 	}{
 		{"nil opts defaults to 2", nil, 2},
 		{"explicit Copies", &UploadOptions{Copies: 5}, 5},
-		{"DataSetIDs count", &UploadOptions{DataSetIDs: []types.DataSetID{1, 2}}, 2},
-		{"ProviderIDs count", &UploadOptions{ProviderIDs: []types.ProviderID{10}}, 1},
+		{"DataSetIDs count", &UploadOptions{DataSetIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(2)}}, 2},
+		{"ProviderIDs count", &UploadOptions{ProviderIDs: []types.BigInt{types.NewBigInt(10)}}, 1},
 		{"zero Copies, no IDs defaults to 2", &UploadOptions{}, 2},
-		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []types.DataSetID{1, 1}}, 1},
+		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(1)}}, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1213,13 +1212,13 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 
@@ -1255,13 +1254,13 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(0), PieceIDs: nil}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: nil}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -1285,13 +1284,13 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: 0, PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -1315,13 +1314,13 @@ func TestManagerUpload_CommitResultAllowsZeroPieceID(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{0}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(0)}}, nil
 		},
 	}
 	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
@@ -1332,7 +1331,7 @@ func TestManagerUpload_CommitResultAllowsZeroPieceID(t *testing.T) {
 	if got.SuccessCount() != 1 {
 		t.Fatalf("success count=%d want 1", got.SuccessCount())
 	}
-	if len(got.Copies) != 1 || got.Copies[0].PieceID != 0 {
+	if len(got.Copies) != 1 || !got.Copies[0].PieceID.IsZero() {
 		t.Fatalf("copies=%+v want pieceID 0", got.Copies)
 	}
 }
@@ -1347,17 +1346,17 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 	}
 
 	primary := &fakeUploadContext{
-		id:       types.ProviderID(1),
+		id:       types.NewBigInt(1),
 		endpoint: "https://p.example.com",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.DataSetID(1), PieceIDs: []types.PieceID{types.PieceID(10)}}, nil
+			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
-		id:       types.ProviderID(2),
+		id:       types.NewBigInt(2),
 		endpoint: "https://s.example.com",
 		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
 			return []byte{0x01}, nil

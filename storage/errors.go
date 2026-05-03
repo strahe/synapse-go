@@ -48,7 +48,7 @@ var ErrMaxBytesExceeded = errors.New("storage: download exceeded MaxBytes")
 
 // StoreError is returned when the primary store operation fails.
 type StoreError struct {
-	ProviderID types.ProviderID
+	ProviderID types.BigInt
 	Endpoint   string
 	Cause      error
 }
@@ -58,9 +58,9 @@ func (e *StoreError) Error() string {
 		return "<nil>"
 	}
 	if e.Cause == nil {
-		return fmt.Sprintf("storage.StoreError: provider %d (%s)", uint64(e.ProviderID), e.Endpoint)
+		return fmt.Sprintf("storage.StoreError: provider %s (%s)", e.ProviderID.String(), e.Endpoint)
 	}
-	return fmt.Sprintf("storage.StoreError: provider %d (%s): %v", uint64(e.ProviderID), e.Endpoint, e.Cause)
+	return fmt.Sprintf("storage.StoreError: provider %s (%s): %v", e.ProviderID.String(), e.Endpoint, e.Cause)
 }
 
 func (e *StoreError) Unwrap() error {
@@ -73,7 +73,7 @@ func (e *StoreError) Unwrap() error {
 // CommitError is returned when all on-chain commit attempts fail and no copies
 // are stored. Individual per-provider failures are reported in UploadResult.FailedAttempts.
 type CommitError struct {
-	ProviderID types.ProviderID
+	ProviderID types.BigInt
 	Endpoint   string
 	Cause      error
 }
@@ -83,9 +83,9 @@ func (e *CommitError) Error() string {
 		return "<nil>"
 	}
 	if e.Cause == nil {
-		return fmt.Sprintf("storage.CommitError: provider %d (%s)", uint64(e.ProviderID), e.Endpoint)
+		return fmt.Sprintf("storage.CommitError: provider %s (%s)", e.ProviderID.String(), e.Endpoint)
 	}
-	return fmt.Sprintf("storage.CommitError: provider %d (%s): %v", uint64(e.ProviderID), e.Endpoint, e.Cause)
+	return fmt.Sprintf("storage.CommitError: provider %s (%s): %v", e.ProviderID.String(), e.Endpoint, e.Cause)
 }
 
 func (e *CommitError) Unwrap() error {

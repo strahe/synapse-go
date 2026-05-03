@@ -7,7 +7,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/strahe/synapse-go/internal/idconv"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/signer"
@@ -44,7 +43,7 @@ func (c *Context) submitCreateDataSet(ctx context.Context) (CreateDataSetSubmiss
 	c.mu.Lock()
 	if c.dataSetID != nil {
 		c.mu.Unlock()
-		return CreateDataSetSubmission{}, false, fmt.Errorf("storage.Context.CreateDataSet: %w: context already has dataSetID %d", ErrInvalidArgument, *c.dataSetID)
+		return CreateDataSetSubmission{}, false, fmt.Errorf("storage.Context.CreateDataSet: %w: context already has dataSetID %s", ErrInvalidArgument, c.dataSetID.String())
 	}
 	if c.pendingCreate != nil {
 		pending := copyCreateDataSetSubmission(*c.pendingCreate)
@@ -85,14 +84,14 @@ func (c *Context) submitCreateDataSet(ctx context.Context) (CreateDataSetSubmiss
 	submission := CreateDataSetSubmission{
 		TransactionID:   created.TxHash.Hex(),
 		StatusURL:       created.StatusURL,
-		ClientDataSetID: copyClientDataSetID(clientDataSetID),
+		ClientDataSetID: copyClientDataSetIDPtr(clientDataSetID),
 	}
 	c.mu.Lock()
 	if c.dataSetID != nil {
 		c.createInFlight = false
 		inFlight = false
 		c.mu.Unlock()
-		return CreateDataSetSubmission{}, false, fmt.Errorf("storage.Context.CreateDataSet: %w: context already has dataSetID %d", ErrInvalidArgument, *c.dataSetID)
+		return CreateDataSetSubmission{}, false, fmt.Errorf("storage.Context.CreateDataSet: %w: context already has dataSetID %s", ErrInvalidArgument, c.dataSetID.String())
 	}
 	c.pendingCreate = cloneCreateDataSetSubmissionPtr(submission)
 	c.createInFlight = false
@@ -109,29 +108,29 @@ func (c *Context) prepareWaitForDataSetCreated(op string, submission CreateDataS
 	return c.rememberPendingDataSetCreation(op, submission)
 }
 
-func (c *Context) signCreateDataSet(ctx context.Context, op string) ([]byte, types.ClientDataSetID, common.Address, error) {
+func (c *Context) signCreateDataSet(ctx context.Context, op string) ([]byte, types.BigInt, common.Address, error) {
 	if c.signer == nil {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
 
 	c.mu.Lock()
 	if c.pendingCreate != nil {
 		c.mu.Unlock()
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", op, ErrInvalidArgument)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", op, ErrInvalidArgument)
 	}
 	if c.dataSetID != nil {
 		c.mu.Unlock()
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: context already has dataSetID %d", op, ErrInvalidArgument, *c.dataSetID)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: context already has dataSetID %s", op, ErrInvalidArgument, c.dataSetID.String())
 	}
 	if c.clientDataSetID == nil {
 		v, err := randomClientDataSetID()
 		if err != nil {
 			c.mu.Unlock()
-			return nil, nil, common.Address{}, fmt.Errorf("%s: %w", op, err)
+			return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w", op, err)
 		}
-		c.clientDataSetID = v
+		c.clientDataSetID = &v
 	}
-	clientDataSetID := copyClientDataSetID(c.clientDataSetID)
+	clientDataSetID := copyClientDataSetIDFromPtr(c.clientDataSetID)
 	dataSetMetadataSnap := cloneStringMap(c.dataSetMetadata)
 	payerSnap := c.payer
 	payeeSnap := c.provider.Payee
@@ -141,32 +140,32 @@ func (c *Context) signCreateDataSet(ctx context.Context, op string) ([]byte, typ
 	c.mu.Unlock()
 
 	if !chainIDSnap.IsValid() {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
 	if recordKeeperSnap == (common.Address{}) {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	if payerSnap == (common.Address{}) {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
 	}
 	dataSetMetadata, err := dataSetMetadataEntries(dataSetMetadataSnap, withCDNSnap)
 	if err != nil {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w", op, err)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, nil, common.Address{}, fmt.Errorf("%s: %w", op, err)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: %w", op, err)
 	}
 	domain := ityped.NewDomain(chainIDSnap.BigInt(), recordKeeperSnap)
-	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID, payeeSnap, dataSetMetadata)
+	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), payeeSnap, dataSetMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, nil, common.Address{}, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
+			return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 		}
-		return nil, nil, common.Address{}, fmt.Errorf("%s: sign create dataset: %w", op, err)
+		return nil, types.BigInt{}, common.Address{}, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
-	extraData, err := encodeCreateDataSetExtraData(payerSnap, clientDataSetID, dataSetMetadata, signatureBytes(createSig))
+	extraData, err := encodeCreateDataSetExtraData(payerSnap, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
 	if err != nil {
-		return nil, nil, common.Address{}, err
+		return nil, types.BigInt{}, common.Address{}, err
 	}
 	return extraData, clientDataSetID, recordKeeperSnap, nil
 }
@@ -188,15 +187,11 @@ func (c *Context) waitForDataSetCreated(ctx context.Context, op string, submissi
 		c.forgetPendingDataSetCreation(submission)
 		return nil, errors.New(op + ": wait dataset created returned nil status")
 	}
-	dataSetID, err := idconv.Safe[types.DataSetID]("dataSetID", status.DataSetID)
-	if err != nil {
-		c.forgetPendingDataSetCreation(submission)
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	if dataSetID == 0 {
+	if status.DataSetID == nil || status.DataSetID.IsZero() {
 		c.forgetPendingDataSetCreation(submission)
 		return nil, errors.New(op + ": server returned zero dataSetID")
 	}
+	dataSetID := copyBigInt(*status.DataSetID)
 	transactionID := submission.TransactionID
 	wantTransactionID := common.HexToHash(submission.TransactionID)
 	if got := status.CreateMessageHash; got != wantTransactionID {
@@ -205,14 +200,14 @@ func (c *Context) waitForDataSetCreated(ctx context.Context, op string, submissi
 	}
 
 	c.mu.Lock()
-	if c.dataSetID != nil && *c.dataSetID != dataSetID {
-		existingID := *c.dataSetID
+	if c.dataSetID != nil && !c.dataSetID.Equal(dataSetID) {
+		existingID := copyBigInt(*c.dataSetID)
 		c.mu.Unlock()
-		return nil, fmt.Errorf("%s: %w: server returned mismatched dataSetID: got %d want %d", op, ErrInvalidArgument, dataSetID, existingID)
+		return nil, fmt.Errorf("%s: %w: server returned mismatched dataSetID: got %s want %s", op, ErrInvalidArgument, dataSetID.String(), existingID.String())
 	}
 	newID := dataSetID
 	c.dataSetID = &newID
-	c.clientDataSetID = copyClientDataSetID(submission.ClientDataSetID)
+	c.clientDataSetID = copyBigIntPtr(submission.ClientDataSetID)
 	c.clientIDFromPending = false
 	c.pendingCreate = nil
 	c.mu.Unlock()
@@ -220,7 +215,7 @@ func (c *Context) waitForDataSetCreated(ctx context.Context, op string, submissi
 	return &CreateDataSetResult{
 		TransactionID:   transactionID,
 		DataSetID:       dataSetID,
-		ClientDataSetID: copyClientDataSetID(submission.ClientDataSetID),
+		ClientDataSetID: copyClientDataSetIDFromPtr(submission.ClientDataSetID),
 	}, nil
 }
 
@@ -240,12 +235,11 @@ func (c *Context) rememberPendingDataSetCreation(op string, submission CreateDat
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: empty statusURL", op, ErrInvalidArgument)
 	}
 	if submission.ClientDataSetID == nil {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: nil clientDataSetID", op, ErrInvalidArgument)
+		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: missing clientDataSetID", op, ErrInvalidArgument)
 	}
-
 	c.mu.Lock()
 	bound := c.dataSetID != nil
-	if c.clientDataSetID != nil && c.clientDataSetID.Cmp(submission.ClientDataSetID) != 0 {
+	if c.clientDataSetID != nil && !c.clientDataSetID.Equal(*submission.ClientDataSetID) {
 		c.mu.Unlock()
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: mismatched clientDataSetID", op, ErrInvalidArgument)
 	}
@@ -256,7 +250,7 @@ func (c *Context) rememberPendingDataSetCreation(op string, submission CreateDat
 		}
 		c.pendingCreate = cloneCreateDataSetSubmissionPtr(submission)
 		if c.clientDataSetID == nil {
-			c.clientDataSetID = copyClientDataSetID(submission.ClientDataSetID)
+			c.clientDataSetID = copyBigIntPtr(submission.ClientDataSetID)
 			c.clientIDFromPending = true
 		}
 	}
@@ -274,7 +268,7 @@ func (c *Context) forgetPendingDataSetCreation(submission CreateDataSetSubmissio
 	c.mu.Lock()
 	if c.pendingCreate != nil && sameCreateDataSetSubmission(*c.pendingCreate, submission) {
 		c.pendingCreate = nil
-		if c.clientIDFromPending && sameClientDataSetID(c.clientDataSetID, submission.ClientDataSetID) {
+		if c.clientIDFromPending && sameClientDataSetIDPtrs(c.clientDataSetID, submission.ClientDataSetID) {
 			c.clientDataSetID = nil
 			c.clientIDFromPending = false
 		}
@@ -284,7 +278,7 @@ func (c *Context) forgetPendingDataSetCreation(submission CreateDataSetSubmissio
 
 func copyCreateDataSetSubmission(in CreateDataSetSubmission) CreateDataSetSubmission {
 	out := in
-	out.ClientDataSetID = copyClientDataSetID(in.ClientDataSetID)
+	out.ClientDataSetID = copyBigIntPtr(in.ClientDataSetID)
 	return out
 }
 
@@ -297,16 +291,16 @@ func sameCreateDataSetSubmission(a, b CreateDataSetSubmission) bool {
 	if a.TransactionID != b.TransactionID || a.StatusURL != b.StatusURL {
 		return false
 	}
-	return sameClientDataSetID(a.ClientDataSetID, b.ClientDataSetID)
+	return sameClientDataSetIDPtrs(a.ClientDataSetID, b.ClientDataSetID)
 }
 
-func sameClientDataSetID(a, b types.ClientDataSetID) bool {
+func sameClientDataSetIDPtrs(a, b *types.BigInt) bool {
 	switch {
 	case a == nil && b == nil:
 		return true
 	case a == nil || b == nil:
 		return false
 	default:
-		return a.Cmp(b) == 0
+		return a.Equal(*b)
 	}
 }

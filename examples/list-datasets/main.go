@@ -92,7 +92,7 @@ func runList(ctx context.Context, cfg listConfig, reader datasetReader, stdout i
 		return fmt.Errorf("find datasets: %w", err)
 	}
 	if cfg.DataSetID != 0 {
-		dataSets = filterDataSets(dataSets, types.DataSetID(cfg.DataSetID))
+		dataSets = filterDataSets(dataSets, types.NewBigInt(cfg.DataSetID))
 	}
 	if err := exampleutil.WriteKV(stdout, "datasetCount", len(dataSets)); err != nil {
 		return err
@@ -159,13 +159,13 @@ func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetInfo) err
 	return exampleutil.WriteMap(stdout, prefix+".metadata", dataSet.Metadata)
 }
 
-func filterDataSets(dataSets []*storage.DataSetInfo, id types.DataSetID) []*storage.DataSetInfo {
+func filterDataSets(dataSets []*storage.DataSetInfo, id types.BigInt) []*storage.DataSetInfo {
 	out := make([]*storage.DataSetInfo, 0, len(dataSets))
 	for _, dataSet := range dataSets {
 		if dataSet == nil || dataSet.DataSetInfo == nil {
 			continue
 		}
-		if dataSet.DataSetID == id {
+		if dataSet.DataSetID.Equal(id) {
 			out = append(out, dataSet)
 		}
 	}

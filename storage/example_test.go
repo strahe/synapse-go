@@ -27,11 +27,11 @@ func Example() {
 		OnProgress: func(uploaded int64) {
 			log.Printf("uploaded %d bytes", uploaded)
 		},
-		OnStored: func(providerID types.ProviderID, pieceCID cid.Cid) {
-			log.Printf("stored %s on provider %d", pieceCID, providerID)
+		OnStored: func(providerID types.BigInt, pieceCID cid.Cid) {
+			log.Printf("stored %s on provider %s", pieceCID, providerID)
 		},
-		OnPiecesConfirmed: func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []storage.ConfirmedPiece) {
-			log.Printf("provider %d confirmed %d piece(s) in dataset %d", providerID, len(pieces), dataSetID)
+		OnPiecesConfirmed: func(dataSetID, providerID types.BigInt, pieces []storage.ConfirmedPiece) {
+			log.Printf("provider %s confirmed %d piece(s) in dataset %s", providerID, len(pieces), dataSetID)
 		},
 	})
 	if err != nil {

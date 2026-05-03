@@ -13,13 +13,13 @@ import (
 )
 
 type fakeFWSSTerminator struct {
-	gotDataSetID types.DataSetID
+	gotDataSetID types.BigInt
 	res          *types.WriteResult
 	err          error
 	called       bool
 }
 
-func (f *fakeFWSSTerminator) TerminateDataSet(_ context.Context, id types.DataSetID, _ ...warmstorage.WriteOption) (*types.WriteResult, error) {
+func (f *fakeFWSSTerminator) TerminateDataSet(_ context.Context, id types.BigInt, _ ...warmstorage.WriteOption) (*types.WriteResult, error) {
 	f.called = true
 	f.gotDataSetID = id
 	return f.res, f.err
@@ -30,7 +30,7 @@ func TestContext_Terminate_NotConfigured(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
+		WithDataSetID(types.NewBigInt(1)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -46,7 +46,7 @@ func TestContext_Terminate_Passthrough(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(123)),
+		WithDataSetID(types.NewBigInt(123)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -56,8 +56,8 @@ func TestContext_Terminate_Passthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Terminate: %v", err)
 	}
-	if !term.called || term.gotDataSetID != types.DataSetID(123) {
-		t.Fatalf("terminator not invoked with expected id: called=%v id=%d", term.called, term.gotDataSetID)
+	if !term.called || !term.gotDataSetID.Equal(types.NewBigInt(123)) {
+		t.Fatalf("terminator not invoked with expected id: called=%v id=%s", term.called, term.gotDataSetID.String())
 	}
 	if res == nil || res.Hash == (common.Hash{}) {
 		t.Fatalf("unexpected result: %+v", res)
@@ -70,7 +70,7 @@ func TestContext_Terminate_PropagatesError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
+		WithDataSetID(types.NewBigInt(1)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestContext_Terminate_TypedNilTerminatorTreatedAsUnset(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
+		WithDataSetID(types.NewBigInt(1)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {

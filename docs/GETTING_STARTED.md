@@ -179,7 +179,7 @@ For one provider or one dataset:
 
 ```go
 ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
-    ProviderIDs: []types.ProviderID{providerID},
+    ProviderIDs: []types.BigInt{providerID},
 })
 if err != nil {
     return err

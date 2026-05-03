@@ -63,7 +63,7 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 
 	go func() {
 		defer wg.Done()
-		var ids []types.ProviderID
+		var ids []types.BigInt
 		for id, err := range a.ws.IterateAllApprovedProviderIDs(ctx) {
 			if err != nil {
 				appendErr(fmt.Errorf("GetApprovedProviderIDs: %w", err))
@@ -75,11 +75,11 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 		var providerWG sync.WaitGroup
 		providerWG.Add(len(ids))
 		for i, id := range ids {
-			go func(i int, id types.ProviderID) {
+			go func(i int, id types.BigInt) {
 				defer providerWG.Done()
 				p, err := a.sp.GetPDPProvider(ctx, id)
 				if err != nil {
-					appendErr(fmt.Errorf("GetPDPProvider(%d): %w", id, err))
+					appendErr(fmt.Errorf("GetPDPProvider(%s): %w", id.String(), err))
 					return
 				}
 				fetched[i] = p

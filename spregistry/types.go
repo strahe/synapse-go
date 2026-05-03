@@ -19,7 +19,7 @@ const (
 
 // ProviderInfo is the canonical on-chain provider record.
 type ProviderInfo struct {
-	ID              types.ProviderID
+	ID              types.BigInt
 	ServiceProvider common.Address
 	Payee           common.Address
 	Name            string
@@ -118,5 +118,5 @@ type ProviderFilter struct {
 	// ExcludeIDs is a set of provider IDs to skip. This supports the
 	// replacement-with-exclusion-set pattern required for secondary
 	// provider selection during multi-copy upload.
-	ExcludeIDs []types.ProviderID
+	ExcludeIDs []types.BigInt
 }

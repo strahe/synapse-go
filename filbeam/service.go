@@ -94,14 +94,14 @@ type statsResponse struct {
 // [context.Canceled] or [context.DeadlineExceeded] are returned immediately;
 // non-transient statuses (4xx other than 404) and decode errors are also
 // returned without retry.
-func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.DataSetID) (*DataSetStats, error) {
+func (s *Service) GetDataSetStats(ctx context.Context, dataSetID types.BigInt) (*DataSetStats, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w", ErrInvalidArgument)
 	}
-	url := fmt.Sprintf("%s/data-set/%d", s.baseURL, uint64(dataSetID))
+	url := fmt.Sprintf("%s/data-set/%s", s.baseURL, dataSetID.String())
 
 	stats, err := retry.Do(ctx, func(ctx context.Context) (*DataSetStats, error) {
 		return s.fetchStats(ctx, url, dataSetID)
@@ -118,7 +118,7 @@ var errTransientFilbeam = errors.New("filbeam: transient")
 
 func isTransientFilbeamErr(err error) bool { return errors.Is(err, errTransientFilbeam) }
 
-func (s *Service) fetchStats(ctx context.Context, url string, dataSetID types.DataSetID) (*DataSetStats, error) {
+func (s *Service) fetchStats(ctx context.Context, url string, dataSetID types.BigInt) (*DataSetStats, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("filbeam.GetDataSetStats: build request: %w", err)
@@ -133,7 +133,7 @@ func (s *Service) fetchStats(ctx context.Context, url string, dataSetID types.Da
 
 	if resp.StatusCode == http.StatusNotFound {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w: id=%d", ErrDataSetNotFound, uint64(dataSetID))
+		return nil, fmt.Errorf("filbeam.GetDataSetStats: %w: id=%s", ErrDataSetNotFound, dataSetID.String())
 	}
 	if resp.StatusCode >= 500 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

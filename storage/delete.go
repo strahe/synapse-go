@@ -70,7 +70,7 @@ func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.
 		c.signHashFunc(),
 		domain,
 		clientDataSetID,
-		[]*big.Int{new(big.Int).SetUint64(pieceID)},
+		[]*big.Int{pieceID.Big()},
 	)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
@@ -84,7 +84,7 @@ func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.
 		return nil, fmt.Errorf("storage.Context.DeletePiece: %w", err)
 	}
 
-	txHash, err := c.client.SchedulePieceDeletion(ctx, uint64(*c.dataSetID), pieceID, extraData)
+	txHash, err := c.client.SchedulePieceDeletion(ctx, *c.dataSetID, pieceID, extraData)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Context.DeletePiece: %w", err)
 	}
@@ -114,9 +114,9 @@ func (c *Context) ensureClientDataSetID() (*big.Int, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.clientDataSetID = v
+		c.clientDataSetID = &v
 	}
-	return new(big.Int).Set(c.clientDataSetID), nil
+	return c.clientDataSetID.Big(), nil
 }
 
 // encodeSignatureExtraData wraps a raw 65-byte signature as

@@ -21,6 +21,7 @@ import (
 
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
+	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/piece"
@@ -75,8 +76,8 @@ func TestIntegration(t *testing.T) {
 		uploadedCID       cid.Cid
 		uploadedURL       string
 		testData          []byte
-		uploadedDataSetID types.DataSetID
-		uploadedRailID    types.RailID
+		uploadedDataSetID types.BigInt
+		uploadedRailID    types.BigInt
 	)
 
 	// Register cleanup to withdraw available funds at the end.
@@ -289,7 +290,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		for i, cp := range result.Copies {
-			if cp.ProviderID == 0 {
+			if cp.ProviderID.IsZero() {
 				t.Errorf("Copy[%d].ProviderID invalid: %d", i, cp.ProviderID)
 			}
 			if _, err := url.Parse(cp.RetrievalURL); err != nil {
@@ -306,7 +307,7 @@ func TestIntegration(t *testing.T) {
 		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s, dataSet=%d",
 			result.PieceCID, result.Size, len(result.Copies), uploadedURL, uploadedDataSetID)
 
-		if uploadedDataSetID != 0 {
+		if !uploadedDataSetID.IsZero() {
 			dsInfo, derr := client.WarmStorage().GetDataSet(cctx, uploadedDataSetID)
 			if derr != nil {
 				t.Logf("GetDataSet(%d): %v", uploadedDataSetID, derr)
@@ -449,17 +450,18 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Verify all providers are distinct.
-		seen := make(map[types.ProviderID]struct{})
+		seen := make(map[string]struct{})
 		for i, cp := range result.Copies {
-			if cp.ProviderID == 0 {
+			if cp.ProviderID.IsZero() {
 				t.Errorf("Copy[%d].ProviderID is zero", i)
 				continue
 			}
 			pid := cp.ProviderID
-			if _, dup := seen[pid]; dup {
+			key := idconv.Key(pid)
+			if _, dup := seen[key]; dup {
 				t.Errorf("Copy[%d] has duplicate ProviderID: %d", i, pid)
 			}
-			seen[pid] = struct{}{}
+			seen[key] = struct{}{}
 
 			if cp.RetrievalURL == "" {
 				t.Errorf("Copy[%d].RetrievalURL is empty", i)
@@ -651,7 +653,7 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetDefaultContext: %v", err)
 		}
-		if def == nil || def.ProviderID() == 0 {
+		if def == nil || def.ProviderID().IsZero() {
 			t.Fatal("GetDefaultContext returned invalid context")
 		}
 
@@ -667,38 +669,38 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateContext(nil): %v", err)
 		}
-		if single == nil || single.ProviderID() == 0 {
+		if single == nil || single.ProviderID().IsZero() {
 			t.Fatal("CreateContext returned invalid context")
 		}
 	})
 
 	// --- ContextInspection: read methods on the Context produced by Upload. ---
 	t.Run("ContextInspection", func(t *testing.T) {
-		if uploadedDataSetID == 0 || !uploadedCID.Defined() {
+		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("Upload subtest did not produce dataset/cid; skipping ContextInspection")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+			DataSetIDs: []types.BigInt{uploadedDataSetID},
 		})
 		if err != nil {
 			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
 		}
 
-		if uctx.ProviderID() == 0 {
+		if uctx.ProviderID().IsZero() {
 			t.Errorf("ProviderID == 0")
 		}
 		if uctx.ServiceURL() == "" {
 			t.Errorf("ServiceURL empty")
 		}
-		if got := uctx.DataSetID(); got == nil || *got != uploadedDataSetID {
+		if got := uctx.DataSetID(); got == nil || !got.Equal(uploadedDataSetID) {
 			t.Errorf("DataSetID = %v, want %d", got, uploadedDataSetID)
 		}
 		_ = uctx.WithCDN()
 		prov := uctx.GetProviderInfo()
-		if prov.ID == 0 {
+		if prov.ID.IsZero() {
 			t.Errorf("Provider.ID == 0")
 		}
 		if u := uctx.PieceURL(uploadedCID); u == "" {
@@ -737,7 +739,7 @@ func TestIntegration(t *testing.T) {
 	// --- ContextUploadExistingDataSet: explicit evidence that the existing-dataset
 	// AddPieces typed-data path accepts the current PieceCID encoding end-to-end. ---
 	t.Run("ContextUploadExistingDataSet", func(t *testing.T) {
-		if uploadedDataSetID == 0 {
+		if uploadedDataSetID.IsZero() {
 			t.Skip("Upload subtest did not produce dataset id; skipping existing-dataset AddPieces evidence")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -753,7 +755,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+			DataSetIDs: []types.BigInt{uploadedDataSetID},
 		})
 		if err != nil {
 			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
@@ -782,7 +784,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("Context.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
 		}
 		copy0 := result.Copies[0]
-		if copy0.DataSetID != uploadedDataSetID {
+		if !copy0.DataSetID.Equal(uploadedDataSetID) {
 			t.Fatalf("Context.Upload(existing dataset) dataSetID = %d, want %d", copy0.DataSetID, uploadedDataSetID)
 		}
 		if copy0.IsNewDataSet {
@@ -804,7 +806,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- WarmStorageInspection: per-dataset/per-piece warm-storage methods. ---
 	t.Run("WarmStorageInspection", func(t *testing.T) {
-		if uploadedDataSetID == 0 {
+		if uploadedDataSetID.IsZero() {
 			t.Skip("no uploaded dataset id; skipping WarmStorageInspection")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -816,7 +818,7 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetDataSet: %v", err)
 		}
-		if ds.PDPRailID == 0 {
+		if ds.PDPRailID.IsZero() {
 			t.Errorf("PDPRailID == 0")
 		}
 
@@ -840,14 +842,14 @@ func TestIntegration(t *testing.T) {
 
 		// PieceID 0 is always queryable. "label" is not a key we set on
 		// upload, so (exists, value) must be (false, "") — assert both.
-		exists, value, err := ws.GetPieceMetadata(cctx, uploadedDataSetID, types.PieceID(0), "label")
+		exists, value, err := ws.GetPieceMetadata(cctx, uploadedDataSetID, types.NewBigInt(0), "label")
 		if err != nil {
 			t.Fatalf("GetPieceMetadata(0,label): %v", err)
 		}
 		if exists || value != "" {
 			t.Errorf("GetPieceMetadata(0,label): want (false, \"\"), got (%v, %q)", exists, value)
 		}
-		all, err := ws.GetAllPieceMetadata(cctx, uploadedDataSetID, types.PieceID(0))
+		all, err := ws.GetAllPieceMetadata(cctx, uploadedDataSetID, types.NewBigInt(0))
 		if err != nil {
 			t.Fatalf("GetAllPieceMetadata(0): %v", err)
 		}
@@ -859,15 +861,13 @@ func TestIntegration(t *testing.T) {
 
 	// --- PaymentsRails: rail read methods + Settle on the upload's PDP rail. ---
 	t.Run("PaymentsRails", func(t *testing.T) {
-		if uploadedRailID == 0 {
+		if uploadedRailID.IsZero() {
 			t.Skip("no uploaded rail id; skipping PaymentsRails")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 
-		railBig := new(big.Int).SetUint64(uint64(uploadedRailID))
-
-		rv, err := client.Payments().GetRail(cctx, railBig)
+		rv, err := client.Payments().GetRail(cctx, uploadedRailID)
 		if err != nil {
 			t.Fatalf("GetRail(%d): %v", uploadedRailID, err)
 		}
@@ -883,7 +883,7 @@ func TestIntegration(t *testing.T) {
 		}
 		t.Logf("payee %s has %d rails (USDFC)", payee, len(page.Rails))
 
-		amts, err := client.Payments().GetSettlementAmounts(cctx, railBig, nil)
+		amts, err := client.Payments().GetSettlementAmounts(cctx, uploadedRailID, nil)
 		if err != nil {
 			t.Fatalf("GetSettlementAmounts: %v", err)
 		}
@@ -892,7 +892,7 @@ func TestIntegration(t *testing.T) {
 			amts.TotalNetworkFee, amts.FinalSettledEpoch, amts.Note)
 
 		// Settle is always safe to call; it's a no-op if nothing accrued.
-		settleRes, err := client.Payments().Settle(cctx, railBig, nil, payments.WithWait(txWaitTimeout))
+		settleRes, err := client.Payments().Settle(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			t.Fatalf("Settle: %v", err)
 		}
@@ -905,7 +905,7 @@ func TestIntegration(t *testing.T) {
 		// to auto-settle (e.g. already settled up to current epoch). The
 		// call path itself is what we want to cover, so a gas-estimate
 		// revert is logged and tolerated.
-		autoRes, err := client.Payments().SettleAuto(cctx, railBig, nil, payments.WithWait(txWaitTimeout))
+		autoRes, err := client.Payments().SettleAuto(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			if !isExecutionRevert(err) {
 				t.Fatalf("SettleAuto: %v", err)
@@ -928,7 +928,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- FilBeam: stats endpoint for the uploaded dataset. ---
 	t.Run("FilBeam", func(t *testing.T) {
-		if uploadedDataSetID == 0 {
+		if uploadedDataSetID.IsZero() {
 			t.Skip("no uploaded dataset id; skipping FilBeam")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -951,14 +951,14 @@ func TestIntegration(t *testing.T) {
 
 	// --- StorageLifecycle: DeletePiece + storage.Service.TerminateDataSet. ---
 	t.Run("StorageLifecycle", func(t *testing.T) {
-		if uploadedDataSetID == 0 || !uploadedCID.Defined() {
+		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.DataSetID{uploadedDataSetID},
+			DataSetIDs: []types.BigInt{uploadedDataSetID},
 		})
 		if err != nil {
 			t.Fatalf("CreateContext: %v", err)

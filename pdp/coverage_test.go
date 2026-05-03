@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
 
 // ---------- client option tests ----------
@@ -213,7 +214,7 @@ func TestAddPieces_EmptyPieces(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not be called")
 	}))
-	_, err := c.AddPieces(context.Background(), 5, nil, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), nil, []byte{1})
 	if err == nil || !strings.Contains(err.Error(), "no pieces") {
 		t.Errorf("want no pieces error, got %v", err)
 	}
@@ -224,7 +225,7 @@ func TestAddPieces_EmptyExtraData(t *testing.T) {
 		t.Fatal("should not be called")
 	}))
 	info, _ := piece.CalculateFromBytes(make([]byte, 256))
-	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, nil)
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty extraData") {
 		t.Errorf("want empty extraData error, got %v", err)
 	}
@@ -234,7 +235,7 @@ func TestAddPieces_UndefinedPieceCID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not be called")
 	}))
-	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: emptyCID()}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: emptyCID()}}, []byte{1})
 	if err == nil || !strings.Contains(err.Error(), "undefined pieceCID") {
 		t.Errorf("want undefined pieceCID error, got %v", err)
 	}
@@ -245,7 +246,7 @@ func TestAddPieces_BadLocation(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated) // no Location
 	}))
-	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Errorf("want ErrLocationHeader, got %v", err)
 	}
@@ -257,7 +258,7 @@ func TestAddPieces_ZeroTxHash(t *testing.T) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0x0000000000000000000000000000000000000000000000000000000000000000")
 		w.WriteHeader(http.StatusCreated)
 	}))
-	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Errorf("want ErrLocationHeader for zero hash, got %v", err)
 	}
@@ -311,7 +312,7 @@ func TestSchedulePieceDeletion_EmptyExtraData(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not be called")
 	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), 5, 9, nil)
+	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), nil)
 	if err == nil || !strings.Contains(err.Error(), "empty extraData") {
 		t.Errorf("want empty extraData error, got %v", err)
 	}
@@ -322,7 +323,7 @@ func TestSchedulePieceDeletion_ZeroTxHash(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), 5, 9, []byte{1})
+	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
 	if err == nil || !strings.Contains(err.Error(), "empty txHash") {
 		t.Errorf("want empty txHash error, got %v", err)
 	}
@@ -332,7 +333,7 @@ func TestSchedulePieceDeletion_ServerError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), 5, 9, []byte{1})
+	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
 	if err == nil {
 		t.Error("expected server error")
 	}
@@ -503,7 +504,7 @@ func TestGetDataSet_Error(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "err", http.StatusInternalServerError)
 	}))
-	_, err := c.GetDataSet(context.Background(), 7)
+	_, err := c.GetDataSet(context.Background(), types.NewBigInt(7))
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -678,7 +679,7 @@ func TestAddPieces_ServerError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	_, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
 	if err == nil {
 		t.Error("expected server error")
 	}
@@ -793,7 +794,7 @@ func TestAddPieces_LocationWithout0xPrefix(t *testing.T) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/"+hashHex)
 		w.WriteHeader(http.StatusCreated)
 	}))
-	res, err := c.AddPieces(context.Background(), 5, []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,17 +819,19 @@ func TestWaitForPiecesAdded_ZeroPollIntervalUsesDefault(t *testing.T) {
 	}
 }
 
-// ---------- GetAddPiecesStatus non-uint64 DataSetID ----------
+// ---------- GetAddPiecesStatus full-width DataSetID ----------
 
-func TestGetAddPiecesStatus_NonUint64DataSetID(t *testing.T) {
+func TestGetAddPiecesStatus_FullWidthDataSetID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Very large number that exceeds uint64 but IS a valid big.Int
 		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"confirmed","dataSetId":99999999999999999999999999999999,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`)
 	}))
-	_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
-	if err == nil || !strings.Contains(err.Error(), "bad dataSetId") {
-		t.Errorf("want bad dataSetId error for non-uint64, got %v", err)
+	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DataSetID.String() != "99999999999999999999999999999999" {
+		t.Fatalf("dataSetID=%s", status.DataSetID.String())
 	}
 }
 

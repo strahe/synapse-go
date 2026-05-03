@@ -2,13 +2,13 @@ package storage
 
 import (
 	"context"
-	"math/big"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -24,7 +24,7 @@ type slowDataSetCatalog struct {
 	maxInflight atomic.Int32
 }
 
-func (s *slowDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, dataSetID types.DataSetID) (map[string]string, error) {
+func (s *slowDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, dataSetID types.BigInt) (map[string]string, error) {
 	cur := s.inflight.Add(1)
 	defer s.inflight.Add(-1)
 	for {
@@ -43,16 +43,16 @@ func (s *slowDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, dataSetI
 
 type mixedOutcomeDataSetCatalog struct {
 	*fakeDataSetCatalog
-	matchingID      types.DataSetID
+	matchingID      types.BigInt
 	matchingDelay   time.Duration
 	matchingStarted chan struct{}
-	failID          types.DataSetID
+	failID          types.BigInt
 	failErr         error
 }
 
-func (m *mixedOutcomeDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, dataSetID types.DataSetID) (map[string]string, error) {
-	switch dataSetID {
-	case m.matchingID:
+func (m *mixedOutcomeDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, dataSetID types.BigInt) (map[string]string, error) {
+	switch {
+	case dataSetID.Equal(m.matchingID):
 		close(m.matchingStarted)
 		select {
 		case <-time.After(m.matchingDelay):
@@ -60,7 +60,7 @@ func (m *mixedOutcomeDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, 
 			return nil, ctx.Err()
 		}
 		return m.fakeDataSetCatalog.GetAllDataSetMetadata(ctx, dataSetID)
-	case m.failID:
+	case dataSetID.Equal(m.failID):
 		<-m.matchingStarted
 		return nil, m.failErr
 	default:
@@ -73,21 +73,21 @@ func (m *mixedOutcomeDataSetCatalog) GetAllDataSetMetadata(ctx context.Context, 
 // (bounded by selectorMetadataConcurrency) rather than running them
 // serially, which used to be an N+1 bottleneck.
 func TestServiceResolver_MetadataFetchIsConcurrent(t *testing.T) {
-	providerID := types.ProviderID(1)
+	providerID := types.NewBigInt(1)
 	const candidates = 6
 	clientDataSets := make([]*warmstorage.DataSetInfo, 0, candidates)
-	metadata := make(map[types.DataSetID]map[string]string, candidates)
+	metadata := make(map[string]map[string]string, candidates)
 	for i := 1; i <= candidates; i++ {
-		dsID := types.DataSetID(i)
+		dsID := types.NewBigInt(uint64(i))
 		clientDataSets = append(clientDataSets, &warmstorage.DataSetInfo{
 			DataSetID:       dsID,
 			ProviderID:      providerID,
-			ClientDataSetID: big.NewInt(int64(i)),
+			ClientDataSetID: types.NewBigInt(uint64(i)),
 		})
-		metadata[dsID] = map[string]string{"other": "x"}
+		metadata[idconv.Key(dsID)] = map[string]string{"other": "x"}
 	}
 	fixture := serviceResolverFixture{
-		approvedProviderIDs: []types.ProviderID{providerID},
+		approvedProviderIDs: []types.BigInt{providerID},
 		activeProviders:     []spregistry.PDPProvider{testPDPProvider(providerID, "https://sp1.example.com")},
 		clientDataSets:      clientDataSets,
 		dataSetMetadata:     metadata,
@@ -129,16 +129,16 @@ func TestServiceResolver_MetadataFetchIsConcurrent(t *testing.T) {
 // selectMatchingDataSet does not impose its own shorter deadline on metadata
 // RPCs; the caller's ctx should remain the sole time budget.
 func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
-	providerID := types.ProviderID(1)
+	providerID := types.NewBigInt(1)
 	const metadataDelay = 6 * time.Second
 	fixture := serviceResolverFixture{
-		approvedProviderIDs: []types.ProviderID{providerID},
+		approvedProviderIDs: []types.BigInt{providerID},
 		activeProviders:     []spregistry.PDPProvider{testPDPProvider(providerID, "https://sp1.example.com")},
 		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: 1, ProviderID: providerID, ClientDataSetID: big.NewInt(1)},
+			{DataSetID: types.NewBigInt(1), ProviderID: providerID, ClientDataSetID: types.NewBigInt(1)},
 		},
-		dataSetMetadata: map[types.DataSetID]map[string]string{
-			1: {"source": "app"},
+		dataSetMetadata: map[string]map[string]string{
+			idconv.Key(types.NewBigInt(1)): {"source": "app"},
 		},
 	}
 	slow := &slowDataSetCatalog{
@@ -162,10 +162,10 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectMatchingDataSet: %v", err)
 	}
-	if dsID == nil || *dsID != 1 {
+	if dsID == nil || !dsID.Equal(types.NewBigInt(1)) {
 		t.Fatalf("DataSetID = %v, want 1", dsID)
 	}
-	if clientID == nil || clientID.Cmp(big.NewInt(1)) != 0 {
+	if clientID == nil || !clientID.Equal(types.NewBigInt(1)) {
 		t.Fatalf("ClientDataSetID = %v, want 1", clientID)
 	}
 	if metadata["source"] != "app" {
@@ -176,24 +176,24 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 // TestServiceResolver_MetadataFetchErrorRejectsReuse verifies that metadata
 // lookup failures are not silently ignored when selecting a reusable dataset.
 func TestServiceResolver_MetadataFetchErrorRejectsReuse(t *testing.T) {
-	providerID := types.ProviderID(1)
+	providerID := types.NewBigInt(1)
 	fixture := serviceResolverFixture{
-		approvedProviderIDs: []types.ProviderID{providerID},
+		approvedProviderIDs: []types.BigInt{providerID},
 		activeProviders:     []spregistry.PDPProvider{testPDPProvider(providerID, "https://sp1.example.com")},
 		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: 1, ProviderID: providerID, ClientDataSetID: big.NewInt(1)},
-			{DataSetID: 2, ProviderID: providerID, ClientDataSetID: big.NewInt(2)},
+			{DataSetID: types.NewBigInt(1), ProviderID: providerID, ClientDataSetID: types.NewBigInt(1)},
+			{DataSetID: types.NewBigInt(2), ProviderID: providerID, ClientDataSetID: types.NewBigInt(2)},
 		},
-		dataSetMetadata: map[types.DataSetID]map[string]string{
-			2: {"source": "app", "env": "prod"},
+		dataSetMetadata: map[string]map[string]string{
+			idconv.Key(types.NewBigInt(2)): {"source": "app", "env": "prod"},
 		},
 	}
 	catalog := &mixedOutcomeDataSetCatalog{
 		fakeDataSetCatalog: &fakeDataSetCatalog{fixture: fixture},
-		matchingID:         2,
+		matchingID:         types.NewBigInt(2),
 		matchingDelay:      25 * time.Millisecond,
 		matchingStarted:    make(chan struct{}),
-		failID:             1,
+		failID:             types.NewBigInt(1),
 		failErr:            context.DeadlineExceeded,
 	}
 	resolver := &ServiceResolver{

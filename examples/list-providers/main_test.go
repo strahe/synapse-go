@@ -23,7 +23,7 @@ func TestRunListProvidersPrintsCapabilities(t *testing.T) {
 		providers: []spregistry.PDPProvider{
 			{
 				Info: spregistry.ProviderInfo{
-					ID:       types.ProviderID(42),
+					ID:       types.NewBigInt(42),
 					Name:     "Example SP",
 					IsActive: true,
 				},

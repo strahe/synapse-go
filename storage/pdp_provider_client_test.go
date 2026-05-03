@@ -10,6 +10,7 @@ import (
 
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 var (
@@ -35,7 +36,7 @@ func (*fakePDPProviderClient) WaitForPullComplete(context.Context, pdp.PullReque
 	return nil, nil
 }
 
-func (*fakePDPProviderClient) AddPieces(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+func (*fakePDPProviderClient) AddPieces(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
 	return nil, nil
 }
 
@@ -59,6 +60,6 @@ func (*fakePDPProviderClient) WaitForCreateDataSetAndAddPieces(context.Context, 
 	return nil, nil
 }
 
-func (*fakePDPProviderClient) SchedulePieceDeletion(context.Context, uint64, uint64, []byte) (common.Hash, error) {
+func (*fakePDPProviderClient) SchedulePieceDeletion(context.Context, types.BigInt, types.BigInt, []byte) (common.Hash, error) {
 	return common.Hash{}, nil
 }

@@ -119,10 +119,11 @@ func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("toDataSetInfo: %v", err)
 	}
-	if got.ClientDataSetID == nil {
-		t.Fatal("ClientDataSetID should be preserved as uint256")
+	want, err := types.BigIntFromBig(large)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got.ClientDataSetID.Cmp(large) != 0 {
+	if !got.ClientDataSetID.Equal(want) {
 		t.Fatalf("ClientDataSetID = %s, want %s", got.ClientDataSetID.String(), large.String())
 	}
 }
@@ -245,11 +246,11 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		ProviderId:      big.NewInt(9),
 		DataSetId:       big.NewInt(42),
 	})
-	got, err := s.GetDataSet(context.Background(), types.DataSetID(42))
+	got, err := s.GetDataSet(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || got.DataSetID != 42 || got.ProviderID != 9 {
+	if got == nil || !got.DataSetID.Equal(types.NewBigInt(42)) || !got.ProviderID.Equal(types.NewBigInt(9)) {
 		t.Fatalf("got=%+v", got)
 	}
 
@@ -264,7 +265,7 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		ProviderId:      big.NewInt(0),
 		DataSetId:       big.NewInt(0),
 	})
-	got, err = s.GetDataSet(context.Background(), types.DataSetID(99))
+	got, err = s.GetDataSet(context.Background(), types.NewBigInt(99))
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
@@ -285,7 +286,7 @@ func TestGetDataSet_ZeroDataSetID(t *testing.T) {
 		ProviderId:      big.NewInt(0),
 		DataSetId:       big.NewInt(0),
 	})
-	_, err := s.GetDataSet(context.Background(), 0)
+	_, err := s.GetDataSet(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero data set ID, got %v", err)
 	}
@@ -321,7 +322,7 @@ func TestGetAllDataSetMetadata(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{"source", "withCDN"}, []string{"app", ""})
 
-	got, err := s.GetAllDataSetMetadata(context.Background(), types.DataSetID(42))
+	got, err := s.GetAllDataSetMetadata(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +334,7 @@ func TestGetAllDataSetMetadata(t *testing.T) {
 func TestGetAllDataSetMetadata_EmptyReturnsEmptyMap(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
-	got, err := s.GetAllDataSetMetadata(context.Background(), types.DataSetID(42))
+	got, err := s.GetAllDataSetMetadata(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +349,7 @@ func TestGetAllDataSetMetadata_EmptyReturnsEmptyMap(t *testing.T) {
 func TestGetAllDataSetMetadata_ZeroDataSetID(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
-	got, err := s.GetAllDataSetMetadata(context.Background(), 0)
+	got, err := s.GetAllDataSetMetadata(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero data set ID, got map=%v err=%v", got, err)
 	}
@@ -369,7 +370,7 @@ func TestGetApprovedProviderIDs(t *testing.T) {
 func TestIsProviderApproved(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "isProviderApproved", true)
-	ok, err := s.IsProviderApproved(context.Background(), types.ProviderID(5))
+	ok, err := s.IsProviderApproved(context.Background(), types.NewBigInt(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +382,7 @@ func TestIsProviderApproved(t *testing.T) {
 func TestIsProviderApproved_ZeroProviderID(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "isProviderApproved", false)
-	_, err := s.IsProviderApproved(context.Background(), 0)
+	_, err := s.IsProviderApproved(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero provider ID, got %v", err)
 	}
@@ -451,7 +452,7 @@ func TestGetApprovedProvidersLength_Error(t *testing.T) {
 func TestIsProviderApproved_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["isProviderApproved"] = errors.New("rpc error")
-	_, err := s.IsProviderApproved(context.Background(), types.ProviderID(1))
+	_, err := s.IsProviderApproved(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Error("expected RPC error")
 	}
@@ -460,7 +461,7 @@ func TestIsProviderApproved_RPCError(t *testing.T) {
 func TestIsProviderApproved_ReturnsFalse(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "isProviderApproved", false)
-	ok, err := s.IsProviderApproved(context.Background(), types.ProviderID(5))
+	ok, err := s.IsProviderApproved(context.Background(), types.NewBigInt(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +495,7 @@ func TestGetServicePrice_RPCError(t *testing.T) {
 func TestGetDataSet_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["getDataSet"] = errors.New("rpc error")
-	_, err := s.GetDataSet(context.Background(), types.DataSetID(1))
+	_, err := s.GetDataSet(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -506,7 +507,7 @@ func TestGetDataSet_RPCError(t *testing.T) {
 
 func TestValidateDataSet_ZeroID(t *testing.T) {
 	s, _ := newTestServiceWithPDP(t)
-	err := s.ValidateDataSet(context.Background(), 0)
+	err := s.ValidateDataSet(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument, got %v", err)
 	}
@@ -514,7 +515,7 @@ func TestValidateDataSet_ZeroID(t *testing.T) {
 
 func TestValidateDataSet_NoPDP(t *testing.T) {
 	s, _ := newTestService(t)
-	err := s.ValidateDataSet(context.Background(), 1)
+	err := s.ValidateDataSet(context.Background(), types.NewBigInt(1))
 	if err == nil || !errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Errorf("expected ErrPDPVerifierNotConfigured, got %v", err)
 	}
@@ -523,7 +524,7 @@ func TestValidateDataSet_NoPDP(t *testing.T) {
 func TestValidateDataSet_NotLive(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
 	mc.setPDPReply(t, "dataSetLive", false)
-	err := s.ValidateDataSet(context.Background(), 1)
+	err := s.ValidateDataSet(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -536,7 +537,7 @@ func TestValidateDataSet_WrongListener(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
 	mc.setPDPReply(t, "dataSetLive", true)
 	mc.setPDPReply(t, "getDataSetListener", common.HexToAddress("0xdead"))
-	err := s.ValidateDataSet(context.Background(), 1)
+	err := s.ValidateDataSet(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -546,7 +547,7 @@ func TestValidateDataSet_OK(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
 	mc.setPDPReply(t, "dataSetLive", true)
 	mc.setPDPReply(t, "getDataSetListener", common.HexToAddress("0x1111111111111111111111111111111111111111"))
-	if err := s.ValidateDataSet(context.Background(), 1); err != nil {
+	if err := s.ValidateDataSet(context.Background(), types.NewBigInt(1)); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
 }
@@ -554,7 +555,7 @@ func TestValidateDataSet_OK(t *testing.T) {
 func TestGetActivePieceCount(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
 	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(42))
-	n, err := s.GetActivePieceCount(context.Background(), 1)
+	n, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +566,7 @@ func TestGetActivePieceCount(t *testing.T) {
 
 func TestGetActivePieceCount_ZeroID(t *testing.T) {
 	s, _ := newTestServiceWithPDP(t)
-	_, err := s.GetActivePieceCount(context.Background(), 0)
+	_, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument, got %v", err)
 	}
@@ -573,7 +574,7 @@ func TestGetActivePieceCount_ZeroID(t *testing.T) {
 
 func TestGetActivePieceCount_NoPDP(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.GetActivePieceCount(context.Background(), 1)
+	_, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
 	if err == nil || !errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Errorf("expected ErrPDPVerifierNotConfigured, got %v", err)
 	}
@@ -582,7 +583,7 @@ func TestGetActivePieceCount_NoPDP(t *testing.T) {
 func TestGetPieceMetadata(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getPieceMetadata", true, "value-1")
-	ok, v, err := s.GetPieceMetadata(context.Background(), 1, 2, "k")
+	ok, v, err := s.GetPieceMetadata(context.Background(), types.NewBigInt(1), types.NewBigInt(2), "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +594,7 @@ func TestGetPieceMetadata(t *testing.T) {
 
 func TestGetPieceMetadata_ZeroID(t *testing.T) {
 	s, _ := newTestService(t)
-	_, _, err := s.GetPieceMetadata(context.Background(), 0, 1, "k")
+	_, _, err := s.GetPieceMetadata(context.Background(), types.NewBigInt(0), types.NewBigInt(1), "k")
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument, got %v", err)
 	}
@@ -602,7 +603,7 @@ func TestGetPieceMetadata_ZeroID(t *testing.T) {
 func TestGetAllPieceMetadata(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getAllPieceMetadata", []string{"a", "b"}, []string{"1", "2"})
-	got, err := s.GetAllPieceMetadata(context.Background(), 1, 2)
+	got, err := s.GetAllPieceMetadata(context.Background(), types.NewBigInt(1), types.NewBigInt(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +614,7 @@ func TestGetAllPieceMetadata(t *testing.T) {
 
 func TestGetAllPieceMetadata_ZeroID(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.GetAllPieceMetadata(context.Background(), 0, 1)
+	_, err := s.GetAllPieceMetadata(context.Background(), types.NewBigInt(0), types.NewBigInt(1))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument, got %v", err)
 	}
@@ -695,7 +696,7 @@ func TestGetClientDataSetIds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 3 || ids[0] != 1 || ids[2] != 3 {
+	if len(ids) != 3 || !ids[0].Equal(types.NewBigInt(1)) || !ids[2].Equal(types.NewBigInt(3)) {
 		t.Errorf("got %+v", ids)
 	}
 }
@@ -710,7 +711,7 @@ func TestGetClientDataSetIds_ZeroPayer(t *testing.T) {
 
 func TestTerminateDataSet_WriteNotConfigured(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.TerminateDataSet(context.Background(), 1)
+	_, err := s.TerminateDataSet(context.Background(), types.NewBigInt(1))
 	if err == nil || !errors.Is(err, ErrWriteNotConfigured) {
 		t.Errorf("expected ErrWriteNotConfigured, got %v", err)
 	}
@@ -720,14 +721,14 @@ func TestIterateAllApprovedProviderIDs_Success(t *testing.T) {
 	s, mc := newTestService(t)
 	// Single page under defaultIteratePageSize terminates after one call.
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2)})
-	var got []types.ProviderID
+	var got []types.BigInt
 	for id, err := range s.IterateAllApprovedProviderIDs(context.Background()) {
 		if err != nil {
 			t.Fatalf("iter err: %v", err)
 		}
 		got = append(got, id)
 	}
-	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+	if len(got) != 2 || !got[0].Equal(types.NewBigInt(1)) || !got[1].Equal(types.NewBigInt(2)) {
 		t.Errorf("got %+v", got)
 	}
 }
@@ -751,14 +752,14 @@ func TestIterateAllApprovedProviderIDs_CtxCancelled(t *testing.T) {
 func TestIterateAllClientDataSetIds_Success(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "clientDataSets", []*big.Int{big.NewInt(10), big.NewInt(11)})
-	var ids []types.DataSetID
+	var ids []types.BigInt
 	for id, err := range s.IterateAllClientDataSetIds(context.Background(), common.HexToAddress("0xabcd")) {
 		if err != nil {
 			t.Fatalf("iter err: %v", err)
 		}
 		ids = append(ids, id)
 	}
-	if len(ids) != 2 || ids[0] != 10 || ids[1] != 11 {
+	if len(ids) != 2 || !ids[0].Equal(types.NewBigInt(10)) || !ids[1].Equal(types.NewBigInt(11)) {
 		t.Errorf("got %+v", ids)
 	}
 }

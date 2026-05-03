@@ -73,7 +73,7 @@ func TestGetDataSetStats_Success(t *testing.T) {
 	cacheVal := "9876543210987654321"
 	_, svc := serveStats(t, cdnVal, cacheVal)
 
-	stats, err := svc.GetDataSetStats(context.Background(), types.DataSetID(42))
+	stats, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestGetDataSetStats_TypedDataSetIDSignature(t *testing.T) {
 	if !ok {
 		t.Fatal("GetDataSetStats method not found")
 	}
-	want := reflect.TypeOf(func(*Service, context.Context, types.DataSetID) (*DataSetStats, error) { return nil, nil })
+	want := reflect.TypeOf(func(*Service, context.Context, types.BigInt) (*DataSetStats, error) { return nil, nil })
 	if method.Type != want {
 		t.Fatalf("GetDataSetStats signature = %v, want %v", method.Type, want)
 	}
@@ -100,7 +100,7 @@ func TestGetDataSetStats_TypedDataSetIDSignature(t *testing.T) {
 
 func TestGetDataSetStats_ZeroQuotas(t *testing.T) {
 	_, svc := serveStats(t, "0", "0")
-	stats, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
+	stats, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestGetDataSetStats_404(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(99))
+	_, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(99))
 	if !errors.Is(err, ErrDataSetNotFound) {
 		t.Fatalf("expected ErrDataSetNotFound, got %v", err)
 	}
@@ -140,7 +140,7 @@ func TestGetDataSetStats_500(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -157,7 +157,7 @@ func TestGetDataSetStats_InvalidJSON(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -178,7 +178,7 @@ func TestGetDataSetStats_InvalidBigIntField(t *testing.T) {
 		Transport: &rewriteHost{base: srv.URL, inner: http.DefaultTransport},
 	}
 
-	_, err := svc.GetDataSetStats(context.Background(), types.DataSetID(1))
+	_, err := svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Fatal("expected error for non-numeric quota string")
 	}

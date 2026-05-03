@@ -61,7 +61,7 @@ type SubmittedPiece struct {
 
 // ConfirmedPiece carries the on-chain identity reported by an OnPiecesConfirmed callback.
 type ConfirmedPiece struct {
-	PieceID  types.PieceID
+	PieceID  types.BigInt
 	PieceCID cid.Cid
 }
 
@@ -105,9 +105,9 @@ type CommitRequest struct {
 
 // CommitResult is returned by a successful Commit call.
 type CommitResult struct {
-	TransactionID string          // on-chain transaction hash
-	DataSetID     types.DataSetID // data set that now holds the piece
-	PieceIDs      []types.PieceID
+	TransactionID string       // on-chain transaction hash
+	DataSetID     types.BigInt // data set that now holds the piece
+	PieceIDs      []types.BigInt
 	IsNewDataSet  bool // true when a new data set was created by this commit
 }
 
@@ -121,23 +121,24 @@ type CreateDataSetOptions struct {
 // CreateDataSetSubmission identifies a submitted create-dataset transaction.
 // Persist and restore all fields together; incomplete submissions are rejected.
 type CreateDataSetSubmission struct {
-	TransactionID   string
-	StatusURL       string
-	ClientDataSetID types.ClientDataSetID
+	TransactionID string
+	StatusURL     string
+	// ClientDataSetID must be non-nil when resuming a submitted create.
+	ClientDataSetID *types.BigInt
 }
 
 // CreateDataSetResult is returned after standalone dataset creation confirms.
 type CreateDataSetResult struct {
 	TransactionID   string
-	DataSetID       types.DataSetID
-	ClientDataSetID types.ClientDataSetID
+	DataSetID       types.BigInt
+	ClientDataSetID types.BigInt
 }
 
 // CopyResult describes one successfully committed copy.
 type CopyResult struct {
-	ProviderID   types.ProviderID
-	DataSetID    types.DataSetID
-	PieceID      types.PieceID
+	ProviderID   types.BigInt
+	DataSetID    types.BigInt
+	PieceID      types.BigInt
 	Role         CopyRole
 	RetrievalURL string // HTTPS retrieval URL for this piece on the provider.
 	IsNewDataSet bool
@@ -145,7 +146,7 @@ type CopyResult struct {
 
 // FailedAttempt records a provider attempt that did not produce a copy.
 type FailedAttempt struct {
-	ProviderID types.ProviderID
+	ProviderID types.BigInt
 	Role       CopyRole
 	Stage      CopyStage // pipeline stage where the failure occurred
 	Err        error
@@ -191,9 +192,9 @@ func (r *UploadResult) SuccessCount() int {
 // ok is false when no primary copy committed on-chain (even if secondaries
 // did). Callers that need precise provenance should inspect
 // [UploadResult.Copies] directly.
-func (r *UploadResult) PrimaryDataSetID() (types.DataSetID, bool) {
+func (r *UploadResult) PrimaryDataSetID() (types.BigInt, bool) {
 	if r == nil {
-		return 0, false
+		return types.BigInt{}, false
 	}
 	for i := range r.Copies {
 		c := &r.Copies[i]
@@ -202,16 +203,16 @@ func (r *UploadResult) PrimaryDataSetID() (types.DataSetID, bool) {
 		}
 		return c.DataSetID, true
 	}
-	return 0, false
+	return types.BigInt{}, false
 }
 
 // SuccessfulProviderIDs returns the ProviderID of every copy that committed
 // on-chain, in the order the copies appear in [UploadResult.Copies].
-func (r *UploadResult) SuccessfulProviderIDs() []types.ProviderID {
+func (r *UploadResult) SuccessfulProviderIDs() []types.BigInt {
 	if r == nil || len(r.Copies) == 0 {
 		return nil
 	}
-	out := make([]types.ProviderID, 0, len(r.Copies))
+	out := make([]types.BigInt, 0, len(r.Copies))
 	for i := range r.Copies {
 		out = append(out, r.Copies[i].ProviderID)
 	}
@@ -243,11 +244,11 @@ type UploadOptions struct {
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
 	// ProviderIDs pins the upload to specific providers by ID.
-	ProviderIDs []types.ProviderID
+	ProviderIDs []types.BigInt
 	// DataSetIDs pins the upload to specific existing data sets.
-	DataSetIDs []types.DataSetID
+	DataSetIDs []types.BigInt
 	// ExcludeProviderIDs skips these providers during auto-selection.
-	ExcludeProviderIDs []types.ProviderID
+	ExcludeProviderIDs []types.BigInt
 	// WithCDN is tri-state: nil inherits the Client-level default
 	// configured via synapse.WithCDN; non-nil explicitly overrides
 	// for this upload. Declare a local variable to take its address:
@@ -265,29 +266,29 @@ type UploadOptions struct {
 	OnProgress func(bytesUploaded int64)
 	// OnStored is invoked once the primary provider has confirmed storage of
 	// the piece. It may be nil.
-	OnStored func(providerID types.ProviderID, pieceCID cid.Cid)
+	OnStored func(providerID types.BigInt, pieceCID cid.Cid)
 	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
 	// submitted for a provider (primary or secondary), carrying the transaction
 	// hash and the batch of pieces included in that transaction. During
 	// Service.Upload, different providers may invoke this callback
 	// concurrently when commitConcurrency > 1. It may be nil.
-	OnPiecesAdded func(txHash string, providerID types.ProviderID, pieces []SubmittedPiece)
+	OnPiecesAdded func(txHash string, providerID types.BigInt, pieces []SubmittedPiece)
 	// OnPiecesConfirmed is invoked after the on-chain AddPieces transaction is
 	// confirmed (CommitResult received) for a provider, carrying the assigned
 	// on-chain IDs for each piece. During Service.Upload, this callback is
 	// invoked sequentially after all commit workers finish. It may be nil.
-	OnPiecesConfirmed func(dataSetID types.DataSetID, providerID types.ProviderID, pieces []ConfirmedPiece)
+	OnPiecesConfirmed func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece)
 	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
 	// completes successfully. It is not fired for the primary (which stores
 	// directly). It may be nil.
-	OnCopyComplete func(providerID types.ProviderID, pieceCID cid.Cid)
+	OnCopyComplete func(providerID types.BigInt, pieceCID cid.Cid)
 	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy
 	// attempt fails. Presign failures are not copy attempts and still surface
 	// only through FailedAttempts with CopyStagePresign. Primary store/commit
 	// failures likewise surface through the Upload return value and
 	// FailedAttempts. It may be nil.
-	OnCopyFailed func(providerID types.ProviderID, pieceCID cid.Cid, err error)
+	OnCopyFailed func(providerID types.BigInt, pieceCID cid.Cid, err error)
 	// OnPullProgress is invoked for each piece status update during a
 	// secondary-provider pull. It may be nil.
-	OnPullProgress func(providerID types.ProviderID, pieceCID cid.Cid, status PullStatus)
+	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
 }

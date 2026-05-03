@@ -112,7 +112,7 @@ func TestIntegration_WarmStorage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IterateAllApprovedProviderIDs: %v", err)
 		}
-		if id == 0 {
+		if id.IsZero() {
 			t.Error("iterator yielded zero providerID")
 		}
 		iterCount++
@@ -191,7 +191,7 @@ func TestIntegration_WarmStorage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IterateAllClientDataSetIds: %v", err)
 		}
-		if id == 0 {
+		if id.IsZero() {
 			t.Error("iterator yielded zero DataSetID")
 		}
 		iterCount++
@@ -201,7 +201,7 @@ func TestIntegration_WarmStorage(t *testing.T) {
 	}
 
 	// ErrInvalidArgument paths.
-	if _, err := ws.GetDataSet(ctx, 0); !errors.Is(err, warmstorage.ErrInvalidArgument) {
+	if _, err := ws.GetDataSet(ctx, types.NewBigInt(0)); !errors.Is(err, warmstorage.ErrInvalidArgument) {
 		t.Errorf("GetDataSet(0): want ErrInvalidArgument, got %v", err)
 	}
 	if _, err := ws.GetClientDataSets(ctx, common.Address{}, types.ListOptions{Limit: 1}); !errors.Is(err, warmstorage.ErrInvalidArgument) {

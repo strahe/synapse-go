@@ -24,6 +24,11 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
+func testBigIntPtr(id types.BigInt) *types.BigInt {
+	cp := copyBigInt(id)
+	return &cp
+}
+
 func TestContextStore_UploadsAndWaits(t *testing.T) {
 	data := bytes.Repeat([]byte("st"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -120,14 +125,14 @@ func TestContextStore_RejectsNonV2PieceCID(t *testing.T) {
 }
 
 func TestNewContext_RejectsZeroDataSetID(t *testing.T) {
-	_, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithDataSetID(0))
+	_, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithDataSetID(types.NewBigInt(0)))
 	if err == nil {
 		t.Fatal("expected error for zero dataSetID")
 	}
 }
 
 func TestNewContext_AllowsZeroClientDataSetID(t *testing.T) {
-	zero := big.NewInt(0)
+	zero := types.NewBigInt(0)
 	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), WithClientDataSetID(zero))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -135,7 +140,7 @@ func TestNewContext_AllowsZeroClientDataSetID(t *testing.T) {
 	if ctx.clientDataSetID == nil {
 		t.Fatal("clientDataSetID should be stored")
 	}
-	if ctx.clientDataSetID.Sign() != 0 {
+	if !ctx.clientDataSetID.IsZero() {
 		t.Fatalf("clientDataSetID = %s, want 0", ctx.clientDataSetID.String())
 	}
 }
@@ -159,11 +164,14 @@ func TestContextPresignForCommit_GeneratesFullWidthClientDataSetID(t *testing.T)
 	if _, err := ctx.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}}); err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
 	}
-	want := new(big.Int).SetBytes(fullWidth)
+	want, err := types.BigIntFromBig(new(big.Int).SetBytes(fullWidth))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ctx.clientDataSetID == nil {
 		t.Fatal("clientDataSetID should be generated")
 	}
-	if ctx.clientDataSetID.Cmp(want) != 0 {
+	if !ctx.clientDataSetID.Equal(want) {
 		t.Fatalf("clientDataSetID = %s, want %s", ctx.clientDataSetID.String(), want.String())
 	}
 }
@@ -194,8 +202,8 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 
 	fake := &fakePDPProviderClient{
 		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
-			if req.DataSetID != 0 {
-				t.Fatalf("dataSetID=%d want 0", req.DataSetID)
+			if req.DataSetID != nil {
+				t.Fatalf("dataSetID=%s want nil", req.DataSetID.String())
 			}
 			if req.RecordKeeper != recordKeeper {
 				t.Fatalf("recordKeeper=%s want %s", req.RecordKeeper, recordKeeper)
@@ -234,12 +242,12 @@ func TestContextPull_NewDataSetUsesRecordKeeper(t *testing.T) {
 
 func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	info := mustPieceInfo(t)
-	dataSetID := types.DataSetID(42)
+	dataSetID := types.NewBigInt(42)
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
-			if gotDataSetID != uint64(dataSetID) {
-				t.Fatalf("dataSetID=%d want %d", gotDataSetID, uint64(dataSetID))
+		addPiecesFn: func(_ context.Context, gotDataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+			if !gotDataSetID.Equal(dataSetID) {
+				t.Fatalf("dataSetID=%s want %s", gotDataSetID.String(), dataSetID.String())
 			}
 			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
 				t.Fatalf("unexpected pieces: %+v", pieces)
@@ -255,10 +263,10 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 			}
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x01"),
-				DataSetID:         uint64(dataSetID),
+				DataSetID:         dataSetID,
 				PieceCount:        1,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(7)},
 			}, nil
 		},
 	}
@@ -268,7 +276,7 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithDataSetID(dataSetID),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -281,10 +289,10 @@ func TestContextCommit_ExistingDataSetUsesAddPieces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID != dataSetID {
-		t.Fatalf("dataSetID=%d want %d", got.DataSetID, dataSetID)
+	if !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("dataSetID=%s want %s", got.DataSetID.String(), dataSetID.String())
 	}
-	if len(got.PieceIDs) != 1 || got.PieceIDs[0] != types.PieceID(7) {
+	if len(got.PieceIDs) != 1 || !got.PieceIDs[0].Equal(types.NewBigInt(7)) {
 		t.Fatalf("pieceIDs=%v want [7]", got.PieceIDs)
 	}
 }
@@ -293,14 +301,14 @@ func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) 
 	info := mustPieceInfo(t)
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         0,
+				DataSetID:         types.NewBigInt(0),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(7)},
 			}, nil
 		},
 	}
@@ -309,8 +317,8 @@ func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) 
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -326,17 +334,17 @@ func TestContextCommit_ExistingDataSet_RejectsZeroStatusDataSetID(t *testing.T) 
 
 func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testing.T) {
 	info := mustPieceInfo(t)
-	expected := types.DataSetID(42)
+	expected := types.NewBigInt(42)
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         43,
+				DataSetID:         types.NewBigInt(43),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(7)},
 			}, nil
 		},
 	}
@@ -346,7 +354,7 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedStatusDataSetID(t *testi
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithDataSetID(expected),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -364,14 +372,14 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *tes
 	info := mustPieceInfo(t)
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         42,
+				DataSetID:         types.NewBigInt(42),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(7)},
 			}, nil
 		},
 	}
@@ -380,8 +388,8 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *tes
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -420,10 +428,10 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 			}
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PieceCount:        1,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
 			}, nil
 		},
 	}
@@ -444,16 +452,17 @@ func TestContextCommit_NewDataSetUsesCreateAndAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID != types.DataSetID(55) {
-		t.Fatalf("dataSetID=%d want 55", got.DataSetID)
+	if !got.DataSetID.Equal(types.NewBigInt(55)) {
+		t.Fatalf("dataSetID=%s want 55", got.DataSetID.String())
 	}
-	if ctx.dataSetID == nil || *ctx.dataSetID != types.DataSetID(55) {
+	if ctx.dataSetID == nil || !ctx.dataSetID.Equal(types.NewBigInt(55)) {
 		t.Fatalf("context dataSetID=%v want 55", ctx.dataSetID)
 	}
 }
 
 func TestContextCreateDataSet_SubmitsWaitsAndBinds(t *testing.T) {
-	wantClientID := big.NewInt(99)
+	wantClientID := types.NewBigInt(99)
+	dataSetID := types.NewBigInt(77)
 	statusURL := "https://sp.example.com/pdp/data-sets/created/0xbeef"
 	wantTx := common.HexToHash("0xbeef").Hex()
 	var submitted *CreateDataSetSubmission
@@ -483,7 +492,7 @@ func TestContextCreateDataSet_SubmitsWaitsAndBinds(t *testing.T) {
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -518,16 +527,16 @@ func TestContextCreateDataSet_SubmitsWaitsAndBinds(t *testing.T) {
 	if submitted.TransactionID != wantTx || submitted.StatusURL != statusURL {
 		t.Fatalf("submitted=%+v want tx=%s statusURL=%s", submitted, wantTx, statusURL)
 	}
-	if submitted.ClientDataSetID == nil || submitted.ClientDataSetID.Cmp(wantClientID) != 0 {
-		t.Fatalf("submitted ClientDataSetID=%v want %s", submitted.ClientDataSetID, wantClientID)
+	if submitted.ClientDataSetID == nil || !submitted.ClientDataSetID.Equal(wantClientID) {
+		t.Fatalf("submitted ClientDataSetID=%v want %s", submitted.ClientDataSetID, wantClientID.String())
 	}
-	if result.TransactionID != wantTx || result.DataSetID != 77 {
+	if result.TransactionID != wantTx || !result.DataSetID.Equal(dataSetID) {
 		t.Fatalf("result=%+v want tx=%s dataSetID=77", result, wantTx)
 	}
-	if result.ClientDataSetID == nil || result.ClientDataSetID.Cmp(wantClientID) != 0 {
-		t.Fatalf("result ClientDataSetID=%v want %s", result.ClientDataSetID, wantClientID)
+	if !result.ClientDataSetID.Equal(wantClientID) {
+		t.Fatalf("result ClientDataSetID=%s want %s", result.ClientDataSetID.String(), wantClientID.String())
 	}
-	if id := ctx.DataSetID(); id == nil || *id != 77 {
+	if id := ctx.DataSetID(); id == nil || !id.Equal(dataSetID) {
 		t.Fatalf("context DataSetID=%v want 77", id)
 	}
 }
@@ -547,17 +556,18 @@ func TestContextCreateDataSetThenCommitUsesAddPieces(t *testing.T) {
 			}, nil
 		},
 		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0x01"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, dataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, dataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 			addCalls++
-			if dataSetID != 77 {
-				t.Fatalf("dataSetID=%d want 77", dataSetID)
+			if !dataSetID.Equal(types.NewBigInt(77)) {
+				t.Fatalf("dataSetID=%s want 77", dataSetID.String())
 			}
 			if len(pieces) != 1 || pieces[0].PieceCID != info.CIDv2 {
 				t.Fatalf("pieces=%+v want %s", pieces, info.CIDv2)
@@ -573,9 +583,9 @@ func TestContextCreateDataSetThenCommitUsesAddPieces(t *testing.T) {
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
-				DataSetID:         77,
+				DataSetID:         types.NewBigInt(77),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
 			}, nil
 		},
 		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
@@ -588,7 +598,7 @@ func TestContextCreateDataSetThenCommitUsesAddPieces(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -605,7 +615,7 @@ func TestContextCreateDataSetThenCommitUsesAddPieces(t *testing.T) {
 	if createCalls != 1 || addCalls != 1 || createAndAddCalls != 0 {
 		t.Fatalf("calls create=%d add=%d createAndAdd=%d", createCalls, addCalls, createAndAddCalls)
 	}
-	if commit.DataSetID != 77 || len(commit.PieceIDs) != 1 || commit.PieceIDs[0] != 8 || commit.IsNewDataSet {
+	if !commit.DataSetID.Equal(types.NewBigInt(77)) || len(commit.PieceIDs) != 1 || !commit.PieceIDs[0].Equal(types.NewBigInt(8)) || commit.IsNewDataSet {
 		t.Fatalf("commit=%+v want existing dataset 77 piece 8", commit)
 	}
 }
@@ -644,7 +654,7 @@ func TestContextCreateDataSetRejectsIncompleteProviderSubmission(t *testing.T) {
 				WithPayer(testPayer()),
 				WithRecordKeeper(testRecordKeeper()),
 				WithChainID(types.ChainID(314159)),
-				WithClientDataSetID(big.NewInt(99)),
+				WithClientDataSetID(types.NewBigInt(99)),
 			)
 			if err != nil {
 				t.Fatalf("NewContext: %v", err)
@@ -668,8 +678,8 @@ func TestContextCreateDataSetRejectsExistingDataSet(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -703,11 +713,12 @@ func TestContextCreateDataSetRetryWaitsForPendingSubmission(t *testing.T) {
 			if waitCalls == 1 {
 				return nil, waitErr
 			}
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -716,7 +727,7 @@ func TestContextCreateDataSetRetryWaitsForPendingSubmission(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -732,8 +743,8 @@ func TestContextCreateDataSetRetryWaitsForPendingSubmission(t *testing.T) {
 	if createCalls != 1 || waitCalls != 2 {
 		t.Fatalf("calls create=%d wait=%d want create=1 wait=2", createCalls, waitCalls)
 	}
-	if result.DataSetID != 77 {
-		t.Fatalf("DataSetID=%d want 77", result.DataSetID)
+	if !result.DataSetID.Equal(types.NewBigInt(77)) {
+		t.Fatalf("DataSetID=%s want 77", result.DataSetID.String())
 	}
 }
 
@@ -766,11 +777,12 @@ func TestContextCreateDataSetRejectedSubmissionCanRetry(t *testing.T) {
 			case statusURL1:
 				return nil, pdp.ErrTxRejected
 			case statusURL2:
+				dataSetID := types.NewBigInt(77)
 				return &pdp.CreateDataSetStatus{
 					CreateMessageHash: common.HexToHash("0xcafe"),
 					TxStatus:          "confirmed",
 					DataSetCreated:    true,
-					DataSetID:         big.NewInt(77),
+					DataSetID:         &dataSetID,
 				}, nil
 			default:
 				t.Fatalf("unexpected statusURL %q", gotStatusURL)
@@ -783,7 +795,7 @@ func TestContextCreateDataSetRejectedSubmissionCanRetry(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -799,7 +811,7 @@ func TestContextCreateDataSetRejectedSubmissionCanRetry(t *testing.T) {
 	if createCalls != 2 {
 		t.Fatalf("CreateDataSet calls=%d want 2", createCalls)
 	}
-	if result.TransactionID != common.HexToHash("0xcafe").Hex() || result.DataSetID != 77 {
+	if result.TransactionID != common.HexToHash("0xcafe").Hex() || !result.DataSetID.Equal(types.NewBigInt(77)) {
 		t.Fatalf("result=%+v want tx=0xcafe dataSetID=77", result)
 	}
 }
@@ -828,11 +840,12 @@ func TestContextCreateDataSetInFlightBlocksPresignAndPull(t *testing.T) {
 			}, nil
 		},
 		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -841,7 +854,7 @@ func TestContextCreateDataSetInFlightBlocksPresignAndPull(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -909,11 +922,12 @@ func TestContextCreateDataSetWaitDoesNotBlockCommit(t *testing.T) {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -922,7 +936,7 @@ func TestContextCreateDataSetWaitDoesNotBlockCommit(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -984,7 +998,7 @@ func TestContextPendingCreateBlocksOtherWritePaths(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1011,11 +1025,12 @@ func TestContextPendingCreateBlocksOtherWritePaths(t *testing.T) {
 }
 
 func TestContextWaitForDataSetCreatedBindsSubmission(t *testing.T) {
-	wantClientID := big.NewInt(99)
+	wantClientID := types.NewBigInt(99)
+	dataSetID := types.NewBigInt(77)
 	submission := CreateDataSetSubmission{
 		TransactionID:   common.HexToHash("0xbeef").Hex(),
 		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
-		ClientDataSetID: wantClientID,
+		ClientDataSetID: testBigIntPtr(wantClientID),
 	}
 	fake := &fakePDPProviderClient{
 		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
@@ -1026,7 +1041,7 @@ func TestContextWaitForDataSetCreatedBindsSubmission(t *testing.T) {
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -1043,13 +1058,13 @@ func TestContextWaitForDataSetCreatedBindsSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
-	if result.TransactionID != submission.TransactionID || result.DataSetID != 77 {
+	if result.TransactionID != submission.TransactionID || !result.DataSetID.Equal(dataSetID) {
 		t.Fatalf("result=%+v want tx=%s dataSetID=77", result, submission.TransactionID)
 	}
-	if result.ClientDataSetID == nil || result.ClientDataSetID.Cmp(wantClientID) != 0 {
-		t.Fatalf("ClientDataSetID=%v want %s", result.ClientDataSetID, wantClientID)
+	if !result.ClientDataSetID.Equal(wantClientID) {
+		t.Fatalf("ClientDataSetID=%s want %s", result.ClientDataSetID.String(), wantClientID.String())
 	}
-	if id := ctx.DataSetID(); id == nil || *id != 77 {
+	if id := ctx.DataSetID(); id == nil || !id.Equal(dataSetID) {
 		t.Fatalf("context DataSetID=%v want 77", id)
 	}
 }
@@ -1076,7 +1091,7 @@ func TestContextWaitForDataSetCreatedRejectsInvalidTransactionID(t *testing.T) {
 				WithPayer(testPayer()),
 				WithRecordKeeper(testRecordKeeper()),
 				WithChainID(types.ChainID(314159)),
-				WithClientDataSetID(big.NewInt(99)),
+				WithClientDataSetID(types.NewBigInt(99)),
 			)
 			if err != nil {
 				t.Fatalf("NewContext: %v", err)
@@ -1085,7 +1100,7 @@ func TestContextWaitForDataSetCreatedRejectsInvalidTransactionID(t *testing.T) {
 			_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
 				TransactionID:   tt.transactionID,
 				StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
-				ClientDataSetID: big.NewInt(99),
+				ClientDataSetID: testBigIntPtr(types.NewBigInt(99)),
 			})
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
@@ -1097,14 +1112,44 @@ func TestContextWaitForDataSetCreatedRejectsInvalidTransactionID(t *testing.T) {
 	}
 }
 
+func TestContextWaitForDataSetCreatedRejectsMissingClientDataSetID(t *testing.T) {
+	waitCalls := 0
+	fake := &fakePDPProviderClient{
+		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			waitCalls++
+			return nil, errors.New("wait should not be called")
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+		TransactionID: common.HexToHash("0xbeef").Hex(),
+		StatusURL:     "https://sp.example.com/pdp/data-sets/created/0xbeef",
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
+	}
+	if waitCalls != 0 {
+		t.Fatalf("WaitForDataSetCreated wait calls=%d want 0", waitCalls)
+	}
+}
+
 func TestContextWaitForDataSetCreatedRejectsMismatchedExistingDataSet(t *testing.T) {
 	fake := &fakePDPProviderClient{
 		waitForCreatedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xbeef"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -1112,8 +1157,8 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedExistingDataSet(t *testing
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1122,7 +1167,7 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedExistingDataSet(t *testing
 	_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
 		TransactionID:   common.HexToHash("0xbeef").Hex(),
 		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
-		ClientDataSetID: big.NewInt(99),
+		ClientDataSetID: testBigIntPtr(types.NewBigInt(99)),
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
@@ -1140,11 +1185,12 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionIDWithoutPoison
 			default:
 				t.Fatalf("statusURL=%q", statusURL)
 			}
+			dataSetID := types.NewBigInt(77)
 			return &pdp.CreateDataSetStatus{
 				CreateMessageHash: common.HexToHash("0xcafe"),
 				TxStatus:          "confirmed",
 				DataSetCreated:    true,
-				DataSetID:         big.NewInt(77),
+				DataSetID:         &dataSetID,
 			}, nil
 		},
 	}
@@ -1160,7 +1206,7 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionIDWithoutPoison
 	_, err = ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
 		TransactionID:   common.HexToHash("0xbeef").Hex(),
 		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xbeef",
-		ClientDataSetID: big.NewInt(99),
+		ClientDataSetID: testBigIntPtr(types.NewBigInt(99)),
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
@@ -1172,13 +1218,13 @@ func TestContextWaitForDataSetCreatedRejectsMismatchedTransactionIDWithoutPoison
 	result, err := ctx.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
 		TransactionID:   common.HexToHash("0xcafe").Hex(),
 		StatusURL:       "https://sp.example.com/pdp/data-sets/created/0xcafe",
-		ClientDataSetID: big.NewInt(100),
+		ClientDataSetID: testBigIntPtr(types.NewBigInt(100)),
 	})
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated retry: %v", err)
 	}
-	if result.DataSetID != 77 {
-		t.Fatalf("retry DataSetID=%d want 77", result.DataSetID)
+	if !result.DataSetID.Equal(types.NewBigInt(77)) {
+		t.Fatalf("retry DataSetID=%s want 77", result.DataSetID.String())
 	}
 	if waitCalls != 2 {
 		t.Fatalf("wait calls=%d want 2", waitCalls)
@@ -1194,10 +1240,10 @@ func TestContextCommit_NewDataSet_RejectsMismatchedConfirmedPieceIDs(t *testing.
 		},
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PieceCount:        2,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
 			}, nil
 		},
 	}
@@ -1316,8 +1362,8 @@ func TestContextPresignForCommit_ExistingDataSetAddPiecesEncoding(t *testing.T) 
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1368,7 +1414,7 @@ func TestContextPresignForCommit_CtxCancelled(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
+		WithDataSetID(types.NewBigInt(1)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1385,7 +1431,7 @@ func TestContextPresignForCommit_InvalidArgumentPrecedesCtxCancelled(t *testing.
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
+		WithDataSetID(types.NewBigInt(1)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1410,7 +1456,7 @@ func TestContextPresignForCommit_ExistingDataSetRequiresClientDataSetID(t *testi
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
+		WithDataSetID(types.NewBigInt(42)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1435,8 +1481,8 @@ func TestContextPresignForCommit_WrappedSignerUnsupported(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(1)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithDataSetID(types.NewBigInt(1)),
+		WithClientDataSetID(types.NewBigInt(7)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1491,7 +1537,7 @@ func mustTestSigner(t *testing.T) signer.EVMSigner {
 
 func testProvider() Provider {
 	return Provider{
-		ID:              types.ProviderID(1),
+		ID:              types.NewBigInt(1),
 		ServiceURL:      "https://sp.example.com",
 		ServiceProvider: common.HexToAddress("0x1001"),
 		Payee:           common.HexToAddress("0x2002"),
@@ -1512,13 +1558,13 @@ type fakePDPProviderClient struct {
 	waitForPieceFn        func(context.Context, cid.Cid, time.Duration) error
 	pullPiecesFn          func(context.Context, pdp.PullRequest) (*pdp.PullResult, error)
 	pullPiecesFnWithCb    func(context.Context, pdp.PullRequest, func(*pdp.PullResult)) (*pdp.PullResult, error)
-	addPiecesFn           func(context.Context, uint64, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
+	addPiecesFn           func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	waitForAddedFn        func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	createDataSetFn       func(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error)
 	waitForCreatedFn      func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error)
 	createAndAddFn        func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
-	scheduleDeletionFn    func(context.Context, uint64, uint64, []byte) (common.Hash, error)
+	scheduleDeletionFn    func(context.Context, types.BigInt, types.BigInt, []byte) (common.Hash, error)
 }
 
 type failingReader struct {
@@ -1548,7 +1594,7 @@ func (f *fakePDPProviderClient) WaitForPullComplete(ctx context.Context, req pdp
 	return f.pullPiecesFn(ctx, req)
 }
 
-func (f *fakePDPProviderClient) AddPieces(ctx context.Context, dataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+func (f *fakePDPProviderClient) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
 	return f.addPiecesFn(ctx, dataSetID, pieces, extraData)
 }
 
@@ -1572,7 +1618,7 @@ func (f *fakePDPProviderClient) WaitForCreateDataSetAndAddPieces(ctx context.Con
 	return f.waitForCreateAndAddFn(ctx, statusURL, pollInterval)
 }
 
-func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID uint64, extraData []byte) (common.Hash, error) {
+func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
 	if f.scheduleDeletionFn == nil {
 		return common.Hash{}, fmt.Errorf("fakePDPProviderClient.SchedulePieceDeletion: not configured")
 	}
@@ -1585,17 +1631,17 @@ func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataS
 func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	info := mustPieceInfo(t)
 	largeID := uint64(1) << 63
-	expected := types.DataSetID(largeID)
+	expected := types.NewBigInt(largeID)
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         largeID,
+				DataSetID:         expected,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(1)},
 			}, nil
 		},
 	}
@@ -1605,7 +1651,7 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithDataSetID(expected),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1617,8 +1663,8 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID != expected {
-		t.Fatalf("DataSetID=%d want %d (uint64 high-bit truncation bug)", got.DataSetID, expected)
+	if !got.DataSetID.Equal(expected) {
+		t.Fatalf("DataSetID=%s want %s (uint64 high-bit truncation bug)", got.DataSetID.String(), expected.String())
 	}
 }
 
@@ -1627,7 +1673,7 @@ func TestContextCommit_ExistingDataSet_LargeIDPreserved(t *testing.T) {
 func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	info := mustPieceInfo(t)
 	largeID := uint64(math.MaxUint64) // all bits set; int64 cast gives -1
-	expected := types.DataSetID(largeID)
+	expected := types.NewBigInt(largeID)
 
 	fake := &fakePDPProviderClient{
 		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
@@ -1635,9 +1681,9 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 		},
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         largeID,
+				DataSetID:         expected,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(2)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(2)},
 			}, nil
 		},
 	}
@@ -1657,12 +1703,12 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got.DataSetID != expected {
-		t.Fatalf("DataSetID=%d want %d (uint64 high-bit truncation bug)", got.DataSetID, expected)
+	if !got.DataSetID.Equal(expected) {
+		t.Fatalf("DataSetID=%s want %s (uint64 high-bit truncation bug)", got.DataSetID.String(), expected.String())
 	}
 	// The context should also cache the correct value.
-	if ctx.dataSetID == nil || *ctx.dataSetID != expected {
-		t.Fatalf("cached dataSetID=%v want %d", ctx.dataSetID, expected)
+	if ctx.dataSetID == nil || !ctx.dataSetID.Equal(expected) {
+		t.Fatalf("cached dataSetID=%v want %s", ctx.dataSetID, expected.String())
 	}
 }
 
@@ -1671,7 +1717,7 @@ func TestContextCommit_NewDataSet_LargeIDPreserved(t *testing.T) {
 // pdp.PullPieces requires RecordKeeper in all cases.
 func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 	info := mustPieceInfo(t)
-	dataSetID := types.DataSetID(42)
+	dataSetID := types.NewBigInt(42)
 	rk := testRecordKeeper()
 
 	var capturedReq pdp.PullRequest
@@ -1700,8 +1746,8 @@ func TestContextPull_ExistingDataSetCarriesRecordKeeper(t *testing.T) {
 	if capturedReq.RecordKeeper != rk {
 		t.Fatalf("RecordKeeper=%s want %s (existing-dataset pull must carry RecordKeeper)", capturedReq.RecordKeeper, rk)
 	}
-	if capturedReq.DataSetID != uint64(dataSetID) {
-		t.Fatalf("DataSetID=%d want %d", capturedReq.DataSetID, uint64(dataSetID))
+	if capturedReq.DataSetID == nil || !capturedReq.DataSetID.Equal(dataSetID) {
+		t.Fatalf("DataSetID=%v want %s", capturedReq.DataSetID, dataSetID.String())
 	}
 }
 
@@ -1739,12 +1785,12 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 		},
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         99,
+				DataSetID:         types.NewBigInt(99),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(1)},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			mu.Lock()
 			addCalls++
 			mu.Unlock()
@@ -1752,9 +1798,9 @@ func TestContextCommit_ConcurrentCommitsNoDuplicateDataSet(t *testing.T) {
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         99,
+				DataSetID:         types.NewBigInt(99),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(1)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(1)},
 			}, nil
 		},
 	}
@@ -1822,8 +1868,8 @@ func TestContextProviderID(t *testing.T) {
 	}
 
 	got := ctx.ProviderID()
-	if got != types.ProviderID(1) {
-		t.Fatalf("ProviderID()=%d want 1", got)
+	if !got.Equal(types.NewBigInt(1)) {
+		t.Fatalf("ProviderID()=%s want 1", got.String())
 	}
 }
 
@@ -1843,7 +1889,7 @@ func TestContextServiceURL(t *testing.T) {
 func TestPieceURLFor_InvalidBaseURL(t *testing.T) {
 	ctx := &Context{
 		provider: Provider{
-			ID:         types.ProviderID(1),
+			ID:         types.NewBigInt(1),
 			ServiceURL: "://invalid-url",
 		},
 	}
@@ -1871,13 +1917,13 @@ func TestContextNewContext_ValidationErrors(t *testing.T) {
 		},
 		{
 			name:     "empty service URL",
-			provider: Provider{ID: types.ProviderID(1)},
+			provider: Provider{ID: types.NewBigInt(1)},
 			client:   &fakePDPProviderClient{},
 			wantErr:  "empty provider service URL",
 		},
 		{
 			name:     "nil client",
-			provider: Provider{ID: types.ProviderID(1), ServiceURL: "https://sp.example.com"},
+			provider: Provider{ID: types.NewBigInt(1), ServiceURL: "https://sp.example.com"},
 			client:   nil,
 			wantErr:  "nil PDP client",
 		},
@@ -1989,7 +2035,7 @@ func TestContextCommit_ZeroDataSetIDFromServer(t *testing.T) {
 			return &pdp.CreateDataSetResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
-			return &pdp.AddPiecesStatus{DataSetID: 0, ConfirmedPieceIDs: []*big.Int{big.NewInt(1)}}, nil
+			return &pdp.AddPiecesStatus{DataSetID: types.NewBigInt(0), ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(1)}}, nil
 		},
 	}
 	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
@@ -2129,8 +2175,8 @@ func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
 		},
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				DataSetID:         42,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(0)},
+				DataSetID:         types.NewBigInt(42),
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(0)},
 				TxHash:            common.HexToHash("0x1234"),
 			}, nil
 		},
@@ -2151,7 +2197,7 @@ func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
 	if got.SuccessCount() != 1 {
 		t.Fatalf("success count=%d want 1", got.SuccessCount())
 	}
-	if len(got.Copies) != 1 || got.Copies[0].PieceID != 0 {
+	if len(got.Copies) != 1 || !got.Copies[0].PieceID.IsZero() {
 		t.Fatalf("copies=%+v want pieceID 0", got.Copies)
 	}
 }
@@ -2191,8 +2237,8 @@ func TestContextPresignForCommit_ExistingDataSet(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2216,8 +2262,8 @@ func TestContextPresignForCommit_ExistingDataSet_TracksAddOnlyPayload(t *testing
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2252,7 +2298,7 @@ func TestContextPresignForCommit_UndefinedPieceCID(t *testing.T) {
 func TestContextCommit_AddPiecesError(t *testing.T) {
 	info := mustPieceInfo(t)
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return nil, errors.New("add pieces failed")
 		},
 	}
@@ -2260,8 +2306,8 @@ func TestContextCommit_AddPiecesError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2293,15 +2339,15 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x01"),
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PieceCount:        1,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(8)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
 			}, nil
 		},
-		addPiecesFn: func(_ context.Context, gotDataSetID uint64, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
-			if gotDataSetID != 55 {
-				t.Fatalf("dataSetID=%d want 55", gotDataSetID)
+		addPiecesFn: func(_ context.Context, gotDataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+			if !gotDataSetID.Equal(types.NewBigInt(55)) {
+				t.Fatalf("dataSetID=%s want 55", gotDataSetID.String())
 			}
 			if len(pieces) != 1 || pieces[0].PieceCID != info2.CIDv2 {
 				t.Fatalf("unexpected add pieces: %+v", pieces)
@@ -2314,10 +2360,10 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0x02"),
-				DataSetID:         55,
+				DataSetID:         types.NewBigInt(55),
 				PieceCount:        1,
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(9)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(9)},
 			}, nil
 		},
 	}
@@ -2326,7 +2372,7 @@ func TestContextCommit_RefreshesStalePresignedExtraData(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2372,8 +2418,8 @@ func TestContextPresignForCommit_ConcurrentWithReaders(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2435,8 +2481,8 @@ func TestContextDataSetID_ConcurrentWithCommit(t *testing.T) {
 		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
 			<-releaseCreate
 			return &pdp.AddPiecesStatus{
-				DataSetID:         42,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(11)},
+				DataSetID:         types.NewBigInt(42),
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(11)},
 				TxHash:            common.HexToHash("0x1234"),
 			}, nil
 		},
@@ -2488,7 +2534,7 @@ func TestContextDataSetID_ConcurrentWithCommit(t *testing.T) {
 func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 	info := mustPieceInfo(t)
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
 		waitForAddedFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
@@ -2499,8 +2545,8 @@ func TestContextCommit_WaitAddPiecesError(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(99)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2731,7 +2777,7 @@ func TestContextCommit_OnSubmittedExistingDataSet(t *testing.T) {
 	waitCalled := false
 
 	fake := &fakePDPProviderClient{
-		addPiecesFn: func(_ context.Context, _ uint64, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
 			return &pdp.AddPiecesResult{
 				TxHash:    common.HexToHash("0xabcd"),
 				StatusURL: "https://sp.example.com/status",
@@ -2742,9 +2788,9 @@ func TestContextCommit_OnSubmittedExistingDataSet(t *testing.T) {
 			submittedBeforeWait = submittedHash != ""
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xabcd"),
-				DataSetID:         42,
+				DataSetID:         types.NewBigInt(42),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(7)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(7)},
 			}, nil
 		},
 	}
@@ -2753,8 +2799,8 @@ func TestContextCommit_OnSubmittedExistingDataSet(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(1)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(1)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -2804,9 +2850,9 @@ func TestContextCommit_OnSubmittedNewDataSet(t *testing.T) {
 			submittedBeforeWait = submittedHash != ""
 			return &pdp.AddPiecesStatus{
 				TxHash:            common.HexToHash("0xbeef"),
-				DataSetID:         99,
+				DataSetID:         types.NewBigInt(99),
 				PiecesAdded:       true,
-				ConfirmedPieceIDs: []*big.Int{big.NewInt(3)},
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(3)},
 			}, nil
 		},
 	}

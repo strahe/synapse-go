@@ -9,7 +9,7 @@ import (
 )
 
 func TestUploadResultSuccessCount(t *testing.T) {
-	oneCopy := CopyResult{ProviderID: 1, DataSetID: 1, PieceID: 1}
+	oneCopy := CopyResult{ProviderID: sdktypes.NewBigInt(1), DataSetID: sdktypes.NewBigInt(1), PieceID: sdktypes.NewBigInt(1)}
 
 	tests := []struct {
 		name string
@@ -32,7 +32,7 @@ func TestUploadResultSuccessCount(t *testing.T) {
 
 func TestUploadResultPartialSuccess(t *testing.T) {
 	dummyCID := cid.MustParse("baga6ea4seaqao7s73y24kcutaosvacpdjgfe74urr3enp3bccbm2fszfxwqvria")
-	oneCopy := CopyResult{ProviderID: 1, DataSetID: 1, PieceID: 1}
+	oneCopy := CopyResult{ProviderID: sdktypes.NewBigInt(1), DataSetID: sdktypes.NewBigInt(1), PieceID: sdktypes.NewBigInt(1)}
 
 	tests := []struct {
 		name string
@@ -54,19 +54,19 @@ func TestUploadResultPartialSuccess(t *testing.T) {
 }
 
 func TestUploadResultPrimaryDataSetID(t *testing.T) {
-	primary := CopyResult{Role: CopyRolePrimary, ProviderID: 10, DataSetID: 42}
-	secondary := CopyResult{Role: CopyRoleSecondary, ProviderID: 11, DataSetID: 99}
+	primary := CopyResult{Role: CopyRolePrimary, ProviderID: sdktypes.NewBigInt(10), DataSetID: sdktypes.NewBigInt(42)}
+	secondary := CopyResult{Role: CopyRoleSecondary, ProviderID: sdktypes.NewBigInt(11), DataSetID: sdktypes.NewBigInt(99)}
 
 	t.Run("nil receiver", func(t *testing.T) {
 		var r *UploadResult
-		if id, ok := r.PrimaryDataSetID(); ok || id != 0 {
+		if id, ok := r.PrimaryDataSetID(); ok || !id.IsZero() {
 			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
 		}
 	})
 
 	t.Run("no primary", func(t *testing.T) {
 		r := &UploadResult{Copies: []CopyResult{secondary}}
-		if id, ok := r.PrimaryDataSetID(); ok || id != 0 {
+		if id, ok := r.PrimaryDataSetID(); ok || !id.IsZero() {
 			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
 		}
 	})
@@ -74,15 +74,15 @@ func TestUploadResultPrimaryDataSetID(t *testing.T) {
 	t.Run("primary present", func(t *testing.T) {
 		r := &UploadResult{Copies: []CopyResult{secondary, primary}}
 		id, ok := r.PrimaryDataSetID()
-		if !ok || id != sdktypes.DataSetID(42) {
+		if !ok || !id.Equal(sdktypes.NewBigInt(42)) {
 			t.Fatalf("got (%d, %v), want (42, true)", id, ok)
 		}
 	})
 }
 
 func TestUploadResultSuccessfulProviderIDs(t *testing.T) {
-	c1 := CopyResult{Role: CopyRolePrimary, ProviderID: 10, DataSetID: 1}
-	c2 := CopyResult{Role: CopyRoleSecondary, ProviderID: 11, DataSetID: 2}
+	c1 := CopyResult{Role: CopyRolePrimary, ProviderID: sdktypes.NewBigInt(10), DataSetID: sdktypes.NewBigInt(1)}
+	c2 := CopyResult{Role: CopyRoleSecondary, ProviderID: sdktypes.NewBigInt(11), DataSetID: sdktypes.NewBigInt(2)}
 
 	t.Run("nil receiver", func(t *testing.T) {
 		var r *UploadResult
@@ -100,8 +100,8 @@ func TestUploadResultSuccessfulProviderIDs(t *testing.T) {
 	t.Run("preserves Copies order", func(t *testing.T) {
 		r := &UploadResult{Copies: []CopyResult{c1, c2}}
 		got := r.SuccessfulProviderIDs()
-		want := []sdktypes.ProviderID{10, 11}
-		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		want := []sdktypes.BigInt{sdktypes.NewBigInt(10), sdktypes.NewBigInt(11)}
+		if len(got) != len(want) || !got[0].Equal(want[0]) || !got[1].Equal(want[1]) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	})

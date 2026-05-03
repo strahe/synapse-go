@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math/big"
-	"strings"
 	"testing"
 
 	ethereum "github.com/ethereum/go-ethereum"
@@ -106,8 +105,8 @@ func TestGetProvider_FoundAndMissing(t *testing.T) {
 			IsActive:        true,
 		},
 	})
-	got, err := s.GetProvider(context.Background(), types.ProviderID(3))
-	if err != nil || got == nil || got.Name != "alice" || got.ID != 3 {
+	got, err := s.GetProvider(context.Background(), types.NewBigInt(3))
+	if err != nil || got == nil || got.Name != "alice" || !got.ID.Equal(types.NewBigInt(3)) {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
 
@@ -115,7 +114,7 @@ func TestGetProvider_FoundAndMissing(t *testing.T) {
 		ProviderId: big.NewInt(0),
 		Info:       sprbind.ServiceProviderRegistryStorageServiceProviderInfo{},
 	})
-	got, err = s.GetProvider(context.Background(), types.ProviderID(99))
+	got, err = s.GetProvider(context.Background(), types.NewBigInt(99))
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
 	}
@@ -124,28 +123,9 @@ func TestGetProvider_FoundAndMissing(t *testing.T) {
 	}
 }
 
-func TestGetProvider_DecodeErrorIsWrapped(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.set(t, "getProvider", sprbind.ServiceProviderRegistryServiceProviderInfoView{
-		ProviderId: new(big.Int).Lsh(big.NewInt(1), 65),
-		Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
-			ServiceProvider: common.HexToAddress("0x11"),
-			IsActive:        true,
-		},
-	})
-
-	_, err := s.GetProvider(context.Background(), types.ProviderID(3))
-	if err == nil {
-		t.Fatal("expected decode error")
-	}
-	if !strings.HasPrefix(err.Error(), "spregistry.GetProvider: ") {
-		t.Fatalf("err=%q want spregistry.GetProvider prefix", err)
-	}
-}
-
 func TestGetProvider_ZeroProviderID(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.GetProvider(context.Background(), 0)
+	_, err := s.GetProvider(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero provider ID, got %v", err)
 	}
@@ -155,7 +135,7 @@ func TestGetProviderIDByAddress(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProviderIdByAddress", big.NewInt(7))
 	got, err := s.GetProviderIDByAddress(context.Background(), common.HexToAddress("0x55"))
-	if err != nil || got != 7 {
+	if err != nil || !got.Equal(types.NewBigInt(7)) {
 		t.Fatalf("got=%v err=%v", got, err)
 	}
 	if _, err := s.GetProviderIDByAddress(context.Background(), common.Address{}); err == nil || !errors.Is(err, ErrInvalidArgument) {
@@ -174,7 +154,7 @@ func TestGetProviderIDByAddress_UnknownReturnsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 0 {
+	if !got.IsZero() {
 		t.Fatalf("expected zero ProviderID for unknown addr, got %v", got)
 	}
 }
@@ -182,7 +162,7 @@ func TestGetProviderIDByAddress_UnknownReturnsZero(t *testing.T) {
 func TestIsProviderActive(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "isProviderActive", true)
-	ok, err := s.IsProviderActive(context.Background(), types.ProviderID(1))
+	ok, err := s.IsProviderActive(context.Background(), types.NewBigInt(1))
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -190,7 +170,7 @@ func TestIsProviderActive(t *testing.T) {
 
 func TestIsProviderActive_ZeroProviderID(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.IsProviderActive(context.Background(), 0)
+	_, err := s.IsProviderActive(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero provider ID, got %v", err)
 	}
@@ -261,7 +241,7 @@ func TestGetPDPProvider(t *testing.T) {
 		},
 		ProductCapabilityValues: vals,
 	})
-	p, err := s.GetPDPProvider(context.Background(), types.ProviderID(4))
+	p, err := s.GetPDPProvider(context.Background(), types.NewBigInt(4))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +267,7 @@ func TestGetPDPProvider_MissingReturnsNotFound(t *testing.T) {
 		Product:                 sprbind.ServiceProviderRegistryStorageServiceProduct{ProductType: 0, CapabilityKeys: []string{}, IsActive: false},
 		ProductCapabilityValues: [][]byte{},
 	})
-	p, err := s.GetPDPProvider(context.Background(), types.ProviderID(77))
+	p, err := s.GetPDPProvider(context.Background(), types.NewBigInt(77))
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, p)
 	}
@@ -298,35 +278,9 @@ func TestGetPDPProvider_MissingReturnsNotFound(t *testing.T) {
 
 func TestGetPDPProvider_ZeroProviderID(t *testing.T) {
 	s, _ := newTestService(t)
-	_, err := s.GetPDPProvider(context.Background(), 0)
+	_, err := s.GetPDPProvider(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for zero provider ID, got %v", err)
-	}
-}
-
-func TestGetPDPProvider_DecodeErrorIsWrapped(t *testing.T) {
-	s, mc := newTestService(t)
-	keys, vals := pdpCapsFixture()
-	mc.set(t, "getProviderWithProduct", sprbind.ServiceProviderRegistryStorageProviderWithProduct{
-		ProviderId: new(big.Int).Lsh(big.NewInt(1), 65),
-		ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
-			ServiceProvider: common.HexToAddress("0x99"),
-			IsActive:        true,
-		},
-		Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
-			ProductType:    uint8(ProductTypePDP),
-			CapabilityKeys: keys,
-			IsActive:       true,
-		},
-		ProductCapabilityValues: vals,
-	})
-
-	_, err := s.GetPDPProvider(context.Background(), types.ProviderID(4))
-	if err == nil {
-		t.Fatal("expected decode error")
-	}
-	if !strings.HasPrefix(err.Error(), "spregistry.GetPDPProvider: ") {
-		t.Fatalf("err=%q want spregistry.GetPDPProvider prefix", err)
 	}
 }
 
@@ -366,36 +320,6 @@ func TestGetPDPProviders(t *testing.T) {
 	}
 }
 
-func TestGetPDPProviders_DecodeErrorIsWrapped(t *testing.T) {
-	s, mc := newTestService(t)
-	keys, vals := pdpCapsFixture()
-	mc.set(t, "getProvidersByProductType", sprbind.ServiceProviderRegistryStoragePaginatedProviders{
-		Providers: []sprbind.ServiceProviderRegistryStorageProviderWithProduct{
-			{
-				ProviderId: new(big.Int).Lsh(big.NewInt(1), 65),
-				ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
-					ServiceProvider: common.HexToAddress("0x01"),
-					IsActive:        true,
-				},
-				Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
-					ProductType:    uint8(ProductTypePDP),
-					CapabilityKeys: keys,
-					IsActive:       true,
-				},
-				ProductCapabilityValues: vals,
-			},
-		},
-	})
-
-	_, err := s.GetPDPProviders(context.Background(), true, types.ListOptions{Limit: 50})
-	if err == nil {
-		t.Fatal("expected decode error")
-	}
-	if !strings.HasPrefix(err.Error(), "spregistry.GetPDPProviders: ") {
-		t.Fatalf("err=%q want spregistry.GetPDPProviders prefix", err)
-	}
-}
-
 func TestGetProvidersByIDs(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProvidersByIds",
@@ -405,7 +329,7 @@ func TestGetProvidersByIDs(t *testing.T) {
 		},
 		[]bool{true, false},
 	)
-	out, err := s.GetProvidersByIDs(context.Background(), []types.ProviderID{types.ProviderID(1), types.ProviderID(999)})
+	out, err := s.GetProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1), types.NewBigInt(999)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +405,7 @@ func TestGetProvidersByIDs_MalformedResponse(t *testing.T) {
 		},
 		[]bool{true},
 	)
-	_, err := s.GetProvidersByIDs(context.Background(), []types.ProviderID{types.ProviderID(1), types.ProviderID(2)})
+	_, err := s.GetProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1), types.NewBigInt(2)})
 	if err == nil {
 		t.Fatal("expected error for malformed response, got nil")
 	}
@@ -525,7 +449,7 @@ func TestSelectActivePDPProviders_NoFilter(t *testing.T) {
 		t.Fatalf("expected 2 providers, got %d", len(got))
 	}
 	// Results must be sorted by ID ascending.
-	if got[0].Info.ID >= got[1].Info.ID {
+	if got[0].Info.ID.Cmp(got[1].Info.ID) >= 0 {
 		t.Errorf("expected ascending ID order, got %v %v", got[0].Info.ID, got[1].Info.ID)
 	}
 }
@@ -566,8 +490,8 @@ func TestSelectActivePDPProviders_SortedByID(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3, got %d", len(got))
 	}
-	ids := []types.ProviderID{got[0].Info.ID, got[1].Info.ID, got[2].Info.ID}
-	if ids[0] != 2 || ids[1] != 5 || ids[2] != 8 {
+	ids := []types.BigInt{got[0].Info.ID, got[1].Info.ID, got[2].Info.ID}
+	if !ids[0].Equal(types.NewBigInt(2)) || !ids[1].Equal(types.NewBigInt(5)) || !ids[2].Equal(types.NewBigInt(8)) {
 		t.Errorf("expected [2 5 8], got %v", ids)
 	}
 }
@@ -661,7 +585,7 @@ func TestSelectActivePDPProviders_FilterByFILToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Info.ID != 1 {
+	if len(got) != 1 || !got[0].Info.ID.Equal(types.NewBigInt(1)) {
 		t.Fatalf("expected only FIL provider, got %+v", got)
 	}
 }
@@ -672,7 +596,7 @@ func TestSelectActivePDPProviders_ExcludeIDs(t *testing.T) {
 	// Providers with IDs 1, 2, 3.
 	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 3, keys, vals, false))
 
-	excluded := []types.ProviderID{types.ProviderID(2)}
+	excluded := []types.BigInt{types.NewBigInt(2)}
 	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{ExcludeIDs: excluded})
 	if err != nil {
 		t.Fatal(err)
@@ -681,7 +605,7 @@ func TestSelectActivePDPProviders_ExcludeIDs(t *testing.T) {
 		t.Fatalf("expected 2 after exclusion, got %d", len(got))
 	}
 	for _, p := range got {
-		if p.Info.ID == 2 {
+		if p.Info.ID.Equal(types.NewBigInt(2)) {
 			t.Errorf("excluded provider ID 2 still present")
 		}
 	}
@@ -871,27 +795,8 @@ func TestGetProviderByAddress_ValidProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || got.Name != "bob" || got.ID != 5 {
+	if got == nil || got.Name != "bob" || !got.ID.Equal(types.NewBigInt(5)) {
 		t.Errorf("got=%+v", got)
-	}
-}
-
-func TestGetProviderByAddress_DecodeErrorIsWrapped(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.set(t, "getProviderByAddress", sprbind.ServiceProviderRegistryServiceProviderInfoView{
-		ProviderId: new(big.Int).Lsh(big.NewInt(1), 65),
-		Info: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
-			ServiceProvider: common.HexToAddress("0x55"),
-			IsActive:        true,
-		},
-	})
-
-	_, err := s.GetProviderByAddress(context.Background(), common.HexToAddress("0x55"))
-	if err == nil {
-		t.Fatal("expected decode error")
-	}
-	if !strings.HasPrefix(err.Error(), "spregistry.GetProviderByAddress: ") {
-		t.Fatalf("err=%q want spregistry.GetProviderByAddress prefix", err)
 	}
 }
 
@@ -902,7 +807,7 @@ func TestGetProviderByAddress_DecodeErrorIsWrapped(t *testing.T) {
 func TestIsProviderActive_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["isProviderActive"] = errors.New("rpc error")
-	_, err := s.IsProviderActive(context.Background(), types.ProviderID(1))
+	_, err := s.IsProviderActive(context.Background(), types.NewBigInt(1))
 	if err == nil {
 		t.Error("expected RPC error")
 	}
@@ -911,7 +816,7 @@ func TestIsProviderActive_RPCError(t *testing.T) {
 func TestIsProviderActive_ReturnsFalse(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "isProviderActive", false)
-	ok, err := s.IsProviderActive(context.Background(), types.ProviderID(1))
+	ok, err := s.IsProviderActive(context.Background(), types.NewBigInt(1))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,7 +37,7 @@ type PDPConfig struct {
 // liveness metadata. Returned by GetClientDataSetsWithDetails.
 type EnhancedDataSetInfo struct {
 	*DataSetInfo
-	PDPVerifierDataSetID sdktypes.DataSetID
+	PDPVerifierDataSetID sdktypes.BigInt
 	IsLive               bool
 	IsManaged            bool
 	ActivePieceCount     *big.Int
@@ -48,23 +48,23 @@ type EnhancedDataSetInfo struct {
 // ValidateDataSet verifies that the given data set is alive on the
 // PDPVerifier contract and that its listener is this WarmStorage contract.
 // Returns nil on success.
-func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.DataSetID) error {
+func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt) error {
 	if err := s.checkInit(); err != nil {
 		return err
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return fmt.Errorf("warmstorage.ValidateDataSet: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	if s.pdpBind == nil {
 		return fmt.Errorf("warmstorage.ValidateDataSet: %w", ErrPDPVerifierNotConfigured)
 	}
-	id := idconv.Big(dataSetID)
+	id := dataSetID.Big()
 	live, err := s.pdpBind.DataSetLive(&bind.CallOpts{Context: ctx}, id)
 	if err != nil {
 		return fmt.Errorf("warmstorage.ValidateDataSet: dataSetLive: %w", err)
 	}
 	if !live {
-		return fmt.Errorf("warmstorage.ValidateDataSet: data set %d does not exist or is not live", dataSetID)
+		return fmt.Errorf("warmstorage.ValidateDataSet: data set %s does not exist or is not live", dataSetID.String())
 	}
 	listener, err := s.pdpBind.GetDataSetListener(&bind.CallOpts{Context: ctx}, id)
 	if err != nil {
@@ -72,8 +72,8 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.DataSe
 	}
 	if listener != s.fwssAddr {
 		return fmt.Errorf(
-			"warmstorage.ValidateDataSet: data set %d is managed by %s, not this WarmStorage contract (%s)",
-			dataSetID, listener.Hex(), s.fwssAddr.Hex(),
+			"warmstorage.ValidateDataSet: data set %s is managed by %s, not this WarmStorage contract (%s)",
+			dataSetID.String(), listener.Hex(), s.fwssAddr.Hex(),
 		)
 	}
 	return nil
@@ -81,17 +81,17 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.DataSe
 
 // GetActivePieceCount returns the number of live (non-removed) pieces in
 // the given data set.
-func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.DataSetID) (*big.Int, error) {
+func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	if s.pdpBind == nil {
 		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", ErrPDPVerifierNotConfigured)
 	}
-	n, err := s.pdpBind.GetActivePieceCount(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID))
+	n, err := s.pdpBind.GetActivePieceCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", err)
 	}
@@ -99,14 +99,14 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Da
 }
 
 // GetPieceMetadata returns the (exists, value) pair for (dataSetID, pieceID, key).
-func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID sdktypes.DataSetID, pieceID sdktypes.PieceID, key string) (bool, string, error) {
+func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID sdktypes.BigInt, pieceID sdktypes.BigInt, key string) (bool, string, error) {
 	if err := s.checkInit(); err != nil {
 		return false, "", err
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return false, "", fmt.Errorf("warmstorage.GetPieceMetadata: %w: zero dataSetID", ErrInvalidArgument)
 	}
-	v, err := s.viewBind.GetPieceMetadata(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID), idconv.Big(pieceID), key)
+	v, err := s.viewBind.GetPieceMetadata(&bind.CallOpts{Context: ctx}, dataSetID.Big(), pieceID.Big(), key)
 	if err != nil {
 		return false, "", fmt.Errorf("warmstorage.GetPieceMetadata: %w", err)
 	}
@@ -115,14 +115,14 @@ func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID sdktypes.DataS
 
 // GetAllPieceMetadata returns a key/value map of all metadata for a
 // specific (dataSetID, pieceID) pair.
-func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID sdktypes.DataSetID, pieceID sdktypes.PieceID) (map[string]string, error) {
+func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID sdktypes.BigInt, pieceID sdktypes.BigInt) (map[string]string, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("warmstorage.GetAllPieceMetadata: %w: zero dataSetID", ErrInvalidArgument)
 	}
-	raw, err := s.viewBind.GetAllPieceMetadata(&bind.CallOpts{Context: ctx}, idconv.Big(dataSetID), idconv.Big(pieceID))
+	raw, err := s.viewBind.GetAllPieceMetadata(&bind.CallOpts{Context: ctx}, dataSetID.Big(), pieceID.Big())
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetAllPieceMetadata: %w", err)
 	}
@@ -177,7 +177,7 @@ func (s *Service) GetPDPConfig(ctx context.Context) (*PDPConfig, error) {
 // GetClientDataSetIds returns the shallow list of data set IDs for payer
 // with offset/limit pagination. Limit must be > 0; use
 // IterateAllClientDataSetIds for unbounded traversal.
-func (s *Service) GetClientDataSetIds(ctx context.Context, payer common.Address, opts sdktypes.ListOptions) ([]sdktypes.DataSetID, error) {
+func (s *Service) GetClientDataSetIds(ctx context.Context, payer common.Address, opts sdktypes.ListOptions) ([]sdktypes.BigInt, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -193,13 +193,9 @@ func (s *Service) GetClientDataSetIds(ctx context.Context, payer common.Address,
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetClientDataSetIds: %w", err)
 	}
-	out := make([]sdktypes.DataSetID, 0, len(raw))
-	for _, v := range raw {
-		id, err := idconv.Safe[sdktypes.DataSetID]("dataSetID", v)
-		if err != nil {
-			return nil, fmt.Errorf("warmstorage.GetClientDataSetIds: %w", err)
-		}
-		out = append(out, id)
+	out, err := idconv.FromBigSlice("dataSetID", raw)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetIds: %w", err)
 	}
 	return out, nil
 }
@@ -236,12 +232,12 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 	}
 	out := make([]*EnhancedDataSetInfo, 0, len(infos))
 	for _, info := range infos {
-		id := idconv.Big(info.DataSetID)
+		id := info.DataSetID.Big()
 		listener, lerr := s.pdpBind.GetDataSetListener(&bind.CallOpts{Context: ctx}, id)
 		if lerr != nil {
 			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: getDataSetListener dataSetID %d: %w",
-				info.DataSetID,
+				"warmstorage.GetClientDataSetsWithDetails: getDataSetListener dataSetID %s: %w",
+				info.DataSetID.String(),
 				lerr,
 			)
 		}
@@ -252,16 +248,16 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 		live, lerr := s.pdpBind.DataSetLive(&bind.CallOpts{Context: ctx}, id)
 		if lerr != nil {
 			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: dataSetLive dataSetID %d: %w",
-				info.DataSetID,
+				"warmstorage.GetClientDataSetsWithDetails: dataSetLive dataSetID %s: %w",
+				info.DataSetID.String(),
 				lerr,
 			)
 		}
 		metadata, merr := s.GetAllDataSetMetadata(ctx, info.DataSetID)
 		if merr != nil {
 			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: getAllDataSetMetadata dataSetID %d: %w",
-				info.DataSetID,
+				"warmstorage.GetClientDataSetsWithDetails: getAllDataSetMetadata dataSetID %s: %w",
+				info.DataSetID.String(),
 				merr,
 			)
 		}
@@ -270,8 +266,8 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			n, cerr := s.pdpBind.GetActivePieceCount(&bind.CallOpts{Context: ctx}, id)
 			if cerr != nil {
 				return nil, fmt.Errorf(
-					"warmstorage.GetClientDataSetsWithDetails: getActivePieceCount dataSetID %d: %w",
-					info.DataSetID,
+					"warmstorage.GetClientDataSetsWithDetails: getActivePieceCount dataSetID %s: %w",
+					info.DataSetID.String(),
 					cerr,
 				)
 			}
@@ -280,7 +276,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			active = big.NewInt(0)
 		}
 		_, withCDN := metadata["withCDN"]
-		withCDN = info.CDNRailID > 0 && withCDN
+		withCDN = !info.CDNRailID.IsZero() && withCDN
 		out = append(out, &EnhancedDataSetInfo{
 			DataSetInfo:          info,
 			PDPVerifierDataSetID: info.DataSetID,
@@ -298,7 +294,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 // associated with dataSetID. Requires Signer + Backend.
 func (s *Service) TopUpCDNPaymentRails(
 	ctx context.Context,
-	dataSetID sdktypes.DataSetID,
+	dataSetID sdktypes.BigInt,
 	cdnAmountToAdd, cacheMissAmountToAdd *big.Int,
 	opts ...WriteOption,
 ) (*sdktypes.WriteResult, error) {
@@ -311,7 +307,7 @@ func (s *Service) TopUpCDNPaymentRails(
 	if !s.chainID.IsValid() {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: invalid ChainID", ErrInvalidArgument)
 	}
-	if dataSetID == 0 {
+	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	if cdnAmountToAdd == nil || cdnAmountToAdd.Sign() < 0 {
@@ -328,7 +324,7 @@ func (s *Service) TopUpCDNPaymentRails(
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w", err)
 	}
 	defer release()
-	tx, err := s.fwssWrite.TopUpCDNPaymentRails(txOpts, idconv.Big(dataSetID), cdnAmountToAdd, cacheMissAmountToAdd)
+	tx, err := s.fwssWrite.TopUpCDNPaymentRails(txOpts, dataSetID.Big(), cdnAmountToAdd, cacheMissAmountToAdd)
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w", err)

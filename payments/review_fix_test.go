@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 func TestFund_NilAmountReturnsErrInvalidArgument(t *testing.T) {
@@ -100,7 +101,7 @@ func TestSettleAuto_NoSignerFailsBeforeFetchingRail(t *testing.T) {
 		ServiceFeeRecipient: common.Address{},
 	})
 
-	_, err := s.SettleAuto(context.Background(), big.NewInt(1), nil)
+	_, err := s.SettleAuto(context.Background(), sdktypes.NewBigInt(1), nil)
 	if err == nil || !strings.Contains(err.Error(), "signer required for write methods") {
 		t.Fatalf("SettleAuto no signer err=%v, want signer-required error", err)
 	}

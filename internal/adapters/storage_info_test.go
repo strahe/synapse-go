@@ -17,6 +17,7 @@ import (
 	pdpverifierbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/spregistry"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -92,7 +93,7 @@ func TestStorageInfoReader_GetStorageInfo_ReturnsPartialProvidersAndError(t *tes
 	if got == nil {
 		t.Fatal("GetStorageInfo result = nil, want partial result")
 	}
-	if len(got.Providers) != 1 || got.Providers[0].Info.ID != 1 {
+	if len(got.Providers) != 1 || !got.Providers[0].Info.ID.Equal(types.NewBigInt(1)) {
 		t.Fatalf("Providers = %+v, want only provider 1", got.Providers)
 	}
 	if got.Pricing.NoCDN.PerMonth == nil || got.Pricing.NoCDN.PerMonth.Cmp(big.NewInt(1000)) != 0 {

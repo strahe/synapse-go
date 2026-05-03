@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/strahe/synapse-go/types"
 )
 
 // pullTestServer builds a test server that handles POST /pdp/piece/pull.
@@ -42,7 +43,7 @@ func pullTestServer(t *testing.T, handleFn func(body pullPiecesBody, callCount i
 type pullPiecesBody struct {
 	ExtraData    string              `json:"extraData"`
 	RecordKeeper string              `json:"recordKeeper,omitempty"`
-	DataSetID    *uint64             `json:"dataSetId,omitempty"`
+	DataSetID    *json.Number        `json:"dataSetId,omitempty"`
 	Pieces       []pullPieceBodyItem `json:"pieces"`
 }
 
@@ -76,8 +77,8 @@ func TestPullPieces_CreateNew(t *testing.T) {
 		if body.RecordKeeper == "" {
 			t.Error("recordKeeper required for new dataset")
 		}
-		if body.DataSetID != nil && *body.DataSetID != 0 {
-			t.Errorf("dataSetId should be absent/0 for new dataset, got %d", *body.DataSetID)
+		if body.DataSetID != nil {
+			t.Errorf("dataSetId should be absent for new dataset, got %s", body.DataSetID)
 		}
 		if len(body.Pieces) != 1 {
 			t.Errorf("pieces len=%d want 1", len(body.Pieces))
@@ -122,12 +123,12 @@ func TestPullPieces_ExistingDataSet(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
 	rk := common.HexToAddress("0xabc")
 	extraData := []byte{0xca, 0xfe}
-	dataSetID := uint64(42)
+	dataSetID := types.NewBigInt(42)
 	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	c, _ := pullTestServer(t, func(body pullPiecesBody, _ int) (int, pullResponse) {
-		if body.DataSetID == nil || *body.DataSetID != dataSetID {
-			t.Errorf("dataSetId: got %v want %d", body.DataSetID, dataSetID)
+		if body.DataSetID == nil || body.DataSetID.String() != dataSetID.String() {
+			t.Errorf("dataSetId: got %v want %s", body.DataSetID, dataSetID.String())
 		}
 		if body.RecordKeeper != rk.Hex() {
 			t.Errorf("recordKeeper=%q want %q", body.RecordKeeper, rk.Hex())
@@ -141,7 +142,7 @@ func TestPullPieces_ExistingDataSet(t *testing.T) {
 	res, err := c.PullPieces(context.Background(), PullRequest{
 		RecordKeeper: rk,
 		ExtraData:    extraData,
-		DataSetID:    dataSetID,
+		DataSetID:    &dataSetID,
 		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: sourceURL}},
 	})
 	if err != nil {
@@ -149,6 +150,27 @@ func TestPullPieces_ExistingDataSet(t *testing.T) {
 	}
 	if res.Status != PullStatusInProgress {
 		t.Errorf("status=%q want inProgress", res.Status)
+	}
+}
+
+func TestPullPieces_ZeroDataSetIDRejected(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach server when dataSetID is zero")
+	}))
+	zero := types.NewBigInt(0)
+
+	_, err := c.PullPieces(context.Background(), PullRequest{
+		RecordKeeper: common.HexToAddress("0xabc"),
+		ExtraData:    []byte{0xca, 0xfe},
+		DataSetID:    &zero,
+		Pieces: []PullPieceInput{{
+			PieceCID:  pc,
+			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected error when dataSetID is zero")
 	}
 }
 
@@ -160,7 +182,10 @@ func TestPullPieces_ExistingDataSetRequiresRecordKeeper(t *testing.T) {
 
 	_, err := c.PullPieces(context.Background(), PullRequest{
 		ExtraData: []byte{0xca, 0xfe},
-		DataSetID: 42,
+		DataSetID: func() *types.BigInt {
+			id := types.NewBigInt(42)
+			return &id
+		}(),
 		Pieces: []PullPieceInput{{
 			PieceCID:  pc,
 			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),

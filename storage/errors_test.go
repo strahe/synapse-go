@@ -21,17 +21,17 @@ func TestStoreError_Error(t *testing.T) {
 		},
 		{
 			name:       "zero ProviderID and nil Cause",
-			err:        &StoreError{ProviderID: 0, Endpoint: "https://sp.example.com"},
+			err:        &StoreError{ProviderID: types.NewBigInt(0), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.StoreError: provider 0",
 		},
 		{
 			name:       "with ProviderID, nil Cause",
-			err:        &StoreError{ProviderID: types.ProviderID(42), Endpoint: "https://sp.example.com"},
+			err:        &StoreError{ProviderID: types.NewBigInt(42), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.StoreError: provider 42",
 		},
 		{
 			name:       "with Cause",
-			err:        &StoreError{ProviderID: types.ProviderID(7), Endpoint: "https://sp.example.com", Cause: errors.New("timeout")},
+			err:        &StoreError{ProviderID: types.NewBigInt(7), Endpoint: "https://sp.example.com", Cause: errors.New("timeout")},
 			wantPrefix: "storage.StoreError: provider 7",
 			wantAlso:   "timeout",
 		},
@@ -70,17 +70,17 @@ func TestCommitError_Error(t *testing.T) {
 		},
 		{
 			name:       "zero ProviderID and nil Cause",
-			err:        &CommitError{ProviderID: 0, Endpoint: "https://sp.example.com"},
+			err:        &CommitError{ProviderID: types.NewBigInt(0), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.CommitError: provider 0",
 		},
 		{
 			name:       "with ProviderID, nil Cause",
-			err:        &CommitError{ProviderID: types.ProviderID(99), Endpoint: "https://sp.example.com"},
+			err:        &CommitError{ProviderID: types.NewBigInt(99), Endpoint: "https://sp.example.com"},
 			wantPrefix: "storage.CommitError: provider 99",
 		},
 		{
 			name:       "with Cause",
-			err:        &CommitError{ProviderID: types.ProviderID(5), Endpoint: "https://sp.example.com", Cause: errors.New("conflict")},
+			err:        &CommitError{ProviderID: types.NewBigInt(5), Endpoint: "https://sp.example.com", Cause: errors.New("conflict")},
 			wantPrefix: "storage.CommitError: provider 5",
 			wantAlso:   "conflict",
 		},

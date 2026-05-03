@@ -24,7 +24,7 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 				WithCDN: storage.PricePerTiB{PerMonth: big.NewInt(200)},
 			},
 			Providers: []spregistry.PDPProvider{
-				{Info: spregistry.ProviderInfo{ID: types.ProviderID(1)}},
+				{Info: spregistry.ProviderInfo{ID: types.NewBigInt(1)}},
 			},
 			Allowances: &storage.Allowances{
 				IsApproved:      true,
@@ -35,8 +35,8 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 		dataSets: []*storage.DataSetInfo{
 			{
 				DataSetInfo: &warmstorage.DataSetInfo{
-					DataSetID:  types.DataSetID(10),
-					ProviderID: types.ProviderID(20),
+					DataSetID:  types.NewBigInt(10),
+					ProviderID: types.NewBigInt(20),
 					Payer:      payer,
 				},
 				IsLive:           true,
@@ -78,8 +78,8 @@ func TestRunListFiltersByDataSetID(t *testing.T) {
 	fake := &fakeDatasetReader{
 		info: &storage.StorageInfo{},
 		dataSets: []*storage.DataSetInfo{
-			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.DataSetID(1)}},
-			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.DataSetID(2)}},
+			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(1)}},
+			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(2)}},
 		},
 	}
 	var stdout bytes.Buffer

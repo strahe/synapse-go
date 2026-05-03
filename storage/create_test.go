@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"math/big"
 	"testing"
 
 	"github.com/strahe/synapse-go/types"
@@ -82,7 +81,7 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithClientDataSetID(types.NewBigInt(7)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)

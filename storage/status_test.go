@@ -14,10 +14,10 @@ import (
 )
 
 type fakePDPReader struct {
-	scheduled   []uint64
+	scheduled   []types.BigInt
 	scheduleErr error
 
-	findIDs []uint64
+	findIDs []types.BigInt
 	findErr error
 
 	nextChallenge    *big.Int
@@ -27,15 +27,15 @@ type fakePDPReader struct {
 	blockNumberErr error
 }
 
-func (f *fakePDPReader) GetScheduledRemovals(_ context.Context, _ types.DataSetID) ([]uint64, error) {
+func (f *fakePDPReader) GetScheduledRemovals(_ context.Context, _ types.BigInt) ([]types.BigInt, error) {
 	return f.scheduled, f.scheduleErr
 }
 
-func (f *fakePDPReader) FindPieceIdsByCid(_ context.Context, _ types.DataSetID, _ cid.Cid, _, _ uint64) ([]uint64, error) {
+func (f *fakePDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, _ cid.Cid, _, _ uint64) ([]types.BigInt, error) {
 	return f.findIDs, f.findErr
 }
 
-func (f *fakePDPReader) GetNextChallengeEpoch(_ context.Context, _ types.DataSetID) (*big.Int, error) {
+func (f *fakePDPReader) GetNextChallengeEpoch(_ context.Context, _ types.BigInt) (*big.Int, error) {
 	return f.nextChallenge, f.nextChallengeErr
 }
 
@@ -58,8 +58,8 @@ func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfig
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)
@@ -70,13 +70,13 @@ func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfig
 }
 
 func TestContext_GetScheduledRemovals(t *testing.T) {
-	pdp := &fakePDPReader{scheduled: []uint64{1, 2, 3}}
+	pdp := &fakePDPReader{scheduled: []types.BigInt{types.NewBigInt(1), types.NewBigInt(2), types.NewBigInt(3)}}
 	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{})
 	got, err := c.GetScheduledRemovals(context.Background())
 	if err != nil {
 		t.Fatalf("GetScheduledRemovals: %v", err)
 	}
-	if len(got) != 3 || got[0] != 1 || got[2] != 3 {
+	if len(got) != 3 || !got[0].Equal(types.NewBigInt(1)) || !got[2].Equal(types.NewBigInt(3)) {
 		t.Fatalf("unexpected scheduled removals: %v", got)
 	}
 }
@@ -86,8 +86,8 @@ func TestContext_GetScheduledRemovals_WithoutDataSetReturnsEmpty(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(big.NewInt(7)),
-		WithPDPVerifierReader(&fakePDPReader{scheduled: []uint64{1, 2, 3}}),
+		WithClientDataSetID(types.NewBigInt(7)),
+		WithPDPVerifierReader(&fakePDPReader{scheduled: []types.BigInt{types.NewBigInt(1), types.NewBigInt(2), types.NewBigInt(3)}}),
 		WithPDPConfigReader(&fakePDPConfigReader{}),
 	)
 	if err != nil {
@@ -108,8 +108,8 @@ func TestContext_GetScheduledRemovals_NotConfigured(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(7)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -133,7 +133,7 @@ func TestContext_PieceStatus_NotFound(t *testing.T) {
 
 func TestContext_PieceStatus_BeforeChallengeWindow(t *testing.T) {
 	pdp := &fakePDPReader{
-		findIDs:       []uint64{99},
+		findIDs:       []types.BigInt{types.NewBigInt(99)},
 		nextChallenge: big.NewInt(1_000_000),
 		blockNumber:   500_000,
 	}
@@ -143,7 +143,7 @@ func TestContext_PieceStatus_BeforeChallengeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PieceStatus: %v", err)
 	}
-	if !st.Exists || st.PieceID != 99 {
+	if !st.Exists || !st.PieceID.Equal(types.NewBigInt(99)) {
 		t.Fatalf("expected Exists=true PieceID=99, got %+v", st)
 	}
 	if st.InChallengeWindow || st.IsProofOverdue {
@@ -156,7 +156,7 @@ func TestContext_PieceStatus_BeforeChallengeWindow(t *testing.T) {
 
 func TestContext_PieceStatus_InChallengeWindow(t *testing.T) {
 	pdp := &fakePDPReader{
-		findIDs:       []uint64{1},
+		findIDs:       []types.BigInt{types.NewBigInt(1)},
 		nextChallenge: big.NewInt(100),
 		blockNumber:   110,
 	}
@@ -176,7 +176,7 @@ func TestContext_PieceStatus_InChallengeWindow(t *testing.T) {
 
 func TestContext_PieceStatus_Overdue(t *testing.T) {
 	pdp := &fakePDPReader{
-		findIDs:       []uint64{1},
+		findIDs:       []types.BigInt{types.NewBigInt(1)},
 		nextChallenge: big.NewInt(100),
 		blockNumber:   500,
 	}
@@ -193,7 +193,7 @@ func TestContext_PieceStatus_Overdue(t *testing.T) {
 
 func TestContext_PieceStatus_MainnetPopulatesProofTimes(t *testing.T) {
 	pdp := &fakePDPReader{
-		findIDs:       []uint64{1},
+		findIDs:       []types.BigInt{types.NewBigInt(1)},
 		nextChallenge: big.NewInt(100),
 		blockNumber:   110,
 	}
@@ -202,8 +202,8 @@ func TestContext_PieceStatus_MainnetPopulatesProofTimes(t *testing.T) {
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)
@@ -237,7 +237,7 @@ func TestContext_PieceStatus_PropagatesFindError(t *testing.T) {
 func TestContext_PieceStatus_TypedNilPDPConfigReaderTreatedAsUnset(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{
-		findIDs:       []uint64{1},
+		findIDs:       []types.BigInt{types.NewBigInt(1)},
 		nextChallenge: big.NewInt(0),
 		blockNumber:   0,
 	}
@@ -247,8 +247,8 @@ func TestContext_PieceStatus_TypedNilPDPConfigReaderTreatedAsUnset(t *testing.T)
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.DataSetID(42)),
-		WithClientDataSetID(big.NewInt(7)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)

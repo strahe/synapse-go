@@ -18,7 +18,7 @@ func Example() {
 	var svc *spregistry.Service // obtained from synapse.Client.SPRegistry()
 
 	ctx := context.Background()
-	info, err := svc.GetProvider(ctx, types.ProviderID(1))
+	info, err := svc.GetProvider(ctx, types.NewBigInt(1))
 	if err != nil {
 		log.Fatal(err)
 	}
