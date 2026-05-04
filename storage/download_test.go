@@ -94,6 +94,186 @@ func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 	}
 }
 
+func TestContextDownload_WithCDNUsesRetrieverFirst(t *testing.T) {
+	data := bytes.Repeat([]byte("cdn"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	cdnCalls := 0
+	cdn := fakeCDNRetriever{
+		downloadPieceFn: func(_ context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+			cdnCalls++
+			if pieceCID != info.CIDv2 {
+				t.Fatalf("cdn pieceCID=%s want %s", pieceCID, info.CIDv2)
+			}
+			return io.NopCloser(bytes.NewReader(data)), nil
+		},
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			t.Fatal("PDP direct should not be called after CDN success")
+			return nil, 0, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithCDN(true),
+		WithCDNRetriever(cdn),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
+	}
+	if cdnCalls != 1 {
+		t.Fatalf("cdnCalls=%d want 1", cdnCalls)
+	}
+}
+
+func TestContextDownload_WithCDNFallbacksToPDPOnRetrieverError(t *testing.T) {
+	data := bytes.Repeat([]byte("fallback"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	cdnCalls := 0
+	pdpCalls := 0
+	cdn := fakeCDNRetriever{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
+			cdnCalls++
+			return nil, errors.New("cdn miss")
+		},
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(_ context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
+			pdpCalls++
+			if pieceCID != info.CIDv2 {
+				t.Fatalf("pdp pieceCID=%s want %s", pieceCID, info.CIDv2)
+			}
+			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithCDN(true),
+		WithCDNRetriever(cdn),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
+	}
+	if cdnCalls != 1 || pdpCalls != 1 {
+		t.Fatalf("cdnCalls=%d pdpCalls=%d want 1,1", cdnCalls, pdpCalls)
+	}
+}
+
+func TestContextDownload_WithCDNContextCancellationDoesNotFallback(t *testing.T) {
+	data := bytes.Repeat([]byte("cancel"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	cdn := fakeCDNRetriever{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
+			return nil, context.Canceled
+		},
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			t.Fatal("PDP direct should not be called after CDN cancellation")
+			return nil, 0, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithCDN(true),
+		WithCDNRetriever(cdn),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Download(context.Background(), info.CIDv2)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+func TestContextDownload_WithCDNFalseSkipsRetriever(t *testing.T) {
+	data := bytes.Repeat([]byte("direct"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	cdnCalls := 0
+	pdpCalls := 0
+	cdn := fakeCDNRetriever{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
+			cdnCalls++
+			return nil, errors.New("should not be called")
+		},
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			pdpCalls++
+			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithCDN(false),
+		WithCDNRetriever(cdn),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
+	}
+	if cdnCalls != 0 || pdpCalls != 1 {
+		t.Fatalf("cdnCalls=%d pdpCalls=%d want 0,1", cdnCalls, pdpCalls)
+	}
+}
+
+type fakeCDNRetriever struct {
+	downloadPieceFn func(context.Context, cid.Cid) (io.ReadCloser, error)
+}
+
+func (f fakeCDNRetriever) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+	return f.downloadPieceFn(ctx, pieceCID)
+}
+
 func TestManagerDownload_URLValidatesPiece(t *testing.T) {
 	data := bytes.Repeat([]byte("mg"), 128)
 	info, err := piece.CalculateFromBytes(data)

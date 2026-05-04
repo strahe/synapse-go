@@ -1,8 +1,9 @@
-// Package filbeam provides a client for the FilBeam stats API.
+// Package filbeam provides a client for FilBeam stats and retrieval APIs.
 //
 // FilBeam is Filecoin's pay-per-byte infrastructure. This client exposes
 // remaining egress quota for FWSS data sets: CDN cache-hit egress and
-// cache-miss egress (retrieval from storage providers).
+// cache-miss egress (retrieval from storage providers), plus CDN-backed
+// piece downloads for a specific owner address.
 //
 // Usage:
 //

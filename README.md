@@ -61,7 +61,7 @@ automatically.
 | `chain` | Filecoin chain IDs, contract addresses, epochs, and token units |
 | `signer` | Secp256k1 and BLS signing abstractions |
 | `piece` | PieceCID v1/v2 calculation, parsing, and validation |
-| `filbeam` | FilBeam egress quota and usage stats for FWSS datasets |
+| `filbeam` | FilBeam egress quota, usage stats, and CDN retrieval for FWSS datasets |
 | `pdp` | Low-level Curio-compatible PDP provider HTTP client |
 
 ## Testing

@@ -36,14 +36,16 @@
 // providers from spregistry.
 //
 // Downloads are validated as they stream so callers can keep io.Reader-style
-// boundaries without skipping PieceCID verification. By default the HTTP
+// boundaries without skipping PieceCID verification. Context.Download can use
+// a CDN-backed retriever first when the context has CDN enabled, then fall back
+// to provider PDP retrieval on ordinary CDN failures. By default the HTTP
 // download client refuses to dial loopback, link-local, or private (RFC1918 /
 // ULA) addresses to guard against SSRF, and it ignores environment-variable
 // proxies for the same reason; set [Options.AllowPrivateNetworks] when
 // connecting to trusted private infrastructure, or provide [Options.HTTPClient]
 // if you need explicit proxy control. Bound the number of bytes accepted per
 // URL-based Service.Download call via [Options.DownloadMaxBytes];
-// Context.Download (PDP-backed) is not subject to this cap.
+// Context.Download is not subject to this cap.
 //
 // [UploadOptions] exposes per-upload lifecycle hooks covering the full
 // store → pull → commit pipeline:

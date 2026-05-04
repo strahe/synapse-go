@@ -117,8 +117,9 @@ Use `storage.UploadOptions` when the default upload is not enough:
 - `OnProgress`, `OnStored`, `OnCopyComplete`, `OnCopyFailed`,
   `OnPullProgress`, `OnPiecesAdded`, `OnPiecesConfirmed`: lifecycle callbacks.
 
-`Upload` returns as soon as at least one copy commits on-chain. Check
-`UploadResult.Complete` to know whether every requested copy succeeded.
+`Upload` succeeds when at least one copy commits on-chain. Before returning,
+it waits for started commit attempts to settle. Check `UploadResult.Complete`
+to know whether every requested copy succeeded.
 
 Dataset metadata must match exactly for automatic dataset reuse. Use stable
 metadata values when you want uploads to share payment rails.

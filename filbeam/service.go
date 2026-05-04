@@ -9,20 +9,26 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/retry"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
-// Service is a client for the FilBeam stats API.
+// Service is a client for the FilBeam stats and retrieval APIs.
 // It is safe for concurrent use.
 type Service struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     *slog.Logger
-	lifecycle  *lifecycle.Lifecycle
+	baseURL         string
+	retrievalDomain string
+	httpClient      *http.Client
+	logger          *slog.Logger
+	lifecycle       *lifecycle.Lifecycle
 }
 
 // Options configures a [Service].
@@ -37,6 +43,10 @@ type Options struct {
 	// If nil, http.DefaultClient is used.
 	HTTPClient *http.Client
 
+	// RetrievalDomain overrides the chain default FilBeam retrieval domain.
+	// Leave empty for the built-in Mainnet / Calibration defaults.
+	RetrievalDomain string
+
 	// Logger is the structured logger. If nil, logging is silent.
 	Logger *slog.Logger
 
@@ -50,33 +60,150 @@ type Options struct {
 // Returns an error wrapping [chain.ErrUnknownChain] if opts.Chain is not a
 // supported FilBeam network.
 func New(opts Options) (*Service, error) {
-	baseURL, ok := filbeamBaseURL(opts.Chain)
+	endpoints, ok := filbeamEndpointsForChain(opts.Chain)
 	if !ok {
 		return nil, fmt.Errorf("filbeam.New: %w: %v", chain.ErrUnknownChain, opts.Chain)
+	}
+	if opts.RetrievalDomain != "" {
+		domain, err := normalizeRetrievalDomain(opts.RetrievalDomain)
+		if err != nil {
+			return nil, fmt.Errorf("filbeam.New: %w: invalid retrieval domain: %w", ErrInvalidArgument, err)
+		}
+		endpoints.retrievalDomain = domain
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	return &Service{
-		baseURL:    baseURL,
-		httpClient: httpClient,
-		logger:     opts.Logger,
-		lifecycle:  opts.Lifecycle,
+		baseURL:         endpoints.statsBaseURL,
+		retrievalDomain: endpoints.retrievalDomain,
+		httpClient:      httpClient,
+		logger:          opts.Logger,
+		lifecycle:       opts.Lifecycle,
 	}, nil
 }
 
-// filbeamBaseURL returns the stats API base URL for the given chain.
-// The second return value reports whether the chain is supported.
-func filbeamBaseURL(c chain.Chain) (string, bool) {
+type filbeamEndpoints struct {
+	statsBaseURL    string
+	retrievalDomain string
+}
+
+// filbeamEndpointsForChain returns the FilBeam endpoints for the given chain.
+func filbeamEndpointsForChain(c chain.Chain) (filbeamEndpoints, bool) {
 	switch c {
 	case chain.Mainnet:
-		return "https://stats.filbeam.com", true
+		return filbeamEndpoints{
+			statsBaseURL:    "https://stats.filbeam.com",
+			retrievalDomain: "filbeam.io",
+		}, true
 	case chain.Calibration:
-		return "https://calibration.stats.filbeam.com", true
+		return filbeamEndpoints{
+			statsBaseURL:    "https://calibration.stats.filbeam.com",
+			retrievalDomain: "calibration.filbeam.io",
+		}, true
 	default:
-		return "", false
+		return filbeamEndpoints{}, false
 	}
+}
+
+func normalizeRetrievalDomain(domain string) (string, error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return "", errors.New("empty")
+	}
+	if strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#@") {
+		return "", errors.New("must be a host name, not a URL")
+	}
+	return domain, nil
+}
+
+// Retriever downloads pieces through FilBeam for one owner address.
+// It is safe for concurrent use.
+type Retriever struct {
+	service *Service
+	owner   common.Address
+}
+
+// NewRetriever creates a FilBeam retriever scoped to owner.
+func (s *Service) NewRetriever(owner common.Address) (*Retriever, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if owner == (common.Address{}) {
+		return nil, fmt.Errorf("filbeam.NewRetriever: %w: zero owner", ErrInvalidArgument)
+	}
+	return &Retriever{service: s, owner: owner}, nil
+}
+
+// DownloadPiece downloads a PieceCID through FilBeam.
+func (r *Retriever) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+	if r == nil || r.service == nil {
+		return nil, ErrUninitialized
+	}
+	if err := r.service.checkInit(); err != nil {
+		return nil, err
+	}
+	if err := validatePieceCID(pieceCID); err != nil {
+		return nil, fmt.Errorf("filbeam.Retriever.DownloadPiece: %w: %w", ErrInvalidArgument, err)
+	}
+	rawURL := fmt.Sprintf("https://%s.%s/%s", strings.ToLower(r.owner.Hex()), r.service.retrievalDomain, pieceCID.String())
+	if err := r.headPiece(ctx, rawURL); err != nil {
+		return nil, err
+	}
+	return r.getPiece(ctx, rawURL)
+}
+
+func validatePieceCID(c cid.Cid) error {
+	if !c.Defined() {
+		return errors.New("undefined pieceCID")
+	}
+	if piece.Validate(c) == nil {
+		return nil
+	}
+	if _, err := piece.ParseV2(c); err == nil {
+		return nil
+	}
+	return fmt.Errorf("not a piece CID: %s", c)
+}
+
+func (r *Retriever) headPiece(ctx context.Context, rawURL string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("filbeam.Retriever.DownloadPiece: build HEAD request: %w", err)
+	}
+	resp, err := r.service.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("filbeam.Retriever.DownloadPiece: HEAD: %w", err)
+	}
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("filbeam.Retriever.DownloadPiece: HEAD %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+	return nil
+}
+
+func (r *Retriever) getPiece(ctx context.Context, rawURL string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("filbeam.Retriever.DownloadPiece: build GET request: %w", err)
+	}
+	resp, err := r.service.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("filbeam.Retriever.DownloadPiece: GET: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("filbeam.Retriever.DownloadPiece: GET %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+	if resp.Body == nil {
+		return nil, errors.New("filbeam.Retriever.DownloadPiece: GET returned nil body")
+	}
+	return resp.Body, nil
 }
 
 // statsResponse mirrors the JSON returned by the FilBeam stats API.

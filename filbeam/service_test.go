@@ -1,6 +1,7 @@
 package filbeam
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ipfs/go-cid"
+
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -66,6 +71,286 @@ func (rt *rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
 	cloned.URL.Scheme = parsed.Scheme
 	cloned.URL.Host = parsed.Host
 	return rt.inner.RoundTrip(cloned)
+}
+
+type recordedRequest struct {
+	method string
+	host   string
+	path   string
+}
+
+type recordingRewriteHost struct {
+	base     string
+	inner    http.RoundTripper
+	requests *[]recordedRequest
+}
+
+func (rt *recordingRewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
+	*rt.requests = append(*rt.requests, recordedRequest{
+		method: req.Method,
+		host:   req.URL.Host,
+		path:   req.URL.Path,
+	})
+	cloned := req.Clone(req.Context())
+	parsed, _ := url.Parse(rt.base)
+	cloned.URL.Scheme = parsed.Scheme
+	cloned.URL.Host = parsed.Host
+	return rt.inner.RoundTrip(cloned)
+}
+
+type closeTrackingBody struct {
+	closed *bool
+}
+
+func (b closeTrackingBody) Read(_ []byte) (int, error) { return 0, io.EOF }
+
+func (b closeTrackingBody) Close() error {
+	*b.closed = true
+	return nil
+}
+
+func TestNewRetrieverRejectsZeroOwner(t *testing.T) {
+	svc := newTestService(t, chain.Calibration)
+	_, err := svc.NewRetriever(common.Address{})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("want ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestRetrieverDownloadPieceValidatesPieceCID(t *testing.T) {
+	svc := newTestService(t, chain.Calibration)
+	retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	if _, err := retriever.DownloadPiece(context.Background(), cid.Undef); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("undefined CID: want ErrInvalidArgument, got %v", err)
+	}
+
+	nonPiece, err := cid.Parse("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
+	if err != nil {
+		t.Fatalf("cid.Parse: %v", err)
+	}
+	if _, err := retriever.DownloadPiece(context.Background(), nonPiece); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("non-piece CID: want ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestRetrieverDownloadPieceAcceptsV1AndV2PieceCID(t *testing.T) {
+	data := bytes.Repeat([]byte("fb"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var requests []recordedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(data)
+		}
+	}))
+	defer srv.Close()
+
+	svc := newTestService(t, chain.Calibration)
+	svc.httpClient = &http.Client{Transport: &recordingRewriteHost{
+		base:     srv.URL,
+		inner:    http.DefaultTransport,
+		requests: &requests,
+	}}
+	retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	for _, pc := range []cid.Cid{info.CIDv1, info.CIDv2} {
+		rc, err := retriever.DownloadPiece(context.Background(), pc)
+		if err != nil {
+			t.Fatalf("DownloadPiece(%s): %v", pc, err)
+		}
+		_ = rc.Close()
+	}
+}
+
+func TestRetrieverDownloadPieceUsesChainRetrievalDomain(t *testing.T) {
+	data := bytes.Repeat([]byte("domain"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		c    chain.Chain
+		host string
+	}{
+		{"mainnet", chain.Mainnet, "0x1234567890123456789012345678901234567890.filbeam.io"},
+		{"calibration", chain.Calibration, "0x1234567890123456789012345678901234567890.calibration.filbeam.io"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests []recordedRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					_, _ = w.Write(data)
+				}
+			}))
+			defer srv.Close()
+
+			svc := newTestService(t, tc.c)
+			svc.httpClient = &http.Client{Transport: &recordingRewriteHost{
+				base:     srv.URL,
+				inner:    http.DefaultTransport,
+				requests: &requests,
+			}}
+			retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+			if err != nil {
+				t.Fatalf("NewRetriever: %v", err)
+			}
+			rc, err := retriever.DownloadPiece(context.Background(), info.CIDv2)
+			if err != nil {
+				t.Fatalf("DownloadPiece: %v", err)
+			}
+			_ = rc.Close()
+
+			if len(requests) != 2 {
+				t.Fatalf("requests=%d want 2", len(requests))
+			}
+			if requests[0].host != tc.host || requests[1].host != tc.host {
+				t.Fatalf("hosts=%q,%q want %q", requests[0].host, requests[1].host, tc.host)
+			}
+			if requests[0].path != "/"+info.CIDv2.String() || requests[1].path != "/"+info.CIDv2.String() {
+				t.Fatalf("paths=%q,%q want /%s", requests[0].path, requests[1].path, info.CIDv2)
+			}
+		})
+	}
+}
+
+func TestRetrieverDownloadPieceHeadsBeforeGet(t *testing.T) {
+	data := bytes.Repeat([]byte("head-get"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var requests []recordedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(data)
+		}
+	}))
+	defer srv.Close()
+
+	svc := newTestService(t, chain.Calibration)
+	svc.httpClient = &http.Client{Transport: &recordingRewriteHost{
+		base:     srv.URL,
+		inner:    http.DefaultTransport,
+		requests: &requests,
+	}}
+	retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	rc, err := retriever.DownloadPiece(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("DownloadPiece: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded bytes mismatch")
+	}
+	if len(requests) != 2 || requests[0].method != http.MethodHead || requests[1].method != http.MethodGet {
+		t.Fatalf("methods=%v want HEAD then GET", requests)
+	}
+}
+
+func TestRetrieverDownloadPieceHeadFailureSkipsGet(t *testing.T) {
+	data := bytes.Repeat([]byte("head-fail"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var requests []recordedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			http.Error(w, "missing", http.StatusNotFound)
+			return
+		}
+		t.Fatalf("unexpected GET after failed HEAD")
+	}))
+	defer srv.Close()
+
+	svc := newTestService(t, chain.Calibration)
+	svc.httpClient = &http.Client{Transport: &recordingRewriteHost{
+		base:     srv.URL,
+		inner:    http.DefaultTransport,
+		requests: &requests,
+	}}
+	retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	if _, err := retriever.DownloadPiece(context.Background(), info.CIDv2); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(requests) != 1 || requests[0].method != http.MethodHead {
+		t.Fatalf("requests=%v want one HEAD", requests)
+	}
+}
+
+func TestRetrieverDownloadPieceGetFailureClosesBody(t *testing.T) {
+	data := bytes.Repeat([]byte("get-fail"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var getBodyClosed bool
+	svc := newTestService(t, chain.Calibration)
+	svc.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodHead:
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		case http.MethodGet:
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       closeTrackingBody{closed: &getBodyClosed},
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+			return nil, nil
+		}
+	})}
+	retriever, err := svc.NewRetriever(common.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	if _, err := retriever.DownloadPiece(context.Background(), info.CIDv2); err == nil {
+		t.Fatal("expected error")
+	}
+	if !getBodyClosed {
+		t.Fatal("GET failure body was not closed")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestGetDataSetStats_Success(t *testing.T) {
@@ -195,6 +480,37 @@ func TestBaseURL_Calibration(t *testing.T) {
 	svc := newTestService(t, chain.Calibration)
 	if svc.baseURL != "https://calibration.stats.filbeam.com" {
 		t.Errorf("unexpected calibration baseURL: %s", svc.baseURL)
+	}
+}
+
+func TestNew_RetrievalDomainOverride(t *testing.T) {
+	svc, err := New(Options{
+		Chain:           chain.Calibration,
+		RetrievalDomain: "staging.filbeam.example",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.retrievalDomain != "staging.filbeam.example" {
+		t.Fatalf("retrievalDomain=%q want staging.filbeam.example", svc.retrievalDomain)
+	}
+}
+
+func TestNew_RetrievalDomainOverrideRejectsURL(t *testing.T) {
+	tests := []string{
+		"https://calibration.filbeam.io",
+		"staging.filbeam.example@attacker.example",
+	}
+	for _, domain := range tests {
+		t.Run(domain, func(t *testing.T) {
+			_, err := New(Options{
+				Chain:           chain.Calibration,
+				RetrievalDomain: domain,
+			})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("want ErrInvalidArgument, got %v", err)
+			}
+		})
 	}
 }
 

@@ -86,15 +86,20 @@ func (c *Client) initServices() error {
 	c.sessionKey = sk
 
 	fb, err := filbeam.New(filbeam.Options{
-		Chain:      c.selectedChain,
-		HTTPClient: c.httpClient,
-		Logger:     c.logger,
-		Lifecycle:  c.lifecycle,
+		Chain:           c.selectedChain,
+		HTTPClient:      c.httpClient,
+		RetrievalDomain: c.filbeamRetrievalDomain,
+		Logger:          c.logger,
+		Lifecycle:       c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create filbeam service: %w", err)
 	}
 	c.filbeam = fb
+	fbRetriever, err := fb.NewRetriever(c.evmSigner.EVMAddress())
+	if err != nil {
+		return fmt.Errorf("create filbeam retriever: %w", err)
+	}
 
 	costsvc, err := costs.New(costs.Options{
 		Chain:       c.selectedChain,
@@ -143,6 +148,7 @@ func (c *Client) initServices() error {
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(sel.DataSetMetadata),
 				storage.WithCDN(effectiveCDN),
+				storage.WithCDNRetriever(fbRetriever),
 				storage.WithPDPVerifierReader(c.pdpReader),
 				storage.WithPDPConfigReader(ws),
 				storage.WithFWSSTerminator(ws),

@@ -8,10 +8,13 @@ import (
 	"crypto/ecdsa"
 	crypto_rand "crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ipfs/go-cid"
 
+	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
@@ -72,6 +76,55 @@ func isExecutionRevert(err error) bool {
 	return strings.Contains(low, "message execution failed") && strings.Contains(low, "revert reason")
 }
 
+type recordedFilBeamRequest struct {
+	Method string
+	Host   string
+	Path   string
+}
+
+type filbeamRecordingTransport struct {
+	inner http.RoundTripper
+
+	mu       sync.Mutex
+	requests []recordedFilBeamRequest
+}
+
+func (rt *filbeamRecordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(strings.ToLower(req.URL.Hostname()), "filbeam.io") {
+		rt.mu.Lock()
+		rt.requests = append(rt.requests, recordedFilBeamRequest{
+			Method: req.Method,
+			Host:   req.URL.Host,
+			Path:   req.URL.Path,
+		})
+		rt.mu.Unlock()
+	}
+	return rt.inner.RoundTrip(req)
+}
+
+func (rt *filbeamRecordingTransport) Reset() {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.requests = nil
+}
+
+func (rt *filbeamRecordingTransport) Snapshot() []recordedFilBeamRequest {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	out := make([]recordedFilBeamRequest, len(rt.requests))
+	copy(out, rt.requests)
+	return out
+}
+
+func hasFilBeamMethod(requests []recordedFilBeamRequest, method string) bool {
+	for _, req := range requests {
+		if req.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
 func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
 	t.Helper()
 	cloned := &storage.UploadOptions{}
@@ -121,6 +174,153 @@ func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions
 	}
 
 	return cloned
+}
+
+func TestIntegration_CDNContextDownload(t *testing.T) {
+	ctx := context.Background()
+	recorder := &filbeamRecordingTransport{inner: http.DefaultTransport}
+	httpClient := &http.Client{
+		Transport: recorder,
+		Timeout:   5 * time.Minute,
+	}
+	client, err := synapse.New(ctx,
+		synapse.WithPrivateKeyHex(integrationtest.RequirePrivateKey(t)),
+		synapse.WithRPCURL(integrationtest.RPCURL()),
+		synapse.WithAllowPrivateNetworks(true),
+		synapse.WithHTTPClient(httpClient),
+		synapse.WithCDN(true),
+	)
+	if err != nil {
+		t.Fatalf("synapse.New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	data := make([]byte, testDataSize)
+	if _, err := crypto_rand.Read(data); err != nil {
+		t.Fatalf("generate CDN test data: %v", err)
+	}
+
+	withCDN := true
+	t.Log("start CDNContextDownload Prepare")
+	prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
+		DataSize:  uint64(len(data)),
+		EnableCDN: &withCDN,
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if prep.Transaction != nil {
+		t.Log("start CDNContextDownload Prepare.Execute")
+		res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			if errors.Is(err, payments.ErrPermitUnsupported) {
+				t.Skip("needs-usdfc-permit-support: CDN integration funding requires permit support")
+			}
+			t.Fatalf("Prepare.Execute: %v", err)
+		}
+		if res.Receipt == nil || res.Receipt.Status != 1 {
+			t.Fatalf("Prepare.Execute receipt = %+v", res.Receipt)
+		}
+	}
+
+	start := time.Now()
+	t.Log("start CDNContextDownload Upload")
+	result, err := client.Storage().Upload(cctx, bytes.NewReader(data), tracedUploadOptions(t, "CDNContextDownload", &storage.UploadOptions{
+		Copies: 1,
+		DataSetMetadata: map[string]string{
+			"source": "integration-cdn-context-download",
+			"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
+		},
+		WithCDN: &withCDN,
+	}))
+	t.Logf("done CDNContextDownload Upload elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(result.Copies) == 0 {
+		t.Fatal("Upload returned no copies")
+	}
+	cleanupDataSetID := result.Copies[0].DataSetID
+	if !cleanupDataSetID.IsZero() {
+		t.Cleanup(func() {
+			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+
+			t.Logf("start CDNContextDownload cleanup TerminateDataSet(%s)", cleanupDataSetID)
+			termRes, err := client.Storage().TerminateDataSet(cctx, cleanupDataSetID, &storage.TerminateDataSetOptions{
+				WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
+			})
+			if err != nil {
+				t.Logf("cleanup TerminateDataSet(%s): %v", cleanupDataSetID, err)
+				return
+			}
+			if termRes.Receipt != nil && termRes.Receipt.Status != 1 {
+				t.Logf("cleanup TerminateDataSet(%s) receipt = %+v", cleanupDataSetID, termRes.Receipt)
+			}
+			t.Logf("done CDNContextDownload cleanup TerminateDataSet(%s) tx=%s", cleanupDataSetID, termRes.Hash)
+		})
+	}
+	if !result.PieceCID.Defined() {
+		t.Fatal("Upload returned undefined PieceCID")
+	}
+
+	uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
+		DataSetIDs: []types.BigInt{result.Copies[0].DataSetID},
+		WithCDN:    &withCDN,
+	})
+	if err != nil {
+		t.Fatalf("CreateContext: %v", err)
+	}
+	if !uctx.WithCDN() {
+		t.Fatal("created context has WithCDN=false")
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= 10; attempt++ {
+		if attempt > 1 {
+			delay := 30 * time.Second
+			t.Logf("CDN context download attempt %d retrying in %s: %v", attempt, delay, lastErr)
+			select {
+			case <-time.After(delay):
+			case <-cctx.Done():
+				t.Fatalf("context expired waiting for CDN download: %v", cctx.Err())
+			}
+		}
+
+		recorder.Reset()
+		start = time.Now()
+		t.Logf("start CDNContextDownload Context.Download attempt %d", attempt)
+		rc, err := uctx.Download(cctx, result.PieceCID)
+		if err != nil {
+			lastErr = err
+			t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v err=%v",
+				attempt, time.Since(start).Round(time.Second), recorder.Snapshot(), err)
+			continue
+		}
+		got, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		requests := recorder.Snapshot()
+		t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v",
+			attempt, time.Since(start).Round(time.Second), requests)
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if !bytes.Equal(got, data) {
+			lastErr = errors.New("downloaded data mismatch")
+			continue
+		}
+		if !hasFilBeamMethod(requests, http.MethodHead) || !hasFilBeamMethod(requests, http.MethodGet) {
+			lastErr = fmt.Errorf("download succeeded without observed FilBeam HEAD+GET: %+v", requests)
+			continue
+		}
+		t.Logf("CDN context download verified through FilBeam: cid=%s dataset=%s", result.PieceCID, result.Copies[0].DataSetID)
+		return
+	}
+	t.Fatalf("CDN context download did not complete through FilBeam: %v", lastErr)
 }
 
 func TestIntegration(t *testing.T) {

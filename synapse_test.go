@@ -420,6 +420,56 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	_ = client.Storage()
 }
 
+func TestNew_WithFilBeamRetrievalDomain(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	data := bytes.Repeat([]byte("domain"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	var gotHost string
+	hc := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		gotHost = req.URL.Host
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(data)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+		WithHTTPClient(hc),
+		WithFilBeamRetrievalDomain("staging.filbeam.example"),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	retriever, err := client.FilBeam().NewRetriever(client.Address())
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+	rc, err := retriever.DownloadPiece(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("DownloadPiece: %v", err)
+	}
+	_ = rc.Close()
+
+	wantHost := strings.ToLower(client.Address().Hex()) + ".staging.filbeam.example"
+	if gotHost != wantHost {
+		t.Fatalf("host=%q want %q", gotHost, wantHost)
+	}
+}
+
 func TestNew_Mainnet(t *testing.T) {
 	srv, ec := fakeRPCServer(t, "0x13a") // Filecoin mainnet = 314
 	defer srv.Close()

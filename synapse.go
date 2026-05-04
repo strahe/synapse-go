@@ -36,16 +36,17 @@ import (
 //
 // All methods are safe for concurrent use.
 type Client struct {
-	ethClient     *ethclient.Client
-	ownsClient    bool
-	evmSigner     signer.EVMSigner
-	selectedChain chain.Chain
-	addresses     iabi.ResolvedAddresses
-	nonces        *txutil.NonceManager
-	logger        *slog.Logger
-	httpClient    *http.Client
-	source        string
-	withCDN       bool
+	ethClient              *ethclient.Client
+	ownsClient             bool
+	evmSigner              signer.EVMSigner
+	selectedChain          chain.Chain
+	addresses              iabi.ResolvedAddresses
+	nonces                 *txutil.NonceManager
+	logger                 *slog.Logger
+	httpClient             *http.Client
+	source                 string
+	withCDN                bool
+	filbeamRetrievalDomain string
 
 	lifecycle *lifecycle.Lifecycle
 	closeOnce sync.Once
@@ -63,16 +64,17 @@ type Client struct {
 }
 
 type clientConfig struct {
-	privateKey           *ecdsa.PrivateKey
-	privateKeyHex        string
-	rpcURL               string
-	ethClient            *ethclient.Client
-	chain                *chain.Chain
-	logger               *slog.Logger
-	httpClient           *http.Client
-	source               string
-	withCDN              bool
-	allowPrivateNetworks bool
+	privateKey             *ecdsa.PrivateKey
+	privateKeyHex          string
+	rpcURL                 string
+	ethClient              *ethclient.Client
+	chain                  *chain.Chain
+	logger                 *slog.Logger
+	httpClient             *http.Client
+	source                 string
+	withCDN                bool
+	filbeamRetrievalDomain string
+	allowPrivateNetworks   bool
 }
 
 // ClientOption configures a [Client] via [New].
@@ -143,7 +145,7 @@ func WithSource(s string) ClientOption {
 	return func(cfg *clientConfig) { cfg.source = s }
 }
 
-// WithCDN sets the Client-wide default for CDN-accelerated retrieval
+// WithCDN sets the Client-wide default for CDN-first context downloads
 // and the withCDN dataset-metadata flag used during provider selection.
 //
 // This is a default only: each [storage.UploadOptions] and
@@ -157,6 +159,12 @@ func WithSource(s string) ClientOption {
 //	_, err := client.Storage().Upload(ctx, r, &storage.UploadOptions{WithCDN: &b})
 func WithCDN(enabled bool) ClientOption {
 	return func(cfg *clientConfig) { cfg.withCDN = enabled }
+}
+
+// WithFilBeamRetrievalDomain overrides the chain default FilBeam retrieval
+// domain. Leave unset for the built-in Mainnet / Calibration defaults.
+func WithFilBeamRetrievalDomain(domain string) ClientOption {
+	return func(cfg *clientConfig) { cfg.filbeamRetrievalDomain = domain }
 }
 
 // WithAllowPrivateNetworks disables the built-in SSRF guard for
@@ -359,18 +367,19 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
 
 	c := &Client{
-		ethClient:            ec,
-		ownsClient:           ownsClient,
-		evmSigner:            evmSigner,
-		selectedChain:        selectedChain,
-		addresses:            addresses,
-		nonces:               nonces,
-		logger:               cfg.logger,
-		httpClient:           cfg.httpClient,
-		source:               cfg.source,
-		withCDN:              cfg.withCDN,
-		allowPrivateNetworks: cfg.allowPrivateNetworks,
-		lifecycle:            lifecycle.New(),
+		ethClient:              ec,
+		ownsClient:             ownsClient,
+		evmSigner:              evmSigner,
+		selectedChain:          selectedChain,
+		addresses:              addresses,
+		nonces:                 nonces,
+		logger:                 cfg.logger,
+		httpClient:             cfg.httpClient,
+		source:                 cfg.source,
+		withCDN:                cfg.withCDN,
+		filbeamRetrievalDomain: cfg.filbeamRetrievalDomain,
+		allowPrivateNetworks:   cfg.allowPrivateNetworks,
+		lifecycle:              lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {
 		return nil, err

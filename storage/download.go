@@ -20,6 +20,11 @@ type DownloadContext interface {
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
+// CDNRetriever provides optional CDN-backed piece retrieval for Context.
+type CDNRetriever interface {
+	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, error)
+}
+
 // DownloadOptions configures a Service.Download call. Exactly one of Context
 // or URL must be set; supplying both, or neither, returns an error matching
 // both [ErrInvalidDownloadOptions] and [ErrInvalidArgument].
@@ -80,9 +85,10 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 	return s.downloadAndValidate(ctx, opts.URL, pieceCID)
 }
 
-// Download retrieves a piece from the storage provider.  Validation is
-// streaming: the integrity check runs at EOF, so callers must inspect the
-// terminal error returned by the last Read (or io.ReadAll).
+// Download retrieves a piece from CDN when enabled and available, otherwise
+// from the storage provider. Validation is streaming: the integrity check runs
+// at EOF, so callers must inspect the terminal error returned by the last Read
+// (or io.ReadAll).
 //
 // pieceCID must be a PieceCIDv2.  PieceCIDv1 is not accepted on this path
 // because PDP provider only accepts v2 and the raw size needed to normalise v1→v2 is
@@ -90,6 +96,18 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	if _, err := piece.ParseV2(pieceCID); err != nil {
 		return nil, fmt.Errorf("storage.Context.Download: PieceCIDv2 required: %w", err)
+	}
+	if c.withCDN && c.cdnRetriever != nil {
+		body, err := c.cdnRetriever.DownloadPiece(ctx, pieceCID)
+		if err == nil && body != nil {
+			return newValidatingReadCloser(body, pieceCID, 0), nil
+		}
+		if err == nil {
+			err = errors.New("CDN retriever returned nil body")
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("storage.Context.Download: CDN: %w", err)
+		}
 	}
 	body, _, err := c.client.DownloadPiece(ctx, pieceCID)
 	if err != nil {

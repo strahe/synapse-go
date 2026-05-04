@@ -90,6 +90,7 @@ type Context struct {
 	chainID      types.ChainID
 	recordKeeper common.Address
 	withCDN      bool
+	cdnRetriever CDNRetriever
 
 	dataSetID           *types.BigInt
 	clientDataSetID     *types.BigInt
@@ -192,11 +193,17 @@ func WithDataSetMetadata(metadata map[string]string) ContextOption {
 	return func(c *Context) { c.dataSetMetadata = cloneStringMap(metadata) }
 }
 
-// WithCDN enables CDN services for the data set. When true, a "withCDN"
-// metadata marker is added to the EIP-712 dataset-creation message;
-// the contract activates CDN and applies its configured lockup upon seeing it.
+// WithCDN enables CDN services for the data set and CDN-first downloads when
+// a retriever is configured. When true, a "withCDN" metadata marker is added
+// to the EIP-712 dataset-creation message; the contract activates CDN and
+// applies its configured lockup upon seeing it.
 func WithCDN(enabled bool) ContextOption {
 	return func(c *Context) { c.withCDN = enabled }
+}
+
+// WithCDNRetriever injects the optional CDN retriever used by Context.Download.
+func WithCDNRetriever(r CDNRetriever) ContextOption {
+	return func(c *Context) { c.cdnRetriever = normalizeOptional(r) }
 }
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.
