@@ -60,14 +60,14 @@ func TestUploadResultPrimaryDataSetID(t *testing.T) {
 	t.Run("nil receiver", func(t *testing.T) {
 		var r *UploadResult
 		if id, ok := r.PrimaryDataSetID(); ok || !id.IsZero() {
-			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
+			t.Fatalf("got (%s, %v), want (0, false)", id, ok)
 		}
 	})
 
 	t.Run("no primary", func(t *testing.T) {
 		r := &UploadResult{Copies: []CopyResult{secondary}}
 		if id, ok := r.PrimaryDataSetID(); ok || !id.IsZero() {
-			t.Fatalf("got (%d, %v), want (0, false)", id, ok)
+			t.Fatalf("got (%s, %v), want (0, false)", id, ok)
 		}
 	})
 
@@ -75,7 +75,7 @@ func TestUploadResultPrimaryDataSetID(t *testing.T) {
 		r := &UploadResult{Copies: []CopyResult{secondary, primary}}
 		id, ok := r.PrimaryDataSetID()
 		if !ok || !id.Equal(sdktypes.NewBigInt(42)) {
-			t.Fatalf("got (%d, %v), want (42, true)", id, ok)
+			t.Fatalf("got (%s, %v), want (42, true)", id, ok)
 		}
 	})
 }

@@ -65,7 +65,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 			})
 			cancel()
 			if err != nil {
-				t.Logf("cleanup TerminateDataSet(%d): %v", id, err)
+				t.Logf("cleanup TerminateDataSet(%s): %v", id, err)
 			}
 		}
 	})
@@ -156,7 +156,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("ClientDataSetID mismatch: got %v want %v", created.ClientDataSetID, submission.ClientDataSetID)
 	}
 	if got := recovered.DataSetID(); got == nil || !got.Equal(created.DataSetID) {
-		t.Fatalf("recovered DataSetID = %v, want %d", got, created.DataSetID)
+		t.Fatalf("recovered DataSetID = %v, want %s", got, created.DataSetID)
 	}
 	cleanupIDs = append(cleanupIDs, created.DataSetID)
 
@@ -198,7 +198,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	if !commit.DataSetID.Equal(created.DataSetID) {
-		t.Fatalf("Commit DataSetID = %d, want %d", commit.DataSetID, created.DataSetID)
+		t.Fatalf("Commit DataSetID = %s, want %s", commit.DataSetID, created.DataSetID)
 	}
 	if commit.IsNewDataSet {
 		t.Fatal("Commit unexpectedly used create-and-add path")

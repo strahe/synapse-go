@@ -60,10 +60,10 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 
 	got := contextsToFake(t, contexts)
 	if !got[0].id.Equal(testID(1)) || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(11)) {
-		t.Fatalf("first context provider=%d dataset=%v want provider=1 dataset=11", got[0].id, got[0].dataSetID)
+		t.Fatalf("first context provider=%s dataset=%v want provider=1 dataset=11", got[0].id, got[0].dataSetID)
 	}
 	if !got[1].id.Equal(testID(2)) {
-		t.Fatalf("second context provider=%d want 2", got[1].id)
+		t.Fatalf("second context provider=%s want 2", got[1].id)
 	}
 	if got[1].dataSetID != nil {
 		t.Fatalf("second context dataset=%v want nil", got[1].dataSetID)
@@ -129,7 +129,7 @@ func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	}
 	got := replacement.(*fakeUploadContext)
 	if !got.id.Equal(testID(3)) {
-		t.Fatalf("replacement provider=%d want 3", got.id)
+		t.Fatalf("replacement provider=%s want 3", got.id)
 	}
 }
 
@@ -761,6 +761,6 @@ func TestServiceResolverResolveUploadContexts_AutoSelectTraversesPagedApprovedPr
 		t.Fatalf("contexts len=%d want 1", len(got))
 	}
 	if !got[0].id.Equal(testID(999)) {
-		t.Fatalf("provider=%d want 999", got[0].id)
+		t.Fatalf("provider=%s want 999", got[0].id)
 	}
 }

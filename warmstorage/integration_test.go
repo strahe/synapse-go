@@ -127,7 +127,7 @@ func TestIntegration_WarmStorage(t *testing.T) {
 			t.Fatalf("IsProviderApproved: %v", err)
 		}
 		if !approved {
-			t.Errorf("IsProviderApproved(%d) = false, want true", ids[0])
+			t.Errorf("IsProviderApproved(%s) = false, want true", ids[0])
 		}
 	}
 

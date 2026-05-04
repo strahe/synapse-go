@@ -72,7 +72,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 	// Sorted ascending by ID (documented invariant).
 	for i := 1; i < len(selected); i++ {
 		if selected[i-1].Info.ID.Cmp(selected[i].Info.ID) >= 0 {
-			t.Errorf("SelectActivePDPProviders not sorted ascending: %d >= %d",
+			t.Errorf("SelectActivePDPProviders not sorted ascending: %s >= %s",
 				selected[i-1].Info.ID, selected[i].Info.ID)
 			break
 		}
@@ -82,7 +82,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 	// Per-provider reads on `first`.
 	pdp, err := reg.GetPDPProvider(ctx, first.Info.ID)
 	if err != nil {
-		t.Fatalf("GetPDPProvider(%d): %v", first.Info.ID, err)
+		t.Fatalf("GetPDPProvider(%s): %v", first.Info.ID, err)
 	}
 	if pdp.Info.ServiceProvider != first.Info.ServiceProvider {
 		t.Errorf("GetPDPProvider ServiceProvider mismatch")
@@ -90,7 +90,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 
 	info, err := reg.GetProvider(ctx, first.Info.ID)
 	if err != nil {
-		t.Fatalf("GetProvider(%d): %v", first.Info.ID, err)
+		t.Fatalf("GetProvider(%s): %v", first.Info.ID, err)
 	}
 	if info.ServiceProvider != first.Info.ServiceProvider {
 		t.Errorf("GetProvider ServiceProvider mismatch")
@@ -100,16 +100,16 @@ func TestIntegration_SPRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProviderByAddress(%s): %v", info.ServiceProvider, err)
 	}
-	if byAddr.ID != info.ID {
-		t.Errorf("GetProviderByAddress ID mismatch: %d != %d", byAddr.ID, info.ID)
+	if !byAddr.ID.Equal(info.ID) {
+		t.Errorf("GetProviderByAddress ID mismatch: %s != %s", byAddr.ID, info.ID)
 	}
 
 	idByAddr, err := reg.GetProviderIDByAddress(ctx, info.ServiceProvider)
 	if err != nil {
 		t.Fatalf("GetProviderIDByAddress: %v", err)
 	}
-	if idByAddr != info.ID {
-		t.Errorf("GetProviderIDByAddress mismatch: %d != %d", idByAddr, info.ID)
+	if !idByAddr.Equal(info.ID) {
+		t.Errorf("GetProviderIDByAddress mismatch: %s != %s", idByAddr, info.ID)
 	}
 
 	isActive, err := reg.IsProviderActive(ctx, info.ID)
@@ -117,7 +117,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		t.Fatalf("IsProviderActive: %v", err)
 	}
 	if !isActive {
-		t.Errorf("IsProviderActive should be true for selected active provider %d", info.ID)
+		t.Errorf("IsProviderActive should be true for selected active provider %s", info.ID)
 	}
 
 	// Zero-address returns zero providerID (not an error for 0 input? yes — zero
@@ -128,7 +128,7 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		t.Fatalf("GetProviderIDByAddress(unreg): %v", err)
 	}
 	if !unreg.IsZero() {
-		t.Errorf("GetProviderIDByAddress(unreg) = %d, want 0", unreg)
+		t.Errorf("GetProviderIDByAddress(unreg) = %s, want 0", unreg)
 	}
 
 	// Batch lookup including one valid ID and one sentinel invalid. Base

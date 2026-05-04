@@ -453,7 +453,7 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 		t.Fatal("replacement clientDataSetID should be backfilled")
 	}
 	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement.ProviderID()) {
-		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement.ProviderID())
+		t.Fatalf("copies=%+v want replacement provider %s in second slot", got.Copies, replacement.ProviderID())
 	}
 }
 
@@ -530,13 +530,13 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 		t.Fatalf("Upload: %v", err)
 	}
 	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement2.id) {
-		t.Fatalf("copies=%+v want replacement provider %d in second slot", got.Copies, replacement2.id)
+		t.Fatalf("copies=%+v want replacement provider %s in second slot", got.Copies, replacement2.id)
 	}
 	if len(got.FailedAttempts) != 3 {
 		t.Fatalf("FailedAttempts=%+v want 3 entries", got.FailedAttempts)
 	}
 	if !got.FailedAttempts[2].ProviderID.Equal(replacementProvider.ID) {
-		t.Fatalf("last failed provider=%d want replacement provider %d (retry should advance to replacement after populate failure)", got.FailedAttempts[2].ProviderID, replacementProvider.ID)
+		t.Fatalf("last failed provider=%s want replacement provider %s (retry should advance to replacement after populate failure)", got.FailedAttempts[2].ProviderID, replacementProvider.ID)
 	}
 }
 

@@ -21,8 +21,10 @@ import (
 
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
+	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/integrationtest"
+	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/sessionkey"
@@ -36,6 +38,25 @@ const (
 	testDataSize       = 256 * 1024 // 256 KB
 	txWaitTimeout      = 180 * time.Second
 )
+
+var noProgressInSettlementSelector = filPayErrorSelector("NoProgressInSettlement")
+
+// ABI selector lookup panics during test init because ABI drift is a codegen bug.
+func filPayErrorSelector(name string) string {
+	parsed, err := filpaybind.FilPayMetaData.GetAbi()
+	if err != nil {
+		panic(err)
+	}
+	def, ok := parsed.Errors[name]
+	if !ok {
+		panic("missing FilPay error: " + name)
+	}
+	return strings.ToLower(def.ID.Hex()[:10])
+}
+
+func isNoProgressInSettlement(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), noProgressInSettlementSelector)
+}
 
 func isExecutionRevert(err error) bool {
 	if err == nil {
@@ -291,7 +312,7 @@ func TestIntegration(t *testing.T) {
 
 		for i, cp := range result.Copies {
 			if cp.ProviderID.IsZero() {
-				t.Errorf("Copy[%d].ProviderID invalid: %d", i, cp.ProviderID)
+				t.Errorf("Copy[%d].ProviderID invalid: %s", i, cp.ProviderID)
 			}
 			if _, err := url.Parse(cp.RetrievalURL); err != nil {
 				t.Errorf("Copy[%d].RetrievalURL invalid: %v", i, err)
@@ -304,22 +325,22 @@ func TestIntegration(t *testing.T) {
 		uploadedCID = result.PieceCID
 		uploadedURL = result.Copies[0].RetrievalURL
 		uploadedDataSetID = result.Copies[0].DataSetID
-		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s, dataSet=%d",
+		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s, dataSet=%s",
 			result.PieceCID, result.Size, len(result.Copies), uploadedURL, uploadedDataSetID)
 
 		if !uploadedDataSetID.IsZero() {
 			dsInfo, derr := client.WarmStorage().GetDataSet(cctx, uploadedDataSetID)
 			if derr != nil {
-				t.Logf("GetDataSet(%d): %v", uploadedDataSetID, derr)
+				t.Logf("GetDataSet(%s): %v", uploadedDataSetID, derr)
 			} else {
 				uploadedRailID = dsInfo.PDPRailID
-				t.Logf("dataSet rails: pdp=%d cacheMiss=%d cdn=%d", dsInfo.PDPRailID, dsInfo.CacheMissRailID, dsInfo.CDNRailID)
+				t.Logf("dataSet rails: pdp=%s cacheMiss=%s cdn=%s", dsInfo.PDPRailID, dsInfo.CacheMissRailID, dsInfo.CDNRailID)
 			}
 		}
 
 		if len(result.FailedAttempts) > 0 {
 			for _, fa := range result.FailedAttempts {
-				t.Logf("  failed attempt: provider=%d, role=%s, stage=%s, err=%v",
+				t.Logf("  failed attempt: provider=%s, role=%s, stage=%s, err=%v",
 					fa.ProviderID, fa.Role, fa.Stage, fa.Err)
 			}
 		}
@@ -459,7 +480,7 @@ func TestIntegration(t *testing.T) {
 			pid := cp.ProviderID
 			key := idconv.Key(pid)
 			if _, dup := seen[key]; dup {
-				t.Errorf("Copy[%d] has duplicate ProviderID: %d", i, pid)
+				t.Errorf("Copy[%d] has duplicate ProviderID: %s", i, pid)
 			}
 			seen[key] = struct{}{}
 
@@ -474,12 +495,12 @@ func TestIntegration(t *testing.T) {
 		t.Logf("multicopy: cid=%s, copies=%d/%d",
 			result.PieceCID, len(result.Copies), result.RequestedCopies)
 		for i, cp := range result.Copies {
-			t.Logf("  copy[%d]: provider=%d, role=%s, url=%s",
+			t.Logf("  copy[%d]: provider=%s, role=%s, url=%s",
 				i, cp.ProviderID, cp.Role, cp.RetrievalURL)
 		}
 		if len(result.FailedAttempts) > 0 {
 			for _, fa := range result.FailedAttempts {
-				t.Logf("  failed: provider=%d, role=%s, stage=%s, err=%v",
+				t.Logf("  failed: provider=%s, role=%s, stage=%s, err=%v",
 					fa.ProviderID, fa.Role, fa.Stage, fa.Err)
 			}
 		}
@@ -581,17 +602,17 @@ func TestIntegration(t *testing.T) {
 		first := page.Providers[0]
 		info, err := client.GetProviderInfoByID(cctx, first.Info.ID)
 		if err != nil {
-			t.Fatalf("GetProviderInfoByID(%d): %v", first.Info.ID, err)
+			t.Fatalf("GetProviderInfoByID(%s): %v", first.Info.ID, err)
 		}
-		if info.ID != first.Info.ID {
-			t.Errorf("provider id mismatch: got %d want %d", info.ID, first.Info.ID)
+		if !info.ID.Equal(first.Info.ID) {
+			t.Errorf("provider id mismatch: got %s want %s", info.ID, first.Info.ID)
 		}
 		info2, err := client.GetProviderInfoByAddress(cctx, info.ServiceProvider)
 		if err != nil {
 			t.Fatalf("GetProviderInfoByAddress(%s): %v", info.ServiceProvider, err)
 		}
-		if info2.ID != info.ID {
-			t.Errorf("address-lookup mismatch: got %d want %d", info2.ID, info.ID)
+		if !info2.ID.Equal(info.ID) {
+			t.Errorf("address-lookup mismatch: got %s want %s", info2.ID, info.ID)
 		}
 	})
 
@@ -696,7 +717,7 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("ServiceURL empty")
 		}
 		if got := uctx.DataSetID(); got == nil || !got.Equal(uploadedDataSetID) {
-			t.Errorf("DataSetID = %v, want %d", got, uploadedDataSetID)
+			t.Errorf("DataSetID = %v, want %s", got, uploadedDataSetID)
 		}
 		_ = uctx.WithCDN()
 		prov := uctx.GetProviderInfo()
@@ -785,7 +806,7 @@ func TestIntegration(t *testing.T) {
 		}
 		copy0 := result.Copies[0]
 		if !copy0.DataSetID.Equal(uploadedDataSetID) {
-			t.Fatalf("Context.Upload(existing dataset) dataSetID = %d, want %d", copy0.DataSetID, uploadedDataSetID)
+			t.Fatalf("Context.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
 		}
 		if copy0.IsNewDataSet {
 			t.Fatal("Context.Upload(existing dataset) unexpectedly created a new dataset")
@@ -869,12 +890,12 @@ func TestIntegration(t *testing.T) {
 
 		rv, err := client.Payments().GetRail(cctx, uploadedRailID)
 		if err != nil {
-			t.Fatalf("GetRail(%d): %v", uploadedRailID, err)
+			t.Fatalf("GetRail(%s): %v", uploadedRailID, err)
 		}
 		if rv == nil {
 			t.Fatal("GetRail returned nil")
 		}
-		t.Logf("rail %d: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
+		t.Logf("rail %s: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
 
 		payee := rv.To
 		page, err := client.Payments().GetRailsAsPayee(cctx, payee, usdfc)
@@ -885,6 +906,9 @@ func TestIntegration(t *testing.T) {
 
 		amts, err := client.Payments().GetSettlementAmounts(cctx, uploadedRailID, nil)
 		if err != nil {
+			if isNoProgressInSettlement(err) {
+				t.Skipf("settlement preview has no progress for rail %s: %v", uploadedRailID, err)
+			}
 			t.Fatalf("GetSettlementAmounts: %v", err)
 		}
 		t.Logf("settlement preview: settled=%s netPayee=%s commission=%s networkFee=%s finalEpoch=%s note=%q",
@@ -939,7 +963,10 @@ func TestIntegration(t *testing.T) {
 			// FilBeam aggregator may not have indexed brand-new uploads yet;
 			// log but do not fail the suite.
 			if errors.Is(err, filbeam.ErrDataSetNotFound) {
-				t.Skipf("FilBeam has no stats yet for dataset %d (eventual consistency)", uploadedDataSetID)
+				t.Skipf("FilBeam has no stats yet for dataset %s (eventual consistency)", uploadedDataSetID)
+			}
+			if errors.Is(err, retry.ErrMaxRetries) {
+				t.Skipf("FilBeam stats endpoint transient failure after retries for dataset %s: %v", uploadedDataSetID, err)
 			}
 			t.Fatalf("GetDataSetStats: %v", err)
 		}

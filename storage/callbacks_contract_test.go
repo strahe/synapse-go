@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +46,58 @@ type pullProgressEvent struct {
 	providerID types.BigInt
 	pieceCID   cid.Cid
 	status     PullStatus
+}
+
+func formatSubmittedEvent(e submittedEvent) string {
+	return fmt.Sprintf("{provider=%s txHash=%s pieces=%s}", e.providerID, e.txHash, formatSubmittedPieces(e.pieces))
+}
+
+func formatSubmittedEvents(events []submittedEvent) string {
+	return formatEvents(events, formatSubmittedEvent)
+}
+
+func formatConfirmedEvent(e confirmedEvent) string {
+	return fmt.Sprintf("{provider=%s dataSet=%s pieces=%s}", e.providerID, e.dataSetID, formatConfirmedPieces(e.pieces))
+}
+
+func formatConfirmedEvents(events []confirmedEvent) string {
+	return formatEvents(events, formatConfirmedEvent)
+}
+
+func formatCopyEvent(e copyEvent) string {
+	return fmt.Sprintf("{provider=%s pieceCID=%s}", e.providerID, e.pieceCID)
+}
+
+func formatCopyEvents(events []copyEvent) string {
+	return formatEvents(events, formatCopyEvent)
+}
+
+func formatPullProgressEvent(e pullProgressEvent) string {
+	return fmt.Sprintf("{provider=%s pieceCID=%s status=%s}", e.providerID, e.pieceCID, e.status)
+}
+
+func formatPullProgressEvents(events []pullProgressEvent) string {
+	return formatEvents(events, formatPullProgressEvent)
+}
+
+func formatSubmittedPieces(pieces []SubmittedPiece) string {
+	return formatEvents(pieces, func(p SubmittedPiece) string {
+		return fmt.Sprintf("{pieceCID=%s}", p.PieceCID)
+	})
+}
+
+func formatConfirmedPieces(pieces []ConfirmedPiece) string {
+	return formatEvents(pieces, func(p ConfirmedPiece) string {
+		return fmt.Sprintf("{pieceID=%s pieceCID=%s}", p.PieceID, p.PieceCID)
+	})
+}
+
+func formatEvents[T any](events []T, formatOne func(T) string) string {
+	parts := make([]string, len(events))
+	for i, event := range events {
+		parts[i] = formatOne(event)
+	}
+	return "[" + strings.Join(parts, " ") + "]"
 }
 
 func submittedPiecesEqual(got, want []SubmittedPiece) bool {
@@ -198,8 +252,9 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	if !piecesAddedProviderID.Equal(provider.ID) {
 		t.Errorf("OnPiecesAdded providerID=%s, want %s", piecesAddedProviderID.String(), provider.ID.String())
 	}
-	if !submittedPiecesEqual(piecesAddedPieces, []SubmittedPiece{{PieceCID: info.CIDv2}}) {
-		t.Errorf("OnPiecesAdded pieces=%v, want [{%s}]", piecesAddedPieces, info.CIDv2)
+	wantSubmittedPieces := []SubmittedPiece{{PieceCID: info.CIDv2}}
+	if !submittedPiecesEqual(piecesAddedPieces, wantSubmittedPieces) {
+		t.Errorf("OnPiecesAdded pieces=%s, want %s", formatSubmittedPieces(piecesAddedPieces), formatSubmittedPieces(wantSubmittedPieces))
 	}
 	if !piecesConfirmedDSID.Equal(types.NewBigInt(55)) {
 		t.Errorf("OnPiecesConfirmed dataSetID=%s, want 55", piecesConfirmedDSID.String())
@@ -207,11 +262,12 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	if !piecesConfirmedProvider.Equal(provider.ID) {
 		t.Errorf("OnPiecesConfirmed providerID=%s, want %s", piecesConfirmedProvider.String(), provider.ID.String())
 	}
-	if !confirmedPiecesEqual(piecesConfirmedPieces, []ConfirmedPiece{{
+	wantConfirmedPieces := []ConfirmedPiece{{
 		PieceID:  types.NewBigInt(77),
 		PieceCID: info.CIDv2,
-	}}) {
-		t.Errorf("OnPiecesConfirmed pieces=%v, want [{77 %s}]", piecesConfirmedPieces, info.CIDv2)
+	}}
+	if !confirmedPiecesEqual(piecesConfirmedPieces, wantConfirmedPieces) {
+		t.Errorf("OnPiecesConfirmed pieces=%s, want %s", formatConfirmedPieces(piecesConfirmedPieces), formatConfirmedPieces(wantConfirmedPieces))
 	}
 }
 
@@ -263,11 +319,12 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	if _, err := ctx.Upload(context.Background(), bytes.NewReader(data), opts); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if !confirmedPiecesEqual(confirmed, []ConfirmedPiece{{
+	wantConfirmedPieces := []ConfirmedPiece{{
 		PieceID:  types.NewBigInt(0),
 		PieceCID: info.CIDv2,
-	}}) {
-		t.Fatalf("OnPiecesConfirmed pieces=%v, want [{0 %s}]", confirmed, info.CIDv2)
+	}}
+	if !confirmedPiecesEqual(confirmed, wantConfirmedPieces) {
+		t.Fatalf("OnPiecesConfirmed pieces=%s, want %s", formatConfirmedPieces(confirmed), formatConfirmedPieces(wantConfirmedPieces))
 	}
 }
 
@@ -413,8 +470,9 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(storedEvents) != 1 || !hasCopyEvent(storedEvents, copyEvent{providerID: primary.id, pieceCID: info.CIDv2}) {
-		t.Errorf("OnStored: got %v, want [{provider=%d pieceCID=%s}]", storedEvents, primary.id, info.CIDv2)
+	wantStored := copyEvent{providerID: primary.id, pieceCID: info.CIDv2}
+	if len(storedEvents) != 1 || !hasCopyEvent(storedEvents, wantStored) {
+		t.Errorf("OnStored: got %s, want %s", formatCopyEvents(storedEvents), formatCopyEvents([]copyEvent{wantStored}))
 	}
 
 	wantSubmitted := []submittedEvent{
@@ -426,7 +484,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 	for _, want := range wantSubmitted {
 		if !hasSubmittedEvent(piecesAddedEvents, want) {
-			t.Errorf("OnPiecesAdded missing event %+v in %v", want, piecesAddedEvents)
+			t.Errorf("OnPiecesAdded missing event %s in %s", formatSubmittedEvent(want), formatSubmittedEvents(piecesAddedEvents))
 		}
 	}
 
@@ -439,32 +497,34 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 	for _, want := range wantConfirmed {
 		if !hasConfirmedEvent(piecesConfirmedEvt, want) {
-			t.Errorf("OnPiecesConfirmed missing event %+v in %v", want, piecesConfirmedEvt)
+			t.Errorf("OnPiecesConfirmed missing event %s in %s", formatConfirmedEvent(want), formatConfirmedEvents(piecesConfirmedEvt))
 		}
 	}
 
 	// OnCopyComplete fires when a secondary's SP-to-SP pull completes, not on
 	// commit. In this scenario the replacement's pull succeeds; the primary has
 	// no pull step and the failedSecondary's pull fails before OnCopyComplete fires.
-	if len(copyCompleteEvents) != 1 || !hasCopyEvent(copyCompleteEvents, copyEvent{providerID: replacement.id, pieceCID: info.CIDv2}) {
-		t.Errorf("OnCopyComplete: got %v, want [{provider=%d pieceCID=%s}]", copyCompleteEvents, replacement.id, info.CIDv2)
+	wantCopyComplete := copyEvent{providerID: replacement.id, pieceCID: info.CIDv2}
+	if len(copyCompleteEvents) != 1 || !hasCopyEvent(copyCompleteEvents, wantCopyComplete) {
+		t.Errorf("OnCopyComplete: got %s, want %s", formatCopyEvents(copyCompleteEvents), formatCopyEvents([]copyEvent{wantCopyComplete}))
 	}
 
 	if len(copyFailedEvents) != 1 {
 		t.Errorf("OnCopyFailed: got %d events, want 1", len(copyFailedEvents))
 	} else {
 		got := copyFailedEvents[0]
-		if got.providerID != failedSecondary.id || got.pieceCID != info.CIDv2 || got.err == nil {
-			t.Errorf("OnCopyFailed: got %+v, want {provider=%d pieceCID=%s err!=nil}", got, failedSecondary.id, info.CIDv2)
+		if !got.providerID.Equal(failedSecondary.id) || got.pieceCID != info.CIDv2 || got.err == nil {
+			t.Errorf("OnCopyFailed: got {provider=%s pieceCID=%s err=%v}, want {provider=%s pieceCID=%s err!=nil}", got.providerID, got.pieceCID, got.err, failedSecondary.id, info.CIDv2)
 		}
 	}
 
-	if !hasPullProgressEvent(pullProgressEvents, pullProgressEvent{
+	wantPullProgress := pullProgressEvent{
 		providerID: replacement.id,
 		pieceCID:   info.CIDv2,
 		status:     PullStatusComplete,
-	}) {
-		t.Errorf("OnPullProgress missing {provider=%d pieceCID=%s status=%s} in %v", replacement.id, info.CIDv2, PullStatusComplete, pullProgressEvents)
+	}
+	if !hasPullProgressEvent(pullProgressEvents, wantPullProgress) {
+		t.Errorf("OnPullProgress missing %s in %s", formatPullProgressEvent(wantPullProgress), formatPullProgressEvents(pullProgressEvents))
 	}
 }
 
@@ -515,7 +575,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		pieces:     []ConfirmedPiece{{PieceID: types.NewBigInt(0), PieceCID: info.CIDv2}},
 	}}
 	if len(confirmed) != 1 || !hasConfirmedEvent(confirmed, want[0]) {
-		t.Fatalf("OnPiecesConfirmed=%v, want %v", confirmed, want)
+		t.Fatalf("OnPiecesConfirmed=%s, want %s", formatConfirmedEvents(confirmed), formatConfirmedEvents(want))
 	}
 }
 
