@@ -44,8 +44,10 @@ fmt.Printf("copies: %d/%d\n", upload.SuccessCount(), upload.RequestedCopies)
 fmt.Println("retrieve:", upload.Copies[0].RetrievalURL)
 ```
 
-Use real values from your config or secret manager. The chain is detected
-automatically.
+Use real values from your config or secret manager. Mainnet and Calibration
+are detected from the RPC chain ID.
+
+Single uploads must be at least 127 bytes and fit the PDP cap, about 1 GiB.
 
 ## Package Map
 
@@ -55,7 +57,7 @@ automatically.
 | `storage` | Multi-provider upload/download orchestration, dataset discovery, and prepare flows |
 | `payments` | USDFC balances, deposits, withdrawals, approvals, and Filecoin Pay rails |
 | `costs` | Storage pricing, lockup, runway, and funding cost calculations |
-| `warmstorage` | FWSS dataset management, pricing, approvals, and provider allocation |
+| `warmstorage` | FWSS datasets, pricing, approved-provider discovery, and termination |
 | `spregistry` | Storage provider registry discovery and provider/product management |
 | `sessionkey` | Delegated session key authorization for FWSS EIP-712 operations |
 | `chain` | Filecoin chain IDs, contract addresses, epochs, and token units |

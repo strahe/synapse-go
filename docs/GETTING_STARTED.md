@@ -31,6 +31,9 @@ defer client.Close()
 Use real values from your config or secret manager. Never hardcode production
 private keys.
 
+Mainnet and Calibration are supported. The client detects the chain from the
+RPC endpoint unless you pass `WithChain`.
+
 Common setup options:
 
 - `WithPrivateKeyHex` / `WithPrivateKey`: configure the signer.
@@ -44,7 +47,8 @@ Common setup options:
 
 `Storage().Upload` is the default path. It selects providers, stores the primary
 copy, asks secondary providers to pull from it, then commits successful copies
-on-chain. Payloads must contain at least 127 raw bytes.
+on-chain. Payloads must be at least 127 bytes and no larger than
+`chain.MaxUploadSize`, the PDP cap of about 1 GiB.
 
 ```go
 withCDN := true
@@ -100,7 +104,9 @@ The download reader validates the PieceCID at EOF. Always check the final
 Use `DownloadOptions{Context: storageCtx}` or `storageCtx.Download` when you
 want to read from a specific provider context. URL downloads reject private
 network addresses by default; enable `WithAllowPrivateNetworks(true)` only for
-trusted infrastructure.
+trusted infrastructure. The top-level client leaves URL downloads uncapped.
+Standalone `storage.Service` users can set `storage.Options.DownloadMaxBytes`;
+exceeding it returns `storage.ErrMaxBytesExceeded`.
 
 ## Upload Controls
 
@@ -251,7 +257,7 @@ application-level destructive operations and gate them accordingly.
 | `Storage()` | Upload, download, prepare, contexts, datasets |
 | `Payments()` | USDFC balances, deposits, withdrawals, approvals, rails |
 | `Costs()` | Storage estimates and account runway |
-| `WarmStorage()` | FWSS dataset metadata, pricing, approvals, termination |
+| `WarmStorage()` | FWSS dataset metadata, pricing, approved-provider discovery, termination |
 | `SPRegistry()` | Provider discovery and PDP capability lookup |
 | `FilBeam()` | CDN quota and dataset usage |
 | `SessionKey()` | Delegated session key authorization |
