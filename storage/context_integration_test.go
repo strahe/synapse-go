@@ -42,11 +42,14 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	metadata := map[string]string{
 		"staged": strconv.FormatInt(time.Now().UnixNano(), 10),
 	}
+	start := time.Now()
+	t.Log("start storage staged CreateContexts")
 	contexts, err := sm.CreateContexts(ctx, &storage.CreateContextsOptions{
 		Copies:          2,
 		DataSetMetadata: metadata,
 		WithCDN:         &withCDN,
 	})
+	t.Logf("done storage staged CreateContexts elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("CreateContexts: %v", err)
 	}
@@ -60,9 +63,12 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	t.Cleanup(func() {
 		for _, id := range cleanupIDs {
 			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			start := time.Now()
+			t.Logf("start storage staged cleanup TerminateDataSet(%s)", id)
 			_, err := sm.TerminateDataSet(cctx, id, &storage.TerminateDataSetOptions{
 				WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(contextIntegrationTxWait)},
 			})
+			t.Logf("done storage staged cleanup TerminateDataSet(%s) elapsed=%s", id, time.Since(start).Round(time.Second))
 			cancel()
 			if err != nil {
 				t.Logf("cleanup TerminateDataSet(%s): %v", id, err)
@@ -70,6 +76,28 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		}
 	})
 
+	executePrepare := func(label string, prepare *storage.PrepareResult) {
+		t.Helper()
+		if prepare == nil || prepare.Transaction == nil {
+			return
+		}
+		start := time.Now()
+		t.Logf("start %s", label)
+		res, err := prepare.Transaction.Execute(ctx, payments.WithWait(contextIntegrationTxWait))
+		t.Logf("done %s elapsed=%s", label, time.Since(start).Round(time.Second))
+		if err != nil {
+			if errors.Is(err, payments.ErrPermitUnsupported) {
+				t.Skip("needs-usdfc-permit-support: storage.Prepare funding requires permit support")
+			}
+			t.Fatalf("%s: %v", label, err)
+		}
+		if res.Receipt == nil || res.Receipt.Status != 1 {
+			t.Fatalf("%s receipt = %+v", label, res.Receipt)
+		}
+	}
+
+	start = time.Now()
+	t.Log("start storage staged Prepare")
 	prepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(len(data)),
 		Contexts: []storage.UploadContext{
@@ -77,23 +105,16 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 			secondary,
 		},
 	})
+	t.Logf("done storage staged Prepare elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if prepare.Transaction != nil {
-		res, err := prepare.Transaction.Execute(ctx, payments.WithWait(contextIntegrationTxWait))
-		if err != nil {
-			if errors.Is(err, payments.ErrPermitUnsupported) {
-				t.Skip("needs-usdfc-permit-support: storage.Prepare funding requires permit support")
-			}
-			t.Fatalf("Prepare.Execute: %v", err)
-		}
-		if res.Receipt == nil || res.Receipt.Status != 1 {
-			t.Fatalf("Prepare.Execute receipt = %+v", res.Receipt)
-		}
-	}
+	executePrepare("Prepare.Execute", prepare)
 
+	start = time.Now()
+	t.Log("start storage staged primary Upload")
 	primaryUpload, err := primary.Upload(ctx, bytes.NewReader(data), nil)
+	t.Logf("done storage staged primary Upload elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("primary Upload: %v", err)
 	}
@@ -115,12 +136,15 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	submitCtx, cancelSubmit := context.WithCancel(ctx)
 	defer cancelSubmit()
 	var submission storage.CreateDataSetSubmission
+	start = time.Now()
+	t.Log("start storage staged secondary CreateDataSet")
 	_, err = secondary.CreateDataSet(submitCtx, &storage.CreateDataSetOptions{
 		OnSubmitted: func(s storage.CreateDataSetSubmission) {
 			submission = s
 			cancelSubmit()
 		},
 	})
+	t.Logf("done storage staged secondary CreateDataSet elapsed=%s", time.Since(start).Round(time.Second))
 	if err == nil {
 		t.Fatal("CreateDataSet returned nil error after submit context cancellation")
 	}
@@ -145,7 +169,10 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateContext(recovery): %v", err)
 	}
+	start = time.Now()
+	t.Log("start storage staged WaitForDataSetCreated")
 	created, err := recovered.WaitForDataSetCreated(ctx, submission)
+	t.Logf("done storage staged WaitForDataSetCreated elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
@@ -173,6 +200,8 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
 	}
+	start = time.Now()
+	t.Log("start storage staged Pull")
 	pull, err := recovered.Pull(ctx, storage.PullRequest{
 		Pieces: []cid.Cid{primaryUpload.PieceCID},
 		From: func(cid.Cid) string {
@@ -180,6 +209,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		},
 		ExtraData: extraData,
 	})
+	t.Logf("done storage staged Pull elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -190,10 +220,27 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("Pull pieces = %+v, want one complete piece", pull.Pieces)
 	}
 
+	start = time.Now()
+	t.Log("start storage staged Prepare(commit)")
+	commitPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
+		DataSize: uint64(len(data)),
+		Contexts: []storage.UploadContext{
+			recovered,
+		},
+	})
+	t.Logf("done storage staged Prepare(commit) elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("Prepare(commit): %v", err)
+	}
+	executePrepare("Prepare(commit).Execute", commitPrepare)
+
+	start = time.Now()
+	t.Log("start storage staged Commit")
 	commit, err := recovered.Commit(ctx, storage.CommitRequest{
 		Pieces:    []storage.PieceInput{pieceInput},
 		ExtraData: extraData,
 	})
+	t.Logf("done storage staged Commit elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

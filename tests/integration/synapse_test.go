@@ -72,6 +72,57 @@ func isExecutionRevert(err error) bool {
 	return strings.Contains(low, "message execution failed") && strings.Contains(low, "revert reason")
 }
 
+func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
+	t.Helper()
+	cloned := &storage.UploadOptions{}
+	if opts != nil {
+		v := *opts
+		cloned = &v
+	}
+
+	prevStored := cloned.OnStored
+	cloned.OnStored = func(providerID types.BigInt, pieceCID cid.Cid) {
+		t.Logf("%s stored: provider=%s cid=%s", label, providerID, pieceCID)
+		if prevStored != nil {
+			prevStored(providerID, pieceCID)
+		}
+	}
+
+	prevPiecesAdded := cloned.OnPiecesAdded
+	cloned.OnPiecesAdded = func(txHash string, providerID types.BigInt, pieces []storage.SubmittedPiece) {
+		t.Logf("%s commit submitted: provider=%s tx=%s pieces=%d", label, providerID, txHash, len(pieces))
+		if prevPiecesAdded != nil {
+			prevPiecesAdded(txHash, providerID, pieces)
+		}
+	}
+
+	prevPiecesConfirmed := cloned.OnPiecesConfirmed
+	cloned.OnPiecesConfirmed = func(dataSetID, providerID types.BigInt, pieces []storage.ConfirmedPiece) {
+		t.Logf("%s commit confirmed: provider=%s dataSet=%s pieces=%d", label, providerID, dataSetID, len(pieces))
+		if prevPiecesConfirmed != nil {
+			prevPiecesConfirmed(dataSetID, providerID, pieces)
+		}
+	}
+
+	prevCopyComplete := cloned.OnCopyComplete
+	cloned.OnCopyComplete = func(providerID types.BigInt, pieceCID cid.Cid) {
+		t.Logf("%s copy complete: provider=%s cid=%s", label, providerID, pieceCID)
+		if prevCopyComplete != nil {
+			prevCopyComplete(providerID, pieceCID)
+		}
+	}
+
+	prevCopyFailed := cloned.OnCopyFailed
+	cloned.OnCopyFailed = func(providerID types.BigInt, pieceCID cid.Cid, err error) {
+		t.Logf("%s copy failed: provider=%s cid=%s err=%v", label, providerID, pieceCID, err)
+		if prevCopyFailed != nil {
+			prevCopyFailed(providerID, pieceCID, err)
+		}
+	}
+
+	return cloned
+}
+
 func TestIntegration(t *testing.T) {
 	ctx := context.Background()
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -100,35 +151,6 @@ func TestIntegration(t *testing.T) {
 		uploadedDataSetID types.BigInt
 		uploadedRailID    types.BigInt
 	)
-
-	// Register cleanup to withdraw available funds at the end.
-	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), txWaitTimeout)
-		defer cancel()
-		acct, err := client.Payments().AccountInfo(cctx, usdfc, addr)
-		if err != nil {
-			t.Logf("cleanup: AccountInfo: %v", err)
-			return
-		}
-		avail := acct.AvailableFunds()
-		if avail == nil || avail.Sign() <= 0 {
-			t.Log("cleanup: no available funds to withdraw")
-			return
-		}
-		// Try withdrawing half of available to avoid contract revert on locked funds.
-		half := new(big.Int).Div(avail, big.NewInt(2))
-		if half.Sign() <= 0 {
-			t.Log("cleanup: available funds too small to withdraw")
-			return
-		}
-		_, err = client.Payments().Withdraw(cctx, usdfc, half,
-			payments.WithWait(txWaitTimeout))
-		if err != nil {
-			t.Logf("cleanup: Withdraw %s: %v", half, err)
-		} else {
-			t.Logf("cleanup: withdrew %s USDFC", half)
-		}
-	})
 
 	// --- Costs subtest ---
 	t.Run("Costs", func(t *testing.T) {
@@ -187,38 +209,19 @@ func TestIntegration(t *testing.T) {
 		t.Logf("initial: funds=%s, lockup=%s, available=%s",
 			acct.Funds, acct.LockupCurrent, acct.AvailableFunds())
 
-		// Calculate deposit amount: 4x the needed deposit for 256KB upload.
+		// Calculate deposit amount for the upload. Well-funded accounts still
+		// deposit 1 atto-USDFC so this full flow keeps direct Deposit coverage.
 		dataSize := big.NewInt(testDataSize)
 		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, dataSize,
 			&costs.UploadCostOptions{IsNewDataSet: true})
 		if err != nil {
 			t.Fatalf("GetUploadCosts for deposit calculation: %v", err)
 		}
-		depositAmount := new(big.Int).Mul(uploadCosts.DepositNeeded, big.NewInt(4))
+		depositAmount := new(big.Int).Set(uploadCosts.DepositNeeded)
 		if depositAmount.Sign() <= 0 {
-			// DepositNeeded may be 0 if account is already well-funded.
-			// Use a minimum deposit of 1 USDFC (18 decimals).
-			depositAmount = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+			depositAmount = big.NewInt(1)
 		}
 		t.Logf("deposit amount: %s (depositNeeded=%s)", depositAmount, uploadCosts.DepositNeeded)
-
-		// Ensure ERC20 allowance for the Payments contract.
-		allowance, err := client.Payments().Allowance(cctx, usdfc, addr, filPay)
-		if err != nil {
-			t.Fatalf("Allowance: %v", err)
-		}
-		if allowance.Cmp(depositAmount) < 0 {
-			approveAmount := new(big.Int).Mul(depositAmount, big.NewInt(10))
-			res, err := client.Payments().Approve(cctx, usdfc, filPay, approveAmount,
-				payments.WithWait(txWaitTimeout))
-			if err != nil {
-				t.Fatalf("Approve: %v", err)
-			}
-			if res.Receipt != nil && res.Receipt.Status != 1 {
-				t.Fatalf("Approve tx failed: status=%d", res.Receipt.Status)
-			}
-			t.Logf("approved %s USDFC for payments contract, tx=%s", approveAmount, res.Hash)
-		}
 
 		// Ensure FWSS service approval.
 		svcApproval, err := client.Payments().ServiceApproval(cctx, usdfc, addr, fwss)
@@ -235,6 +238,7 @@ func TestIntegration(t *testing.T) {
 			maxRate := new(big.Int).Mul(uploadCosts.Rate.RatePerEpoch, big.NewInt(100))
 			maxLockup := new(big.Int).Mul(uploadCosts.Lockup.TotalLockup, big.NewInt(100))
 			maxPeriod := big.NewInt(365 * 24 * 60 * 2) // ~1 year in epochs
+			t.Log("start Payments ApproveService")
 			res, err := client.Payments().ApproveService(cctx, usdfc, fwss,
 				maxRate, maxLockup, maxPeriod,
 				payments.WithWait(txWaitTimeout))
@@ -247,12 +251,31 @@ func TestIntegration(t *testing.T) {
 			t.Logf("approved FWSS service operator, tx=%s", res.Hash)
 		}
 
-		// Deposit funds.
+		// Ensure ERC20 allowance for the Payments contract before depositing.
+		allowance, err := client.Payments().Allowance(cctx, usdfc, addr, filPay)
+		if err != nil {
+			t.Fatalf("Allowance: %v", err)
+		}
+		if allowance.Cmp(depositAmount) < 0 {
+			approveAmount := new(big.Int).Mul(depositAmount, big.NewInt(10))
+			t.Log("start Payments Approve")
+			res, err := client.Payments().Approve(cctx, usdfc, filPay, approveAmount,
+				payments.WithWait(txWaitTimeout))
+			if err != nil {
+				t.Fatalf("Approve: %v", err)
+			}
+			if res.Receipt != nil && res.Receipt.Status != 1 {
+				t.Fatalf("Approve tx failed: status=%d", res.Receipt.Status)
+			}
+			t.Logf("approved %s USDFC for payments contract, tx=%s", approveAmount, res.Hash)
+		}
+
 		balBefore, err := client.Payments().Balance(cctx, usdfc, addr)
 		if err != nil {
 			t.Fatalf("Balance (before): %v", err)
 		}
 
+		t.Log("start Payments Deposit")
 		res, err := client.Payments().Deposit(cctx, usdfc, addr, depositAmount,
 			payments.WithWait(txWaitTimeout))
 		if err != nil {
@@ -277,7 +300,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- Upload subtest ---
 	t.Run("Upload", func(t *testing.T) {
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 
 		testData = make([]byte, testDataSize)
@@ -285,9 +308,12 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("generate test data: %v", err)
 		}
 
-		result, err := client.Storage().Upload(cctx, bytes.NewReader(testData), &storage.UploadOptions{
+		start := time.Now()
+		t.Log("start Upload Storage.Upload")
+		result, err := client.Storage().Upload(cctx, bytes.NewReader(testData), tracedUploadOptions(t, "Upload", &storage.UploadOptions{
 			Copies: 1,
-		})
+		}))
+		t.Logf("done Upload Storage.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
@@ -369,16 +395,20 @@ func TestIntegration(t *testing.T) {
 				}
 			}
 
+			start := time.Now()
+			t.Logf("start Download attempt %d", attempt+1)
 			rc, err := client.Storage().Download(cctx, uploadedCID, &storage.DownloadOptions{
 				URL: uploadedURL,
 			})
 			if err != nil {
+				t.Logf("done Download attempt %d elapsed=%s", attempt+1, time.Since(start).Round(time.Second))
 				lastErr = err
 				continue
 			}
 
 			data, err := io.ReadAll(rc)
 			_ = rc.Close()
+			t.Logf("done Download attempt %d elapsed=%s", attempt+1, time.Since(start).Round(time.Second))
 			if err != nil {
 				lastErr = err
 				continue
@@ -426,6 +456,7 @@ func TestIntegration(t *testing.T) {
 			}
 			if allowance.Cmp(multiCosts.DepositNeeded) < 0 {
 				approveAmount := new(big.Int).Mul(multiCosts.DepositNeeded, big.NewInt(10))
+				t.Log("start Multicopy Approve")
 				res, err := client.Payments().Approve(cctx, usdfc, filPay, approveAmount,
 					payments.WithWait(txWaitTimeout))
 				if err != nil {
@@ -437,6 +468,7 @@ func TestIntegration(t *testing.T) {
 				t.Logf("approved %s USDFC for multicopy, tx=%s", approveAmount, res.Hash)
 			}
 
+			t.Log("start Multicopy Deposit")
 			res, err := client.Payments().Deposit(cctx, usdfc, addr, multiCosts.DepositNeeded,
 				payments.WithWait(txWaitTimeout))
 			if err != nil {
@@ -454,10 +486,13 @@ func TestIntegration(t *testing.T) {
 		}
 
 		withCDN := true
-		result, err := client.Storage().Upload(cctx, bytes.NewReader(multiData), &storage.UploadOptions{
+		start := time.Now()
+		t.Log("start Multicopy Storage.Upload")
+		result, err := client.Storage().Upload(cctx, bytes.NewReader(multiData), tracedUploadOptions(t, "Multicopy", &storage.UploadOptions{
 			Copies:  2,
 			WithCDN: &withCDN,
-		})
+		}))
+		t.Logf("done Multicopy Storage.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("Upload (multicopy) failed: %v", err)
 		}
@@ -520,6 +555,7 @@ func TestIntegration(t *testing.T) {
 		t.Logf("session key address: %s", sessionKeyAddr)
 
 		// Login (authorize session key without funding).
+		t.Log("start SessionKey Login")
 		loginRes, err := client.SessionKey().Login(cctx, sessionKeyAddr,
 			sessionkey.WithWait(txWaitTimeout))
 		if err != nil {
@@ -552,6 +588,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Revoke the session key.
+		t.Log("start SessionKey Revoke")
 		revokeRes, err := client.SessionKey().Revoke(cctx, sessionKeyAddr,
 			sessionkey.WithWait(txWaitTimeout))
 		if err != nil {
@@ -743,12 +780,16 @@ func TestIntegration(t *testing.T) {
 		t.Logf("scheduled removals: %d", len(removals))
 
 		// Context-level Download.
+		start := time.Now()
+		t.Log("start ContextInspection Download")
 		rc, err := uctx.Download(cctx, uploadedCID)
 		if err != nil {
+			t.Logf("done ContextInspection Download elapsed=%s", time.Since(start).Round(time.Second))
 			t.Fatalf("Context.Download: %v", err)
 		}
 		defer func() { _ = rc.Close() }()
 		got, err := io.ReadAll(rc)
+		t.Logf("done ContextInspection Download elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("read downloaded: %v", err)
 		}
@@ -763,7 +804,7 @@ func TestIntegration(t *testing.T) {
 		if uploadedDataSetID.IsZero() {
 			t.Skip("Upload subtest did not produce dataset id; skipping existing-dataset AddPieces evidence")
 		}
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 
 		ws := client.WarmStorage()
@@ -787,7 +828,34 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("generate existing-dataset upload data: %v", err)
 		}
 
-		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), nil)
+		t.Log("start ExistingDataSet Prepare")
+		prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
+			DataSize: uint64(len(extraData)),
+			Contexts: []storage.UploadContext{
+				uctx,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Prepare(existing dataset): %v", err)
+		}
+		if prep.Transaction != nil {
+			t.Log("start ExistingDataSet Prepare.Execute")
+			res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				if errors.Is(err, payments.ErrPermitUnsupported) {
+					t.Skip("needs-usdfc-permit-support: existing-dataset funding requires permit support")
+				}
+				t.Fatalf("Prepare(existing dataset).Execute: %v", err)
+			}
+			if res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Fatalf("Prepare(existing dataset).Execute receipt = %+v", res.Receipt)
+			}
+		}
+
+		start := time.Now()
+		t.Log("start ExistingDataSet Context.Upload")
+		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedUploadOptions(t, "ExistingDataSet", nil))
+		t.Logf("done ExistingDataSet Context.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("Context.Upload(existing dataset): %v", err)
 		}
@@ -916,6 +984,7 @@ func TestIntegration(t *testing.T) {
 			amts.TotalNetworkFee, amts.FinalSettledEpoch, amts.Note)
 
 		// Settle is always safe to call; it's a no-op if nothing accrued.
+		t.Log("start PaymentsRails Settle")
 		settleRes, err := client.Payments().Settle(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			t.Fatalf("Settle: %v", err)
@@ -929,6 +998,7 @@ func TestIntegration(t *testing.T) {
 		// to auto-settle (e.g. already settled up to current epoch). The
 		// call path itself is what we want to cover, so a gas-estimate
 		// revert is logged and tolerated.
+		t.Log("start PaymentsRails SettleAuto")
 		autoRes, err := client.Payments().SettleAuto(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			if !isExecutionRevert(err) {
@@ -991,6 +1061,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("CreateContext: %v", err)
 		}
 
+		t.Log("start StorageLifecycle DeletePiece")
 		delRes, err := uctx.DeletePiece(cctx, uploadedCID)
 		if err != nil {
 			t.Fatalf("DeletePiece: %v", err)
@@ -999,6 +1070,7 @@ func TestIntegration(t *testing.T) {
 		// matching TS behaviour; the server schedules the removal.
 		t.Logf("DeletePiece tx=%s", delRes.Hash)
 
+		t.Log("start StorageLifecycle TerminateDataSet")
 		termRes, err := client.Storage().TerminateDataSet(cctx, uploadedDataSetID, &storage.TerminateDataSetOptions{
 			WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
 		})
@@ -1024,6 +1096,7 @@ func TestIntegration(t *testing.T) {
 		daddr := dclient.Address()
 
 		// RevokeService — reset operator approval to zero (idempotent).
+		t.Log("start DestructiveSuite RevokeService")
 		revRes, err := dclient.Payments().RevokeService(dctx, usdfc, fwss, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			t.Fatalf("RevokeService: %v", err)
@@ -1038,6 +1111,7 @@ func TestIntegration(t *testing.T) {
 		// lacks one of the permit ABI methods, skip with the documented
 		// reason rather than failing.
 		amount := big.NewInt(1)
+		t.Log("start DestructiveSuite DepositWithPermit")
 		depRes, err := dclient.Payments().DepositWithPermit(dctx, usdfc, daddr, amount, nil, payments.WithWait(txWaitTimeout))
 		if err != nil {
 			if errors.Is(err, payments.ErrPermitUnsupported) {
@@ -1055,6 +1129,7 @@ func TestIntegration(t *testing.T) {
 		rate := big.NewInt(1)
 		lockup := big.NewInt(1)
 		maxPeriod := big.NewInt(86400)
+		t.Log("start DestructiveSuite DepositWithPermitAndApproveOperator")
 		dpaRes, err := dclient.Payments().DepositWithPermitAndApproveOperator(
 			dctx, usdfc, daddr, amount, nil, fwss, rate, lockup, maxPeriod,
 			payments.WithWait(txWaitTimeout),

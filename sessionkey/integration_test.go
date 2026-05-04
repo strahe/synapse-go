@@ -46,8 +46,9 @@ func TestIntegration_SessionKey(t *testing.T) {
 		}
 		skAddr := crypto.PubkeyToAddress(skPriv.PublicKey)
 
-		// Custom 30-minute expiry on just CreateDataSet + AddPieces.
-		expiresAt := uint64(time.Now().Add(30 * time.Minute).Unix())
+		// Short expiry on just CreateDataSet + AddPieces keeps any residual
+		// authorization bounded without an extra cleanup transaction.
+		expiresAt := uint64(time.Now().Add(10 * time.Minute).Unix())
 		perms := []sessionkey.Permission{
 			sessionkey.CreateDataSetPermission,
 			sessionkey.AddPiecesPermission,
@@ -127,10 +128,6 @@ func TestIntegration_SessionKey(t *testing.T) {
 			t.Error("CreateDataSet should still be authorised after partial revoke")
 		}
 
-		// Clean up by revoking remaining perms.
-		if _, err := sk.Revoke(ctx, skAddr, sessionkey.WithWait(txWait)); err != nil {
-			t.Fatalf("cleanup Revoke: %v", err)
-		}
 	})
 
 	t.Run("LoginAndFund+LoginAndFundWithOptions", func(t *testing.T) {
@@ -159,11 +156,6 @@ func TestIntegration_SessionKey(t *testing.T) {
 			t.Errorf("session key should have > 0 FIL after LoginAndFund, got %s", bal)
 		}
 
-		// Clean up.
-		if _, err := sk.Revoke(ctx, skAddr1, sessionkey.WithWait(txWait)); err != nil {
-			t.Fatalf("cleanup Revoke skAddr1: %v", err)
-		}
-
 		// LoginAndFundWithOptions — custom permissions + funding.
 		skPriv2, err := ecdsa.GenerateKey(crypto.S256(), cryptorand.Reader)
 		if err != nil {
@@ -173,7 +165,7 @@ func TestIntegration_SessionKey(t *testing.T) {
 
 		res2, err := sk.LoginAndFundWithOptions(ctx, skAddr2, one, &sessionkey.LoginOptions{
 			Permissions: []sessionkey.Permission{sessionkey.CreateDataSetPermission},
-			ExpiresAt:   uint64(time.Now().Add(15 * time.Minute).Unix()),
+			ExpiresAt:   uint64(time.Now().Add(10 * time.Minute).Unix()),
 			Origin:      "integration-test",
 		}, sessionkey.WithWait(txWait))
 		if err != nil {
@@ -192,8 +184,5 @@ func TestIntegration_SessionKey(t *testing.T) {
 			t.Errorf("AddPieces expiry = %d, want 0 (only CreateDataSet was requested)", expAdd)
 		}
 
-		if _, err := sk.Revoke(ctx, skAddr2, sessionkey.WithWait(txWait)); err != nil {
-			t.Fatalf("cleanup Revoke skAddr2: %v", err)
-		}
 	})
 }

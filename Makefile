@@ -1,4 +1,8 @@
-.PHONY: build test bench lint vet generate generate-contracts clean fmt tidy check test-integration test-integration-cross
+.PHONY: build test bench lint vet generate generate-contracts clean fmt tidy check test-integration test-integration-readonly test-integration-fast test-integration-cross
+
+INTEGRATION_PKGS := ./costs ./payments ./sessionkey ./spregistry ./storage ./tests/integration ./warmstorage
+INTEGRATION_READONLY_PKGS := ./costs ./spregistry ./warmstorage
+INTEGRATION_FAST_RUN := ^TestIntegration$$/(Costs|Payments|Upload|Download|ClientSmoke|StorageManagerSurface|ContextInspection|WarmStorageInspection|StorageLifecycle)$$
 
 # Default target
 all: check
@@ -30,7 +34,17 @@ test-cover:
 # -p 1 is required when using a single shared wallet, otherwise package-level
 # parallelism races on FEVM nonces and causes mpool conflicts.
 test-integration:
-	go test -tags=integration -run '^TestIntegration' -p 1 -count=1 -v -timeout 60m ./...
+	go test -tags=integration -run '^TestIntegration' -p 1 -count=1 -v -timeout 60m $(INTEGRATION_PKGS)
+
+# Run read-only integration tests. These packages do not broadcast
+# transactions, so package-level parallelism is safe with one wallet.
+test-integration-readonly:
+	go test -tags=integration -run '^TestIntegration' -p 3 -count=1 -v -timeout 10m $(INTEGRATION_READONLY_PKGS)
+
+# Run a faster single-wallet smoke path. Read-only packages can run in
+# parallel; the cross-package flow stays serial and includes dataset cleanup.
+test-integration-fast: test-integration-readonly
+	go test -tags=integration -run '$(INTEGRATION_FAST_RUN)' -p 1 -count=1 -v -timeout 30m ./tests/integration
 
 # Run only the cross-package integration flows under tests/integration.
 test-integration-cross:

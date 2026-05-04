@@ -68,15 +68,19 @@ automatically.
 
 CI covers build, vet, lint, tests, and govulncheck.
 
-```bash
-make test                   # Unit tests
-make test-integration       # Full integration suite (Calibration)
-make test-integration-cross # High-level cross-package flows
-```
-
 Integration tests require `INTEGRATION_PRIVATE_KEY` in `.env` (needs **tFIL** for gas + **5 USDFC**).
 
 `INTEGRATION_RPC_URL` is optional.
+
+Approximate local runtimes on Calibration:
+
+```bash
+make test                      # seconds; normal development loop
+make test-integration-readonly # 30-60s; read-only Calibration checks
+make test-integration-fast     # 5-10m; upload/download smoke with cleanup
+make test-integration-cross    # 15-20m; full cross-package flow
+make test-integration          # ~30m; final validation before merge
+```
 
 ## Development
 

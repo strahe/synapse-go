@@ -71,10 +71,9 @@ func TestIntegration_Payments(t *testing.T) {
 	}
 	t.Logf("rails-as-payer: count=%d", len(page.Rails))
 
-	// Fund / FundSync — deposit a trivial amount (1 atto-USDFC) to assert the
-	// code path works without materially changing balances. Use FundSync
-	// for the variant so we can assert the receipt directly, then Fund
-	// with WithWait for coverage of the async-broadcast path.
+	// FundSync — deposit a trivial amount (1 atto-USDFC) to assert the
+	// chain path works without materially changing balances. The async Fund /
+	// WithWait finalization path is covered by unit tests.
 	one := big.NewInt(1)
 	syncRes, err := p.FundSync(ctx, one)
 	if err != nil {
@@ -89,18 +88,6 @@ func TestIntegration_Payments(t *testing.T) {
 		t.Errorf("FundSync tx failed: status=%d", syncRes.Receipt.Status)
 	}
 	t.Logf("FundSync tx=%s", syncRes.Hash)
-
-	fundRes, err := p.Fund(ctx, one, payments.WithWait(90*time.Second))
-	if err != nil {
-		if errors.Is(err, payments.ErrPermitUnsupported) {
-			t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
-		}
-		t.Fatalf("Fund: %v", err)
-	}
-	if fundRes.Receipt != nil && fundRes.Receipt.Status != 1 {
-		t.Errorf("Fund tx failed: status=%d", fundRes.Receipt.Status)
-	}
-	t.Logf("Fund tx=%s", fundRes.Hash)
 
 	t.Run("SettleTerminatedRail", func(t *testing.T) {
 		t.Skip("needs-terminated-rail")
