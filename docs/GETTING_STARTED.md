@@ -117,6 +117,9 @@ Use `storage.UploadOptions` when the default upload is not enough:
 - `OnProgress`, `OnStored`, `OnCopyComplete`, `OnCopyFailed`,
   `OnPullProgress`, `OnPiecesAdded`, `OnPiecesConfirmed`: lifecycle callbacks.
 
+High-level upload callbacks are isolated from the upload flow: a callback panic
+does not interrupt the upload, and a configured logger records a warning.
+
 `Upload` succeeds when at least one copy commits on-chain. Before returning,
 it waits for started commit attempts to settle. Check `UploadResult.Complete`
 to know whether every requested copy succeeded.

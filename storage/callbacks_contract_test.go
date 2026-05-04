@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +48,67 @@ type pullProgressEvent struct {
 	providerID types.BigInt
 	pieceCID   cid.Cid
 	status     PullStatus
+}
+
+type recordingSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordingSlogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingSlogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingSlogHandler) warningCallbacks(t *testing.T) map[string]int {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]int)
+	for _, record := range h.records {
+		if record.Level != slog.LevelWarn || record.Message != "storage upload callback panic ignored" {
+			continue
+		}
+		var callback string
+		var panicValue string
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "callback" {
+				callback = attr.Value.String()
+			}
+			if attr.Key == "panic" {
+				panicValue = attr.Value.String()
+			}
+			return true
+		})
+		if callback == "" {
+			t.Fatalf("warning missing callback attr: %+v", record)
+		}
+		if panicValue == "" {
+			t.Fatalf("warning missing panic attr: %+v", record)
+		}
+		out[callback]++
+	}
+	return out
+}
+
+func assertWarnedOnce(t *testing.T, got map[string]int, callbacks ...string) {
+	t.Helper()
+	for _, callback := range callbacks {
+		if got[callback] != 1 {
+			t.Fatalf("warning count for %s = %d, want 1; all warnings=%v", callback, got[callback], got)
+		}
+		delete(got, callback)
+	}
+	if len(got) != 0 {
+		t.Fatalf("unexpected callback warnings: %v", got)
+	}
 }
 
 func formatSubmittedEvent(e submittedEvent) string {
@@ -158,6 +221,234 @@ func hasPullProgressEvent(events []pullProgressEvent, want pullProgressEvent) bo
 		}
 	}
 	return false
+}
+
+func TestManagerUpload_CallbackPanicsAreRecoveredAndWarnOnce(t *testing.T) {
+	data := bytes.Repeat([]byte("mp"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			if opts.OnProgress != nil {
+				opts.OnProgress(1)
+				opts.OnProgress(2)
+			}
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
+			if req.OnSubmitted != nil {
+				req.OnSubmitted("0xprimary")
+			}
+			return &CommitResult{
+				TransactionID: "0xprimary",
+				DataSetID:     types.NewBigInt(1001),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
+				IsNewDataSet:  true,
+			}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.NewBigInt(202),
+		endpoint: "https://secondary-a.example.com",
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+	replacement := &fakeUploadContext{
+		id:       types.NewBigInt(303),
+		endpoint: "https://secondary-b.example.com",
+		pieceURL: "https://secondary-b.example.com/piece/" + info.CIDv2.String(),
+		presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+			return []byte{0x02}, nil
+		},
+		pullFn: func(_ context.Context, req PullRequest) (*PullResult, error) {
+			if req.OnProgress != nil {
+				req.OnProgress(info.CIDv2, PullStatusInProgress)
+				req.OnProgress(info.CIDv2, PullStatusComplete)
+			}
+			return &PullResult{
+				Status: PullStatusComplete,
+				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+			}, nil
+		},
+		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
+			if req.OnSubmitted != nil {
+				req.OnSubmitted("0xreplacement")
+			}
+			return &CommitResult{
+				TransactionID: "0xreplacement",
+				DataSetID:     types.NewBigInt(1002),
+				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
+				IsNewDataSet:  true,
+			}, nil
+		},
+	}
+
+	handler := &recordingSlogHandler{}
+	mgr := mustNewService(t, Options{
+		Resolver: &fakeResolver{
+			contexts:     []UploadContext{primary, failedSecondary},
+			replacements: []UploadContext{replacement},
+		},
+		Logger: slog.New(handler),
+	})
+	panicCallback := func(string) {
+		panic("callback failed")
+	}
+	opts := &UploadOptions{
+		Copies: 2,
+		OnProgress: func(int64) {
+			panicCallback("OnProgress")
+		},
+		OnStored: func(types.BigInt, cid.Cid) {
+			panicCallback("OnStored")
+		},
+		OnPullProgress: func(types.BigInt, cid.Cid, PullStatus) {
+			panicCallback("OnPullProgress")
+		},
+		OnCopyComplete: func(types.BigInt, cid.Cid) {
+			panicCallback("OnCopyComplete")
+		},
+		OnCopyFailed: func(types.BigInt, cid.Cid, error) {
+			panicCallback("OnCopyFailed")
+		},
+		OnPiecesAdded: func(string, types.BigInt, []SubmittedPiece) {
+			panicCallback("OnPiecesAdded")
+		},
+		OnPiecesConfirmed: func(types.BigInt, types.BigInt, []ConfirmedPiece) {
+			panicCallback("OnPiecesConfirmed")
+		},
+	}
+	originalOnStored := opts.OnStored
+
+	result, err := mgr.Upload(context.Background(), bytes.NewReader(data), opts)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if !result.Complete || result.SuccessCount() != 2 {
+		t.Fatalf("upload result complete=%v successCount=%d, want complete with 2 copies", result.Complete, result.SuccessCount())
+	}
+	if reflect.ValueOf(opts.OnStored).Pointer() != reflect.ValueOf(originalOnStored).Pointer() {
+		t.Fatal("Upload mutated caller UploadOptions callback")
+	}
+
+	assertWarnedOnce(t, handler.warningCallbacks(t),
+		"OnProgress",
+		"OnStored",
+		"OnPullProgress",
+		"OnCopyComplete",
+		"OnCopyFailed",
+		"OnPiecesAdded",
+		"OnPiecesConfirmed",
+	)
+}
+
+func TestContextUpload_CallbackPanicsAreRecoveredWithNilLogger(t *testing.T) {
+	data := bytes.Repeat([]byte("cp"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			if opts.OnProgress != nil {
+				opts.OnProgress(1)
+				opts.OnProgress(2)
+			}
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
+		createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, _ []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xabc"),
+				StatusURL: "https://sp.example.com/status",
+			}, nil
+		},
+		waitForCreateAndAddFn: func(_ context.Context, _ string, _ time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xabc"),
+				DataSetID:         types.NewBigInt(55),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(77)},
+			}, nil
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	panicCallback := func() {
+		panic("callback failed")
+	}
+
+	result, err := ctx.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
+		OnProgress: func(int64) {
+			panicCallback()
+		},
+		OnStored: func(types.BigInt, cid.Cid) {
+			panicCallback()
+		},
+		OnPiecesAdded: func(string, types.BigInt, []SubmittedPiece) {
+			panicCallback()
+		},
+		OnPiecesConfirmed: func(types.BigInt, types.BigInt, []ConfirmedPiece) {
+			panicCallback()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if result.SuccessCount() != 1 {
+		t.Fatalf("SuccessCount=%d, want 1", result.SuccessCount())
+	}
+}
+
+func TestContextStore_LowLevelProgressPanicPropagates(t *testing.T) {
+	data := bytes.Repeat([]byte("lp"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			if opts.OnProgress != nil {
+				opts.OnProgress(1)
+			}
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("StoreOptions.OnProgress panic did not propagate")
+		}
+	}()
+	_, _ = ctx.Store(context.Background(), bytes.NewReader(data), &StoreOptions{
+		OnProgress: func(int64) {
+			panic("low-level progress panic")
+		},
+	})
 }
 
 // TestContextUpload_Callbacks exercises Context.Upload with all lifecycle

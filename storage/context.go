@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/big"
 	"net/url"
@@ -91,6 +92,7 @@ type Context struct {
 	recordKeeper common.Address
 	withCDN      bool
 	cdnRetriever CDNRetriever
+	logger       *slog.Logger
 
 	dataSetID           *types.BigInt
 	clientDataSetID     *types.BigInt
@@ -204,6 +206,11 @@ func WithCDN(enabled bool) ContextOption {
 // WithCDNRetriever injects the optional CDN retriever used by Context.Download.
 func WithCDNRetriever(r CDNRetriever) ContextOption {
 	return func(c *Context) { c.cdnRetriever = normalizeOptional(r) }
+}
+
+// WithLogger sets the logger used for internal warnings.
+func WithLogger(logger *slog.Logger) ContextOption {
+	return func(c *Context) { c.logger = logger }
 }
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.

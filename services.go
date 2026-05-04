@@ -149,6 +149,7 @@ func (c *Client) initServices() error {
 				storage.WithDataSetMetadata(sel.DataSetMetadata),
 				storage.WithCDN(effectiveCDN),
 				storage.WithCDNRetriever(fbRetriever),
+				storage.WithLogger(c.logger),
 				storage.WithPDPVerifierReader(c.pdpReader),
 				storage.WithPDPConfigReader(ws),
 				storage.WithFWSSTerminator(ws),
@@ -177,6 +178,7 @@ func (c *Client) initServices() error {
 		DefaultWithCDN:       c.withCDN,
 		AllowPrivateNetworks: c.allowPrivateNetworks,
 		Lifecycle:            c.lifecycle,
+		Logger:               c.logger,
 
 		DataSetFinder:     adapters.NewDataSetFinder(ws),
 		StorageInfoReader: adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),

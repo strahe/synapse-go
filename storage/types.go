@@ -44,7 +44,8 @@ type StoreOptions struct {
 	// verifies the uploaded bytes match this value.
 	PieceCID cid.Cid
 	// OnProgress is invoked after each non-empty Read from the reader, with
-	// the cumulative bytes sent so far. It may be nil.
+	// the cumulative bytes sent so far. It may be nil. Direct Store calls do
+	// not recover callback panics.
 	OnProgress func(bytesUploaded int64)
 }
 
@@ -77,7 +78,7 @@ type PullRequest struct {
 	From      func(cid.Cid) string // returns the HTTPS URL for a given piece CID
 	ExtraData []byte               // EIP-712 signed payload authorising the pull
 	// OnProgress is invoked after each piece status update during the pull.
-	// It may be nil.
+	// It may be nil. Direct Pull calls do not recover callback panics.
 	OnProgress func(pieceCID cid.Cid, status PullStatus)
 }
 
@@ -99,7 +100,7 @@ type CommitRequest struct {
 	ExtraData []byte // EIP-712 signed payload; nil for the primary (create-or-add path)
 	// OnSubmitted is invoked with the transaction hash immediately after the
 	// on-chain AddPieces transaction is submitted, before confirmation. It may
-	// be nil.
+	// be nil. Direct Commit calls do not recover callback panics.
 	OnSubmitted func(txHash string)
 }
 
@@ -233,8 +234,10 @@ func (r *UploadResult) PartialSuccess() bool {
 //
 // Some lifecycle callbacks may be invoked from internal orchestration
 // goroutines. Callers that share mutable state across callbacks must keep their
-// handlers concurrency-safe. Callback panics are not recovered by the SDK, so
-// handlers must not panic.
+// handlers concurrency-safe. Service.Upload and Context.Upload recover and
+// ignore callback panics; when a logger is configured, the first panic per
+// callback name in an upload logs a warning. This recovery does not apply to
+// direct StoreOptions, PullRequest, or CommitRequest hooks.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. Zero means the resolver
 	// default: len(DataSetIDs) or len(ProviderIDs) when those are set, otherwise 2.

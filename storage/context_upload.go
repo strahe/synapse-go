@@ -23,6 +23,7 @@ func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	if r == nil {
 		return nil, fmt.Errorf("storage.Context.Upload: %w: nil reader", ErrInvalidArgument)
 	}
+	opts = newUploadCallbackGuard(c.logger).wrapUploadOptions(opts)
 
 	storeOpts := &StoreOptions{}
 	if opts != nil {

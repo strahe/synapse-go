@@ -61,6 +61,12 @@
 //     (presign failures remain FailedAttempts-only).
 //   - [UploadOptions.OnPullProgress] — per-piece status update during a secondary pull.
 //
+// [Service.Upload] and [Context.Upload] recover and ignore [UploadOptions]
+// callback panics. If a logger is configured, the first panic per callback name
+// in an upload is logged as a warning. Direct staged hooks on [StoreOptions],
+// [PullRequest], and [CommitRequest] are invoked as-is and are not covered by
+// this recovery guarantee.
+//
 // [Context.Pull] checks that each requested piece resolves to a non-empty
 // source URL. The PDP provider performs stricter source-URL validation before executing
 // the provider-to-provider pull.

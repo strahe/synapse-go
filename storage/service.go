@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -55,6 +56,7 @@ type Service struct {
 	maxSecondaryAttempts int
 	commitConcurrency    int
 	downloadMaxBytes     int64
+	logger               *slog.Logger
 	lifecycle            *lifecycle.Lifecycle
 
 	// Manager-level collaborators (all optional). When unset, the
@@ -127,6 +129,9 @@ type Options struct {
 	// Content-Length) or at the terminal Read of the returned reader.
 	DownloadMaxBytes int64
 
+	// Logger receives internal warnings. nil disables logging.
+	Logger *slog.Logger
+
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// ErrClosed. Nil is allowed for standalone use.
@@ -193,6 +198,7 @@ func New(opts Options) (*Service, error) {
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
+		logger:               opts.Logger,
 		lifecycle:            opts.Lifecycle,
 		finder:               normalizeOptional(opts.DataSetFinder),
 		info:                 normalizeOptional(opts.StorageInfoReader),
@@ -240,6 +246,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 	// Resolve WithCDN to a non-nil *bool using Client-level default.
 	opts = s.resolveWithCDN(opts)
+	opts = newUploadCallbackGuard(s.logger).wrapUploadOptions(opts)
 
 	// Capture the caller's intent before resolving (the resolver may return
 	// fewer contexts than requested; Complete must reflect the shortfall).
