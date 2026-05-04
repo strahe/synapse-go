@@ -111,8 +111,8 @@ func SignAddPieces(signHash func([]byte) ([]byte, error), domain apitypes.TypedD
 }
 
 // SignDeleteDataSet signs a DeleteDataSet EIP-712 message.
-func SignDeleteDataSet(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain, clientDataSetID *big.Int) (*Signature, error) {
-	msg := DeleteDataSetMessage(clientDataSetID)
+func SignDeleteDataSet(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain, dataSetID *big.Int) (*Signature, error) {
+	msg := DeleteDataSetMessage(dataSetID)
 	return Sign(signHash, domain, "DeleteDataSet", msg)
 }
 

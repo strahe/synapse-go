@@ -168,6 +168,15 @@ func TestSign_DeleteDataSet(t *testing.T) {
 	}
 
 	msg := DeleteDataSetMessage(big.NewInt(99))
+	if len(msg) != 1 {
+		t.Fatalf("DeleteDataSetMessage fields=%d want 1", len(msg))
+	}
+	if _, ok := msg["dataSetId"]; !ok {
+		t.Fatal("DeleteDataSetMessage missing dataSetId field")
+	}
+	if _, ok := msg["clientDataSetId"]; ok {
+		t.Fatal("DeleteDataSetMessage includes clientDataSetId field")
+	}
 	recovered := recoverAddress(t, domain, "DeleteDataSet", msg, sig)
 	if recovered != addr {
 		t.Errorf("recovered address %s != expected %s", recovered.Hex(), addr.Hex())

@@ -82,7 +82,8 @@ func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Conte
 
 // isPrivateAddress returns true for IPs that should never be dialed from
 // SDK-initiated downloads of remote provider URLs: loopback, link-local,
-// RFC1918 / ULA (net.IP.IsPrivate), RFC6598 (CGNAT), multicast, and unspecified.
+// RFC1918 / ULA (net.IP.IsPrivate), RFC6598 (CGNAT), multicast, unspecified,
+// and zero IPv4 network addresses.
 func isPrivateAddress(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -94,6 +95,10 @@ func isPrivateAddress(ip net.IP) bool {
 	}
 	// RFC6598 CGNAT range: 100.64.0.0/10
 	if v4 := ip.To4(); v4 != nil {
+		// Zero IPv4 network: 0.0.0.0/8
+		if v4[0] == 0 {
+			return true
+		}
 		if v4[0] == 100 && (v4[1]&0xc0) == 64 {
 			return true
 		}

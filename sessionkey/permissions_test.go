@@ -13,7 +13,7 @@ var encodeTypeStrings = map[string]string{
 	"CreateDataSet":         "CreateDataSet(uint256 clientDataSetId,address payee,MetadataEntry[] metadata)MetadataEntry(string key,string value)",
 	"AddPieces":             "AddPieces(uint256 clientDataSetId,uint256 nonce,Cid[] pieceData,PieceMetadata[] pieceMetadata)Cid(bytes data)MetadataEntry(string key,string value)PieceMetadata(uint256 pieceIndex,MetadataEntry[] metadata)",
 	"SchedulePieceRemovals": "SchedulePieceRemovals(uint256 clientDataSetId,uint256[] pieceIds)",
-	"DeleteDataSet":         "DeleteDataSet(uint256 clientDataSetId)",
+	"DeleteDataSet":         "DeleteDataSet(uint256 dataSetId)",
 }
 
 func TestPermissionHashes(t *testing.T) {
@@ -45,7 +45,7 @@ func TestPermissionHashes(t *testing.T) {
 			name:     "DeleteDataSet",
 			encType:  encodeTypeStrings["DeleteDataSet"],
 			wantPerm: DeleteDataSetPermission,
-			wantHex:  "0xb5d6b3fc97881f05e96958136ac09d7e0bc7cbf17ea92fce7c431d88132d2b58",
+			wantHex:  "0xb0988e9a1e5723860e0f59e0469113fb8a0ce9e83f8a1dd9109527eaad225b37",
 		},
 	}
 	for _, tt := range tests {

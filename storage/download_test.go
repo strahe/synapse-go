@@ -589,6 +589,23 @@ func TestManagerDownload_RejectsLoopbackByDefault(t *testing.T) {
 	}
 }
 
+func TestManagerDownload_RejectsZeroNetworkByDefault(t *testing.T) {
+	data := bytes.Repeat([]byte("z"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	mgr := mustNewService(t, Options{})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: "http://0.0.0.1:8080/foo"})
+	if err == nil {
+		t.Fatal("expected ErrPrivateNetwork, got nil")
+	}
+	if !errors.Is(err, ErrPrivateNetwork) {
+		t.Fatalf("expected ErrPrivateNetwork, got: %v", err)
+	}
+}
+
 // TestManagerDownload_AllowPrivateNetworksOptOut verifies that opting in
 // via AllowPrivateNetworks=true lets the same loopback download succeed.
 func TestManagerDownload_AllowPrivateNetworksOptOut(t *testing.T) {

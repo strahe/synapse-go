@@ -281,8 +281,9 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data sets: %w", err)
 	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
-	withDataSet := make([]ResolvedUploadContext, 0, len(providers))
-	withoutDataSet := make([]ResolvedUploadContext, 0, len(providers))
+	selectionCap := min(count, len(providers))
+	withDataSet := make([]ResolvedUploadContext, 0, selectionCap)
+	withoutDataSet := make([]ResolvedUploadContext, 0, selectionCap)
 	for _, provider := range providers {
 		if _, ok := approvedSet[idconv.Key(provider.Info.ID)]; !ok {
 			continue
@@ -294,16 +295,22 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		resolved := buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata)
 		if dataSetID != nil {
 			withDataSet = append(withDataSet, resolved)
-		} else {
+			if len(withDataSet) == count {
+				break
+			}
+		} else if len(withoutDataSet) < count {
 			withoutDataSet = append(withoutDataSet, resolved)
 		}
 	}
 
-	selected := make([]ResolvedUploadContext, 0, len(withDataSet)+len(withoutDataSet))
+	selected := make([]ResolvedUploadContext, 0, selectionCap)
 	selected = append(selected, withDataSet...)
-	selected = append(selected, withoutDataSet...)
-	if len(selected) > count {
-		selected = selected[:count]
+	if len(selected) < count {
+		remaining := count - len(selected)
+		if remaining > len(withoutDataSet) {
+			remaining = len(withoutDataSet)
+		}
+		selected = append(selected, withoutDataSet[:remaining]...)
 	}
 	if len(selected) == 0 {
 		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")

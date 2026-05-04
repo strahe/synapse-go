@@ -41,8 +41,8 @@ var SchedulePieceRemovalsPermission = mustPermission("5415701e313bb627e755b16924
 
 // DeleteDataSetPermission authorises session keys to delete a dataset.
 //
-// encodeType: "DeleteDataSet(uint256 clientDataSetId)"
-var DeleteDataSetPermission = mustPermission("b5d6b3fc97881f05e96958136ac09d7e0bc7cbf17ea92fce7c431d88132d2b58")
+// encodeType: "DeleteDataSet(uint256 dataSetId)"
+var DeleteDataSetPermission = mustPermission("b0988e9a1e5723860e0f59e0469113fb8a0ce9e83f8a1dd9109527eaad225b37")
 
 // DefaultFWSSPermissions contains all four standard FWSS permissions.
 // This is the default set used by Login when no explicit permissions
