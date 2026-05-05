@@ -149,6 +149,41 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		t.Errorf("GetProvidersByIDs[1] should be nil for invalid ID, got %+v", batch[1])
 	}
 
+	pdpByAddr, err := reg.GetPDPProviderByAddress(ctx, info.ServiceProvider)
+	if err != nil {
+		t.Fatalf("GetPDPProviderByAddress(%s): %v", info.ServiceProvider, err)
+	}
+	if !pdpByAddr.Info.ID.Equal(info.ID) {
+		t.Errorf("GetPDPProviderByAddress ID mismatch: %s != %s", pdpByAddr.Info.ID, info.ID)
+	}
+
+	pdpBatch, err := reg.GetPDPProvidersByIDs(ctx, []types.BigInt{info.ID, bogusID})
+	if err != nil {
+		t.Fatalf("GetPDPProvidersByIDs: %v", err)
+	}
+	if len(pdpBatch) != 1 {
+		t.Fatalf("GetPDPProvidersByIDs len = %d, want 1", len(pdpBatch))
+	}
+	if !pdpBatch[0].Info.ID.Equal(info.ID) {
+		t.Errorf("GetPDPProvidersByIDs[0] ID mismatch: %+v", pdpBatch[0])
+	}
+
+	registered, err := reg.IsRegisteredProvider(ctx, info.ServiceProvider)
+	if err != nil {
+		t.Fatalf("IsRegisteredProvider(%s): %v", info.ServiceProvider, err)
+	}
+	if !registered {
+		t.Errorf("IsRegisteredProvider(%s) = false, want true", info.ServiceProvider)
+	}
+
+	registered, err = reg.IsRegisteredProvider(ctx, common.HexToAddress("0x1111111111111111111111111111111111111111"))
+	if err != nil {
+		t.Fatalf("IsRegisteredProvider(unreg): %v", err)
+	}
+	if registered {
+		t.Error("IsRegisteredProvider(unreg) = true, want false")
+	}
+
 	// IterateAllPDPProviders — stop after the first to bound duration.
 	var iterCount int
 	for p, err := range reg.IterateAllPDPProviders(ctx, true) {

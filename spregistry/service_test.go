@@ -4,21 +4,26 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/types"
 )
 
 type mockCaller struct {
-	sprABI   abi.ABI
-	replies  map[string][]byte
-	errs     map[string]error
-	argCheck func(string, []any)
+	sprABI       abi.ABI
+	multicallABI abi.ABI
+	replies      map[string][]byte
+	errs         map[string]error
+	handlers     map[string]func([]any) ([]byte, error)
+	multicallFn  func([]byte) ([]byte, error)
+	argCheck     func(string, []any)
 }
 
 func newMockCaller(t *testing.T) *mockCaller {
@@ -27,7 +32,17 @@ func newMockCaller(t *testing.T) *mockCaller {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &mockCaller{sprABI: *a, replies: map[string][]byte{}, errs: map[string]error{}}
+	mcABI, err := abi.JSON(strings.NewReader(`[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &mockCaller{
+		sprABI:       *a,
+		multicallABI: mcABI,
+		replies:      map[string][]byte{},
+		errs:         map[string]error{},
+		handlers:     map[string]func([]any) ([]byte, error){},
+	}
 }
 
 func (m *mockCaller) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([]byte, error) {
@@ -38,23 +53,71 @@ func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *b
 	if len(call.Data) < 4 {
 		return nil, errors.New("calldata too short")
 	}
-	selector := [4]byte{call.Data[0], call.Data[1], call.Data[2], call.Data[3]}
+	if call.To != nil && *call.To == chain.Mainnet.Addresses().Multicall3 {
+		if m.multicallFn != nil {
+			return m.multicallFn(call.Data)
+		}
+		return m.handleMulticall(call.Data)
+	}
+	return m.handleRegistryCall(call.Data)
+}
+
+func (m *mockCaller) handleRegistryCall(data []byte) ([]byte, error) {
+	if len(data) < 4 {
+		return nil, errors.New("calldata too short")
+	}
+	selector := [4]byte{data[0], data[1], data[2], data[3]}
 	for name, method := range m.sprABI.Methods {
 		if [4]byte(method.ID) == selector {
+			args, err := method.Inputs.Unpack(data[4:])
+			if err != nil {
+				return nil, err
+			}
 			if m.argCheck != nil {
-				args, err := method.Inputs.Unpack(call.Data[4:])
-				if err != nil {
-					return nil, err
-				}
 				m.argCheck(name, args)
 			}
 			if err, ok := m.errs[name]; ok {
 				return nil, err
 			}
+			if handler, ok := m.handlers[name]; ok {
+				return handler(args)
+			}
 			return m.replies[name], nil
 		}
 	}
 	return nil, errors.New("no method matches selector")
+}
+
+func (m *mockCaller) handleMulticall(data []byte) ([]byte, error) {
+	vals, err := m.multicallABI.Methods["aggregate3"].Inputs.Unpack(data[4:])
+	if err != nil {
+		return nil, err
+	}
+	rawCalls, ok := vals[0].([]struct {
+		Target       common.Address `json:"target"`
+		AllowFailure bool           `json:"allowFailure"`
+		CallData     []byte         `json:"callData"`
+	})
+	if !ok {
+		return nil, errors.New("unexpected aggregate3 input type")
+	}
+	type result3 struct {
+		Success    bool
+		ReturnData []byte
+	}
+	results := make([]result3, len(rawCalls))
+	for i, c := range rawCalls {
+		reply, err := m.handleRegistryCall(c.CallData)
+		if err != nil {
+			if c.AllowFailure {
+				results[i] = result3{Success: false, ReturnData: []byte(err.Error())}
+				continue
+			}
+			return nil, err
+		}
+		results[i] = result3{Success: true, ReturnData: reply}
+	}
+	return m.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
 }
 
 func (m *mockCaller) set(t *testing.T, method string, values ...any) {
@@ -68,6 +131,27 @@ func (m *mockCaller) set(t *testing.T, method string, values ...any) {
 		t.Fatalf("pack %s: %v", method, err)
 	}
 	m.replies[method] = b
+}
+
+func (m *mockCaller) setHandler(t *testing.T, method string, handler func([]any) ([]byte, error)) {
+	t.Helper()
+	if _, ok := m.sprABI.Methods[method]; !ok {
+		t.Fatalf("method %q not found", method)
+	}
+	m.handlers[method] = handler
+}
+
+func (m *mockCaller) pack(t *testing.T, method string, values ...any) []byte {
+	t.Helper()
+	mth, ok := m.sprABI.Methods[method]
+	if !ok {
+		t.Fatalf("method %q not found", method)
+	}
+	b, err := mth.Outputs.Pack(values...)
+	if err != nil {
+		t.Fatalf("pack %s: %v", method, err)
+	}
+	return b
 }
 
 func newTestService(t *testing.T) (*Service, *mockCaller) {
@@ -176,6 +260,38 @@ func TestIsProviderActive_ZeroProviderID(t *testing.T) {
 	}
 }
 
+func TestIsRegisteredProvider(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "isRegisteredProvider", true)
+	ok, err := s.IsRegisteredProvider(context.Background(), common.HexToAddress("0x55"))
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+
+	mc.set(t, "isRegisteredProvider", false)
+	ok, err = s.IsRegisteredProvider(context.Background(), common.HexToAddress("0x66"))
+	if err != nil || ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+}
+
+func TestIsRegisteredProvider_ZeroAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.IsRegisteredProvider(context.Background(), common.Address{})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for zero address, got %v", err)
+	}
+}
+
+func TestIsRegisteredProvider_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["isRegisteredProvider"] = errors.New("rpc error")
+	_, err := s.IsRegisteredProvider(context.Background(), common.HexToAddress("0x55"))
+	if err == nil {
+		t.Fatal("expected RPC error")
+	}
+}
+
 func TestGetProviderCountAndActive(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProviderCount", big.NewInt(50))
@@ -217,6 +333,26 @@ func pdpCapsFixtureWithToken(token common.Address) (keys []string, values [][]by
 	keys, values = pdpCapsFixture()
 	values[6] = token.Bytes()
 	return
+}
+
+func pdpProviderFixture(providerID int64, serviceProvider common.Address, name string) sprbind.ServiceProviderRegistryStorageProviderWithProduct {
+	keys, values := pdpCapsFixture()
+	return sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+		ProviderId: big.NewInt(providerID),
+		ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+			ServiceProvider: serviceProvider,
+			Payee:           common.HexToAddress("0x66"),
+			Name:            name,
+			Description:     "test",
+			IsActive:        true,
+		},
+		Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
+			ProductType:    uint8(ProductTypePDP),
+			CapabilityKeys: keys,
+			IsActive:       true,
+		},
+		ProductCapabilityValues: values,
+	}
 }
 
 func addrPtr(addr common.Address) *common.Address {
@@ -284,6 +420,50 @@ func TestGetPDPProvider_ZeroProviderID(t *testing.T) {
 	}
 }
 
+func TestGetPDPProviderByAddress_ZeroAddress(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.GetPDPProviderByAddress(context.Background(), common.Address{})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for zero address, got %v", err)
+	}
+}
+
+func TestGetPDPProviderByAddress_UnknownReturnsNotFound(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderIdByAddress", big.NewInt(0))
+	got, err := s.GetPDPProviderByAddress(context.Background(), common.HexToAddress("0x99"))
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, got)
+	}
+	if got != nil {
+		t.Fatalf("expected nil provider, got %+v", got)
+	}
+}
+
+func TestGetPDPProviderByAddress_ValidProvider(t *testing.T) {
+	s, mc := newTestService(t)
+	addr := common.HexToAddress("0x55")
+	mc.set(t, "getProviderIdByAddress", big.NewInt(4))
+	mc.set(t, "getProviderWithProduct", pdpProviderFixture(4, addr, "alice"))
+	got, err := s.GetPDPProviderByAddress(context.Background(), addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.Info.ID.Equal(types.NewBigInt(4)) || got.Info.ServiceProvider != addr || got.Offering.ServiceURL == "" {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
+func TestGetPDPProviderByAddress_PDPError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.set(t, "getProviderIdByAddress", big.NewInt(4))
+	mc.errs["getProviderWithProduct"] = errors.New("rpc error")
+	got, err := s.GetPDPProviderByAddress(context.Background(), common.HexToAddress("0x55"))
+	if err == nil {
+		t.Fatalf("expected error, got provider %+v", got)
+	}
+}
+
 func TestGetPDPProviders(t *testing.T) {
 	s, mc := newTestService(t)
 	keys, vals := pdpCapsFixture()
@@ -338,6 +518,119 @@ func TestGetProvidersByIDs(t *testing.T) {
 	}
 	if out[0].Name != "a" {
 		t.Errorf("name=%s", out[0].Name)
+	}
+}
+
+func TestGetPDPProvidersByIDs_EmptyInput(t *testing.T) {
+	s, _ := newTestService(t)
+	out, err := s.GetPDPProvidersByIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil || len(out) != 0 {
+		t.Fatalf("expected empty non-nil slice, got %v (nil=%v)", out, out == nil)
+	}
+}
+
+func TestGetPDPProvidersByIDs_AllSuccess(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setHandler(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		providerID := args[0].(*big.Int)
+		switch providerID.Int64() {
+		case 1:
+			return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(1, common.HexToAddress("0x01"), "alpha")), nil
+		case 2:
+			return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(2, common.HexToAddress("0x02"), "beta")), nil
+		default:
+			return nil, errors.New("unexpected provider id")
+		}
+	})
+	out, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1), types.NewBigInt(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("len=%d providers=%+v", len(out), out)
+	}
+	if out[0].Info.Name != "alpha" || out[1].Info.Name != "beta" {
+		t.Fatalf("providers out of order: %+v", out)
+	}
+}
+
+func TestGetPDPProvidersByIDs_SkipsFailedAndEmptyProviders(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setHandler(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		providerID := args[0].(*big.Int)
+		switch providerID.Int64() {
+		case 1:
+			return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(1, common.HexToAddress("0x01"), "alpha")), nil
+		case 2:
+			return nil, errors.New("subcall failed")
+		case 3:
+			return mc.pack(t, "getProviderWithProduct", sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+				ProviderId: big.NewInt(3),
+			}), nil
+		case 4:
+			return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(4, common.HexToAddress("0x04"), "delta")), nil
+		default:
+			return nil, errors.New("unexpected provider id")
+		}
+	})
+	out, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{
+		types.NewBigInt(1),
+		types.NewBigInt(2),
+		types.NewBigInt(3),
+		types.NewBigInt(4),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("len=%d providers=%+v", len(out), out)
+	}
+	if out[0].Info.Name != "alpha" || out[1].Info.Name != "delta" {
+		t.Fatalf("providers out of order: %+v", out)
+	}
+}
+
+func TestGetPDPProvidersByIDs_DecodeError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setHandler(t, "getProviderWithProduct", func(_ []any) ([]byte, error) {
+		return []byte{0x01}, nil
+	})
+	_, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1)})
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+}
+
+func TestGetPDPProvidersByIDs_EmptySuccessfulReturnData(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.multicallFn = func(_ []byte) ([]byte, error) {
+		type result3 struct {
+			Success    bool
+			ReturnData []byte
+		}
+		return mc.multicallABI.Methods["aggregate3"].Outputs.Pack([]result3{{Success: true}})
+	}
+	_, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1)})
+	if err == nil || !strings.Contains(err.Error(), "empty return data") {
+		t.Fatalf("expected empty return data error, got %v", err)
+	}
+}
+
+func TestGetPDPProvidersByIDs_MalformedAggregateLength(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.multicallFn = func(_ []byte) ([]byte, error) {
+		type result3 struct {
+			Success    bool
+			ReturnData []byte
+		}
+		return mc.multicallABI.Methods["aggregate3"].Outputs.Pack([]result3{})
+	}
+	_, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{types.NewBigInt(1)})
+	if err == nil || !strings.Contains(err.Error(), "expected 1 results") {
+		t.Fatalf("expected malformed length error, got %v", err)
 	}
 }
 

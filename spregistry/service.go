@@ -9,10 +9,12 @@ import (
 	"sort"
 	"time"
 
+	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/lifecycle"
@@ -272,6 +274,21 @@ func (s *Service) IsProviderActive(ctx context.Context, providerID types.BigInt)
 	return ok, nil
 }
 
+// IsRegisteredProvider returns true if addr is registered as a provider.
+func (s *Service) IsRegisteredProvider(ctx context.Context, addr common.Address) (bool, error) {
+	if err := s.checkInit(); err != nil {
+		return false, err
+	}
+	if (addr == common.Address{}) {
+		return false, fmt.Errorf("spregistry.IsRegisteredProvider: %w: zero address", ErrInvalidArgument)
+	}
+	ok, err := s.contract.IsRegisteredProvider(&bind.CallOpts{Context: ctx}, addr)
+	if err != nil {
+		return false, fmt.Errorf("spregistry.IsRegisteredProvider: %w", err)
+	}
+	return ok, nil
+}
+
 // GetProviderCount returns the total number of registered providers
 // (active + inactive).
 func (s *Service) GetProviderCount(ctx context.Context) (*big.Int, error) {
@@ -322,6 +339,29 @@ func (s *Service) GetPDPProvider(ctx context.Context, providerID types.BigInt) (
 	return provider, nil
 }
 
+// GetPDPProviderByAddress returns the PDP provider whose service-provider
+// address matches addr.
+func (s *Service) GetPDPProviderByAddress(ctx context.Context, addr common.Address) (*PDPProvider, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if (addr == common.Address{}) {
+		return nil, fmt.Errorf("spregistry.GetPDPProviderByAddress: %w: zero address", ErrInvalidArgument)
+	}
+	providerID, err := s.GetProviderIDByAddress(ctx, addr)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProviderByAddress: %w", err)
+	}
+	if providerID.IsZero() {
+		return nil, fmt.Errorf("spregistry.GetPDPProviderByAddress: %w", ErrNotFound)
+	}
+	provider, err := s.GetPDPProvider(ctx, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProviderByAddress: %w", err)
+	}
+	return provider, nil
+}
+
 // GetPDPProviders lists PDP providers with pagination. When onlyActive is
 // true the registry filters out inactive providers BEFORE applying offset
 // and limit (matches the contract semantics). opts.Limit must be > 0; use
@@ -348,6 +388,67 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, opts typ
 		if dec != nil {
 			out.Providers = append(out.Providers, *dec)
 		}
+	}
+	return out, nil
+}
+
+// GetPDPProvidersByIDs returns PDP providers for the given ids using
+// Multicall3. Failed, missing, or non-PDP entries are skipped.
+func (s *Service) GetPDPProvidersByIDs(ctx context.Context, providerIDs []types.BigInt) ([]PDPProvider, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if len(providerIDs) == 0 {
+		return []PDPProvider{}, nil
+	}
+	registryABI, err := spr.SPRegistryMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: parse ABI: %w", err)
+	}
+	calls := make([]iabi.Call3, len(providerIDs))
+	for i, providerID := range providerIDs {
+		data, err := registryABI.Pack("getProviderWithProduct", providerID.Big(), uint8(ProductTypePDP))
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: pack call %d: %w", i, err)
+		}
+		calls[i] = iabi.Call3{
+			Target:       s.addr,
+			AllowFailure: true,
+			CallData:     data,
+		}
+	}
+	results, err := iabi.BatchCall(ctx, s.caller, calls)
+	if err != nil {
+		return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: batch call: %w", err)
+	}
+	if len(results) != len(providerIDs) {
+		return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: expected %d results, got %d", len(providerIDs), len(results))
+	}
+	method := registryABI.Methods["getProviderWithProduct"]
+	out := make([]PDPProvider, 0, len(results))
+	for i, result := range results {
+		if !result.Success {
+			continue
+		}
+		if len(result.ReturnData) == 0 {
+			return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: result %d: empty return data", i)
+		}
+		values, err := method.Outputs.Unpack(result.ReturnData)
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: unpack result %d: %w", i, err)
+		}
+		if len(values) != 1 {
+			return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: result %d: expected 1 output, got %d", i, len(values))
+		}
+		raw := *gethabi.ConvertType(values[0], new(spr.ServiceProviderRegistryStorageProviderWithProduct)).(*spr.ServiceProviderRegistryStorageProviderWithProduct)
+		if (raw.ProviderInfo.ServiceProvider == common.Address{}) {
+			continue
+		}
+		provider, err := decodeProviderWithProduct(raw)
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: decode result %d: %w", i, err)
+		}
+		out = append(out, *provider)
 	}
 	return out, nil
 }
