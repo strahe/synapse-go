@@ -30,7 +30,7 @@ type CDNRetriever interface {
 // both [ErrInvalidDownloadOptions] and [ErrInvalidArgument].
 type DownloadOptions struct {
 	Context DownloadContext // when set, delegates to DownloadContext.Download; mutually exclusive with URL
-	URL     string          // direct HTTPS URL; validated against pieceCID on read completion
+	URL     string          // direct HTTP or HTTPS URL; validated against pieceCID on read completion
 }
 
 // ErrInvalidDownloadOptions is returned when [DownloadOptions] is nil, empty,
