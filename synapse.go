@@ -296,13 +296,13 @@ func resolvePrivateKey(cfg *clientConfig) (func(), error) {
 }
 
 // zeroPrivateKey clears the private key D scalar. The signer deep-copies D,
-// so this does not affect the created signer. SetBytes overwrites the backing
-// []Word array with zeros; SetInt64 then truncates the slice length. Both steps
-// are required — SetInt64 alone only truncates without writing, leaving key
-// bits in the heap.
+// so this does not affect the created signer. The backing words are cleared in
+// place before SetInt64 truncates the logical value; SetInt64 alone only changes
+// the length and can leave key bits in the heap.
 func zeroPrivateKey(key *ecdsa.PrivateKey) {
 	if key != nil && key.D != nil {
-		key.D.SetBytes(make([]byte, 32))
+		bits := key.D.Bits()
+		clear(bits[:cap(bits)])
 		key.D.SetInt64(0)
 	}
 }

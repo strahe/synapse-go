@@ -785,6 +785,22 @@ func TestParsePrivateKeyHex_Valid(t *testing.T) {
 	}
 }
 
+func TestZeroPrivateKeyClearsBackingArrayCapacity(t *testing.T) {
+	backing := []big.Word{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	key := &ecdsa.PrivateKey{D: new(big.Int).SetBits(backing[:2])}
+
+	zeroPrivateKey(key)
+
+	for i, word := range backing {
+		if word != 0 {
+			t.Fatalf("backing word %d = %x, want 0", i, word)
+		}
+	}
+	if key.D.Sign() != 0 {
+		t.Fatalf("key.D.Sign() = %d, want 0", key.D.Sign())
+	}
+}
+
 func TestGetters_ConcurrentAccess(t *testing.T) {
 	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
