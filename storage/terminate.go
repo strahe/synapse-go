@@ -20,8 +20,12 @@ func (c *Context) Terminate(ctx context.Context, opts ...warmstorage.WriteOption
 	if c.fwssTerminator == nil {
 		return nil, errors.New("storage.Context.Terminate: FWSS terminator not configured")
 	}
+	c.mu.RLock()
 	if c.dataSetID == nil {
+		c.mu.RUnlock()
 		return nil, fmt.Errorf("storage.Context.Terminate: %w: dataSetID not set", ErrInvalidArgument)
 	}
-	return c.fwssTerminator.TerminateDataSet(ctx, *c.dataSetID, opts...)
+	dataSetID := copyBigInt(*c.dataSetID)
+	c.mu.RUnlock()
+	return c.fwssTerminator.TerminateDataSet(ctx, dataSetID, opts...)
 }
