@@ -93,6 +93,7 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 		t.Fatalf("CreateContext: %v", err)
 	}
 	_ = got.DeletePiece
+	_ = got.DeletePieceByID
 
 	if got != want {
 		t.Fatalf("CreateContext returned %p want %p", got, want)

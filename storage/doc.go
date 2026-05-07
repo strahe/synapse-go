@@ -19,8 +19,9 @@
 //     [PrepareTransaction] to move funds into place when the account is not Ready.
 //
 // Per-context manager operations live on [*Context]: [Context.Upload]
-// (single-copy), [Context.DeletePiece], [Context.PieceStatus],
-// [Context.GetScheduledRemovals] and [Context.Terminate].
+// (single-copy), [Context.DeletePieceByID], [Context.DeletePiece],
+// [Context.PieceStatus], [Context.GetScheduledRemovals] and
+// [Context.Terminate].
 //
 // # Upload Flow
 //

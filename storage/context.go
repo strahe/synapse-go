@@ -102,8 +102,9 @@ type Context struct {
 	clientIDFromPending bool
 	presignedKinds      map[[32]byte]commitExtraDataKind
 
-	// Optional read/write collaborators used by TS-parity lifecycle
-	// methods (GetScheduledRemovals, PieceStatus, DeletePiece, Terminate).
+	// Optional read/write collaborators used by lifecycle methods that read
+	// PDP/FWSS state (GetScheduledRemovals, PieceStatus, DeletePiece by CID,
+	// Terminate).
 	// All are nil by default; when unset the corresponding method returns
 	// a descriptive error.
 	pdpCaller      PDPVerifierReader
@@ -215,7 +216,8 @@ func WithLogger(logger *slog.Logger) ContextOption {
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.
 // Required by [Context.GetScheduledRemovals], [Context.PieceStatus] and
-// [Context.DeletePiece]; callers that only Store/Pull/Commit may leave it nil.
+// [Context.DeletePiece]; callers that only Store/Pull/Commit/DeletePieceByID
+// may leave it nil.
 func WithPDPVerifierReader(r PDPVerifierReader) ContextOption {
 	return func(c *Context) { c.pdpCaller = normalizeOptional(r) }
 }

@@ -242,7 +242,9 @@ Common management calls:
 - `FindDataSets`: list datasets owned by the signer or another payer.
 - `GetStorageInfo`: inspect providers, pricing, limits, and allowances.
 - `Context.Download`: download from a known provider and dataset context.
-- `Context.DeletePiece`: schedule removal of a piece from a dataset.
+- `Context.DeletePieceByID`: schedule exact removal by on-chain piece ID.
+- `Context.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
+  `DeletePieceByID` when available, because repeated uploads can share a CID.
 - `Context.Terminate` / `Service.TerminateDataSet`: terminate an FWSS dataset.
 
 Termination and removal are storage lifecycle actions. Treat them as
