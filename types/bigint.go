@@ -10,7 +10,9 @@ import (
 var uint256Limit = new(big.Int).Lsh(big.NewInt(1), 256)
 
 // BigInt holds a uint256 value used by on-chain identifiers.
+// Use Equal or Cmp for numeric comparisons.
 type BigInt struct {
+	_ [0]func()
 	n *big.Int
 }
 

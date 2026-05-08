@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"math"
 	"math/big"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +98,54 @@ func TestBigIntEqualAndCmp(t *testing.T) {
 	}
 	if one.Cmp(two) >= 0 || two.Cmp(one) <= 0 || one.Cmp(alsoOne) != 0 {
 		t.Fatalf("bad ordering: one/two=%d two/one=%d one/also=%d", one.Cmp(two), two.Cmp(one), one.Cmp(alsoOne))
+	}
+}
+
+func TestBigIntRejectsDirectComparison(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	repoRoot := filepath.Dir(wd)
+	dir := t.TempDir()
+
+	goMod := "module bigintcomparetest\n\n" +
+		"go 1.25\n\n" +
+		"require github.com/strahe/synapse-go v0.0.0\n\n" +
+		"replace github.com/strahe/synapse-go => " + filepath.ToSlash(repoRoot) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o600); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	goSum, err := os.ReadFile(filepath.Join(repoRoot, "go.sum"))
+	if err != nil {
+		t.Fatalf("read go.sum: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.sum"), goSum, 0o600); err != nil {
+		t.Fatalf("write go.sum: %v", err)
+	}
+	for _, op := range []string{"==", "!=", "<", "<=", ">", ">="} {
+		t.Run(op, func(t *testing.T) {
+			source := `package bigintcomparetest
+
+import "github.com/strahe/synapse-go/types"
+
+var _ = types.NewBigInt(1) ` + op + ` types.NewBigInt(1)
+`
+			if err := os.WriteFile(filepath.Join(dir, "bigint_compare_test.go"), []byte(source), 0o600); err != nil {
+				t.Fatalf("write test source: %v", err)
+			}
+
+			cmd := exec.Command("go", "test", "-mod=mod", ".")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GOWORK=off")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("direct BigInt comparison %s compiled; output:\n%s", op, out)
+			}
+			if !strings.Contains(string(out), op) {
+				t.Fatalf("direct BigInt comparison %s failed for the wrong reason:\n%s", op, out)
+			}
+		})
 	}
 }
 
