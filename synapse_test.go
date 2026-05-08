@@ -35,6 +35,11 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 	return key
 }
 
+//nolint:staticcheck // test constructs D storage to verify zeroPrivateKey clears it.
+func testPrivateKeyWithScalar(scalar *big.Int) *ecdsa.PrivateKey {
+	return &ecdsa.PrivateKey{D: scalar}
+}
+
 // jsonRPCReq is a minimal JSON-RPC request.
 type jsonRPCReq struct {
 	ID     json.RawMessage `json:"id"`
@@ -787,7 +792,8 @@ func TestParsePrivateKeyHex_Valid(t *testing.T) {
 
 func TestZeroPrivateKeyClearsBackingArrayCapacity(t *testing.T) {
 	backing := []big.Word{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
-	key := &ecdsa.PrivateKey{D: new(big.Int).SetBits(backing[:2])}
+	scalar := new(big.Int).SetBits(backing[:2])
+	key := testPrivateKeyWithScalar(scalar)
 
 	zeroPrivateKey(key)
 
@@ -796,8 +802,8 @@ func TestZeroPrivateKeyClearsBackingArrayCapacity(t *testing.T) {
 			t.Fatalf("backing word %d = %x, want 0", i, word)
 		}
 	}
-	if key.D.Sign() != 0 {
-		t.Fatalf("key.D.Sign() = %d, want 0", key.D.Sign())
+	if scalar.Sign() != 0 {
+		t.Fatalf("scalar.Sign() = %d, want 0", scalar.Sign())
 	}
 }
 

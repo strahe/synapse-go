@@ -34,13 +34,11 @@ var _ EVMSigner = (*Secp256k1Signer)(nil)
 // private key. The key is deep-copied so the signer owns an independent
 // copy; the caller may safely zero or mutate the original.
 func NewSecp256k1Signer(key *ecdsa.PrivateKey) (*Secp256k1Signer, error) {
-	if key == nil {
-		return nil, fmt.Errorf("signer: nil private key")
+	keyCopy, err := cloneSecp256k1PrivateKey(key)
+	if err != nil {
+		return nil, err
 	}
-	// Deep-copy: caller retains ownership of the original key.
-	keyCopy := *key
-	keyCopy.D = new(big.Int).Set(key.D)
-	return newSecp256k1(&keyCopy)
+	return newSecp256k1(keyCopy)
 }
 
 // NewSecp256k1SignerFromBytes creates a dual-protocol signer from a raw
@@ -106,10 +104,24 @@ func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
 // on the given chain. The returned opts embed their own key copy so they
 // remain valid for the lifetime of the opts independent of the signer.
 func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
-	// Copy the key so the returned TransactOpts closure is independent of the signer.
-	keyCopy := *s.ecdsaKey
-	keyCopy.D = new(big.Int).Set(s.ecdsaKey.D)
-	return bind.NewKeyedTransactorWithChainID(&keyCopy, chainID)
+	keyCopy, err := cloneSecp256k1PrivateKey(s.ecdsaKey)
+	if err != nil {
+		return nil, fmt.Errorf("signer.Transactor: %w", err)
+	}
+	return bind.NewKeyedTransactorWithChainID(keyCopy, chainID)
+}
+
+//nolint:staticcheck // secp256k1 copies need D; stdlib raw helpers do not support this curve.
+func cloneSecp256k1PrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
+	if key == nil {
+		return nil, fmt.Errorf("signer: nil private key")
+	}
+	if key.D == nil {
+		return nil, fmt.Errorf("signer: nil private scalar")
+	}
+	keyCopy := *key
+	keyCopy.D = new(big.Int).Set(key.D)
+	return &keyCopy, nil
 }
 
 // SignHash signs a pre-computed 32-byte hash using the secp256k1 key.

@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
@@ -23,6 +24,11 @@ func makeTestLotusExport(t *testing.T, keyType string, raw []byte) string {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	return hex.EncodeToString(j)
+}
+
+//nolint:staticcheck // tests intentionally mutate secp256k1 D to verify defensive copies.
+func testSecp256k1Scalar(key *ecdsa.PrivateKey) *big.Int {
+	return key.D
 }
 
 func TestSecp256k1Signer_DualProtocol(t *testing.T) {
@@ -143,7 +149,8 @@ func TestSecp256k1Signer_PadsShortKeys(t *testing.T) {
 	}
 
 	// big.Int.Bytes() may drop leading zeros
-	s2, err := NewSecp256k1SignerFromBytes(key.D.Bytes())
+	short := new(big.Int).SetBytes(raw).Bytes()
+	s2, err := NewSecp256k1SignerFromBytes(short)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +166,9 @@ func TestSecp256k1Signer_PadsShortKeys(t *testing.T) {
 func TestSecp256k1Signer_InvalidInputs(t *testing.T) {
 	if _, err := NewSecp256k1Signer(nil); err == nil {
 		t.Error("expected error for nil key")
+	}
+	if _, err := NewSecp256k1Signer(&ecdsa.PrivateKey{}); err == nil {
+		t.Error("expected error for nil private scalar")
 	}
 	if _, err := NewSecp256k1SignerFromBytes(nil); err == nil {
 		t.Error("expected error for nil bytes")
@@ -437,18 +447,19 @@ func TestNewSecp256k1Signer_DeepCopiesKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origD := new(big.Int).Set(key.D)
+	scalar := testSecp256k1Scalar(key)
+	origD := new(big.Int).Set(scalar)
 
 	s, err := NewSecp256k1Signer(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Mutate the caller-owned key; the signer must remain functional.
-	key.D.SetInt64(0)
+	scalar.SetInt64(0)
 
 	if _, err := s.Sign([]byte("msg")); err != nil {
 		t.Errorf("Sign should still work after caller mutates original key: %v", err)
 	}
 	// Original key restored for clarity (no longer required by the signer).
-	key.D.Set(origD)
+	scalar.Set(origD)
 }

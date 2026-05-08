@@ -10,7 +10,7 @@ symbols and [examples](../examples/) for runnable CLI flows.
 go get github.com/strahe/synapse-go
 ```
 
-Requires Go 1.25+.
+Requires Go 1.26.3+.
 
 ## Client
 

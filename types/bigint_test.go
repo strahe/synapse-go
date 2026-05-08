@@ -110,7 +110,7 @@ func TestBigIntRejectsDirectComparison(t *testing.T) {
 	dir := t.TempDir()
 
 	goMod := "module bigintcomparetest\n\n" +
-		"go 1.25\n\n" +
+		"go 1.26.3\n\n" +
 		"require github.com/strahe/synapse-go v0.0.0\n\n" +
 		"replace github.com/strahe/synapse-go => " + filepath.ToSlash(repoRoot) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o600); err != nil {

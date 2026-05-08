@@ -299,6 +299,8 @@ func resolvePrivateKey(cfg *clientConfig) (func(), error) {
 // so this does not affect the created signer. The backing words are cleared in
 // place before SetInt64 truncates the logical value; SetInt64 alone only changes
 // the length and can leave key bits in the heap.
+//
+//nolint:staticcheck // zeroing secp256k1 key material requires clearing D in place.
 func zeroPrivateKey(key *ecdsa.PrivateKey) {
 	if key != nil && key.D != nil {
 		bits := key.D.Bits()
