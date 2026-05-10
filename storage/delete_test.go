@@ -206,6 +206,39 @@ func TestContext_DeletePieceByID_AllowsZeroPieceID(t *testing.T) {
 	}
 }
 
+func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
+	want := errors.New("validator should not block delete")
+	var gotPieceID types.BigInt
+	validator := &fakeDataSetValidator{err: want}
+	fake := &fakePDPProviderClient{
+		scheduleDeletionFn: func(_ context.Context, _ types.BigInt, pID types.BigInt, _ []byte) (common.Hash, error) {
+			gotPieceID = pID
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.NewBigInt(77)),
+		WithClientDataSetID(types.NewBigInt(3)),
+		WithDataSetValidator(validator),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	if _, err := c.DeletePieceByID(context.Background(), types.NewBigInt(42)); err != nil {
+		t.Fatalf("DeletePieceByID: %v", err)
+	}
+	if !gotPieceID.Equal(types.NewBigInt(42)) {
+		t.Fatalf("pieceID=%s want 42", gotPieceID.String())
+	}
+	if len(validator.calls) != 0 {
+		t.Fatalf("validator calls=%d want 0", len(validator.calls))
+	}
+}
+
 func TestContext_DeletePieceByID_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
 	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
 		WithPayer(testPayer()),

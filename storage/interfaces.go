@@ -37,10 +37,24 @@ type FWSSTerminator interface {
 	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts ...warmstorage.WriteOption) (*sdktypes.WriteResult, error)
 }
 
+// DataSetValidator verifies that a data set is live in PDPVerifier and
+// managed by the current FWSS listener. Satisfied by *warmstorage.Service.
+type DataSetValidator interface {
+	ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt) error
+}
+
+// DataSetDetailsCatalog lists data sets enriched with PDP liveness,
+// FWSS-listener ownership and metadata. Satisfied by *warmstorage.Service.
+type DataSetDetailsCatalog interface {
+	GetClientDataSetsWithDetails(ctx context.Context, payer common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error)
+}
+
 // FWSSDataSetReader reads an existing data set's on-chain record from the
 // FWSSView contract. Used by Service.CreateContext / Service.CreateContexts
 // to auto-fetch the on-chain ClientDataSetID when the resolver path did not
-// already supply one. Satisfied by *warmstorage.Service (see GetDataSet).
+// already supply one, and by upload paths to reject ended existing data sets
+// before sending bytes to a provider. Satisfied by *warmstorage.Service
+// (see GetDataSet).
 type FWSSDataSetReader interface {
 	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }

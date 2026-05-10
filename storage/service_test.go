@@ -18,6 +18,7 @@ import (
 
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -29,6 +30,522 @@ func mustNewService(t *testing.T, opts Options) *Service {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+func TestManagerUpload_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{}})
+
+	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{
+		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
+		DataSetIDs:  []types.BigInt{types.NewBigInt(2)},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Upload error=%v want ErrInvalidArgument", err)
+	}
+}
+
+func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
+	dataSetID := types.NewBigInt(13269)
+	providerID := types.NewBigInt(2)
+	fixture := serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(13269): {
+				DataSetID:       dataSetID,
+				ProviderID:      providerID,
+				Payer:           testPayer(),
+				PDPEndEpoch:     3778900,
+				ClientDataSetID: types.NewBigInt(99),
+			},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(2): ptrPDPProvider(testPDPProvider(providerID, "https://sp-2.example.com")),
+		},
+		validatorEnabled: true,
+	}
+	catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
+	contextBuilt := false
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: catalog,
+		NewContext: func(ResolvedUploadContext, *UploadOptions) (UploadContext, error) {
+			contextBuilt = true
+			return &fakeUploadContext{
+				id:       providerID,
+				endpoint: "https://sp-2.example.com",
+				storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+					t.Fatal("Store must not run for an ended explicit data set")
+					return nil, nil
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+	mgr := mustNewService(t, Options{Resolver: resolver})
+
+	_, err = mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{
+		DataSetIDs: []types.BigInt{dataSetID},
+	})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
+		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
+	}
+	if contextBuilt {
+		t.Fatal("resolver built a Context for an ended upload data set")
+	}
+}
+
+func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) {
+	dataSetID := types.NewBigInt(13269)
+	providerID := types.NewBigInt(2)
+	clientDataSetID := types.NewBigInt(99)
+	fixture := serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(13269): {
+				DataSetID:       dataSetID,
+				ProviderID:      providerID,
+				Payer:           testPayer(),
+				PDPEndEpoch:     3778900,
+				ClientDataSetID: clientDataSetID,
+			},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(2): ptrPDPProvider(testPDPProvider(providerID, "https://sp-2.example.com")),
+		},
+		validatorEnabled: true,
+		validatorErr:     errors.New("not live"),
+	}
+	catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: catalog,
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+			return NewContext(
+				selection.Provider,
+				&fakePDPProviderClient{},
+				mustTestSigner(t),
+				WithDataSetID(*selection.DataSetID),
+				WithClientDataSetID(*selection.ClientDataSetID),
+			)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+	mgr := mustNewService(t, Options{Resolver: resolver})
+
+	got, err := mgr.CreateContext(context.Background(), &CreateContextOptions{
+		DataSetIDs: []types.BigInt{dataSetID},
+	})
+	if err != nil {
+		t.Fatalf("CreateContext: %v", err)
+	}
+	if got.DataSetID() == nil || !got.DataSetID().Equal(dataSetID) {
+		t.Fatalf("DataSetID=%v want %s", got.DataSetID(), dataSetID.String())
+	}
+}
+
+func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		create func(*Service, context.Context) (*Context, error)
+	}{
+		{
+			name: "single",
+			create: func(s *Service, ctx context.Context) (*Context, error) {
+				return s.CreateContext(ctx, nil)
+			},
+		},
+		{
+			name: "multiple",
+			create: func(s *Service, ctx context.Context) (*Context, error) {
+				contexts, err := s.CreateContexts(ctx, nil)
+				if err != nil {
+					return nil, err
+				}
+				if len(contexts) == 0 {
+					return nil, errors.New("CreateContexts returned no contexts")
+				}
+				return contexts[0], nil
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := bytes.Repeat([]byte("up"), 128)
+			info, err := piece.CalculateFromBytes(data)
+			if err != nil {
+				t.Fatalf("CalculateFromBytes: %v", err)
+			}
+			dataSetID := types.NewBigInt(13269)
+			storeCalled := false
+			fake := &fakePDPProviderClient{
+				uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+					storeCalled = true
+					return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+				},
+				waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error {
+					return nil
+				},
+				addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+					return nil, errors.New("add pieces should not run")
+				},
+			}
+			rawContext, err := NewContext(testProvider(), fake, mustTestSigner(t),
+				WithPayer(testPayer()),
+				WithRecordKeeper(testRecordKeeper()),
+				WithChainID(types.ChainID(314159)),
+				WithDataSetID(dataSetID),
+				WithClientDataSetID(types.NewBigInt(99)),
+			)
+			if err != nil {
+				t.Fatalf("NewContext: %v", err)
+			}
+			reader := &fakeFWSSDataSetReader{
+				info: &warmstorage.DataSetInfo{
+					DataSetID:   dataSetID,
+					PDPEndEpoch: 3778900,
+				},
+			}
+			svc := newTestService()
+			svc.dsReader = reader
+			svc.resolver = &fakeResolver{contexts: []UploadContext{rawContext}}
+
+			got, err := tt.create(svc, context.Background())
+			if err != nil {
+				t.Fatalf("CreateContext: %v", err)
+			}
+			_, err = got.Upload(context.Background(), bytes.NewReader(data), nil)
+			if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
+				t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
+			}
+			if storeCalled {
+				t.Fatal("Store was called")
+			}
+		})
+	}
+}
+
+func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		create func(*Service, context.Context, types.BigInt) (*Context, error)
+	}{
+		{
+			name: "single",
+			create: func(s *Service, ctx context.Context, providerID types.BigInt) (*Context, error) {
+				return s.CreateContext(ctx, &CreateContextOptions{ProviderIDs: []types.BigInt{providerID}})
+			},
+		},
+		{
+			name: "multiple",
+			create: func(s *Service, ctx context.Context, providerID types.BigInt) (*Context, error) {
+				contexts, err := s.CreateContexts(ctx, &CreateContextsOptions{ProviderIDs: []types.BigInt{providerID}})
+				if err != nil {
+					return nil, err
+				}
+				if len(contexts) == 0 {
+					return nil, errors.New("CreateContexts returned no contexts")
+				}
+				return contexts[0], nil
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := bytes.Repeat([]byte("uv"), 128)
+			info, err := piece.CalculateFromBytes(data)
+			if err != nil {
+				t.Fatalf("CalculateFromBytes: %v", err)
+			}
+			dataSetID := types.NewBigInt(2468)
+			providerID := types.NewBigInt(9)
+			clientDataSetID := types.NewBigInt(99)
+			want := errors.New("not managed by listener")
+			storeCalled := false
+			fake := &fakePDPProviderClient{
+				uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+					storeCalled = true
+					return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+				},
+				waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error {
+					return nil
+				},
+				addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+					return nil, errors.New("add pieces should not run")
+				},
+			}
+			fixture := serviceResolverFixture{
+				clientDataSets: []*warmstorage.DataSetInfo{
+					{DataSetID: dataSetID, ProviderID: providerID, PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
+				},
+				dataSetsByID: map[string]*warmstorage.DataSetInfo{
+					testIDKey(2468): {DataSetID: dataSetID, ProviderID: providerID, Payer: testPayer(), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
+				},
+				providersByID: map[string]*spregistry.PDPProvider{
+					testIDKey(9): ptrPDPProvider(testPDPProvider(providerID, "https://sp-9.example.com")),
+				},
+				validatorEnabled: true,
+				validatorErr:     want,
+			}
+			catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
+			resolver, err := NewServiceResolver(ServiceResolverOptions{
+				Payer:       testPayer(),
+				SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+				WarmStorage: catalog,
+				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+					return NewContext(
+						selection.Provider,
+						fake,
+						mustTestSigner(t),
+						WithPayer(testPayer()),
+						WithRecordKeeper(testRecordKeeper()),
+						WithChainID(types.ChainID(314159)),
+						WithDataSetID(*selection.DataSetID),
+						WithClientDataSetID(*selection.ClientDataSetID),
+					)
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewServiceResolver: %v", err)
+			}
+			mgr := mustNewService(t, Options{
+				Resolver:          resolver,
+				FWSSDataSetReader: catalog,
+			})
+
+			got, err := tt.create(mgr, context.Background(), providerID)
+			if err != nil {
+				t.Fatalf("CreateContext: %v", err)
+			}
+			_, err = got.Upload(context.Background(), bytes.NewReader(data), nil)
+			if !errors.Is(err, want) {
+				t.Fatalf("Upload error=%v want wrap of %v", err, want)
+			}
+			if storeCalled {
+				t.Fatal("Store was called")
+			}
+		})
+	}
+}
+
+func TestManagerUpload_SafetyNetRejectsEndedDataSetBeforeStore(t *testing.T) {
+	dataSetID := types.NewBigInt(88)
+	storeCalled := false
+	ctxWithEndedDataSet := &fakeUploadContext{
+		id:        types.NewBigInt(7),
+		endpoint:  "https://sp-7.example.com",
+		dataSetID: &dataSetID,
+		storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+			storeCalled = true
+			t.Fatal("Store must not run when FWSS data set is ended")
+			return nil, nil
+		},
+	}
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{
+			DataSetID:   dataSetID,
+			PDPEndEpoch: 1234,
+		},
+	}
+	mgr := mustNewService(t, Options{
+		Resolver:          &fakeResolver{contexts: []UploadContext{ctxWithEndedDataSet}},
+		FWSSDataSetReader: reader,
+	})
+
+	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
+		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
+	}
+	if storeCalled {
+		t.Fatal("Store was called")
+	}
+	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+		t.Fatalf("reader calls=%d gotID=%s want one call for %s", reader.calls, reader.gotID.String(), dataSetID.String())
+	}
+}
+
+func TestManagerUpload_SafetyNetReaderErrorFailsBeforeStore(t *testing.T) {
+	data := bytes.Repeat([]byte("up"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	dataSetID := types.NewBigInt(88)
+	boom := errors.New("fwss unavailable")
+	storeCalled := false
+	ctxWithDataSet := &fakeUploadContext{
+		id:        types.NewBigInt(7),
+		endpoint:  "https://sp-7.example.com",
+		dataSetID: &dataSetID,
+		storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+			storeCalled = true
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+	}
+	reader := &fakeFWSSDataSetReader{infoErr: boom}
+	mgr := mustNewService(t, Options{
+		Resolver:          &fakeResolver{contexts: []UploadContext{ctxWithDataSet}},
+		FWSSDataSetReader: reader,
+	})
+
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	if !errors.Is(err, boom) {
+		t.Fatalf("Upload error=%v want wrap of %v", err, boom)
+	}
+	if storeCalled {
+		t.Fatal("Store was called")
+	}
+}
+
+func TestManagerUpload_SafetyNetRejectsEndedReplacementBeforePull(t *testing.T) {
+	data := bytes.Repeat([]byte("rp"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	dataSetID := types.NewBigInt(88)
+	replacementPresignCalled := false
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(1),
+		endpoint: "https://sp-1.example.com",
+		storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.NewBigInt(10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.NewBigInt(2),
+		endpoint: "https://sp-2.example.com",
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			return nil, errors.New("presign failed")
+		},
+	}
+	replacement := &fakeUploadContext{
+		id:        types.NewBigInt(3),
+		endpoint:  "https://sp-3.example.com",
+		dataSetID: &dataSetID,
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			replacementPresignCalled = true
+			t.Fatal("replacement PresignForCommit must not run for an ended data set")
+			return nil, nil
+		},
+	}
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{
+			DataSetID:   dataSetID,
+			PDPEndEpoch: 1234,
+		},
+	}
+	mgr := mustNewService(t, Options{
+		Resolver: &fakeResolver{
+			contexts:     []UploadContext{primary, failedSecondary},
+			replacements: []UploadContext{replacement},
+		},
+		FWSSDataSetReader: reader,
+	})
+
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if replacementPresignCalled {
+		t.Fatal("replacement PresignForCommit was called")
+	}
+	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+		t.Fatalf("reader calls=%d gotID=%s want one call for %s", reader.calls, reader.gotID.String(), dataSetID.String())
+	}
+	if got.SuccessCount() != 1 || got.Complete {
+		t.Fatalf("result success=%d complete=%v want one partial primary success", got.SuccessCount(), got.Complete)
+	}
+	if len(got.FailedAttempts) < 2 || !errors.Is(got.FailedAttempts[1].Err, ErrInvalidArgument) {
+		t.Fatalf("failed attempts=%+v want replacement ErrInvalidArgument", got.FailedAttempts)
+	}
+}
+
+func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testing.T) {
+	data := bytes.Repeat([]byte("rs"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	replacementDataSetID := types.NewBigInt(88)
+	replacementPresignCalled := false
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(1),
+		endpoint: "https://sp-1.example.com",
+		pieceURL: "https://sp-1.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.NewBigInt(10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.NewBigInt(2),
+		endpoint: "https://sp-2.example.com",
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+	badReplacement := &fakeUploadContext{
+		id:        types.NewBigInt(3),
+		endpoint:  "https://sp-3.example.com",
+		dataSetID: &replacementDataSetID,
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			replacementPresignCalled = true
+			return nil, errors.New("replacement presign should not run")
+		},
+	}
+	goodReplacement := &fakeUploadContext{
+		id:       types.NewBigInt(4),
+		endpoint: "https://sp-4.example.com",
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			t.Fatal("second replacement must not run after attempt budget is exhausted")
+			return nil, nil
+		},
+		pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+			return &PullResult{
+				Status: PullStatusComplete,
+				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+			}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSetID: types.NewBigInt(20), PieceIDs: []types.BigInt{types.NewBigInt(200)}}, nil
+		},
+	}
+	reader := &fakeFWSSDataSetReader{infoErr: errors.New("fwss unavailable")}
+	mgr := mustNewService(t, Options{
+		Resolver: &fakeResolver{
+			contexts:     []UploadContext{primary, failedSecondary},
+			replacements: []UploadContext{badReplacement, goodReplacement},
+		},
+		MaxSecondaryAttempts: 2,
+		FWSSDataSetReader:    reader,
+	})
+
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(got.Copies) != 1 || !got.Copies[0].ProviderID.Equal(primary.id) {
+		t.Fatalf("copies=%+v want only primary after replacement preflight exhausts budget", got.Copies)
+	}
+	if replacementPresignCalled {
+		t.Fatal("bad replacement PresignForCommit was called")
+	}
+	if got.Complete {
+		t.Fatal("upload should be partial after exhausting secondary attempt budget")
+	}
+	if len(got.FailedAttempts) != 2 {
+		t.Fatalf("failedAttempts=%+v want initial secondary and one replacement failure", got.FailedAttempts)
+	}
 }
 
 func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
@@ -457,7 +974,7 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 	}
 }
 
-func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *testing.T) {
+func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing.T) {
 	data := bytes.Repeat([]byte("kl"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -514,7 +1031,8 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 		},
 	}
 
-	reader := &fakeFWSSDataSetReader{infoErr: errors.New("fwss unavailable")}
+	readerErr := errors.New("fwss unavailable")
+	reader := &fakeFWSSDataSetReader{infoErr: readerErr}
 	resolver := &fakeResolver{
 		contexts:     []UploadContext{primary, failedSecondary},
 		replacements: []UploadContext{replacementCtx, replacement2},
@@ -532,11 +1050,15 @@ func TestManagerUpload_ReplacementPopulateFailureAdvancesCurrentProvider(t *test
 	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement2.id) {
 		t.Fatalf("copies=%+v want replacement provider %s in second slot", got.Copies, replacement2.id)
 	}
-	if len(got.FailedAttempts) != 3 {
-		t.Fatalf("FailedAttempts=%+v want 3 entries", got.FailedAttempts)
+	foundReplacementFailure := false
+	for _, attempt := range got.FailedAttempts {
+		if attempt.ProviderID.Equal(replacementProvider.ID) && errors.Is(attempt.Err, readerErr) {
+			foundReplacementFailure = true
+			break
+		}
 	}
-	if !got.FailedAttempts[2].ProviderID.Equal(replacementProvider.ID) {
-		t.Fatalf("last failed provider=%s want replacement provider %s (retry should advance to replacement after populate failure)", got.FailedAttempts[2].ProviderID, replacementProvider.ID)
+	if !foundReplacementFailure {
+		t.Fatalf("FailedAttempts=%+v want replacement provider %s reader failure", got.FailedAttempts, replacementProvider.ID)
 	}
 }
 

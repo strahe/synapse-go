@@ -46,6 +46,19 @@ type UploadResolver interface {
 	SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
 }
 
+type writableUploadResolver interface {
+	resolveWritableUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
+	selectWritableReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
+}
+
+type dataSetIDContext interface {
+	DataSetID() *types.BigInt
+}
+
+type clientDataSetIDSetter interface {
+	setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.BigInt)
+}
+
 // Service orchestrates multi-copy uploads and downloads.
 // Create with New; configure via the [Options] struct.
 type Service struct {
@@ -162,10 +175,9 @@ type Options struct {
 	DataSetSizeReader DataSetSizeReader
 
 	// FWSSDataSetReader is used by Service.CreateContext /
-	// Service.CreateContexts to auto-fetch the on-chain
-	// ClientDataSetID when a context resolves with a pinned dataSetID
-	// but the resolver did not already populate clientDataSetID. When
-	// nil, the safety net is skipped (existing behaviour).
+	// Service.CreateContexts to auto-fetch the on-chain ClientDataSetID
+	// and to equip returned contexts with upload-time ended-dataset
+	// checks. When nil, those safety nets are skipped.
 	FWSSDataSetReader FWSSDataSetReader
 
 	// SignerAddress is the default payer/client used by manager-level
@@ -235,6 +247,11 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	if r == nil {
 		return nil, fmt.Errorf("storage.Service.Upload: %w: nil reader", ErrInvalidArgument)
 	}
+	if opts != nil {
+		if err := validateProviderAndDataSetIDs(opts.ProviderIDs, opts.DataSetIDs); err != nil {
+			return nil, fmt.Errorf("storage.Service.Upload: %w", err)
+		}
+	}
 	if s.resolver == nil {
 		return nil, errors.New("storage.Service.Upload: no upload resolver configured")
 	}
@@ -252,14 +269,14 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	// fewer contexts than requested; Complete must reflect the shortfall).
 	requestedCopies := requestedCopiesForUpload(opts)
 
-	contexts, explicitProviders, err := s.resolver.ResolveUploadContexts(ctx, opts)
+	contexts, explicitProviders, err := resolveUploadContextsForUpload(ctx, s.resolver, opts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Service.Upload: resolve contexts: %w", err)
 	}
 	if len(contexts) == 0 {
 		return nil, errors.New("storage.Service.Upload: no upload contexts available")
 	}
-	if err := s.populateClientDataSetIDsFromInterfaces(ctx, contexts); err != nil {
+	if err := s.validateUploadContextsWritable(ctx, contexts); err != nil {
 		return nil, fmt.Errorf("storage.Service.Upload: %w", err)
 	}
 
@@ -308,7 +325,12 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	for _, secondary := range secondaries {
 		current := secondary
 		maxAttempts := s.maxSecondaryAttempts
-		for attempt := 0; attempt < maxAttempts; attempt++ {
+		currentAttemptCounted := false
+		for attemptsUsed := 0; attemptsUsed < maxAttempts || currentAttemptCounted; {
+			if !currentAttemptCounted {
+				attemptsUsed++
+			}
+			currentAttemptCounted = false
 			extraData, presignErr := current.PresignForCommit(ctx, pieceInputs)
 			if presignErr == nil {
 				var onProgress func(cid.Cid, PullStatus)
@@ -361,25 +383,35 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 				})
 			}
 
-			if explicitProviders || attempt == maxAttempts-1 {
+			if explicitProviders || attemptsUsed >= maxAttempts {
 				break
 			}
-			replacement, replErr := s.resolver.SelectReplacement(ctx, usedProviders, opts)
-			if replErr != nil {
+			foundReplacement := false
+			for attemptsUsed < maxAttempts {
+				replacement, replErr := selectReplacementForUpload(ctx, s.resolver, usedProviders, opts)
+				if replErr != nil {
+					break
+				}
+				id := replacement.ProviderID()
+				usedProviders[idconv.Key(id)] = id
+				attemptsUsed++
+				if err := s.validateUploadContextsWritable(ctx, []UploadContext{replacement}); err != nil {
+					failedAttempts = append(failedAttempts, FailedAttempt{
+						ProviderID: replacement.ProviderID(),
+						Role:       CopyRoleSecondary,
+						Stage:      CopyStagePresign,
+						Err:        err,
+						Explicit:   explicitProviders,
+					})
+					continue
+				}
+				current = replacement
+				currentAttemptCounted = true
+				foundReplacement = true
 				break
 			}
-			current = replacement
-			id := replacement.ProviderID()
-			usedProviders[idconv.Key(id)] = id
-			if err := s.populateClientDataSetIDsFromInterfaces(ctx, []UploadContext{replacement}); err != nil {
-				failedAttempts = append(failedAttempts, FailedAttempt{
-					ProviderID: replacement.ProviderID(),
-					Role:       CopyRoleSecondary,
-					Stage:      CopyStagePresign,
-					Err:        err,
-					Explicit:   explicitProviders,
-				})
-				continue
+			if !foundReplacement {
+				break
 			}
 		}
 	}
@@ -529,6 +561,53 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}, nil
 }
 
+func resolveUploadContextsForUpload(ctx context.Context, resolver UploadResolver, opts *UploadOptions) ([]UploadContext, bool, error) {
+	if writable, ok := resolver.(writableUploadResolver); ok {
+		return writable.resolveWritableUploadContexts(ctx, opts)
+	}
+	return resolver.ResolveUploadContexts(ctx, opts)
+}
+
+func selectReplacementForUpload(ctx context.Context, resolver UploadResolver, usedProviders map[string]types.BigInt, opts *UploadOptions) (UploadContext, error) {
+	if writable, ok := resolver.(writableUploadResolver); ok {
+		return writable.selectWritableReplacement(ctx, usedProviders, opts)
+	}
+	return resolver.SelectReplacement(ctx, usedProviders, opts)
+}
+
+func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts []UploadContext) error {
+	if s.dsReader == nil {
+		return nil
+	}
+	for _, uploadCtx := range contexts {
+		dsCtx, ok := uploadCtx.(dataSetIDContext)
+		if !ok {
+			continue
+		}
+		dataSetID := dsCtx.DataSetID()
+		if dataSetID == nil {
+			continue
+		}
+		info, err := s.dsReader.GetDataSet(ctx, *dataSetID)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("validate data set %s: %w", dataSetID.String(), ctxErr)
+			}
+			return fmt.Errorf("validate data set %s: %w", dataSetID.String(), err)
+		}
+		if info == nil {
+			return fmt.Errorf("%w: FWSS returned no data set for dataSetID %s", ErrInvalidArgument, dataSetID.String())
+		}
+		if err := validateDataSetAcceptsUploads(*dataSetID, info.PDPEndEpoch); err != nil {
+			return err
+		}
+		if setter, ok := uploadCtx.(clientDataSetIDSetter); ok {
+			setter.setClientDataSetIDIfMissing(*dataSetID, info.ClientDataSetID)
+		}
+	}
+	return nil
+}
+
 func cloneMetadata(opts *UploadOptions) map[string]string {
 	if opts == nil || len(opts.PieceMetadata) == 0 {
 		return nil
@@ -593,6 +672,13 @@ func (s *Service) resolveWithCDN(opts *UploadOptions) *UploadOptions {
 	b := s.defaultWithCDN
 	cloned.WithCDN = &b
 	return &cloned
+}
+
+func validateDataSetAcceptsUploads(dataSetID types.BigInt, pdpEndEpoch types.Epoch) error {
+	if pdpEndEpoch == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: data set %s cannot accept uploads: PDP payment rail ended at epoch %d", ErrInvalidArgument, dataSetID.String(), pdpEndEpoch)
 }
 
 func validateConfirmedPieceIDs(ids []types.BigInt, want int) error {

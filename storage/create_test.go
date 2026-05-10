@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/strahe/synapse-go/types"
@@ -100,6 +101,19 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 	}
 }
 
+func TestCreateContext_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
+	svc := newTestService()
+	svc.resolver = &fakeResolver{}
+
+	_, err := svc.CreateContext(context.Background(), &CreateContextOptions{
+		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
+		DataSetIDs:  []types.BigInt{types.NewBigInt(2)},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
+	}
+}
+
 func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	svc := newTestService()
 	ctx1, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
@@ -122,5 +136,18 @@ func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	_ = got[0].Terminate
 	if got[0] != ctx1 || got[1] != ctx2 {
 		t.Fatalf("CreateContexts returned unexpected contexts")
+	}
+}
+
+func TestCreateContexts_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
+	svc := newTestService()
+	svc.resolver = &fakeResolver{}
+
+	_, err := svc.CreateContexts(context.Background(), &CreateContextsOptions{
+		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
+		DataSetIDs:  []types.BigInt{types.NewBigInt(2)},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
 	}
 }

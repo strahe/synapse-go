@@ -153,6 +153,8 @@ func (c *Client) initServices() error {
 				storage.WithPDPVerifierReader(c.pdpReader),
 				storage.WithPDPConfigReader(ws),
 				storage.WithFWSSTerminator(ws),
+				storage.WithFWSSDataSetReader(ws),
+				storage.WithDataSetValidator(ws),
 			}
 			if sel.DataSetID != nil {
 				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))

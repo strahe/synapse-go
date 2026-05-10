@@ -24,8 +24,8 @@ import (
 // [synapse.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go#WithCDN
 type CreateContextsOptions struct {
 	Copies             int
-	ProviderIDs        []types.BigInt
-	DataSetIDs         []types.BigInt
+	ProviderIDs        []types.BigInt // mutually exclusive with DataSetIDs
+	DataSetIDs         []types.BigInt // mutually exclusive with ProviderIDs
 	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
@@ -39,8 +39,8 @@ type CreateContextsOptions struct {
 //
 // [CreateContextsOptions.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go/storage#CreateContextsOptions.WithCDN
 type CreateContextOptions struct {
-	ProviderIDs        []types.BigInt
-	DataSetIDs         []types.BigInt
+	ProviderIDs        []types.BigInt // mutually exclusive with DataSetIDs
+	DataSetIDs         []types.BigInt // mutually exclusive with ProviderIDs
 	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
@@ -89,6 +89,9 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w: resolver not configured", ErrUninitialized)
 	}
 	uploadOpts := opts.toUploadOptions()
+	if err := validateProviderAndDataSetIDs(uploadOpts.ProviderIDs, uploadOpts.DataSetIDs); err != nil {
+		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
+	}
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
@@ -105,6 +108,7 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 		}
 		out[i] = concrete
 	}
+	s.injectContextUploadGuards(out)
 	if err := s.populateClientDataSetIDs(ctx, out); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
 	}
@@ -120,6 +124,9 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver not configured", ErrUninitialized)
 	}
 	uploadOpts := opts.toUploadOptions()
+	if err := validateProviderAndDataSetIDs(uploadOpts.ProviderIDs, uploadOpts.DataSetIDs); err != nil {
+		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
+	}
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
@@ -135,10 +142,38 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	if !ok {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver returned non-*Context value", ErrInvalidArgument)
 	}
+	s.injectContextUploadGuards([]*Context{concrete})
 	if err := s.populateClientDataSetIDs(ctx, []*Context{concrete}); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
 	}
 	return concrete, nil
+}
+
+func (s *Service) injectContextUploadGuards(contexts []*Context) {
+	reader := s.dsReader
+	var validator DataSetValidator
+	if resolver, ok := s.resolver.(*ServiceResolver); ok {
+		if reader == nil {
+			reader = resolver.warmStorage
+		}
+		validator = resolver.dataSetValidator
+	}
+	if reader == nil && validator == nil {
+		return
+	}
+	for _, c := range contexts {
+		if c == nil {
+			continue
+		}
+		c.mu.Lock()
+		if reader != nil && c.dataSetReader == nil {
+			c.dataSetReader = reader
+		}
+		if validator != nil && c.dataSetValidator == nil {
+			c.dataSetValidator = validator
+		}
+		c.mu.Unlock()
+	}
 }
 
 // populateClientDataSetIDs is the F-48b safety net: for each resolved
@@ -198,27 +233,6 @@ func (s *Service) populateClientDataSetIDs(ctx context.Context, contexts []*Cont
 		c.mu.Unlock()
 	}
 	return nil
-}
-
-// populateClientDataSetIDsFromInterfaces is the Service.Upload-side
-// counterpart of populateClientDataSetIDs: the resolver returns a
-// []UploadContext interface slice, so non-*Context implementations
-// are skipped silently (the safety net only applies to the SDK's
-// concrete Context type).
-func (s *Service) populateClientDataSetIDsFromInterfaces(ctx context.Context, contexts []UploadContext) error {
-	if s.dsReader == nil {
-		return nil
-	}
-	concretes := make([]*Context, 0, len(contexts))
-	for _, uc := range contexts {
-		if c, ok := uc.(*Context); ok {
-			concretes = append(concretes, c)
-		}
-	}
-	if len(concretes) == 0 {
-		return nil
-	}
-	return s.populateClientDataSetIDs(ctx, concretes)
 }
 
 // GetDefaultContext returns a single auto-selected context using resolver

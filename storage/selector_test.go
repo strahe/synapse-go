@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +25,10 @@ func testIDKey(v uint64) string {
 	return idconv.Key(testID(v))
 }
 
+func bigInt(v int64) *big.Int {
+	return big.NewInt(v)
+}
+
 func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReusesMatchingDataSet(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(2), testID(1), testID(3)},
@@ -35,6 +41,28 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 			{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 			{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
 			{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{"source": "app", "withCDN": ""},
+			},
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(0),
+				Metadata:         map[string]string{"source": "other"},
+			},
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+			},
 		},
 		dataSetMetadata: map[string]map[string]string{
 			testIDKey(11): {"source": "app", "withCDN": ""},
@@ -110,6 +138,66 @@ func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacem
 	}
 }
 
+func TestServiceResolverResolveWritableUploadContexts_ProviderIDsSkipFailedValidatorCandidate(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(71), ProviderID: testID(7), PDPEndEpoch: 0},
+			{DataSetID: testID(72), ProviderID: testID(7), PDPEndEpoch: 0},
+		},
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(71): {"source": "app"},
+			testIDKey(72): {"source": "app"},
+		},
+		validatorEnabled: true,
+		validatorErrByID: map[string]error{
+			testIDKey(71): errors.New("not writable"),
+		},
+	})
+
+	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs:     []types.BigInt{testID(7)},
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("resolveWritableUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(72)) {
+		t.Fatalf("context=%+v want provider 7 dataSetID 72", got)
+	}
+}
+
+func TestServiceResolverResolveWritableUploadContexts_ProviderIDsCreateNewWhenValidatorFailsAll(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(71), ProviderID: testID(7), PDPEndEpoch: 0},
+		},
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(71): {"source": "app"},
+		},
+		validatorEnabled: true,
+		validatorErr:     errors.New("not writable"),
+	})
+
+	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs:     []types.BigInt{testID(7)},
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("resolveWritableUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || got[0].dataSetID != nil {
+		t.Fatalf("context=%+v want provider 7 with new data set", got)
+	}
+}
+
 func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3)},
@@ -148,6 +236,343 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnershi
 	}
 }
 
+func TestServiceResolverResolveUploadContexts_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(33): {DataSetID: testID(33), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
+		},
+		validatorEnabled: true,
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs: []types.BigInt{testID(5)},
+		DataSetIDs:  []types.BigInt{testID(33)},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsAllowEndedRailWhenValidatorPasses(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(55): {
+				DataSetID:       testID(55),
+				ProviderID:      testID(5),
+				Payer:           testPayer(),
+				PDPEndEpoch:     1000,
+				ClientDataSetID: testID(155),
+				CommissionBps:   bigInt(0),
+				Payee:           common.HexToAddress("0x5005"),
+				ServiceProvider: common.HexToAddress("0x5006"),
+			},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
+		},
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(55): {"source": "app"},
+		},
+		validatorEnabled: true,
+	})
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []types.BigInt{testID(55)},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(55)) {
+		t.Fatalf("contexts=%+v want dataSetID 55", got)
+	}
+}
+
+func TestServiceResolverResolveWritableUploadContexts_ExplicitDataSetIDsRequireValidator(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(55): {DataSetID: testID(55), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
+		},
+	})
+
+	_, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []types.BigInt{testID(55)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "validator") {
+		t.Fatalf("err=%v want validator requirement", err)
+	}
+}
+
+func TestServiceResolverResolveWritableUploadContexts_ExplicitDataSetIDsSurfaceValidatorFailure(t *testing.T) {
+	want := errors.New("not live")
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		dataSetsByID: map[string]*warmstorage.DataSetInfo{
+			testIDKey(55): {DataSetID: testID(55), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
+		},
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
+		},
+		validatorEnabled: true,
+		validatorErr:     want,
+	})
+
+	_, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+		DataSetIDs: []types.BigInt{testID(55)},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v want %v", err, want)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectSkipsUnusableDetailedDataSets(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           false,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{"source": "app"},
+			},
+		},
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(11): {"source": "app"},
+		},
+	})
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		Copies:          1,
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if got[0].dataSetID != nil {
+		t.Fatalf("auto-select reused dataSetID=%v want nil", got[0].dataSetID)
+	}
+}
+
+func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSnapshot(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(2),
+				Metadata:         map[string]string{"source": "app"},
+			},
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{"source": "app"},
+			},
+		},
+		validatorEnabled: true,
+		validatorErr:     errors.New("validator must not run"),
+	})
+
+	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+		Copies:          1,
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("resolveWritableUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(11)) {
+		t.Fatalf("context=%+v want dataSetID 11 from detailed snapshot", got)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEnrichmentFailure(t *testing.T) {
+	fixture := serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{"source": "app"},
+			},
+		},
+	}
+	want := errors.New(`Post "https://api.calibration.node.glif.io/rpc/v1": EOF`)
+	catalog := &flakyDetailsCatalog{
+		fakeEnhancedDataSetCatalog: fakeEnhancedDataSetCatalog{
+			fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
+		},
+		firstErr: want,
+	}
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: catalog,
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+			return &fakeUploadContext{
+				id:        selection.Provider.ID,
+				endpoint:  selection.Provider.ServiceURL,
+				dataSetID: selection.DataSetID,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		Copies:          1,
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(11)) {
+		t.Fatalf("context=%+v want dataSetID 11 after details retry", got)
+	}
+	if attempts := catalog.attempts.Load(); attempts != 2 {
+		t.Fatalf("GetClientDataSetsWithDetails attempts=%d want 2", attempts)
+	}
+}
+
+func TestServiceResolverDataSetAcceptsUpload_PropagatesRetryableValidatorError(t *testing.T) {
+	want := errors.New(`Post "https://api.calibration.node.glif.io/rpc/v1": EOF`)
+	resolver := &ServiceResolver{
+		dataSetValidator: &fakeDataSetValidator{err: want},
+	}
+
+	ok, err := resolver.dataSetAcceptsUpload(context.Background(), testID(11))
+	if ok || !errors.Is(err, want) {
+		t.Fatalf("dataSetAcceptsUpload ok=%v err=%v want retryable validator error", ok, err)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectWithoutDetailsDoesNotReuseDataSet(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+		},
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(11): {"source": "app"},
+		},
+	})
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		Copies:          1,
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if got[0].dataSetID != nil {
+		t.Fatalf("auto-select reused dataSetID=%v want nil without details", got[0].dataSetID)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectTreatsUnconfiguredPDPVerifierAsNoDetails(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+		},
+		dataSetDetailsErr: fmt.Errorf("details unavailable: %w", warmstorage.ErrPDPVerifierNotConfigured),
+		dataSetMetadata: map[string]map[string]string{
+			testIDKey(11): {"source": "app"},
+		},
+	})
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		Copies:          1,
+		DataSetMetadata: map[string]string{"source": "app"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if got[0].dataSetID != nil {
+		t.Fatalf("auto-select reused dataSetID=%v want nil when details are unavailable", got[0].dataSetID)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectRequestsOnlyManagedDetails(t *testing.T) {
+	var onlyManaged *bool
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{},
+			},
+		},
+		dataSetDetailsOnlyManaged: &onlyManaged,
+	})
+
+	if _, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1}); err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	if onlyManaged == nil || !*onlyManaged {
+		t.Fatalf("onlyManaged=%v want true", onlyManaged)
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_AutoSelectTreatsDetailEnrichmentFailureAsNoDetails(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		dataSetDetailsErr: errors.New("dataSetLive failed"),
+	})
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if got[0].dataSetID != nil {
+		t.Fatalf("auto-select reused dataSetID=%v want nil when details fail", got[0].dataSetID)
+	}
+}
+
 func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t *testing.T) {
 	fixture := serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1)},
@@ -155,7 +580,7 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 			testPDPProvider(testID(1), "https://sp-1.example.com"),
 		},
 	}
-	catalog := &flakyClientDataSetsCatalog{
+	catalog := &flakyApprovedProviderCatalog{
 		fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
 	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
@@ -181,26 +606,36 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 		t.Fatalf("contexts=%d want 1", len(contexts))
 	}
 	if attempts := catalog.attempts.Load(); attempts != 2 {
-		t.Fatalf("GetClientDataSets attempts=%d want 2", attempts)
+		t.Fatalf("GetApprovedProviderIDs attempts=%d want 2", attempts)
 	}
 }
 
 type serviceResolverFixture struct {
-	approvedProviderIDs      []types.BigInt
-	activeProviders          []spregistry.PDPProvider
-	clientDataSets           []*warmstorage.DataSetInfo
-	dataSetMetadata          map[string]map[string]string
-	providersByID            map[string]*spregistry.PDPProvider
-	dataSetsByID             map[string]*warmstorage.DataSetInfo
-	requirePositiveListLimit bool
+	approvedProviderIDs       []types.BigInt
+	activeProviders           []spregistry.PDPProvider
+	clientDataSets            []*warmstorage.DataSetInfo
+	detailedDataSets          []*warmstorage.EnhancedDataSetInfo
+	dataSetDetailsErr         error
+	dataSetDetailsOnlyManaged **bool
+	dataSetMetadata           map[string]map[string]string
+	providersByID             map[string]*spregistry.PDPProvider
+	dataSetsByID              map[string]*warmstorage.DataSetInfo
+	validatorEnabled          bool
+	validatorErr              error
+	validatorErrByID          map[string]error
+	requirePositiveListLimit  bool
 }
 
 func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
 	t.Helper()
+	var catalog DataSetCatalog = &fakeDataSetCatalog{fixture: fixture}
+	if fixture.validatorEnabled || fixture.detailedDataSets != nil || fixture.dataSetDetailsErr != nil {
+		catalog = &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
+	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: &fakeDataSetCatalog{fixture: fixture},
+		WarmStorage: catalog,
 		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
 			return &fakeUploadContext{
 				id:              selection.Provider.ID,
@@ -254,16 +689,76 @@ type fakeDataSetCatalog struct {
 	fixture serviceResolverFixture
 }
 
-type flakyClientDataSetsCatalog struct {
+type fakeEnhancedDataSetCatalog struct {
+	fakeDataSetCatalog
+}
+
+func (f *fakeEnhancedDataSetCatalog) ValidateDataSet(_ context.Context, dataSetID types.BigInt) error {
+	if err := f.fixture.validatorErrByID[idconv.Key(dataSetID)]; err != nil {
+		return err
+	}
+	if f.fixture.validatorErr != nil {
+		return f.fixture.validatorErr
+	}
+	if f.fixture.validatorEnabled {
+		return nil
+	}
+	return fmt.Errorf("fakeEnhancedDataSetCatalog.ValidateDataSet: unexpected dataSetID %s", dataSetID.String())
+}
+
+func (f *fakeEnhancedDataSetCatalog) GetClientDataSetsWithDetails(_ context.Context, _ common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error) {
+	if f.fixture.dataSetDetailsOnlyManaged != nil {
+		value := onlyManaged
+		*f.fixture.dataSetDetailsOnlyManaged = &value
+	}
+	if f.fixture.dataSetDetailsErr != nil {
+		return nil, f.fixture.dataSetDetailsErr
+	}
+	out := make([]*warmstorage.EnhancedDataSetInfo, 0, len(f.fixture.detailedDataSets))
+	for _, dataSet := range f.fixture.detailedDataSets {
+		if dataSet == nil {
+			continue
+		}
+		if onlyManaged && !dataSet.IsManaged {
+			continue
+		}
+		cloned := *dataSet
+		if dataSet.DataSetInfo != nil {
+			base := *dataSet.DataSetInfo
+			cloned.DataSetInfo = &base
+		}
+		cloned.Metadata = cloneStringMap(dataSet.Metadata)
+		if dataSet.ActivePieceCount != nil {
+			cloned.ActivePieceCount = new(big.Int).Set(dataSet.ActivePieceCount)
+		}
+		out = append(out, &cloned)
+	}
+	return out, nil
+}
+
+type flakyApprovedProviderCatalog struct {
 	fakeDataSetCatalog
 	attempts atomic.Int32
 }
 
-func (f *flakyClientDataSetsCatalog) GetClientDataSets(ctx context.Context, payer common.Address, opts types.ListOptions) ([]*warmstorage.DataSetInfo, error) {
+func (f *flakyApprovedProviderCatalog) GetApprovedProviderIDs(ctx context.Context, opts types.ListOptions) ([]types.BigInt, error) {
 	if f.attempts.Add(1) == 1 {
 		return nil, fmt.Errorf("Post %q: EOF", "https://api.calibration.node.glif.io/rpc/v1")
 	}
-	return f.fakeDataSetCatalog.GetClientDataSets(ctx, payer, opts)
+	return f.fakeDataSetCatalog.GetApprovedProviderIDs(ctx, opts)
+}
+
+type flakyDetailsCatalog struct {
+	fakeEnhancedDataSetCatalog
+	attempts atomic.Int32
+	firstErr error
+}
+
+func (f *flakyDetailsCatalog) GetClientDataSetsWithDetails(ctx context.Context, payer common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error) {
+	if f.attempts.Add(1) == 1 {
+		return nil, f.firstErr
+	}
+	return f.fakeEnhancedDataSetCatalog.GetClientDataSetsWithDetails(ctx, payer, onlyManaged)
 }
 
 func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, opts types.ListOptions) ([]types.BigInt, error) {
@@ -383,6 +878,15 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 		clientDataSets: []*warmstorage.DataSetInfo{
 			{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
 		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{},
+			},
+		},
 	})
 
 	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
@@ -395,32 +899,6 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 	got := contextsToFake(t, contexts)
 	if got[0].clientDataSetID == nil || !got[0].clientDataSetID.Equal(clientDataSetID) {
 		t.Fatalf("clientDataSetID=%v want %s (ClientDataSetID not threaded through resolver)", got[0].clientDataSetID, clientDataSetID.String())
-	}
-}
-
-// TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsRejectsInactive proves
-// that the explicit DataSetIDs path enforces the active-dataset constraint
-// (PDPEndEpoch == 0), matching the behaviour of autoSelect.
-func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsRejectsInactive(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(55): {
-				DataSetID:   testID(55),
-				ProviderID:  testID(5),
-				Payer:       testPayer(),
-				PDPEndEpoch: 1000, // non-zero: inactive
-			},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
-		},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(55)},
-	})
-	if err == nil {
-		t.Fatal("expected error for inactive dataset, got nil")
 	}
 }
 
@@ -584,6 +1062,38 @@ func TestSelectReplacement_ErrorFromAutoSelect(t *testing.T) {
 	}, &UploadOptions{})
 	if err == nil {
 		t.Fatal("expected error when all providers excluded")
+	}
+}
+
+func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+			testPDPProvider(testID(2), "https://sp-2.example.com"),
+		},
+		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
+			{
+				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 0},
+				IsLive:           true,
+				IsManaged:        true,
+				ActivePieceCount: bigInt(1),
+				Metadata:         map[string]string{},
+			},
+		},
+		validatorEnabled: true,
+		validatorErr:     errors.New("not writable"),
+	})
+
+	replacement, err := resolver.selectWritableReplacement(context.Background(), map[string]types.BigInt{
+		testIDKey(1): testID(1),
+	}, &UploadOptions{})
+	if err != nil {
+		t.Fatalf("selectWritableReplacement: %v", err)
+	}
+	got := replacement.(*fakeUploadContext)
+	if !got.id.Equal(testID(2)) || got.dataSetID == nil || !got.dataSetID.Equal(testID(21)) {
+		t.Fatalf("replacement=%+v want provider 2 dataSetID 21 from detailed snapshot", got)
 	}
 }
 

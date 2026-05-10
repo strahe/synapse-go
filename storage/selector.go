@@ -61,27 +61,36 @@ type ContextFactory func(ResolvedUploadContext, *UploadOptions) (UploadContext, 
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
-	Payer       common.Address // EVM address of the paying account
-	SPRegistry  PDPProviderSource
-	WarmStorage DataSetCatalog
-	NewContext  ContextFactory // called per-provider to construct an UploadContext
+	Payer            common.Address // EVM address of the paying account
+	SPRegistry       PDPProviderSource
+	WarmStorage      DataSetCatalog
+	DataSetValidator DataSetValidator
+	DataSetDetails   DataSetDetailsCatalog
+	NewContext       ContextFactory // called per-provider to construct an UploadContext
 }
 
-// ServiceResolver selects providers and data sets for each upload, reusing
-// existing data sets when metadata matches exactly.
+// ServiceResolver selects providers and data sets for each upload. Auto-select
+// reuses existing data sets only when enriched liveness details are available;
+// explicit ProviderIDs keep the legacy FWSS-only reuse path.
 type ServiceResolver struct {
-	payer       common.Address
-	spRegistry  PDPProviderSource
-	warmStorage DataSetCatalog
-	newContext  ContextFactory
+	payer            common.Address
+	spRegistry       PDPProviderSource
+	warmStorage      DataSetCatalog
+	dataSetValidator DataSetValidator
+	dataSetDetails   DataSetDetailsCatalog
+	newContext       ContextFactory
 }
 
 var (
-	_ PDPProviderSource = (*spregistry.Service)(nil)
-	_ DataSetCatalog    = (*warmstorage.Service)(nil)
+	_ PDPProviderSource     = (*spregistry.Service)(nil)
+	_ DataSetCatalog        = (*warmstorage.Service)(nil)
+	_ DataSetValidator      = (*warmstorage.Service)(nil)
+	_ DataSetDetailsCatalog = (*warmstorage.Service)(nil)
 )
 
-// NewServiceResolver constructs a ServiceResolver. All fields in opts are required.
+// NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
+// WarmStorage, and NewContext are required. DataSetValidator and
+// DataSetDetails are optional and auto-detected from WarmStorage when present.
 func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.Payer == (common.Address{}) {
 		return nil, fmt.Errorf("storage.NewServiceResolver: %w: zero payer", ErrInvalidArgument)
@@ -95,11 +104,21 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.NewContext == nil {
 		return nil, fmt.Errorf("storage.NewServiceResolver: %w: nil NewContext", ErrInvalidArgument)
 	}
+	validator := opts.DataSetValidator
+	if validator == nil {
+		validator, _ = opts.WarmStorage.(DataSetValidator)
+	}
+	details := opts.DataSetDetails
+	if details == nil {
+		details, _ = opts.WarmStorage.(DataSetDetailsCatalog)
+	}
 	return &ServiceResolver{
-		payer:       opts.Payer,
-		spRegistry:  opts.SPRegistry,
-		warmStorage: opts.WarmStorage,
-		newContext:  opts.NewContext,
+		payer:            opts.Payer,
+		spRegistry:       opts.SPRegistry,
+		warmStorage:      opts.WarmStorage,
+		dataSetValidator: validator,
+		dataSetDetails:   details,
+		newContext:       opts.NewContext,
 	}, nil
 }
 
@@ -108,7 +127,15 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 // the warmstorage-approved and active-PDP intersection. The second return value
 // is true when providers were explicitly specified by opts.
 func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
-	resolved, err := r.resolveSelectionsWithRetry(ctx, opts, nil)
+	return r.resolveUploadContexts(ctx, opts, false)
+}
+
+func (r *ServiceResolver) resolveWritableUploadContexts(ctx context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
+	return r.resolveUploadContexts(ctx, opts, true)
+}
+
+func (r *ServiceResolver) resolveUploadContexts(ctx context.Context, opts *UploadOptions, requireWritable bool) ([]UploadContext, bool, error) {
+	resolved, err := r.resolveSelectionsWithRetry(ctx, opts, nil, requireWritable)
 	if err != nil {
 		return nil, false, err
 	}
@@ -126,7 +153,15 @@ func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *Uploa
 
 // SelectReplacement picks a single unused provider to replace a failed attempt.
 func (r *ServiceResolver) SelectReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions) (UploadContext, error) {
-	resolved, err := r.resolveSelectionsWithRetry(ctx, withCopies(opts, 1), usedProviders)
+	return r.selectReplacement(ctx, usedProviders, opts, false)
+}
+
+func (r *ServiceResolver) selectWritableReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions) (UploadContext, error) {
+	return r.selectReplacement(ctx, usedProviders, opts, true)
+}
+
+func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions, requireWritable bool) (UploadContext, error) {
+	resolved, err := r.resolveSelectionsWithRetry(ctx, withCopies(opts, 1), usedProviders, requireWritable)
 	if err != nil {
 		return nil, err
 	}
@@ -141,9 +176,9 @@ func (r *ServiceResolver) SelectReplacement(ctx context.Context, usedProviders m
 	return uploadCtx, nil
 }
 
-func (r *ServiceResolver) resolveSelectionsWithRetry(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt) (selectionResult, error) {
+func (r *ServiceResolver) resolveSelectionsWithRetry(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, requireWritable bool) (selectionResult, error) {
 	return retry.Do(ctx, func(ctx context.Context) (selectionResult, error) {
-		selections, explicit, err := r.resolveSelections(ctx, opts, extraExcludes)
+		selections, explicit, err := r.resolveSelections(ctx, opts, extraExcludes, requireWritable)
 		if err != nil {
 			return selectionResult{}, err
 		}
@@ -156,24 +191,27 @@ func (r *ServiceResolver) resolveSelectionsWithRetry(ctx context.Context, opts *
 	)
 }
 
-func (r *ServiceResolver) resolveSelections(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt) ([]ResolvedUploadContext, bool, error) {
+func (r *ServiceResolver) resolveSelections(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, requireWritable bool) ([]ResolvedUploadContext, bool, error) {
 	if opts == nil {
 		opts = &UploadOptions{}
 	}
+	if err := validateProviderAndDataSetIDs(opts.ProviderIDs, opts.DataSetIDs); err != nil {
+		return nil, false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w", err)
+	}
 	switch {
 	case len(opts.DataSetIDs) > 0:
-		resolved, err := r.resolveByDataSetIDs(ctx, opts)
+		resolved, err := r.resolveByDataSetIDs(ctx, opts, requireWritable)
 		return resolved, true, err
 	case len(opts.ProviderIDs) > 0:
-		resolved, err := r.resolveByProviderIDs(ctx, opts)
+		resolved, err := r.resolveByProviderIDs(ctx, opts, requireWritable)
 		return resolved, true, err
 	default:
-		resolved, err := r.autoSelect(ctx, opts, extraExcludes)
+		resolved, err := r.autoSelect(ctx, opts, extraExcludes, requireWritable)
 		return resolved, false, err
 	}
 }
 
-func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadOptions) ([]ResolvedUploadContext, error) {
+func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadOptions, requireWritable bool) ([]ResolvedUploadContext, error) {
 	ids := dedupeIDs(opts.DataSetIDs)
 	count := opts.Copies
 	if count == 0 {
@@ -196,9 +234,6 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 		if dataSet.Payer != r.payer {
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s is not owned by %s", dataSetID.String(), r.payer.Hex())
 		}
-		if dataSet.PDPEndEpoch != 0 {
-			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s is not active", dataSetID.String())
-		}
 		provider, err := r.spRegistry.GetPDPProvider(ctx, dataSet.ProviderID)
 		if err != nil {
 			if errors.Is(err, spregistry.ErrNotFound) {
@@ -211,6 +246,11 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 			return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: dataSetIDs resolve to duplicate providers")
 		}
 		seenProviders[providerKey] = struct{}{}
+		if requireWritable {
+			if err := validateDataSetAcceptsUploads(dataSetID, dataSet.PDPEndEpoch); err != nil {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w", err)
+			}
+		}
 		metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dataSetID)
 		if err != nil {
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %s: %w", dataSetID.String(), err)
@@ -218,10 +258,20 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 		dsID := dataSetID
 		out = append(out, buildResolvedUploadContext(*provider, &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), metadata))
 	}
+	if requireWritable {
+		if r.dataSetValidator == nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no data set validator configured", ErrUninitialized)
+		}
+		for _, dataSetID := range ids {
+			if err := r.dataSetValidator.ValidateDataSet(ctx, dataSetID); err != nil {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: validate data set %s: %w", dataSetID.String(), err)
+			}
+		}
+	}
 	return out, nil
 }
 
-func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *UploadOptions) ([]ResolvedUploadContext, error) {
+func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *UploadOptions, requireWritable bool) ([]ResolvedUploadContext, error) {
 	ids := dedupeIDs(opts.ProviderIDs)
 	count := opts.Copies
 	if count == 0 {
@@ -245,7 +295,7 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 			}
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get provider %s: %w", providerID.String(), err)
 		}
-		dataSetID, clientDataSetID, metadata, err := r.selectMatchingDataSet(ctx, providerID, dataSets, requestedMetadata)
+		dataSetID, clientDataSetID, metadata, err := r.selectMatchingDataSetWithWritable(ctx, providerID, dataSets, requestedMetadata, requireWritable)
 		if err != nil {
 			return nil, err
 		}
@@ -254,7 +304,7 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 	return out, nil
 }
 
-func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt) ([]ResolvedUploadContext, error) {
+func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, requireWritable bool) ([]ResolvedUploadContext, error) {
 	count := opts.Copies
 	if count == 0 {
 		count = 2
@@ -276,9 +326,18 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		approvedSet[idconv.Key(id)] = struct{}{}
 	}
 
-	dataSets, err := r.getAllClientDataSets(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data sets: %w", err)
+	var detailedDataSets []*warmstorage.EnhancedDataSetInfo
+	if r.dataSetDetails != nil {
+		detailedDataSets, err = r.dataSetDetails.GetClientDataSetsWithDetails(ctx, r.payer, true)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data set details: %w", ctxErr)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || txutil.IsRetryableRPCError(err) {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get client data set details: %w", err)
+			}
+			detailedDataSets = nil
+		}
 	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
 	selectionCap := min(count, len(providers))
@@ -288,9 +347,10 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		if _, ok := approvedSet[idconv.Key(provider.Info.ID)]; !ok {
 			continue
 		}
-		dataSetID, clientDataSetID, metadata, err := r.selectMatchingDataSet(ctx, provider.Info.ID, dataSets, requestedMetadata)
-		if err != nil {
-			return nil, err
+		var dataSetID, clientDataSetID *types.BigInt
+		metadata := cloneStringMap(requestedMetadata)
+		if r.dataSetDetails != nil {
+			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, detailedDataSets, requestedMetadata)
 		}
 		resolved := buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata)
 		if dataSetID != nil {
@@ -361,6 +421,10 @@ func (r *ServiceResolver) getAllApprovedProviderIDs(ctx context.Context) ([]type
 }
 
 func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID types.BigInt, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string, error) {
+	return r.selectMatchingDataSetWithWritable(ctx, providerID, dataSets, requestedMetadata, false)
+}
+
+func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context, providerID types.BigInt, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
 	matching := make([]*warmstorage.DataSetInfo, 0)
 	for _, dataSet := range dataSets {
 		if dataSet == nil {
@@ -427,12 +491,81 @@ func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID 
 
 	for _, dataSet := range matching {
 		if metadata, ok := metadataByID[idconv.Key(dataSet.DataSetID)]; ok && metadataMatches(metadata, requestedMetadata) {
+			if requireWritable {
+				ok, err := r.dataSetAcceptsUpload(ctx, dataSet.DataSetID)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: validate data set %s: %w", dataSet.DataSetID.String(), err)
+				}
+				if !ok {
+					continue
+				}
+			}
 			dsID := dataSet.DataSetID
 			return &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), metadata, nil
 		}
 	}
 
 	return nil, nil, cloneStringMap(requestedMetadata), nil
+}
+
+func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string) {
+	matching := matchingDetailedDataSets(providerID, dataSets, requestedMetadata)
+	if len(matching) == 0 {
+		return nil, nil, cloneStringMap(requestedMetadata)
+	}
+	return resolvedDetailedDataSet(matching[0])
+}
+
+func matchingDetailedDataSets(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) []*warmstorage.EnhancedDataSetInfo {
+	matching := make([]*warmstorage.EnhancedDataSetInfo, 0)
+	for _, dataSet := range dataSets {
+		if dataSet == nil || dataSet.DataSetInfo == nil {
+			continue
+		}
+		if dataSet.DataSetID.IsZero() || !dataSet.ProviderID.Equal(providerID) {
+			continue
+		}
+		if dataSet.PDPEndEpoch != 0 || !dataSet.IsLive || !dataSet.IsManaged {
+			continue
+		}
+		if !metadataMatches(dataSet.Metadata, requestedMetadata) {
+			continue
+		}
+		matching = append(matching, dataSet)
+	}
+	sort.Slice(matching, func(i, j int) bool {
+		iHasPieces := matching[i].ActivePieceCount != nil && matching[i].ActivePieceCount.Sign() > 0
+		jHasPieces := matching[j].ActivePieceCount != nil && matching[j].ActivePieceCount.Sign() > 0
+		if iHasPieces != jHasPieces {
+			return iHasPieces
+		}
+		return matching[i].DataSetID.Cmp(matching[j].DataSetID) < 0
+	})
+	return matching
+}
+
+func (r *ServiceResolver) dataSetAcceptsUpload(ctx context.Context, dataSetID types.BigInt) (bool, error) {
+	if r.dataSetValidator == nil {
+		return false, nil
+	}
+	if err := r.dataSetValidator.ValidateDataSet(ctx, dataSetID); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false, err
+		}
+		if txutil.IsRetryableRPCError(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func resolvedDetailedDataSet(dataSet *warmstorage.EnhancedDataSetInfo) (*types.BigInt, *types.BigInt, map[string]string) {
+	dsID := dataSet.DataSetID
+	return &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), cloneStringMap(dataSet.Metadata)
 }
 
 func buildResolvedUploadContext(provider spregistry.PDPProvider, dataSetID, clientDataSetID *types.BigInt, metadata map[string]string) ResolvedUploadContext {
@@ -556,6 +689,13 @@ func copyClientDataSetID(v types.BigInt) types.BigInt {
 func copyClientDataSetIDPtr(v types.BigInt) *types.BigInt {
 	cp := copyClientDataSetID(v)
 	return &cp
+}
+
+func validateProviderAndDataSetIDs(providerIDs, dataSetIDs []types.BigInt) error {
+	if len(providerIDs) > 0 && len(dataSetIDs) > 0 {
+		return fmt.Errorf("%w: providerIDs and dataSetIDs are mutually exclusive", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func copyClientDataSetIDFromPtr(v *types.BigInt) types.BigInt {

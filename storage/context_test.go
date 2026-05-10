@@ -22,6 +22,7 @@ import (
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func testBigIntPtr(id types.BigInt) *types.BigInt {
@@ -403,6 +404,91 @@ func TestContextCommit_ExistingDataSet_RejectsMismatchedConfirmedPieceIDs(t *tes
 	})
 	if err == nil {
 		t.Fatal("expected error for mismatched confirmed pieceIDs")
+	}
+}
+
+func TestContextCommit_ExistingDataSet_ValidatorFailureSkipsSigningAndAddPieces(t *testing.T) {
+	info := mustPieceInfo(t)
+	want := errors.New("not live")
+	signCalls := 0
+	signing := &dataSetMutatingSigner{
+		EVMSigner: mustTestSigner(t),
+		mutate:    func() { signCalls++ },
+	}
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+			t.Fatal("AddPieces must not be called after validator failure")
+			return nil, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, signing,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(types.NewBigInt(42)),
+		WithClientDataSetID(types.NewBigInt(99)),
+		WithDataSetValidator(&fakeDataSetValidator{err: want}),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v want %v", err, want)
+	}
+	if signCalls != 0 {
+		t.Fatalf("signCalls=%d want 0", signCalls)
+	}
+}
+
+func TestContextCommit_ExistingDataSet_EndedReaderSkipsSigningAndAddPieces(t *testing.T) {
+	info := mustPieceInfo(t)
+	dataSetID := types.NewBigInt(13269)
+	signCalls := 0
+	signing := &dataSetMutatingSigner{
+		EVMSigner: mustTestSigner(t),
+		mutate:    func() { signCalls++ },
+	}
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{
+			DataSetID:   dataSetID,
+			PDPEndEpoch: 3778900,
+		},
+	}
+	fake := &fakePDPProviderClient{
+		addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+			t.Fatal("AddPieces must not be called when the existing data set cannot accept uploads")
+			return nil, nil
+		},
+	}
+
+	ctx, err := NewContext(testProvider(), fake, signing,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(dataSetID),
+		WithClientDataSetID(types.NewBigInt(99)),
+		WithFWSSDataSetReader(reader),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
+	})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
+		t.Fatalf("Commit error=%v want cannot accept uploads ErrInvalidArgument", err)
+	}
+	if signCalls != 0 {
+		t.Fatalf("signCalls=%d want 0", signCalls)
+	}
+	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+		t.Fatalf("reader calls=%d gotID=%s want one call for %s", reader.calls, reader.gotID.String(), dataSetID.String())
 	}
 }
 
@@ -1535,6 +1621,16 @@ func mustTestSigner(t *testing.T) signer.EVMSigner {
 	return s
 }
 
+type fakeDataSetValidator struct {
+	err   error
+	calls []types.BigInt
+}
+
+func (v *fakeDataSetValidator) ValidateDataSet(_ context.Context, dataSetID types.BigInt) error {
+	v.calls = append(v.calls, dataSetID)
+	return v.err
+}
+
 func testProvider() Provider {
 	return Provider{
 		ID:              types.NewBigInt(1),
@@ -2199,6 +2295,46 @@ func TestContextUpload_AcceptsZeroPieceID(t *testing.T) {
 	}
 	if len(got.Copies) != 1 || !got.Copies[0].PieceID.IsZero() {
 		t.Fatalf("copies=%+v want pieceID 0", got.Copies)
+	}
+}
+
+func TestContextUpload_RejectsEndedExistingDataSetBeforeStore(t *testing.T) {
+	dataSetID := types.NewBigInt(13269)
+	storeCalled := false
+	fake := &fakePDPProviderClient{
+		uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			storeCalled = true
+			t.Fatal("Store must not run when the existing data set cannot accept uploads")
+			return nil, nil
+		},
+	}
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{
+			DataSetID:   dataSetID,
+			PDPEndEpoch: 3778900,
+		},
+	}
+	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithDataSetID(dataSetID),
+		WithClientDataSetID(types.NewBigInt(99)),
+		WithFWSSDataSetReader(reader),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = ctx.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
+	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
+		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
+	}
+	if storeCalled {
+		t.Fatal("Store was called")
+	}
+	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+		t.Fatalf("reader calls=%d gotID=%s want one call for %s", reader.calls, reader.gotID.String(), dataSetID.String())
 	}
 }
 

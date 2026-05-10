@@ -25,6 +25,10 @@ func (c *Context) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 	opts = newUploadCallbackGuard(c.logger).wrapUploadOptions(opts)
 
+	if err := c.validateWritableDataSet(ctx, "storage.Context.Upload"); err != nil {
+		return nil, err
+	}
+
 	storeOpts := &StoreOptions{}
 	if opts != nil {
 		storeOpts.PieceCID = opts.PieceCID

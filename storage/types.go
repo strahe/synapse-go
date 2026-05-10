@@ -246,9 +246,11 @@ type UploadOptions struct {
 	PieceMetadata map[string]string
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
-	// ProviderIDs pins the upload to specific providers by ID.
+	// ProviderIDs pins the upload to specific providers by ID. Mutually
+	// exclusive with DataSetIDs.
 	ProviderIDs []types.BigInt
-	// DataSetIDs pins the upload to specific existing data sets.
+	// DataSetIDs pins the upload to specific existing data sets. Mutually
+	// exclusive with ProviderIDs.
 	DataSetIDs []types.BigInt
 	// ExcludeProviderIDs skips these providers during auto-selection.
 	ExcludeProviderIDs []types.BigInt

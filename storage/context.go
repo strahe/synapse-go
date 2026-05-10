@@ -104,12 +104,15 @@ type Context struct {
 
 	// Optional read/write collaborators used by lifecycle methods that read
 	// PDP/FWSS state (GetScheduledRemovals, PieceStatus, DeletePiece by CID,
-	// Terminate).
-	// All are nil by default; when unset the corresponding method returns
-	// a descriptive error.
-	pdpCaller      PDPVerifierReader
-	pdpConfig      PDPConfigReader
-	fwssTerminator FWSSTerminator
+	// Upload or Commit to an existing data set, Terminate).
+	// All are nil by default; methods that require one return a descriptive
+	// error when it is unset. Upload and Commit validate existing data sets
+	// when a validator is configured.
+	pdpCaller        PDPVerifierReader
+	pdpConfig        PDPConfigReader
+	fwssTerminator   FWSSTerminator
+	dataSetValidator DataSetValidator
+	dataSetReader    FWSSDataSetReader
 }
 
 type commitExtraDataKind uint8
@@ -231,6 +234,18 @@ func WithPDPConfigReader(r PDPConfigReader) ContextOption {
 // WithFWSSTerminator injects the terminator used by [Context.Terminate].
 func WithFWSSTerminator(t FWSSTerminator) ContextOption {
 	return func(c *Context) { c.fwssTerminator = normalizeOptional(t) }
+}
+
+// WithFWSSDataSetReader injects the reader used before uploads to reject
+// existing data sets whose PDP payment rail has ended.
+func WithFWSSDataSetReader(r FWSSDataSetReader) ContextOption {
+	return func(c *Context) { c.dataSetReader = normalizeOptional(r) }
+}
+
+// WithDataSetValidator injects the validator used before uploading or
+// committing pieces to an existing data set.
+func WithDataSetValidator(v DataSetValidator) ContextOption {
+	return func(c *Context) { c.dataSetValidator = normalizeOptional(v) }
 }
 
 // Store streams data to the provider and waits for it to be parked.
@@ -546,10 +561,9 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	}
 
 	// Serialise all Commit calls to prevent a TOCTOU race: the create-vs-add
-	// decision is made in PresignForCommit (which reads c.dataSetID) and then
-	// acted on below (also reading c.dataSetID).  Without serialisation, two
-	// concurrent Commits can both see dataSetID==nil and both create a new
-	// dataset, corrupting the on-chain state.
+	// decision is captured from c.dataSetID and then reused below. Without
+	// serialisation, two concurrent Commits can both see dataSetID==nil and
+	// both create a new dataset, corrupting the on-chain state.
 	c.commitMu.Lock()
 	defer c.commitMu.Unlock()
 
@@ -558,6 +572,14 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	c.mu.RUnlock()
 	if pendingCreate {
 		return nil, fmt.Errorf("storage.Context.Commit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
+	}
+
+	c.mu.RLock()
+	dataSetID := copyIDPtr(c.dataSetID)
+	recordKeeper := c.recordKeeper
+	c.mu.RUnlock()
+	if err := c.validateWritableDataSet(ctx, "storage.Context.Commit"); err != nil {
+		return nil, err
 	}
 
 	extraData := append([]byte(nil), req.ExtraData...)
@@ -573,13 +595,6 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		}
 	}
 	defer c.forgetPresignedExtraData(extraData)
-
-	// Snapshot create-vs-add decision under the data lock after any required
-	// re-signing so the chosen PDP API matches the payload we are sending.
-	c.mu.RLock()
-	dataSetID := c.dataSetID
-	recordKeeper := c.recordKeeper
-	c.mu.RUnlock()
 
 	pieces := make([]pdp.AddPieceInput, 0, len(req.Pieces))
 	for _, p := range req.Pieces {
@@ -650,6 +665,35 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 	return result, nil
 }
 
+func (c *Context) validateWritableDataSet(ctx context.Context, op string) error {
+	c.mu.RLock()
+	dataSetID := copyIDPtr(c.dataSetID)
+	reader := c.dataSetReader
+	validator := c.dataSetValidator
+	c.mu.RUnlock()
+	if dataSetID == nil {
+		return nil
+	}
+	if reader != nil {
+		info, err := reader.GetDataSet(ctx, *dataSetID)
+		if err != nil {
+			return fmt.Errorf("%s: validate data set %s: %w", op, dataSetID.String(), err)
+		}
+		if info == nil {
+			return fmt.Errorf("%s: %w: FWSS returned no data set for dataSetID %s", op, ErrInvalidArgument, dataSetID.String())
+		}
+		if err := validateDataSetAcceptsUploads(*dataSetID, info.PDPEndEpoch); err != nil {
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	}
+	if validator != nil {
+		if err := validator.ValidateDataSet(ctx, *dataSetID); err != nil {
+			return fmt.Errorf("%s: validate data set %s: %w", op, dataSetID.String(), err)
+		}
+	}
+	return nil
+}
+
 // PieceURL returns the HTTPS retrieval URL for the given piece CID on this provider.
 func (c *Context) PieceURL(pieceCID cid.Cid) string {
 	return c.pieceURLFor(pieceCID)
@@ -688,6 +732,15 @@ func (c *Context) DataSetID() *types.BigInt {
 	}
 	id := *c.dataSetID
 	return &id
+}
+
+func (c *Context) setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.BigInt) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dataSetID == nil || !c.dataSetID.Equal(dataSetID) || c.clientDataSetID != nil {
+		return
+	}
+	c.clientDataSetID = copyClientDataSetIDPtr(clientDataSetID)
 }
 
 // WithCDN reports whether CDN services are enabled for this Context.

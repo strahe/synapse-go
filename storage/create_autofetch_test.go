@@ -152,31 +152,30 @@ func TestCreateContexts_AutoFetchCachesByDataSetID(t *testing.T) {
 	}
 }
 
-// TestPopulateClientDataSetIDsFromInterfaces_UploadPathParity asserts the
-// Service.Upload-side wrapper iterates the resolver's []UploadContext,
-// type-asserts to *Context, and back-fills clientDataSetID for matching
-// concrete contexts. Non-*Context implementations are skipped silently
-// so custom resolvers do not break.
-func TestPopulateClientDataSetIDsFromInterfaces_UploadPathParity(t *testing.T) {
+func TestValidateUploadContextsWritable_BackfillsSDKContextClientDataSetID(t *testing.T) {
 	dsID := types.NewBigInt(99)
 	wantClient := types.NewBigInt(0xBEEF)
 
 	reader := &fakeFWSSDataSetReader{
-		info: &warmstorage.DataSetInfo{ClientDataSetID: wantClient},
+		info: &warmstorage.DataSetInfo{DataSetID: dsID, ClientDataSetID: wantClient},
 	}
 	svc := newTestService()
 	svc.dsReader = reader
 
 	concrete := newAutoFetchContext(t, dsID)
-	contexts := []UploadContext{concrete, &fakeUploadContext{}}
+	custom := &fakeUploadContext{dataSetID: &dsID}
+	contexts := []UploadContext{concrete, custom}
 
-	if err := svc.populateClientDataSetIDsFromInterfaces(context.Background(), contexts); err != nil {
-		t.Fatalf("populateClientDataSetIDsFromInterfaces: %v", err)
+	if err := svc.validateUploadContextsWritable(context.Background(), contexts); err != nil {
+		t.Fatalf("validateUploadContextsWritable: %v", err)
 	}
-	if reader.calls != 1 {
-		t.Fatalf("reader.calls=%d want 1 (only the *Context should trigger a fetch)", reader.calls)
+	if reader.calls != 2 {
+		t.Fatalf("reader.calls=%d want 2 (both existing data sets should be validated)", reader.calls)
 	}
 	if concrete.clientDataSetID == nil || !concrete.clientDataSetID.Equal(wantClient) {
 		t.Fatalf("clientDataSetID=%v want %s", concrete.clientDataSetID, wantClient.String())
+	}
+	if custom.clientDataSetID != nil {
+		t.Fatalf("custom clientDataSetID=%v want nil", custom.clientDataSetID)
 	}
 }
