@@ -106,8 +106,11 @@ func TestCreateDataSetAndAddPieces_RespectsHTTPClientTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected CreateDataSetAndAddPieces to respect the configured HTTP timeout")
 	}
-	var timeoutErr interface{ Timeout() bool }
-	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+	type timeoutError interface {
+		error
+		Timeout() bool
+	}
+	if timeoutErr, ok := errors.AsType[timeoutError](err); ok && timeoutErr.Timeout() {
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -15,7 +15,8 @@
 // a shared signer. Standalone services create their own nonce coordinator
 // when constructed with write dependencies.
 //
-// Errors are returned as wrapped sentinels. Use errors.Is to check:
+// Errors are returned as wrapped sentinels or typed errors. Use errors.Is for
+// sentinels and errors.AsType for typed errors:
 //
 //   - ErrNotFound: returned when a queried record (e.g. data set) does not
 //     exist. Getter methods document which lookups can produce this.
@@ -25,6 +26,10 @@
 //     is used without configuring a PDPVerifier address.
 //   - ErrWriteNotConfigured: returned when a write method is used without
 //     write dependencies.
+//   - DataSetNotLiveError: returned by ValidateDataSet when PDPVerifier reports
+//     that the data set is not live.
+//   - DataSetNotManagedError: returned by ValidateDataSet when the data set is
+//     managed by another listener.
 //
 // # Stability
 //

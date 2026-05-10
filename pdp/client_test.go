@@ -92,8 +92,8 @@ func TestPing_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	he, ok := errors.AsType[*HTTPError](err)
+	if !ok {
 		t.Fatalf("want HTTPError, got %T", err)
 	}
 	if he.StatusCode != 503 {
@@ -604,8 +604,8 @@ func TestWaitForDataSetCreated_404ReturnsHTTPError(t *testing.T) {
 		http.Error(w, "", http.StatusNotFound)
 	}))
 	_, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1", 10*time.Millisecond)
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	he, ok := errors.AsType[*HTTPError](err)
+	if !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
 	}
 	if he.StatusCode != http.StatusNotFound {
@@ -745,8 +745,8 @@ func TestWaitForPiecesAdded_404ReturnsHTTPError(t *testing.T) {
 		http.Error(w, "", http.StatusNotFound)
 	}))
 	_, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", 10*time.Millisecond)
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	he, ok := errors.AsType[*HTTPError](err)
+	if !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
 	}
 	if he.StatusCode != http.StatusNotFound {
@@ -1021,8 +1021,7 @@ func TestDoRetryable_429WithRetryAfter(t *testing.T) {
 	}
 	// Zero-delay but verify Retry-After is parsed into HTTPError.
 	c.retryDelayFn = func(err error, attempt int) time.Duration {
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests {
+		if httpErr, ok := errors.AsType[*HTTPError](err); ok && httpErr.StatusCode == http.StatusTooManyRequests {
 			if httpErr.RetryAfter != 60*time.Second {
 				t.Errorf("expected RetryAfter=60s, got %v", httpErr.RetryAfter)
 			}

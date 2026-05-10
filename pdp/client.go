@@ -203,8 +203,7 @@ func isRetryable(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) {
+	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
 		if httpErr.StatusCode == http.StatusTooManyRequests {
 			return true
 		}
@@ -213,8 +212,7 @@ func isRetryable(err error) bool {
 	// TLS handshake rejections are permanent — bad/expired cert, protocol
 	// mismatch. Check before url.Error since these wrap tls.AlertError inside
 	// net.OpError inside url.Error.
-	var tlsAlert tls.AlertError
-	if errors.As(err, &tlsAlert) {
+	if _, ok := errors.AsType[tls.AlertError](err); ok {
 		return false
 	}
 	// Connection-level failures are transient.
@@ -228,25 +226,21 @@ func isRetryable(err error) bool {
 		return true
 	}
 	// HTTP/2: retry on GOAWAY and stream-level recoverable errors.
-	var goaway http2.GoAwayError
-	if errors.As(err, &goaway) {
+	if _, ok := errors.AsType[http2.GoAwayError](err); ok {
 		return true
 	}
-	var streamErr http2.StreamError
-	if errors.As(err, &streamErr) {
+	if streamErr, ok := errors.AsType[http2.StreamError](err); ok {
 		switch streamErr.Code {
 		case http2.ErrCodeRefusedStream, http2.ErrCodeCancel:
 			return true
 		}
 	}
 	// DNS: retry only explicitly temporary or timeout failures.
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if dnsErr, ok := errors.AsType[*net.DNSError](err); ok {
 		return dnsErr.IsTemporary || dnsErr.IsTimeout
 	}
 	// url.Error surfaces timeouts (request timeout, idle timeout).
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return urlErr.Timeout()
 	}
 	// Unknown error type: do not retry. Safer than optimistic retry.
@@ -259,8 +253,7 @@ func isRetryable(err error) bool {
 // (1s, 2s, 4s … capped at maxRetryDelay) is used.
 func httpRetryDelay(err error, attempt int) time.Duration {
 	const maxRetryDelay = 30 * time.Second
-	var httpErr *HTTPError
-	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
+	if httpErr, ok := errors.AsType[*HTTPError](err); ok && httpErr.RetryAfter > 0 {
 		if httpErr.RetryAfter > maxRetryDelay {
 			return maxRetryDelay
 		}

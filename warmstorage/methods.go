@@ -64,17 +64,18 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt
 		return fmt.Errorf("warmstorage.ValidateDataSet: dataSetLive: %w", err)
 	}
 	if !live {
-		return fmt.Errorf("warmstorage.ValidateDataSet: data set %s does not exist or is not live", dataSetID.String())
+		return &DataSetNotLiveError{DataSetID: dataSetID.Copy()}
 	}
 	listener, err := s.pdpBind.GetDataSetListener(&bind.CallOpts{Context: ctx}, id)
 	if err != nil {
 		return fmt.Errorf("warmstorage.ValidateDataSet: getDataSetListener: %w", err)
 	}
 	if listener != s.fwssAddr {
-		return fmt.Errorf(
-			"warmstorage.ValidateDataSet: data set %s is managed by %s, not this WarmStorage contract (%s)",
-			dataSetID.String(), listener.Hex(), s.fwssAddr.Hex(),
-		)
+		return &DataSetNotManagedError{
+			DataSetID:        dataSetID.Copy(),
+			Listener:         listener,
+			ExpectedListener: s.fwssAddr,
+		}
 	}
 	return nil
 }

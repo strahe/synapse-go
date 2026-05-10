@@ -61,6 +61,7 @@ func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
 			testIDKey(2): ptrPDPProvider(testPDPProvider(providerID, "https://sp-2.example.com")),
 		},
 		validatorEnabled: true,
+		validatorErr:     &warmstorage.DataSetNotLiveError{DataSetID: dataSetID.Copy()},
 	}
 	catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
 	contextBuilt := false
@@ -88,9 +89,7 @@ func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
 	_, err = mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{
 		DataSetIDs: []types.BigInt{dataSetID},
 	})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
-		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
-	}
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
 	if contextBuilt {
 		t.Fatal("resolver built a Context for an ended upload data set")
 	}
@@ -217,9 +216,7 @@ func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *
 				t.Fatalf("CreateContext: %v", err)
 			}
 			_, err = got.Upload(context.Background(), bytes.NewReader(data), nil)
-			if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
-				t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
-			}
+			requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
 			if storeCalled {
 				t.Fatal("Store was called")
 			}
@@ -354,9 +351,7 @@ func TestManagerUpload_SafetyNetRejectsEndedDataSetBeforeStore(t *testing.T) {
 	})
 
 	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
-	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
-		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
-	}
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 1234)
 	if storeCalled {
 		t.Fatal("Store was called")
 	}
@@ -460,9 +455,10 @@ func TestManagerUpload_SafetyNetRejectsEndedReplacementBeforePull(t *testing.T) 
 	if got.SuccessCount() != 1 || got.Complete {
 		t.Fatalf("result success=%d complete=%v want one partial primary success", got.SuccessCount(), got.Complete)
 	}
-	if len(got.FailedAttempts) < 2 || !errors.Is(got.FailedAttempts[1].Err, ErrInvalidArgument) {
-		t.Fatalf("failed attempts=%+v want replacement ErrInvalidArgument", got.FailedAttempts)
+	if len(got.FailedAttempts) < 2 {
+		t.Fatalf("failed attempts=%+v want replacement failure", got.FailedAttempts)
 	}
+	requireDataSetPDPPaymentTerminated(t, got.FailedAttempts[1].Err, dataSetID, 1234)
 }
 
 func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testing.T) {
@@ -675,8 +671,8 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected StoreError")
 	}
-	var got *StoreError
-	if !errors.As(err, &got) {
+	got, ok := errors.AsType[*StoreError](err)
+	if !ok {
 		t.Fatalf("want StoreError, got %T", err)
 	}
 	if !got.ProviderID.Equal(primary.id) {
@@ -794,8 +790,8 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected CommitError")
 	}
-	var got *CommitError
-	if !errors.As(err, &got) {
+	got, ok := errors.AsType[*CommitError](err)
+	if !ok {
 		t.Fatalf("want CommitError, got %T", err)
 	}
 	if !got.ProviderID.Equal(primary.id) {
@@ -1790,8 +1786,7 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected CommitError when identifiers missing")
 	}
-	var ce *CommitError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*CommitError](err); !ok {
 		t.Fatalf("want CommitError, got %T", err)
 	}
 }
@@ -1820,8 +1815,7 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected CommitError when dataSetID is zero")
 	}
-	var ce *CommitError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*CommitError](err); !ok {
 		t.Fatalf("want CommitError, got %T", err)
 	}
 }

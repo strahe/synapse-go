@@ -481,9 +481,7 @@ func TestContextCommit_ExistingDataSet_EndedReaderSkipsSigningAndAddPieces(t *te
 	_, err = ctx.Commit(context.Background(), CommitRequest{
 		Pieces: []PieceInput{{PieceCID: info.CIDv2}},
 	})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
-		t.Fatalf("Commit error=%v want cannot accept uploads ErrInvalidArgument", err)
-	}
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
 	if signCalls != 0 {
 		t.Fatalf("signCalls=%d want 0", signCalls)
 	}
@@ -2327,9 +2325,7 @@ func TestContextUpload_RejectsEndedExistingDataSetBeforeStore(t *testing.T) {
 	}
 
 	_, err = ctx.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
-	if err == nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot accept uploads") {
-		t.Fatalf("Upload error=%v want cannot accept uploads ErrInvalidArgument", err)
-	}
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
 	if storeCalled {
 		t.Fatal("Store was called")
 	}

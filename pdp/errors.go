@@ -10,6 +10,8 @@ import (
 )
 
 // HTTPError wraps a non-success response from the PDP provider API.
+// Use errors.AsType[*pdp.HTTPError] to read StatusCode, Body, and RetryAfter
+// from wrapped errors.
 //
 // The URL field is always pre-redacted: userinfo is stripped and sensitive
 // query parameters (see sensitiveQueryKeys in redact.go) are masked as

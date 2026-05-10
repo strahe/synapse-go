@@ -230,8 +230,8 @@ func TestPullPieces_ServerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for server 500")
 	}
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	he, ok := errors.AsType[*HTTPError](err)
+	if !ok {
 		t.Fatalf("want HTTPError, got %T", err)
 	}
 	if he.StatusCode != http.StatusInternalServerError {
@@ -368,8 +368,7 @@ func TestPullPieces_ZeroDataSetIDRequiresRecordKeeper(t *testing.T) {
 		t.Fatal("expected error for zero DataSetID without RecordKeeper")
 	}
 	// Must be a local validation error, not an HTTP round-trip.
-	var he *HTTPError
-	if errors.As(err, &he) {
+	if _, ok := errors.AsType[*HTTPError](err); ok {
 		t.Fatalf("expected local validation error, got HTTPError: %v", err)
 	}
 }

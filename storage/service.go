@@ -678,7 +678,10 @@ func validateDataSetAcceptsUploads(dataSetID types.BigInt, pdpEndEpoch types.Epo
 	if pdpEndEpoch == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: data set %s cannot accept uploads: PDP payment rail ended at epoch %d", ErrInvalidArgument, dataSetID.String(), pdpEndEpoch)
+	return &DataSetPDPPaymentTerminatedError{
+		DataSetID:   dataSetID.Copy(),
+		PDPEndEpoch: pdpEndEpoch,
+	}
 }
 
 func validateConfirmedPieceIDs(ids []types.BigInt, want int) error {

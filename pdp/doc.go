@@ -14,6 +14,9 @@
 // Streaming piece downloads (DownloadPiece) are executed once with the
 // caller's context as the sole lifetime control; they do not go through
 // the automatic retry loop.
+// Non-success PDP HTTP responses surface *HTTPError. Use
+// errors.AsType[*pdp.HTTPError] to inspect status code, response body, and
+// Retry-After.
 //
 // POST and DELETE requests are executed exactly once. These verbs may
 // mutate server state, and a client-side retry after a server-side

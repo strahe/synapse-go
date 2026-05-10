@@ -129,6 +129,22 @@ func TestErrInvalidArgument_NegativeMatch(t *testing.T) {
 	}
 }
 
+func TestDataSetPDPPaymentTerminatedError_DoesNotMatchInvalidArgument(t *testing.T) {
+	dataSetID := types.NewBigInt(13269)
+	err := &DataSetPDPPaymentTerminatedError{
+		DataSetID:   dataSetID,
+		PDPEndEpoch: 3778900,
+	}
+
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
+	if !strings.Contains(err.Error(), "has PDP payment rail end epoch 3778900") {
+		t.Fatalf("Error()=%q want future-safe end epoch wording", err.Error())
+	}
+	if strings.Contains(err.Error(), "ended at epoch") {
+		t.Fatalf("Error()=%q must not imply the payment rail already ended", err.Error())
+	}
+}
+
 func requireInvalidArgument(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -136,5 +152,25 @@ func requireInvalidArgument(t *testing.T, err error) {
 	}
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("errors.Is(err, ErrInvalidArgument)=false; err=%v", err)
+	}
+}
+
+func requireDataSetPDPPaymentTerminated(t *testing.T, err error, dataSetID types.BigInt, pdpEndEpoch types.Epoch) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	got, ok := errors.AsType[*DataSetPDPPaymentTerminatedError](err)
+	if !ok {
+		t.Fatalf("errors.AsType[*DataSetPDPPaymentTerminatedError]=false; err=%T %v", err, err)
+	}
+	if !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("DataSetID=%s want %s", got.DataSetID.String(), dataSetID.String())
+	}
+	if got.PDPEndEpoch != pdpEndEpoch {
+		t.Fatalf("PDPEndEpoch=%d want %d", got.PDPEndEpoch, pdpEndEpoch)
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("DataSetPDPPaymentTerminatedError must not match ErrInvalidArgument: %v", err)
 	}
 }

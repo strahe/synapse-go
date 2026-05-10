@@ -441,8 +441,8 @@ func TestDownloadPiece_ServerError(t *testing.T) {
 	}))
 	pc := testPieceInfoV2(t).CIDv2
 	_, _, err := c.DownloadPiece(context.Background(), pc)
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	he, ok := errors.AsType[*HTTPError](err)
+	if !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
 	}
 	if he.StatusCode != 500 {
@@ -467,8 +467,7 @@ func TestDoWithClient_LoggerAndNon2xx(t *testing.T) {
 	if err == nil {
 		t.Error("expected error")
 	}
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	if _, ok := errors.AsType[*HTTPError](err); !ok {
 		t.Fatalf("want HTTPError, got %T", err)
 	}
 }
@@ -750,8 +749,7 @@ func TestDoWithClient_ExpectedStatusMismatch(t *testing.T) {
 	}
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/test", nil)
 	_, _, err = c.do(req, http.StatusCreated) // expect 201 but get 200
-	var he *HTTPError
-	if !errors.As(err, &he) {
+	if _, ok := errors.AsType[*HTTPError](err); !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
 	}
 }

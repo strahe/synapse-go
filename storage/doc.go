@@ -35,6 +35,9 @@
 // ServiceResolver reuses provider-local datasets only when metadata matches
 // exactly and the warmstorage-approved provider set intersects active PDP
 // providers from spregistry.
+// Existing data sets that cannot accept writes surface typed errors such as
+// DataSetPDPPaymentTerminatedError. Use errors.AsType to access fields like
+// PDPEndEpoch.
 //
 // Downloads are validated as they stream so callers can keep io.Reader-style
 // boundaries without skipping PieceCID verification. Context.Download can use

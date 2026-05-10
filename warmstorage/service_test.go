@@ -522,11 +522,19 @@ func TestValidateDataSet_NoPDP(t *testing.T) {
 }
 
 func TestValidateDataSet_NotLive(t *testing.T) {
+	dataSetID := types.NewBigInt(1)
 	s, mc := newTestServiceWithPDP(t)
 	mc.setPDPReply(t, "dataSetLive", false)
-	err := s.ValidateDataSet(context.Background(), types.NewBigInt(1))
+	err := s.ValidateDataSet(context.Background(), dataSetID)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	got, ok := errors.AsType[*DataSetNotLiveError](err)
+	if !ok {
+		t.Fatalf("want DataSetNotLiveError, got %T: %v", err, err)
+	}
+	if !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("DataSetID=%s want %s", got.DataSetID.String(), dataSetID.String())
 	}
 	if errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Errorf("unexpected sentinel: %v", err)
@@ -534,12 +542,27 @@ func TestValidateDataSet_NotLive(t *testing.T) {
 }
 
 func TestValidateDataSet_WrongListener(t *testing.T) {
+	dataSetID := types.NewBigInt(1)
 	s, mc := newTestServiceWithPDP(t)
+	wantListener := common.HexToAddress("0x000000000000000000000000000000000000dead")
 	mc.setPDPReply(t, "dataSetLive", true)
-	mc.setPDPReply(t, "getDataSetListener", common.HexToAddress("0xdead"))
-	err := s.ValidateDataSet(context.Background(), types.NewBigInt(1))
+	mc.setPDPReply(t, "getDataSetListener", wantListener)
+	err := s.ValidateDataSet(context.Background(), dataSetID)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	got, ok := errors.AsType[*DataSetNotManagedError](err)
+	if !ok {
+		t.Fatalf("want DataSetNotManagedError, got %T: %v", err, err)
+	}
+	if !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("DataSetID=%s want %s", got.DataSetID.String(), dataSetID.String())
+	}
+	if got.Listener != wantListener {
+		t.Fatalf("Listener=%s want %s", got.Listener.Hex(), wantListener.Hex())
+	}
+	if got.ExpectedListener != s.fwssAddr {
+		t.Fatalf("ExpectedListener=%s want %s", got.ExpectedListener.Hex(), s.fwssAddr.Hex())
 	}
 }
 

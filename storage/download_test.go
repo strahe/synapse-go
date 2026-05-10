@@ -79,8 +79,8 @@ func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 	if readErr == nil {
 		t.Fatal("expected validation error")
 	}
-	var cidMismatch *CIDMismatchError
-	if !errors.As(readErr, &cidMismatch) {
+	cidMismatch, ok := errors.AsType[*CIDMismatchError](readErr)
+	if !ok {
 		t.Fatalf("want *CIDMismatchError, got %T: %v", readErr, readErr)
 	}
 	if cidMismatch.Expected != info.CIDv2 {
@@ -489,8 +489,8 @@ func TestDownloadAndValidate_Non2xxStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-2xx status")
 	}
-	var dlErr *DownloadError
-	if !errors.As(err, &dlErr) {
+	dlErr, ok := errors.AsType[*DownloadError](err)
+	if !ok {
 		t.Fatalf("want *DownloadError, got %T: %v", err, err)
 	}
 	if dlErr.StatusCode != http.StatusInternalServerError {
@@ -514,8 +514,8 @@ func TestDownloadAndValidate_RequestCreationError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
-	var dlErr *DownloadError
-	if !errors.As(err, &dlErr) {
+	dlErr, ok := errors.AsType[*DownloadError](err)
+	if !ok {
 		t.Fatalf("want *DownloadError, got %T: %v", err, err)
 	}
 	if dlErr.Cause == nil {

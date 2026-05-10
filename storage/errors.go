@@ -46,6 +46,20 @@ var ErrUnsupportedScheme = errors.New("storage: unsupported URL scheme")
 // on the returned reader.
 var ErrMaxBytesExceeded = errors.New("storage: download exceeded MaxBytes")
 
+// DataSetPDPPaymentTerminatedError is returned when an existing data set's
+// PDP payment rail has an end epoch, so the data set cannot accept writes.
+type DataSetPDPPaymentTerminatedError struct {
+	DataSetID   types.BigInt
+	PDPEndEpoch types.Epoch
+}
+
+func (e *DataSetPDPPaymentTerminatedError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("storage: data set %s cannot accept uploads: has PDP payment rail end epoch %d", e.DataSetID.String(), e.PDPEndEpoch)
+}
+
 // StoreError is returned when the primary store operation fails.
 type StoreError struct {
 	ProviderID types.BigInt
@@ -96,7 +110,7 @@ func (e *CommitError) Unwrap() error {
 }
 
 // DownloadError is returned when an HTTP download request fails, either due to
-// a network error or a non-2xx HTTP status code. Use errors.As to access the
+// a network error or a non-2xx HTTP status code. Use errors.AsType to access the
 // URL and status code.
 type DownloadError struct {
 	URL        string
@@ -128,7 +142,7 @@ func (e *DownloadError) Unwrap() error {
 }
 
 // CIDMismatchError is returned when the piece CID computed from the downloaded
-// bytes does not match the expected CID. Use errors.As to retrieve the computed
+// bytes does not match the expected CID. Use errors.AsType to retrieve the computed
 // and expected CIDs for diagnostic purposes.
 type CIDMismatchError struct {
 	Expected   cid.Cid
