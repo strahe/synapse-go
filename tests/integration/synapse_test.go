@@ -377,9 +377,9 @@ func TestIntegration(t *testing.T) {
 			uploadCosts.Rate.RatePerEpoch, uploadCosts.Rate.RatePerMonth,
 			uploadCosts.Lockup.TotalLockup, uploadCosts.DepositNeeded, uploadCosts.Ready)
 
-		summary, err := client.Costs().GetAccountSummary(cctx, addr)
+		summary, err := client.Payments().AccountSummary(cctx, addr)
 		if err != nil {
-			t.Fatalf("GetAccountSummary: %v", err)
+			t.Fatalf("AccountSummary: %v", err)
 		}
 		if summary.Funds == nil {
 			t.Error("AccountSummary.Funds is nil")

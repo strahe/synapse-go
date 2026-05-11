@@ -11,6 +11,9 @@
 //     upload contexts (one new + N existing data sets); used by the storage
 //     manager's Prepare flow.
 //
+// Payment account summary moved to `payments.Service.AccountSummary`. The
+// older [Service.GetAccountSummary] method remains for compatibility.
+//
 // # Glossary
 //
 // Epoch — Filecoin block interval (30 seconds on mainnet and calibration).

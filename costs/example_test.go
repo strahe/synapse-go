@@ -19,7 +19,7 @@ func Example() {
 	ctx := context.Background()
 	owner := common.HexToAddress("0x...")
 
-	summary, err := svc.GetAccountSummary(ctx, owner)
+	summary, err := svc.GetAccountSummary(ctx, owner) //nolint:staticcheck // compatibility example for legacy costs callers
 	if err != nil {
 		log.Fatal(err)
 	}

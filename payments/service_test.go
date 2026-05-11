@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/strahe/synapse-go/chain"
 	erc20bind "github.com/strahe/synapse-go/internal/contracts/erc20"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/txutil"
@@ -36,8 +37,9 @@ type mockBackend struct {
 	errs map[string]error
 
 	// per-account balances; nil -> 0
-	balances map[common.Address]*big.Int
-	lastIn   map[string][]byte
+	balances  map[common.Address]*big.Int
+	lastIn    map[string][]byte
+	lastBlock map[string]*big.Int
 
 	// sent transactions (hash -> tx)
 	sent      []*types.Transaction
@@ -70,6 +72,7 @@ func newMockBackend(t *testing.T) *mockBackend {
 		errs:      map[string]error{},
 		balances:  map[common.Address]*big.Int{},
 		lastIn:    map[string][]byte{},
+		lastBlock: map[string]*big.Int{},
 		receipts:  map[common.Hash]*types.Receipt{},
 		nonces:    map[common.Address]uint64{},
 	}
@@ -81,7 +84,7 @@ func (m *mockBackend) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([
 	return []byte{0x01}, nil
 }
 
-func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(call.Data) < 4 || call.To == nil {
@@ -93,6 +96,7 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
+			m.lastBlock[key] = copyBig(blockNumber)
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -103,6 +107,7 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
+			m.lastBlock[key] = copyBig(blockNumber)
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -113,6 +118,7 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, _ *
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
+			m.lastBlock[key] = copyBig(blockNumber)
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -274,6 +280,23 @@ func newTestService(t *testing.T) (*Service, *mockBackend) {
 	return newTestServiceWith(t, newTestSigner(t))
 }
 
+func testRailView(owner common.Address, lockupFixed *big.Int) filpaybind.FilecoinPayV1RailView {
+	return filpaybind.FilecoinPayV1RailView{
+		Token:               tokenAddr,
+		From:                owner,
+		To:                  operatorAddr,
+		Operator:            operatorAddr,
+		Validator:           common.Address{},
+		PaymentRate:         big.NewInt(0),
+		LockupPeriod:        big.NewInt(0),
+		LockupFixed:         lockupFixed,
+		SettledUpTo:         big.NewInt(0),
+		EndEpoch:            big.NewInt(0),
+		CommissionRateBps:   big.NewInt(0),
+		ServiceFeeRecipient: common.Address{},
+	}
+}
+
 func TestNewValidation(t *testing.T) {
 	mb := newMockBackend(t)
 	if _, err := New(Options{ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}); err == nil {
@@ -315,6 +338,155 @@ func TestAccountInfoAndBalance(t *testing.T) {
 
 	if _, err := s.AccountInfo(context.Background(), common.Address{}, owner); err != nil {
 		t.Errorf("zero token (FIL path): unexpected error: %v", err)
+	}
+}
+
+func TestTotalAccountFixedLockup_NoRails(t *testing.T) {
+	s, mb := newTestService(t)
+	s.usdfcToken = tokenAddr
+	owner := s.Account()
+	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken",
+		[]filpaybind.FilecoinPayV1RailInfo{}, big.NewInt(0), big.NewInt(0))
+
+	total, err := s.TotalAccountFixedLockup(context.Background(), owner)
+	if err != nil {
+		t.Fatalf("TotalAccountFixedLockup: %v", err)
+	}
+	if total.Sign() != 0 {
+		t.Fatalf("TotalAccountFixedLockup = %s, want 0", total)
+	}
+}
+
+func TestTotalAccountFixedLockup_IncludesTerminatedRails(t *testing.T) {
+	s, mb := newTestService(t)
+	s.usdfcToken = tokenAddr
+	owner := s.Account()
+	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{
+		{RailId: big.NewInt(1), IsTerminated: false, EndEpoch: big.NewInt(0)},
+		{RailId: big.NewInt(2), IsTerminated: true, EndEpoch: big.NewInt(99)},
+	}, big.NewInt(0), big.NewInt(2))
+	mb.setFilPayReply(t, filPayAddr, "getRail", testRailView(owner, big.NewInt(700)))
+
+	total, err := s.TotalAccountFixedLockup(context.Background(), owner)
+	if err != nil {
+		t.Fatalf("TotalAccountFixedLockup: %v", err)
+	}
+	if total.Cmp(big.NewInt(1400)) != 0 {
+		t.Fatalf("TotalAccountFixedLockup = %s, want 1400", total)
+	}
+}
+
+func TestAccountSummary_ComputesBreakdown(t *testing.T) {
+	s, mb := newTestService(t)
+	s.usdfcToken = tokenAddr
+	owner := s.Account()
+	mb.blockFn = func(context.Context) (uint64, error) { return 100, nil }
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(1000), big.NewInt(300), big.NewInt(5), big.NewInt(10))
+	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{
+		{RailId: big.NewInt(1), IsTerminated: false, EndEpoch: big.NewInt(0)},
+		{RailId: big.NewInt(2), IsTerminated: true, EndEpoch: big.NewInt(99)},
+	}, big.NewInt(0), big.NewInt(2))
+	mb.setFilPayReply(t, filPayAddr, "getRail", testRailView(owner, big.NewInt(100)))
+
+	summary, err := s.AccountSummary(context.Background(), owner)
+	if err != nil {
+		t.Fatalf("AccountSummary: %v", err)
+	}
+	if summary.Funds.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("Funds = %s, want 1000", summary.Funds)
+	}
+	if summary.AvailableFunds.Cmp(big.NewInt(250)) != 0 {
+		t.Fatalf("AvailableFunds = %s, want 250", summary.AvailableFunds)
+	}
+	if summary.Debt.Sign() != 0 {
+		t.Fatalf("Debt = %s, want 0", summary.Debt)
+	}
+	if summary.LockupRatePerEpoch.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("LockupRatePerEpoch = %s, want 5", summary.LockupRatePerEpoch)
+	}
+	wantMonthly := new(big.Int).Mul(big.NewInt(5), big.NewInt(chain.EpochsPerMonth))
+	if summary.LockupRatePerMonth.Cmp(wantMonthly) != 0 {
+		t.Fatalf("LockupRatePerMonth = %s, want %s", summary.LockupRatePerMonth, wantMonthly)
+	}
+	if summary.TotalLockup.Cmp(big.NewInt(750)) != 0 {
+		t.Fatalf("TotalLockup = %s, want 750", summary.TotalLockup)
+	}
+	if summary.TotalFixedLockup.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("TotalFixedLockup = %s, want 200", summary.TotalFixedLockup)
+	}
+	if summary.TotalRateBasedLockup.Cmp(big.NewInt(550)) != 0 {
+		t.Fatalf("TotalRateBasedLockup = %s, want 550", summary.TotalRateBasedLockup)
+	}
+	if summary.FundedUntilEpoch.Cmp(big.NewInt(150)) != 0 {
+		t.Fatalf("FundedUntilEpoch = %s, want 150", summary.FundedUntilEpoch)
+	}
+	if summary.CurrentEpoch.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("CurrentEpoch = %s, want 100", summary.CurrentEpoch)
+	}
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	for _, method := range []string{"accounts", "getRailsForPayerAndToken", "getRail"} {
+		key := filPayAddr.Hex() + ":" + method
+		block := mb.lastBlock[key]
+		if block == nil || block.Cmp(big.NewInt(100)) != 0 {
+			t.Fatalf("%s block = %v, want 100", method, block)
+		}
+	}
+	if _, ok := mb.lastIn[filPayAddr.Hex()+":getAccountInfoIfSettled"]; ok {
+		t.Fatal("AccountSummary should not call getAccountInfoIfSettled")
+	}
+}
+
+func TestFundedUntilEpoch_UnderfundedUsesTruncationTowardZero(t *testing.T) {
+	got := fundedUntilEpoch(big.NewInt(100), big.NewInt(201), big.NewInt(2), big.NewInt(1000))
+	if got.Cmp(big.NewInt(950)) != 0 {
+		t.Fatalf("FundedUntilEpoch = %s, want 950", got)
+	}
+}
+
+func TestSummarizeAccount_CurrentEpochBeforeLastSettledDoesNotIncreaseAvailable(t *testing.T) {
+	summary := summarizeAccount(&AccountState{
+		Funds:               big.NewInt(1000),
+		LockupCurrent:       big.NewInt(300),
+		LockupRate:          big.NewInt(5),
+		LockupLastSettledAt: big.NewInt(100),
+	}, big.NewInt(0), big.NewInt(90))
+
+	if summary.AvailableFunds.Cmp(big.NewInt(700)) != 0 {
+		t.Fatalf("AvailableFunds = %s, want 700", summary.AvailableFunds)
+	}
+	if summary.TotalLockup.Cmp(big.NewInt(300)) != 0 {
+		t.Fatalf("TotalLockup = %s, want 300", summary.TotalLockup)
+	}
+}
+
+func TestAccountDebt_CurrentEpochBeforeLastSettledReturnsZero(t *testing.T) {
+	debt := accountDebt(
+		big.NewInt(100),
+		big.NewInt(300),
+		big.NewInt(5),
+		big.NewInt(100),
+		big.NewInt(90),
+	)
+
+	if debt.Sign() != 0 {
+		t.Fatalf("Debt = %s, want 0", debt)
+	}
+}
+
+func TestAccountSummaryValidation(t *testing.T) {
+	s, _ := newTestService(t)
+	if _, err := s.AccountSummary(context.Background(), otherAddr); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("AccountSummary without USDFC err=%v, want ErrInvalidArgument", err)
+	}
+	s.usdfcToken = tokenAddr
+	if _, err := s.AccountSummary(context.Background(), common.Address{}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("AccountSummary zero owner err=%v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.TotalAccountFixedLockup(context.Background(), common.Address{}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("TotalAccountFixedLockup zero owner err=%v, want ErrInvalidArgument", err)
 	}
 }
 

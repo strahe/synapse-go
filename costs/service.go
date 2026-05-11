@@ -280,6 +280,9 @@ func (s *Service) GetUploadCosts(
 }
 
 // GetAccountSummary returns a payment health snapshot for the given owner.
+//
+// Deprecated: Use payments.Service.AccountSummary for payment account state.
+// This method is kept for compatibility.
 func (s *Service) GetAccountSummary(ctx context.Context, owner common.Address) (*AccountSummary, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err

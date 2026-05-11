@@ -218,6 +218,26 @@ func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
 	}
 }
 
+func TestAccountSummary_OnlyExposeCompatibilityFields(t *testing.T) {
+	typ := reflect.TypeOf(AccountSummary{})
+	got := make([]string, typ.NumField())
+	for i := range typ.NumField() {
+		got[i] = typ.Field(i).Name
+	}
+	want := []string{
+		"Funds",
+		"AvailableFunds",
+		"Debt",
+		"LockupRatePerEpoch",
+		"LockupRatePerMonth",
+		"FundedUntilEpoch",
+		"CurrentEpoch",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AccountSummary fields=%v want %v", got, want)
+	}
+}
+
 func TestGetAccountSummary(t *testing.T) {
 	rate := big.NewInt(500_000)
 	svc := buildSvc(t,
@@ -233,7 +253,7 @@ func TestGetAccountSummary(t *testing.T) {
 		usdfcFrac(1),
 	)
 
-	summary, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +287,7 @@ func TestGetAccountSummary_Debt(t *testing.T) {
 		new(big.Int),
 	)
 
-	summary, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -441,7 +461,7 @@ func TestGetAccountSummary_Error(t *testing.T) {
 		&mockPayErr{err: payErr},
 		new(big.Int),
 	)
-	_, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	_, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if !errors.Is(err, payErr) {
 		t.Fatalf("want wrapped payErr, got %v", err)
 	}
@@ -462,7 +482,7 @@ func TestGetAccountSummary_NilFields(t *testing.T) {
 		},
 		new(big.Int),
 	)
-	summary, err := svc.GetAccountSummary(context.Background(), common.Address{})
+	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
 		t.Fatal(err)
 	}

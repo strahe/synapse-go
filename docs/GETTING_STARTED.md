@@ -291,8 +291,8 @@ application-level destructive operations and gate them accordingly.
 | Service | Use it for |
 |---------|------------|
 | `Storage()` | Upload, download, prepare, contexts, datasets |
-| `Payments()` | USDFC balances, deposits, withdrawals, approvals, rails |
-| `Costs()` | Storage estimates and account runway |
+| `Payments()` | USDFC balances, account summary, deposits, withdrawals, approvals, rails |
+| `Costs()` | Storage estimates; legacy account runway compatibility |
 | `WarmStorage()` | FWSS dataset metadata, pricing, approved-provider discovery, termination |
 | `SPRegistry()` | Provider discovery and PDP capability lookup |
 | `FilBeam()` | CDN quota and dataset usage |
