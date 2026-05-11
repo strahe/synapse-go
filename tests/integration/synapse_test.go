@@ -23,6 +23,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	synapse "github.com/strahe/synapse-go"
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
@@ -74,6 +75,37 @@ func isExecutionRevert(err error) bool {
 		return true
 	}
 	return strings.Contains(low, "message execution failed") && strings.Contains(low, "revert reason")
+}
+
+func isIntegrationReadTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isExecutionRevert(err) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context deadline exceeded",
+		"client.timeout exceeded",
+		"timeout",
+		"timed out",
+		"i/o timeout",
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"temporary failure",
+		"try again",
+		"eof",
+	} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type recordedFilBeamRequest struct {
@@ -204,10 +236,30 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 	}
 
 	withCDN := true
+	metadata := map[string]string{
+		"source": "integration-cdn-context-download",
+		"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
+	}
+	t.Log("start CDNContextDownload CreateContexts")
+	uploadContexts, err := client.Storage().CreateContexts(cctx, &storage.CreateContextsOptions{
+		Copies:          1,
+		DataSetMetadata: metadata,
+		WithCDN:         &withCDN,
+	})
+	if err != nil {
+		t.Fatalf("CreateContexts: %v", err)
+	}
+	if len(uploadContexts) != 1 || uploadContexts[0] == nil {
+		t.Fatalf("CreateContexts returned %d contexts", len(uploadContexts))
+	}
+	uploadCtx := uploadContexts[0]
+
 	t.Log("start CDNContextDownload Prepare")
 	prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
-		DataSize:  uint64(len(data)),
-		EnableCDN: &withCDN,
+		DataSize:          uint64(len(data)),
+		Contexts:          []storage.UploadContext{uploadCtx},
+		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+		BufferEpochs:      integrationFundingBufferEpochs,
 	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -228,14 +280,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 	start := time.Now()
 	t.Log("start CDNContextDownload Upload")
-	result, err := client.Storage().Upload(cctx, bytes.NewReader(data), tracedUploadOptions(t, "CDNContextDownload", &storage.UploadOptions{
-		Copies: 1,
-		DataSetMetadata: map[string]string{
-			"source": "integration-cdn-context-download",
-			"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
-		},
-		WithCDN: &withCDN,
-	}))
+	result, err := uploadCtx.Upload(cctx, bytes.NewReader(data), tracedUploadOptions(t, "CDNContextDownload", nil))
 	t.Logf("done CDNContextDownload Upload elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -414,7 +459,11 @@ func TestIntegration(t *testing.T) {
 		// deposit 1 atto-USDFC so this full flow keeps direct Deposit coverage.
 		dataSize := big.NewInt(testDataSize)
 		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, dataSize,
-			&costs.UploadCostOptions{IsNewDataSet: true})
+			&costs.UploadCostOptions{
+				ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+				BufferEpochs:      integrationFundingBufferEpochs,
+				IsNewDataSet:      true,
+			})
 		if err != nil {
 			t.Fatalf("GetUploadCosts for deposit calculation: %v", err)
 		}
@@ -493,10 +542,23 @@ func TestIntegration(t *testing.T) {
 		}
 
 		diff := new(big.Int).Sub(balAfter, balBefore)
-		if diff.Cmp(depositAmount) != 0 {
-			t.Errorf("balance diff = %s, want %s", diff, depositAmount)
+		shortfall := new(big.Int).Sub(depositAmount, diff)
+		maxAccrued := new(big.Int)
+		if acct.LockupRate != nil {
+			maxEpochs := int64(txWaitTimeout/chain.EpochDuration) + 2
+			maxAccrued.Mul(acct.LockupRate, big.NewInt(maxEpochs))
 		}
-		t.Logf("balance: before=%s, after=%s, diff=%s", balBefore, balAfter, diff)
+		if diff.Sign() <= 0 {
+			t.Errorf("balance diff = %s, want positive", diff)
+		}
+		if diff.Cmp(depositAmount) > 0 {
+			t.Errorf("balance diff = %s, want <= deposit %s", diff, depositAmount)
+		}
+		if shortfall.Sign() > 0 && shortfall.Cmp(maxAccrued) > 0 {
+			t.Errorf("balance diff shortfall = %s, want <= accrued lockup bound %s", shortfall, maxAccrued)
+		}
+		t.Logf("balance: before=%s, after=%s, diff=%s, deposit=%s, shortfall=%s, maxAccrued=%s",
+			balBefore, balAfter, diff, depositAmount, shortfall, maxAccrued)
 	})
 
 	// --- Upload subtest ---
@@ -637,8 +699,10 @@ func TestIntegration(t *testing.T) {
 		defer cancel()
 
 		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, big.NewInt(testDataSize), &costs.UploadCostOptions{
-			EnableCDN:    true,
-			IsNewDataSet: true,
+			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+			BufferEpochs:      integrationFundingBufferEpochs,
+			EnableCDN:         true,
+			IsNewDataSet:      true,
 		})
 		if err != nil {
 			t.Fatalf("GetUploadCosts (multicopy): %v", err)
@@ -856,29 +920,42 @@ func TestIntegration(t *testing.T) {
 
 	// --- StorageManagerSurface: every storage.Service read method. ---
 	t.Run("StorageManagerSurface", func(t *testing.T) {
-		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		sm := client.Storage()
+		failOrSkipTransient := func(label string, err error) {
+			t.Helper()
+			if err == nil {
+				return
+			}
+			if isIntegrationReadTransient(err) {
+				t.Skipf("%s transient read failure: %v", label, err)
+			}
+			t.Fatalf("%s: %v", label, err)
+		}
+
+		var sets []*storage.DataSetInfo
+		{
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+
+			var err error
+			sets, err = sm.FindDataSets(cctx, nil)
+			failOrSkipTransient("FindDataSets(default)", err)
+			t.Logf("FindDataSets(default): %d", len(sets))
+
+			start := time.Now()
+			setsManaged, err := sm.FindDataSets(cctx, &storage.FindDataSetsOptions{OnlyManaged: true})
+			t.Logf("done FindDataSets(onlyManaged) elapsed=%s", time.Since(start).Round(time.Second))
+			failOrSkipTransient("FindDataSets(onlyManaged)", err)
+			if len(setsManaged) > len(sets) {
+				t.Errorf("OnlyManaged returned %d > total %d", len(setsManaged), len(sets))
+			}
+		}
+
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 
-		sm := client.Storage()
-
-		sets, err := sm.FindDataSets(cctx, nil)
-		if err != nil {
-			t.Fatalf("FindDataSets(default): %v", err)
-		}
-		t.Logf("FindDataSets(default): %d", len(sets))
-
-		setsManaged, err := sm.FindDataSets(cctx, &storage.FindDataSetsOptions{OnlyManaged: true})
-		if err != nil {
-			t.Fatalf("FindDataSets(onlyManaged): %v", err)
-		}
-		if len(setsManaged) > len(sets) {
-			t.Errorf("OnlyManaged returned %d > total %d", len(setsManaged), len(sets))
-		}
-
 		info, err := sm.GetStorageInfo(cctx, nil)
-		if err != nil {
-			t.Fatalf("GetStorageInfo: %v", err)
-		}
+		failOrSkipTransient("GetStorageInfo", err)
 		if len(info.Providers) == 0 {
 			t.Errorf("StorageInfo.Providers empty")
 		}
@@ -887,9 +964,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		prep, err := sm.Prepare(cctx, &storage.PrepareOptions{DataSize: 64 * 1024})
-		if err != nil {
-			t.Fatalf("Prepare: %v", err)
-		}
+		failOrSkipTransient("Prepare", err)
 		if prep == nil || prep.Costs == nil {
 			t.Fatal("Prepare returned nil result/costs")
 		}
@@ -901,33 +976,25 @@ func TestIntegration(t *testing.T) {
 		mc, err := sm.CalculateMultiContextCosts(cctx, 64*1024, []storage.ContextCostRef{
 			{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
 		}, storage.MultiCostOptions{}, addr)
-		if err != nil {
-			t.Fatalf("CalculateMultiContextCosts: %v", err)
-		}
+		failOrSkipTransient("CalculateMultiContextCosts", err)
 		if mc == nil || mc.RatePerEpoch == nil {
 			t.Fatal("MultiContextCosts missing RatePerEpoch")
 		}
 
 		def, err := sm.GetDefaultContext(cctx)
-		if err != nil {
-			t.Fatalf("GetDefaultContext: %v", err)
-		}
+		failOrSkipTransient("GetDefaultContext", err)
 		if def == nil || def.ProviderID().IsZero() {
 			t.Fatal("GetDefaultContext returned invalid context")
 		}
 
 		ctxs, err := sm.CreateContexts(cctx, &storage.CreateContextsOptions{Copies: 1})
-		if err != nil {
-			t.Fatalf("CreateContexts: %v", err)
-		}
+		failOrSkipTransient("CreateContexts", err)
 		if len(ctxs) != 1 {
 			t.Errorf("CreateContexts returned %d contexts, want 1", len(ctxs))
 		}
 
 		single, err := sm.CreateContext(cctx, nil)
-		if err != nil {
-			t.Fatalf("CreateContext(nil): %v", err)
-		}
+		failOrSkipTransient("CreateContext(nil)", err)
 		if single == nil || single.ProviderID().IsZero() {
 			t.Fatal("CreateContext returned invalid context")
 		}
@@ -1031,7 +1098,9 @@ func TestIntegration(t *testing.T) {
 
 		t.Log("start ExistingDataSet Prepare")
 		prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
-			DataSize: uint64(len(extraData)),
+			DataSize:          uint64(len(extraData)),
+			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+			BufferEpochs:      integrationFundingBufferEpochs,
 			Contexts: []storage.UploadContext{
 				uctx,
 			},

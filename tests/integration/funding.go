@@ -5,8 +5,14 @@ package integration_test
 import (
 	"math/big"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/payments"
+)
+
+const (
+	integrationFundingExtraRunwayEpochs = chain.EpochsPerDay
+	integrationFundingBufferEpochs      = 120
 )
 
 func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountState, copies int) *costs.UploadCosts {
@@ -43,8 +49,8 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 		currentLockupRate,
 		debt,
 		availableFunds,
-		costs.DefaultExtraRunwayEpochs,
-		costs.DefaultBufferEpochs,
+		integrationFundingExtraRunwayEpochs,
+		integrationFundingBufferEpochs,
 		true,
 	)
 
