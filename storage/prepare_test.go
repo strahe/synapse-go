@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -47,6 +48,13 @@ func newTestService() *Service {
 	}
 }
 
+func assertInvalidArgument(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Prepare error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func (c *fakeUploadContext) DataSetID() *sdktypes.BigInt { return c.dataSetID }
 
 func (c *fakeUploadContext) GetProviderInfo() Provider {
@@ -76,6 +84,84 @@ func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	}
 	if res.Transaction != nil {
 		t.Fatalf("want nil Transaction when Ready=true, got %+v", res.Transaction)
+	}
+}
+
+func TestPrepare_RejectsInvalidOptions(t *testing.T) {
+	cdn := true
+	readyCosts := &MultiContextCosts{Ready: true}
+	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1)}
+
+	tests := []struct {
+		name string
+		opts *PrepareOptions
+	}{
+		{
+			name: "nil options",
+			opts: nil,
+		},
+		{
+			name: "zero data size without costs",
+			opts: &PrepareOptions{},
+		},
+		{
+			name: "costs with contexts",
+			opts: &PrepareOptions{
+				Costs:    readyCosts,
+				Contexts: []UploadContext{uploadCtx},
+			},
+		},
+		{
+			name: "costs with data size",
+			opts: &PrepareOptions{
+				Costs:    readyCosts,
+				DataSize: 128,
+			},
+		},
+		{
+			name: "costs with enable cdn",
+			opts: &PrepareOptions{
+				Costs:     readyCosts,
+				EnableCDN: &cdn,
+			},
+		},
+		{
+			name: "costs with extra runway",
+			opts: &PrepareOptions{
+				Costs:             readyCosts,
+				ExtraRunwayEpochs: 1,
+			},
+		},
+		{
+			name: "costs with buffer",
+			opts: &PrepareOptions{
+				Costs:        readyCosts,
+				BufferEpochs: 1,
+			},
+		},
+		{
+			name: "negative extra runway",
+			opts: &PrepareOptions{
+				DataSize:          128,
+				ExtraRunwayEpochs: -1,
+			},
+		},
+		{
+			name: "negative buffer",
+			opts: &PrepareOptions{
+				DataSize:     128,
+				BufferEpochs: -1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService()
+
+			_, err := svc.Prepare(context.Background(), tt.opts)
+			assertInvalidArgument(t, err)
+		})
 	}
 }
 
@@ -118,6 +204,70 @@ func TestPrepare_BuildsExecuteWhenNotReady(t *testing.T) {
 	}
 }
 
+func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
+	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1)}
+	tests := []struct {
+		name  string
+		opts  *PrepareOptions
+		setup func(*Service)
+	}{
+		{
+			name: "supplied nil deposit",
+			opts: &PrepareOptions{Costs: &MultiContextCosts{Ready: false}},
+		},
+		{
+			name: "supplied negative deposit",
+			opts: &PrepareOptions{
+				Costs: &MultiContextCosts{
+					Ready:         false,
+					DepositNeeded: big.NewInt(-1),
+				},
+			},
+		},
+		{
+			name: "calculated nil deposit",
+			opts: &PrepareOptions{
+				DataSize: 128,
+				Contexts: []UploadContext{
+					uploadCtx,
+				},
+			},
+			setup: func(svc *Service) {
+				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: false}}
+				svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+			},
+		},
+		{
+			name: "calculated negative deposit",
+			opts: &PrepareOptions{
+				DataSize: 128,
+				Contexts: []UploadContext{
+					uploadCtx,
+				},
+			},
+			setup: func(svc *Service) {
+				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{
+					Ready:         false,
+					DepositNeeded: big.NewInt(-1),
+				}}
+				svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService()
+			if tt.setup != nil {
+				tt.setup(svc)
+			}
+
+			_, err := svc.Prepare(context.Background(), tt.opts)
+			assertInvalidArgument(t, err)
+		})
+	}
+}
+
 func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
@@ -154,7 +304,7 @@ func TestPrepare_AutoCreatesContextsWithContextResolver(t *testing.T) {
 	}
 }
 
-func TestPrepare_IgnoresEnableCDNWhenContextsSupplied(t *testing.T) {
+func TestPrepare_RejectsEnableCDNWhenContextsSupplied(t *testing.T) {
 	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 	svc := newTestService()
 	svc.costCalc = costCalc
@@ -167,16 +317,59 @@ func TestPrepare_IgnoresEnableCDNWhenContextsSupplied(t *testing.T) {
 		Contexts:     []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 		BufferEpochs: 9,
 	})
+	assertInvalidArgument(t, err)
+}
+
+func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
+	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	svc := newTestService()
+	svc.costCalc = costCalc
+	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	_, err := svc.Prepare(context.Background(), &PrepareOptions{
+		DataSize:          128,
+		Contexts:          []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+		ExtraRunwayEpochs: 7,
+		BufferEpochs:      9,
+	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if costCalc.gotOpts.EnableCDN {
-		t.Fatal("Prepare forwarded EnableCDN despite explicit Contexts")
+	if costCalc.gotOpts.ExtraRunwayEpochs != 7 {
+		t.Fatalf("ExtraRunwayEpochs=%d want 7", costCalc.gotOpts.ExtraRunwayEpochs)
+	}
+	if costCalc.gotOpts.BufferEpochs != 9 {
+		t.Fatalf("BufferEpochs=%d want 9", costCalc.gotOpts.BufferEpochs)
 	}
 	if len(costCalc.gotRefs) != 1 {
 		t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
 	}
-	if costCalc.gotRefs[0].WithCDN {
-		t.Fatal("Prepare mutated explicit context ref to WithCDN=true")
+}
+
+func TestPrepare_ReturnsErrorWhenCostCalculatorReturnsNil(t *testing.T) {
+	svc := newTestService()
+	svc.costCalc = &stubCostCalc{}
+	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Prepare panicked: %v", recovered)
+		}
+	}()
+
+	_, err := svc.Prepare(context.Background(), &PrepareOptions{
+		DataSize: 128,
+		Contexts: []UploadContext{
+			&fakeUploadContext{id: sdktypes.NewBigInt(1)},
+		},
+	})
+	if err == nil {
+		t.Fatal("Prepare error = nil, want error")
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Prepare error = %v, want internal error", err)
+	}
+	if !strings.Contains(err.Error(), "cost calculator returned nil costs") {
+		t.Fatalf("Prepare error = %v, want nil-costs message", err)
 	}
 }

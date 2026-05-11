@@ -20,6 +20,12 @@
 //   - [Service.Prepare] — compute required funding and return a deferred
 //     [PrepareTransaction] to move funds into place when the account is not Ready.
 //
+// For exact preparation, create contexts first with [Service.CreateContexts],
+// pass the same contexts to [Service.Prepare], execute any returned funding
+// transaction, then upload through the matching staged or per-context path.
+// Prepare's auto-created contexts are estimate-only; they are not cached,
+// reserved, or bound to a later [Service.Upload] call.
+//
 // Per-context manager operations live on [*Context]: [Context.Upload]
 // (single-copy), [Context.DeletePieceByID], [Context.DeletePiece],
 // [Context.PieceStatus], [Context.GetScheduledRemovals] and
