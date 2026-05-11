@@ -252,7 +252,7 @@ type UploadOptions struct {
 	// DataSetIDs pins the upload to specific existing data sets. Mutually
 	// exclusive with ProviderIDs.
 	DataSetIDs []types.BigInt
-	// ExcludeProviderIDs skips these providers during auto-selection.
+	// ExcludeProviderIDs skips these providers only during auto-selection.
 	ExcludeProviderIDs []types.BigInt
 	// WithCDN is tri-state: nil inherits the Client-level default
 	// configured via synapse.WithCDN; non-nil explicitly overrides

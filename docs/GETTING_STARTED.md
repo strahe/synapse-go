@@ -115,7 +115,7 @@ Use `storage.UploadOptions` when the default upload is not enough:
 - `Copies`: requested provider copies. Zero means the resolver default.
 - `ProviderIDs`: pin copies to specific providers.
 - `DataSetIDs`: write to specific existing datasets.
-- `ExcludeProviderIDs`: skip providers during automatic selection.
+- `ExcludeProviderIDs`: skip providers only during automatic selection.
 - `DataSetMetadata`: metadata used when creating or reusing datasets.
 - `PieceMetadata`: metadata stored with the committed piece.
 - `WithCDN`: per-upload CDN override. `nil` inherits the client default.
@@ -188,8 +188,9 @@ fmt.Println("contexts:", len(contexts))
 For one provider or one dataset:
 
 ```go
+providerID := types.NewBigInt(123)
 ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
-    ProviderIDs: []types.BigInt{providerID},
+    ProviderID: &providerID,
 })
 if err != nil {
     return err
@@ -202,6 +203,21 @@ if err != nil {
     return err
 }
 fmt.Println(result.PieceCID)
+```
+
+When resuming a known dataset, pass `DataSetID`. If you also pass
+`ProviderID`, the SDK checks that the dataset belongs to that provider.
+
+```go
+dataSetID := types.NewBigInt(456)
+providerID := types.NewBigInt(123)
+ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
+    DataSetID:  &dataSetID,
+    ProviderID: &providerID,
+})
+if err != nil {
+    return err
+}
 ```
 
 To create an empty dataset first, persist the submission if your process may

@@ -161,8 +161,9 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatal("CreateDataSet submission missing ClientDataSetID")
 	}
 
+	recoveryProviderID := secondary.ProviderID()
 	recovered, err := sm.CreateContext(ctx, &storage.CreateContextOptions{
-		ProviderIDs:     []types.BigInt{secondary.ProviderID()},
+		ProviderID:      &recoveryProviderID,
 		DataSetMetadata: metadata,
 		WithCDN:         &withCDN,
 	})

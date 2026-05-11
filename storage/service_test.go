@@ -136,7 +136,7 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 	mgr := mustNewService(t, Options{Resolver: resolver})
 
 	got, err := mgr.CreateContext(context.Background(), &CreateContextOptions{
-		DataSetIDs: []types.BigInt{dataSetID},
+		DataSetID: &dataSetID,
 	})
 	if err != nil {
 		t.Fatalf("CreateContext: %v", err)
@@ -232,7 +232,7 @@ func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload
 		{
 			name: "single",
 			create: func(s *Service, ctx context.Context, providerID types.BigInt) (*Context, error) {
-				return s.CreateContext(ctx, &CreateContextOptions{ProviderIDs: []types.BigInt{providerID}})
+				return s.CreateContext(ctx, &CreateContextOptions{ProviderID: &providerID})
 			},
 		},
 		{

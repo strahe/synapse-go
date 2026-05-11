@@ -267,9 +267,10 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		t.Fatal("Upload returned undefined PieceCID")
 	}
 
+	downloadDataSetID := result.Copies[0].DataSetID
 	uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-		DataSetIDs: []types.BigInt{result.Copies[0].DataSetID},
-		WithCDN:    &withCDN,
+		DataSetID: &downloadDataSetID,
+		WithCDN:   &withCDN,
 	})
 	if err != nil {
 		t.Fatalf("CreateContext: %v", err)
@@ -941,7 +942,7 @@ func TestIntegration(t *testing.T) {
 		defer cancel()
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.BigInt{uploadedDataSetID},
+			DataSetID: &uploadedDataSetID,
 		})
 		if err != nil {
 			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
@@ -1017,7 +1018,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.BigInt{uploadedDataSetID},
+			DataSetID: &uploadedDataSetID,
 		})
 		if err != nil {
 			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
@@ -1255,7 +1256,7 @@ func TestIntegration(t *testing.T) {
 		defer cancel()
 
 		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetIDs: []types.BigInt{uploadedDataSetID},
+			DataSetID: &uploadedDataSetID,
 		})
 		if err != nil {
 			t.Fatalf("CreateContext: %v", err)

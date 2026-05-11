@@ -26,22 +26,25 @@ type CreateContextsOptions struct {
 	Copies             int
 	ProviderIDs        []types.BigInt // mutually exclusive with DataSetIDs
 	DataSetIDs         []types.BigInt // mutually exclusive with ProviderIDs
-	ExcludeProviderIDs []types.BigInt
+	ExcludeProviderIDs []types.BigInt // only used when providers are auto-selected
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
 }
 
-// CreateContextOptions configures Service.CreateContext — the
-// single-copy variant. Same knobs as CreateContextsOptions minus Copies.
+// CreateContextOptions configures Service.CreateContext.
+//
+// ProviderID pins the context to one provider. DataSetID pins it to one
+// existing data set. When both are set, DataSetID selects the context and
+// ProviderID asserts that the selected data set belongs to that provider.
 //
 // WithCDN follows the same tri-state convention as
 // [CreateContextsOptions.WithCDN].
 //
 // [CreateContextsOptions.WithCDN]: https://pkg.go.dev/github.com/strahe/synapse-go/storage#CreateContextsOptions.WithCDN
 type CreateContextOptions struct {
-	ProviderIDs        []types.BigInt // mutually exclusive with DataSetIDs
-	DataSetIDs         []types.BigInt // mutually exclusive with ProviderIDs
-	ExcludeProviderIDs []types.BigInt
+	ProviderID         *types.BigInt
+	DataSetID          *types.BigInt
+	ExcludeProviderIDs []types.BigInt // only used when no ProviderID or DataSetID is set
 	DataSetMetadata    map[string]string
 	WithCDN            *bool
 }
@@ -55,10 +58,10 @@ func (o *CreateContextsOptions) toUploadOptions() *UploadOptions {
 	}
 	return &UploadOptions{
 		Copies:             o.Copies,
-		ProviderIDs:        o.ProviderIDs,
-		DataSetIDs:         o.DataSetIDs,
-		ExcludeProviderIDs: o.ExcludeProviderIDs,
-		DataSetMetadata:    o.DataSetMetadata,
+		ProviderIDs:        cloneBigIntSlice(o.ProviderIDs),
+		DataSetIDs:         cloneBigIntSlice(o.DataSetIDs),
+		ExcludeProviderIDs: cloneBigIntSlice(o.ExcludeProviderIDs),
+		DataSetMetadata:    cloneStringMap(o.DataSetMetadata),
 		WithCDN:            o.WithCDN,
 	}
 }
@@ -67,14 +70,18 @@ func (o *CreateContextOptions) toUploadOptions() *UploadOptions {
 	if o == nil {
 		return &UploadOptions{Copies: 1}
 	}
-	return &UploadOptions{
+	out := &UploadOptions{
 		Copies:             1,
-		ProviderIDs:        o.ProviderIDs,
-		DataSetIDs:         o.DataSetIDs,
-		ExcludeProviderIDs: o.ExcludeProviderIDs,
-		DataSetMetadata:    o.DataSetMetadata,
+		ExcludeProviderIDs: cloneBigIntSlice(o.ExcludeProviderIDs),
+		DataSetMetadata:    cloneStringMap(o.DataSetMetadata),
 		WithCDN:            o.WithCDN,
 	}
+	if o.DataSetID != nil {
+		out.DataSetIDs = []types.BigInt{copyBigInt(*o.DataSetID)}
+	} else if o.ProviderID != nil {
+		out.ProviderIDs = []types.BigInt{copyBigInt(*o.ProviderID)}
+	}
+	return out
 }
 
 // CreateContexts provisions one or more concrete storage contexts without
@@ -88,10 +95,10 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 	if s.resolver == nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w: resolver not configured", ErrUninitialized)
 	}
-	uploadOpts := opts.toUploadOptions()
-	if err := validateProviderAndDataSetIDs(uploadOpts.ProviderIDs, uploadOpts.DataSetIDs); err != nil {
+	if err := validateCreateContextsOptions(opts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
 	}
+	uploadOpts := opts.toUploadOptions()
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
@@ -104,7 +111,7 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 	for i, ctx := range contexts {
 		concrete, ok := ctx.(*Context)
 		if !ok {
-			return nil, fmt.Errorf("storage.Service.CreateContexts: %w: resolver returned non-*Context value", ErrInvalidArgument)
+			return nil, fmt.Errorf("storage.Service.CreateContexts: resolver returned non-*Context value")
 		}
 		out[i] = concrete
 	}
@@ -123,10 +130,10 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	if s.resolver == nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver not configured", ErrUninitialized)
 	}
-	uploadOpts := opts.toUploadOptions()
-	if err := validateProviderAndDataSetIDs(uploadOpts.ProviderIDs, uploadOpts.DataSetIDs); err != nil {
+	if err := validateCreateContextOptions(opts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
 	}
+	uploadOpts := opts.toUploadOptions()
 	if s.source != "" {
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
@@ -140,13 +147,84 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	}
 	concrete, ok := contexts[0].(*Context)
 	if !ok {
-		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver returned non-*Context value", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.Service.CreateContext: resolver returned non-*Context value")
+	}
+	if opts != nil && opts.ProviderID != nil && opts.DataSetID != nil {
+		gotProviderID := concrete.ProviderID()
+		if !gotProviderID.Equal(*opts.ProviderID) {
+			return nil, fmt.Errorf(
+				"storage.Service.CreateContext: %w: DataSetID %s belongs to ProviderID %s, but ProviderID %s was requested",
+				ErrInvalidArgument,
+				opts.DataSetID.String(),
+				gotProviderID.String(),
+				opts.ProviderID.String(),
+			)
+		}
 	}
 	s.injectContextUploadGuards([]*Context{concrete})
 	if err := s.populateClientDataSetIDs(ctx, []*Context{concrete}); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
 	}
 	return concrete, nil
+}
+
+func validateCreateContextsOptions(opts *CreateContextsOptions) error {
+	if opts == nil {
+		return nil
+	}
+	if err := validateProviderAndDataSetIDs(opts.ProviderIDs, opts.DataSetIDs); err != nil {
+		return err
+	}
+	if err := validateNonZeroIDs("ProviderID", opts.ProviderIDs...); err != nil {
+		return err
+	}
+	if err := validateNonZeroIDs("DataSetID", opts.DataSetIDs...); err != nil {
+		return err
+	}
+	if err := validateNonZeroIDs("ExcludeProviderID", opts.ExcludeProviderIDs...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCreateContextOptions(opts *CreateContextOptions) error {
+	if opts == nil {
+		return nil
+	}
+	if opts.ProviderID != nil {
+		if err := validateNonZeroIDs("ProviderID", *opts.ProviderID); err != nil {
+			return err
+		}
+	}
+	if opts.DataSetID != nil {
+		if err := validateNonZeroIDs("DataSetID", *opts.DataSetID); err != nil {
+			return err
+		}
+	}
+	if err := validateNonZeroIDs("ExcludeProviderID", opts.ExcludeProviderIDs...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateNonZeroIDs(name string, ids ...types.BigInt) error {
+	for _, id := range ids {
+		if id.IsZero() {
+			return fmt.Errorf("%w: zero %s", ErrInvalidArgument, name)
+		}
+	}
+	return nil
+}
+
+func cloneBigIntSlice(ids []types.BigInt) []types.BigInt {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]types.BigInt, len(ids))
+	for i, id := range ids {
+		out[i] = copyBigInt(id)
+	}
+	return out
 }
 
 func (s *Service) injectContextUploadGuards(contexts []*Context) {
