@@ -7,8 +7,8 @@
 // that instantiate Service directly must provide those addresses explicitly.
 //
 // Key operations: data set management (including [Service.TerminateDataSet]
-// for FWSS-initiated teardown), service price queries, approval management,
-// and provider allocation.
+// for FWSS-initiated teardown), service price queries, approved-provider
+// reads, and provider allocation.
 //
 // The root synapse Client wires WarmStorage together with the other
 // write-capable services so transaction nonce allocation is coordinated for

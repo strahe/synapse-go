@@ -309,8 +309,8 @@ func TestAccountInfoAndBalance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bal.Int64() != 1000 {
-		t.Errorf("Balance = %s, want 1000", bal)
+	if bal.Int64() != 123 {
+		t.Errorf("Balance = %s, want 123", bal)
 	}
 
 	if _, err := s.AccountInfo(context.Background(), common.Address{}, owner); err != nil {
@@ -562,17 +562,17 @@ func TestValidation_NegativeAmounts(t *testing.T) {
 	s, _ := newTestService(t)
 	ctx := context.Background()
 	neg := big.NewInt(-1)
-	if _, err := s.Approve(ctx, tokenAddr, filPayAddr, neg); err == nil {
-		t.Error("expected negative error")
+	if _, err := s.Approve(ctx, tokenAddr, filPayAddr, neg); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("Approve negative err = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := s.Deposit(ctx, tokenAddr, otherAddr, neg); err == nil {
-		t.Error("expected negative error")
+	if _, err := s.Deposit(ctx, tokenAddr, otherAddr, neg); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("Deposit negative err = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := s.Withdraw(ctx, tokenAddr, neg); err == nil {
-		t.Error("expected negative error")
+	if _, err := s.Withdraw(ctx, tokenAddr, neg); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("Withdraw negative err = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := s.ApproveService(ctx, tokenAddr, operatorAddr, neg, big.NewInt(0), big.NewInt(0)); err == nil {
-		t.Error("expected negative error")
+	if _, err := s.ApproveService(ctx, tokenAddr, operatorAddr, neg, big.NewInt(0), big.NewInt(0)); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("ApproveService negative err = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -1133,8 +1133,8 @@ func TestApproveService_NegativeAllowances(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := s.ApproveService(ctx, tokenAddr, operatorAddr, tc.rateAllowance, tc.lockupAllowance, tc.maxLockupPer)
-			if err == nil {
-				t.Error("expected error for negative allowance")
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("err=%v want ErrInvalidArgument", err)
 			}
 		})
 	}
@@ -1167,8 +1167,8 @@ func TestApproveService_NilAllowances(t *testing.T) {
 	s, _ := newTestService(t)
 	ctx := context.Background()
 	_, err := s.ApproveService(ctx, tokenAddr, operatorAddr, nil, big.NewInt(0), big.NewInt(0))
-	if err == nil {
-		t.Error("expected error for nil rateAllowance")
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("err=%v want ErrInvalidArgument", err)
 	}
 }
 
@@ -1180,20 +1180,24 @@ func TestCopyBig_Nil(t *testing.T) {
 
 func TestValidateNonNegative_TableDriven(t *testing.T) {
 	tests := []struct {
-		name    string
-		val     *big.Int
-		wantErr bool
+		name        string
+		val         *big.Int
+		wantErr     bool
+		wantInvalid bool
 	}{
-		{"nil", nil, true},
-		{"negative", big.NewInt(-1), true},
-		{"zero", big.NewInt(0), false},
-		{"positive", big.NewInt(42), false},
+		{"nil", nil, true, true},
+		{"negative", big.NewInt(-1), true, true},
+		{"zero", big.NewInt(0), false, false},
+		{"positive", big.NewInt(42), false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateNonNegative("test", tc.val)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("validateNonNegative(%v) error = %v, wantErr %v", tc.val, err, tc.wantErr)
+			}
+			if errors.Is(err, ErrInvalidArgument) != tc.wantInvalid {
+				t.Errorf("validateNonNegative(%v) ErrInvalidArgument = %v, want %v", tc.val, errors.Is(err, ErrInvalidArgument), tc.wantInvalid)
 			}
 		})
 	}
@@ -1244,8 +1248,8 @@ func TestBalance_Success(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bal.Int64() != 500 {
-		t.Errorf("Balance() = %s, want 500", bal)
+	if bal.Int64() != 400 {
+		t.Errorf("Balance() = %s, want 400", bal)
 	}
 }
 

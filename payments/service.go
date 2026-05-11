@@ -196,7 +196,7 @@ func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) 
 	}, nil
 }
 
-// Balance is a convenience that returns the Funds field of AccountInfo.
+// Balance is a convenience that returns AccountInfo.AvailableFunds.
 func (s *Service) Balance(ctx context.Context, token, owner common.Address) (*big.Int, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -205,7 +205,7 @@ func (s *Service) Balance(ctx context.Context, token, owner common.Address) (*bi
 	if err != nil {
 		return nil, err
 	}
-	return info.Funds, nil
+	return info.AvailableFunds(), nil
 }
 
 // WalletBalance returns the EOA balance of token. When token is the zero
@@ -560,10 +560,10 @@ func copyBig(v *big.Int) *big.Int {
 
 func validateNonNegative(name string, v *big.Int) error {
 	if v == nil {
-		return fmt.Errorf("%s: nil", name)
+		return fmt.Errorf("%s: %w: nil", name, ErrInvalidArgument)
 	}
 	if v.Sign() < 0 {
-		return fmt.Errorf("%s: negative", name)
+		return fmt.Errorf("%s: %w: negative", name, ErrInvalidArgument)
 	}
 	return nil
 }
