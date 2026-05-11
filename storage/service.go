@@ -27,8 +27,9 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// UploadContext abstracts a single provider's upload operations.
-// Implementations are returned by UploadResolver and are safe for concurrent use.
+// UploadContext abstracts one provider context used by upload and prepare
+// operations. Upload resolvers may return custom implementations; Service
+// methods that create managed contexts return [*Context] instead.
 type UploadContext interface {
 	ProviderID() types.BigInt
 	ServiceURL() string
@@ -39,11 +40,17 @@ type UploadContext interface {
 	Commit(context.Context, CommitRequest) (*CommitResult, error)
 }
 
-// UploadResolver selects the set of providers for an upload and provides
+// UploadResolver selects provider contexts for upload operations and provides
 // replacement candidates when a secondary provider fails.
 type UploadResolver interface {
 	ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
 	SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
+}
+
+// ContextResolver creates managed storage contexts for Service.CreateContext,
+// Service.CreateContexts, and the auto-create branch of Service.Prepare.
+type ContextResolver interface {
+	ResolveContexts(context.Context, *UploadOptions) ([]*Context, error)
 }
 
 type writableUploadResolver interface {
@@ -63,6 +70,7 @@ type clientDataSetIDSetter interface {
 // Create with New; configure via the [Options] struct.
 type Service struct {
 	resolver             UploadResolver
+	contextResolver      ContextResolver
 	httpClient           *http.Client
 	source               string
 	defaultWithCDN       bool
@@ -90,11 +98,16 @@ type Service struct {
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
 type Options struct {
-	// Resolver selects providers for each upload and supplies replacement
+	// Resolver selects provider contexts for Upload and supplies replacement
 	// candidates when a secondary provider fails. A nil resolver is allowed
 	// so the Service can still serve DownloadFromContext / download-by-URL
 	// calls; Upload then returns a clean validation error.
 	Resolver UploadResolver
+
+	// ContextResolver creates managed *Context values for CreateContext(s)
+	// and Prepare when PrepareOptions.Contexts is empty. When nil and
+	// Resolver also implements ContextResolver, New reuses Resolver.
+	ContextResolver ContextResolver
 
 	// HTTPClient is used for URL-based downloads. nil installs a client with
 	// a 24-hour timeout — long enough for multi-GiB transfers over typical
@@ -202,8 +215,16 @@ func New(opts Options) (*Service, error) {
 	if opts.DownloadMaxBytes < 0 {
 		opts.DownloadMaxBytes = 0
 	}
+	resolver := normalizeOptional(opts.Resolver)
+	contextResolver := normalizeOptional(opts.ContextResolver)
+	if contextResolver == nil {
+		if inherited, ok := resolver.(ContextResolver); ok {
+			contextResolver = inherited
+		}
+	}
 	return &Service{
-		resolver:             normalizeOptional(opts.Resolver),
+		resolver:             resolver,
+		contextResolver:      contextResolver,
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
 		defaultWithCDN:       opts.DefaultWithCDN,

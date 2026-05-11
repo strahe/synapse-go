@@ -19,7 +19,8 @@ type PrepareOptions struct {
 	// costs when Costs is not pre-supplied.
 	DataSize uint64
 	// Contexts (optional) restricts cost calculation to the given set
-	// of upload contexts. Each element should be a *Context.
+	// of upload contexts. Each element must expose dataset, provider,
+	// and CDN state.
 	Contexts []UploadContext
 	// Costs (optional) short-circuits calculation when supplied.
 	Costs *MultiContextCosts

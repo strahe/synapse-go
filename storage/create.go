@@ -87,13 +87,13 @@ func (o *CreateContextOptions) toUploadOptions() *UploadOptions {
 // CreateContexts provisions one or more concrete storage contexts without
 // uploading. It picks providers, reuses or creates data sets according to
 // opts, and returns the resulting contexts. When opts is nil or opts.Copies
-// is zero the resolver default (two copies in auto-select) applies.
+// is zero the context resolver default (two copies in auto-select) applies.
 func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOptions) ([]*Context, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if s.resolver == nil {
-		return nil, fmt.Errorf("storage.Service.CreateContexts: %w: resolver not configured", ErrUninitialized)
+	if s.contextResolver == nil {
+		return nil, fmt.Errorf("storage.Service.CreateContexts: %w: context resolver not configured", ErrUninitialized)
 	}
 	if err := validateCreateContextsOptions(opts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
@@ -103,23 +103,18 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
 	uploadOpts = s.resolveWithCDN(uploadOpts)
-	contexts, _, err := s.resolver.ResolveUploadContexts(ctx, uploadOpts)
+	contexts, err := s.contextResolver.ResolveContexts(ctx, uploadOpts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
 	}
-	out := make([]*Context, len(contexts))
-	for i, ctx := range contexts {
-		concrete, ok := ctx.(*Context)
-		if !ok {
-			return nil, fmt.Errorf("storage.Service.CreateContexts: resolver returned non-*Context value")
-		}
-		out[i] = concrete
-	}
-	s.injectContextUploadGuards(out)
-	if err := s.populateClientDataSetIDs(ctx, out); err != nil {
+	if err := validateResolvedContexts(contexts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
 	}
-	return out, nil
+	s.injectContextUploadGuards(contexts)
+	if err := s.populateClientDataSetIDs(ctx, contexts); err != nil {
+		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
+	}
+	return contexts, nil
 }
 
 // CreateContext is the single-copy convenience wrapper around CreateContexts.
@@ -127,8 +122,8 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if s.resolver == nil {
-		return nil, fmt.Errorf("storage.Service.CreateContext: %w: resolver not configured", ErrUninitialized)
+	if s.contextResolver == nil {
+		return nil, fmt.Errorf("storage.Service.CreateContext: %w: context resolver not configured", ErrUninitialized)
 	}
 	if err := validateCreateContextOptions(opts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
@@ -138,16 +133,16 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 		uploadOpts = s.withSourceMetadata(uploadOpts)
 	}
 	uploadOpts = s.resolveWithCDN(uploadOpts)
-	contexts, _, err := s.resolver.ResolveUploadContexts(ctx, uploadOpts)
+	contexts, err := s.contextResolver.ResolveContexts(ctx, uploadOpts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
 	}
 	if len(contexts) == 0 {
 		return nil, fmt.Errorf("storage.Service.CreateContext: resolver returned no contexts")
 	}
-	concrete, ok := contexts[0].(*Context)
-	if !ok {
-		return nil, fmt.Errorf("storage.Service.CreateContext: resolver returned non-*Context value")
+	concrete := contexts[0]
+	if concrete == nil {
+		return nil, fmt.Errorf("storage.Service.CreateContext: resolver returned nil context")
 	}
 	if opts != nil && opts.ProviderID != nil && opts.DataSetID != nil {
 		gotProviderID := concrete.ProviderID()
@@ -207,6 +202,15 @@ func validateCreateContextOptions(opts *CreateContextOptions) error {
 	return nil
 }
 
+func validateResolvedContexts(contexts []*Context) error {
+	for i, ctx := range contexts {
+		if ctx == nil {
+			return fmt.Errorf("resolver returned nil context at index %d", i)
+		}
+	}
+	return nil
+}
+
 func validateNonZeroIDs(name string, ids ...types.BigInt) error {
 	for _, id := range ids {
 		if id.IsZero() {
@@ -230,7 +234,12 @@ func cloneBigIntSlice(ids []types.BigInt) []types.BigInt {
 func (s *Service) injectContextUploadGuards(contexts []*Context) {
 	reader := s.dsReader
 	var validator DataSetValidator
-	if resolver, ok := s.resolver.(*ServiceResolver); ok {
+	if resolver, ok := s.contextResolver.(*ServiceResolver); ok {
+		if reader == nil {
+			reader = resolver.warmStorage
+		}
+		validator = resolver.dataSetValidator
+	} else if resolver, ok := s.resolver.(*ServiceResolver); ok {
 		if reader == nil {
 			reader = resolver.warmStorage
 		}

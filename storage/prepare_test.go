@@ -131,6 +131,29 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	}
 }
 
+func TestPrepare_AutoCreatesContextsWithContextResolver(t *testing.T) {
+	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	svc := newTestService()
+	svc.costCalc = costCalc
+	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
+
+	_, err = svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if len(costCalc.gotRefs) != 1 {
+		t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
+	}
+	if !costCalc.gotRefs[0].Provider.ID.Equal(testProvider().ID) {
+		t.Fatalf("ProviderID=%s want %s", costCalc.gotRefs[0].Provider.ID, testProvider().ID)
+	}
+}
+
 func TestPrepare_IgnoresEnableCDNWhenContextsSupplied(t *testing.T) {
 	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 	svc := newTestService()

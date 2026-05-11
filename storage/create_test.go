@@ -18,8 +18,8 @@ func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
 	}
 
 	var captured *UploadOptions
-	svc.resolver = &fakeResolver{
-		contexts: []UploadContext{ctx},
+	svc.contextResolver = &fakeResolver{
+		contextContexts: []*Context{ctx},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -55,8 +55,8 @@ func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
 	}
 
 	var captured *UploadOptions
-	svc.resolver = &fakeResolver{
-		contexts: []UploadContext{ctx},
+	svc.contextResolver = &fakeResolver{
+		contextContexts: []*Context{ctx},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -88,7 +88,7 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	svc.resolver = &fakeResolver{contexts: []UploadContext{want}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{want}}
 
 	got, err := svc.CreateContext(context.Background(), nil)
 	if err != nil {
@@ -102,16 +102,31 @@ func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 	}
 }
 
-func TestCreateContext_NonConcreteResolverContextIsPlainError(t *testing.T) {
-	svc := newTestService()
-	svc.resolver = &fakeResolver{contexts: []UploadContext{&fakeUploadContext{id: types.NewBigInt(1)}}}
+func TestCreateContext_RequiresContextResolver(t *testing.T) {
+	svc := mustNewService(t, Options{Resolver: uploadOnlyResolver{}})
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
-		t.Fatal("CreateContext returned nil error; want non-*Context error")
+		t.Fatal("CreateContext returned nil error; want uninitialized context resolver error")
 	}
-	if errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v should not match ErrInvalidArgument", err)
+	if !errors.Is(err, ErrUninitialized) {
+		t.Fatalf("err=%v want ErrUninitialized", err)
+	}
+	if !strings.Contains(err.Error(), "context resolver not configured") {
+		t.Fatalf("err=%v want context resolver message", err)
+	}
+}
+
+func TestCreateContext_RejectsNilResolvedContext(t *testing.T) {
+	svc := newTestService()
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
+
+	_, err := svc.CreateContext(context.Background(), nil)
+	if err == nil {
+		t.Fatal("CreateContext returned nil error; want nil context error")
+	}
+	if !strings.Contains(err.Error(), "resolver returned nil context") {
+		t.Fatalf("err=%v want nil context message", err)
 	}
 }
 
@@ -127,8 +142,8 @@ func TestCreateContext_AcceptsProviderAssertionForDataSetID(t *testing.T) {
 	}
 
 	var captured *UploadOptions
-	svc.resolver = &fakeResolver{
-		contexts: []UploadContext{want},
+	svc.contextResolver = &fakeResolver{
+		contextContexts: []*Context{want},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -168,7 +183,7 @@ func TestCreateContext_RejectsMismatchedProviderAssertionForDataSetID(t *testing
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	svc.resolver = &fakeResolver{contexts: []UploadContext{ctx}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
 
 	_, err = svc.CreateContext(context.Background(), &CreateContextOptions{
 		DataSetID:  &dataSetID,
@@ -213,7 +228,7 @@ func TestCreateContext_RejectsZeroOptionIDs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newTestService()
 			resolverCalled := false
-			svc.resolver = &fakeResolver{
+			svc.contextResolver = &fakeResolver{
 				captureFn: func(*UploadOptions) {
 					resolverCalled = true
 				},
@@ -269,7 +284,7 @@ func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext #2: %v", err)
 	}
-	svc.resolver = &fakeResolver{contexts: []UploadContext{ctx1, ctx2}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx1, ctx2}}
 
 	got, err := svc.CreateContexts(context.Background(), nil)
 	if err != nil {
@@ -284,22 +299,41 @@ func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	}
 }
 
-func TestCreateContexts_NonConcreteResolverContextIsPlainError(t *testing.T) {
+func TestCreateContexts_RejectsNilResolvedContext(t *testing.T) {
 	svc := newTestService()
-	svc.resolver = &fakeResolver{contexts: []UploadContext{&fakeUploadContext{id: types.NewBigInt(1)}}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
 
 	_, err := svc.CreateContexts(context.Background(), nil)
 	if err == nil {
-		t.Fatal("CreateContexts returned nil error; want non-*Context error")
+		t.Fatal("CreateContexts returned nil error; want nil context error")
 	}
-	if errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v should not match ErrInvalidArgument", err)
+	if !strings.Contains(err.Error(), "resolver returned nil context at index 0") {
+		t.Fatalf("err=%v want nil context index message", err)
+	}
+}
+
+func TestCreateContexts_UsesExplicitContextResolver(t *testing.T) {
+	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	svc := mustNewService(t, Options{
+		Resolver:        uploadOnlyResolver{},
+		ContextResolver: &fakeResolver{contextContexts: []*Context{want}},
+	})
+
+	got, err := svc.CreateContexts(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("CreateContexts: %v", err)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("CreateContexts returned %v want %p", got, want)
 	}
 }
 
 func TestCreateContexts_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
 	svc := newTestService()
-	svc.resolver = &fakeResolver{}
+	svc.contextResolver = &fakeResolver{}
 
 	_, err := svc.CreateContexts(context.Background(), &CreateContextsOptions{
 		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
@@ -367,7 +401,7 @@ func TestCreateContexts_RejectsZeroOptionIDs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newTestService()
 			resolverCalled := false
-			svc.resolver = &fakeResolver{
+			svc.contextResolver = &fakeResolver{
 				captureFn: func(*UploadOptions) {
 					resolverCalled = true
 				},

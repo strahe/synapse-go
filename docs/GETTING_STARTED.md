@@ -112,7 +112,7 @@ exceeding it returns `storage.ErrMaxBytesExceeded`.
 
 Use `storage.UploadOptions` when the default upload is not enough:
 
-- `Copies`: requested provider copies. Zero means the resolver default.
+- `Copies`: requested provider copies. Zero means the selection default.
 - `ProviderIDs`: pin copies to specific providers.
 - `DataSetIDs`: write to specific existing datasets.
 - `ExcludeProviderIDs`: skip providers only during automatic selection.
@@ -162,7 +162,9 @@ if prep.Transaction != nil {
 ```
 
 If you already selected contexts, pass them through `PrepareOptions.Contexts`
-so the estimate matches the exact providers and datasets.
+so the estimate matches the exact providers and datasets. `CreateContexts`
+returns managed `*storage.Context` values; convert the slice element-by-element
+when filling the `[]storage.UploadContext` field.
 
 For read-only cost and account state, use `GetStorageInfo` or
 `CalculateMultiContextCosts`.
@@ -183,6 +185,22 @@ if err != nil {
 }
 
 fmt.Println("contexts:", len(contexts))
+```
+
+```go
+prepareContexts := make([]storage.UploadContext, len(contexts))
+for i, c := range contexts {
+    prepareContexts[i] = c
+}
+
+prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
+    DataSize: uint64(payloadSize),
+    Contexts: prepareContexts,
+})
+if err != nil {
+    return err
+}
+fmt.Println("ready:", prep.Costs.Ready)
 ```
 
 For one provider or one dataset:
@@ -247,9 +265,9 @@ if err != nil {
 fmt.Println("dataset:", created.DataSetID)
 ```
 
-Use `GetDefaultContext` when the resolver defaults are enough. Advanced callers
-can split a context upload into `Store`, `Pull`, `PresignForCommit`, and
-`Commit`.
+Use `GetDefaultContext` when the context resolver defaults are enough.
+Advanced callers can split a context upload into `Store`, `Pull`,
+`PresignForCommit`, and `Commit`.
 
 ## Discovery And Lifecycle
 

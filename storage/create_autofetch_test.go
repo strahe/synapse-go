@@ -40,7 +40,7 @@ func TestCreateContext_AutoFetchesClientDataSetID(t *testing.T) {
 	}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, dsID)}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{newAutoFetchContext(t, dsID)}}
 
 	got, err := svc.CreateContext(context.Background(), nil)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestCreateContext_AutoFetchTransientErrorIsSurfacedUnwrapped(t *testing.T) 
 	reader := &fakeFWSSDataSetReader{infoErr: boom}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, types.NewBigInt(7))}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{newAutoFetchContext(t, types.NewBigInt(7))}}
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
@@ -80,7 +80,7 @@ func TestCreateContext_AutoFetchEmptyResultIsInvalidArgument(t *testing.T) {
 	reader := &fakeFWSSDataSetReader{}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{newAutoFetchContext(t, types.NewBigInt(7))}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{newAutoFetchContext(t, types.NewBigInt(7))}}
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
@@ -105,7 +105,7 @@ func TestCreateContext_PrefersExplicitClientDataSetID(t *testing.T) {
 	}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{contexts: []UploadContext{c}}
+	svc.contextResolver = &fakeResolver{contextContexts: []*Context{c}}
 
 	got, err := svc.CreateContext(context.Background(), nil)
 	if err != nil {
@@ -128,8 +128,8 @@ func TestCreateContexts_AutoFetchCachesByDataSetID(t *testing.T) {
 	}
 	svc := newTestService()
 	svc.dsReader = reader
-	svc.resolver = &fakeResolver{
-		contexts: []UploadContext{
+	svc.contextResolver = &fakeResolver{
+		contextContexts: []*Context{
 			newAutoFetchContext(t, dsID),
 			newAutoFetchContext(t, dsID),
 		},

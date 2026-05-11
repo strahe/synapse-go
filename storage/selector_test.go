@@ -87,11 +87,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 	}
 
 	got := contextsToFake(t, contexts)
-	if !got[0].id.Equal(testID(1)) || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(11)) {
-		t.Fatalf("first context provider=%s dataset=%v want provider=1 dataset=11", got[0].id, got[0].dataSetID)
+	if !got[0].ProviderID().Equal(testID(1)) || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(11)) {
+		t.Fatalf("first context provider=%s dataset=%v want provider=1 dataset=11", got[0].ProviderID(), got[0].dataSetID)
 	}
-	if !got[1].id.Equal(testID(2)) {
-		t.Fatalf("second context provider=%s want 2", got[1].id)
+	if !got[1].ProviderID().Equal(testID(2)) {
+		t.Fatalf("second context provider=%s want 2", got[1].ProviderID())
 	}
 	if got[1].dataSetID != nil {
 		t.Fatalf("second context dataset=%v want nil", got[1].dataSetID)
@@ -130,10 +130,10 @@ func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacem
 	if len(got) != 2 {
 		t.Fatalf("contexts len=%d want 2", len(got))
 	}
-	if !got[0].id.Equal(testID(7)) || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(71)) {
+	if !got[0].ProviderID().Equal(testID(7)) || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(71)) {
 		t.Fatalf("first context=%+v", got[0])
 	}
-	if !got[1].id.Equal(testID(8)) || got[1].dataSetID != nil {
+	if !got[1].ProviderID().Equal(testID(8)) || got[1].dataSetID != nil {
 		t.Fatalf("second context=%+v", got[1])
 	}
 }
@@ -215,9 +215,46 @@ func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectReplacement: %v", err)
 	}
-	got := replacement.(*fakeUploadContext)
-	if !got.id.Equal(testID(3)) {
-		t.Fatalf("replacement provider=%s want 3", got.id)
+	got := replacement.(*Context)
+	if !got.ProviderID().Equal(testID(3)) {
+		t.Fatalf("replacement provider=%s want 3", got.ProviderID())
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_RejectsNilContextFactoryResult(t *testing.T) {
+	providerID := testID(7)
+	resolver := newNilContextServiceResolver(t, serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(7): ptrPDPProvider(testPDPProvider(providerID, "https://sp-7.example.com")),
+		},
+	})
+
+	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		ProviderIDs: []types.BigInt{providerID},
+	})
+	if err == nil {
+		t.Fatal("ResolveUploadContexts returned nil error; want nil context factory error")
+	}
+	if !strings.Contains(err.Error(), "nil context") {
+		t.Fatalf("err=%v want nil context message", err)
+	}
+}
+
+func TestServiceResolverSelectReplacement_RejectsNilContextFactoryResult(t *testing.T) {
+	providerID := testID(3)
+	resolver := newNilContextServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{providerID},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(providerID, "https://sp-3.example.com"),
+		},
+	})
+
+	_, err := resolver.SelectReplacement(context.Background(), nil, &UploadOptions{})
+	if err == nil {
+		t.Fatal("SelectReplacement returned nil error; want nil context factory error")
+	}
+	if !strings.Contains(err.Error(), "nil context") {
+		t.Fatalf("err=%v want nil context message", err)
 	}
 }
 
@@ -432,12 +469,8 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return &fakeUploadContext{
-				id:        selection.Provider.ID,
-				endpoint:  selection.Provider.ServiceURL,
-				dataSetID: selection.DataSetID,
-			}, nil
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+			return newResolvedTestContext(selection)
 		},
 	})
 	if err != nil {
@@ -587,11 +620,8 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return &fakeUploadContext{
-				id:       selection.Provider.ID,
-				endpoint: selection.Provider.ServiceURL,
-			}, nil
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+			return newResolvedTestContext(selection)
 		},
 	})
 	if err != nil {
@@ -636,14 +666,24 @@ func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *Servi
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return &fakeUploadContext{
-				id:              selection.Provider.ID,
-				endpoint:        selection.Provider.ServiceURL,
-				dataSetID:       selection.DataSetID,
-				clientDataSetID: selection.ClientDataSetID,
-				dataSetMetadata: cloneStringMap(selection.DataSetMetadata),
-			}, nil
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+			return newResolvedTestContext(selection)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+	return resolver
+}
+
+func newNilContextServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
+	t.Helper()
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: &fakeDataSetCatalog{fixture: fixture},
+		NewContext: func(ResolvedUploadContext, *UploadOptions) (*Context, error) {
+			return nil, nil
 		},
 	})
 	if err != nil {
@@ -852,17 +892,28 @@ func containsExcludedProvider(values []types.BigInt, target types.BigInt) bool {
 	return false
 }
 
-func contextsToFake(t *testing.T, contexts []UploadContext) []*fakeUploadContext {
+func contextsToFake(t *testing.T, contexts []UploadContext) []*Context {
 	t.Helper()
-	out := make([]*fakeUploadContext, 0, len(contexts))
+	out := make([]*Context, 0, len(contexts))
 	for _, ctx := range contexts {
-		fake, ok := ctx.(*fakeUploadContext)
+		concrete, ok := ctx.(*Context)
 		if !ok {
 			t.Fatalf("unexpected context type %T", ctx)
 		}
-		out = append(out, fake)
+		out = append(out, concrete)
 	}
 	return out
+}
+
+func newResolvedTestContext(selection ResolvedUploadContext) (*Context, error) {
+	opts := []ContextOption{WithDataSetMetadata(selection.DataSetMetadata)}
+	if selection.DataSetID != nil {
+		opts = append(opts, WithDataSetID(*selection.DataSetID))
+	}
+	if selection.ClientDataSetID != nil {
+		opts = append(opts, WithClientDataSetID(*selection.ClientDataSetID))
+	}
+	return NewContext(selection.Provider, &fakePDPProviderClient{}, nil, opts...)
 }
 
 // TestServiceResolverResolveUploadContexts_CarriesClientDataSetID proves that
@@ -1091,8 +1142,8 @@ func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *test
 	if err != nil {
 		t.Fatalf("selectWritableReplacement: %v", err)
 	}
-	got := replacement.(*fakeUploadContext)
-	if !got.id.Equal(testID(2)) || got.dataSetID == nil || !got.dataSetID.Equal(testID(21)) {
+	got := replacement.(*Context)
+	if !got.ProviderID().Equal(testID(2)) || got.dataSetID == nil || !got.dataSetID.Equal(testID(21)) {
 		t.Fatalf("replacement=%+v want provider 2 dataSetID 21 from detailed snapshot", got)
 	}
 }
@@ -1270,7 +1321,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectTraversesPagedApprovedPr
 	if len(got) != 1 {
 		t.Fatalf("contexts len=%d want 1", len(got))
 	}
-	if !got[0].id.Equal(testID(999)) {
-		t.Fatalf("provider=%s want 999", got[0].id)
+	if !got[0].ProviderID().Equal(testID(999)) {
+		t.Fatalf("provider=%s want 999", got[0].ProviderID())
 	}
 }

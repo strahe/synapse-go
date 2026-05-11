@@ -126,7 +126,7 @@ func (c *Client) initServices() error {
 		Payer:       c.evmSigner.EVMAddress(),
 		SPRegistry:  spReg,
 		WarmStorage: ws,
-		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (storage.UploadContext, error) {
+		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (*storage.Context, error) {
 			var pdpOpts []pdp.Option
 			if c.logger != nil {
 				pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
@@ -236,7 +236,8 @@ func (c *Client) FilBeam() *filbeam.Service {
 //
 // The service is wired with a [storage.ServiceResolver] that uses
 // [Client.WarmStorage] and [Client.SPRegistry]. A per-provider PDP client is
-// created inside the [storage.ContextFactory] closure on each upload.
+// created inside the [storage.ContextFactory] closure whenever a managed
+// storage context is resolved.
 func (c *Client) Storage() *storage.Service {
 	return c.storage
 }

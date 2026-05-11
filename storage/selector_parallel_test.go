@@ -100,7 +100,7 @@ func TestServiceResolver_MetadataFetchIsConcurrent(t *testing.T) {
 		payer:       common.HexToAddress("0xabc"),
 		spRegistry:  &fakePDPProviderSource{fixture: fixture},
 		warmStorage: slow,
-		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) { return nil, nil },
+		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (*Context, error) { return nil, nil },
 	}
 
 	start := time.Now()
@@ -149,7 +149,7 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 		payer:       common.HexToAddress("0xabc"),
 		spRegistry:  &fakePDPProviderSource{fixture: fixture},
 		warmStorage: slow,
-		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) { return nil, nil },
+		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (*Context, error) { return nil, nil },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), metadataDelay+time.Second)
 	defer cancel()
@@ -200,7 +200,7 @@ func TestServiceResolver_MetadataFetchErrorRejectsReuse(t *testing.T) {
 		payer:       common.HexToAddress("0xabc"),
 		spRegistry:  &fakePDPProviderSource{fixture: fixture},
 		warmStorage: catalog,
-		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) { return nil, nil },
+		newContext:  func(_ ResolvedUploadContext, _ *UploadOptions) (*Context, error) { return nil, nil },
 	}
 
 	dsID, clientID, metadata, err := resolver.selectMatchingDataSet(

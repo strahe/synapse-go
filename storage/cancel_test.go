@@ -13,8 +13,8 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// ctxAwareResolver is a UploadResolver that honors ctx.Done(), letting us
-// drive Service.Upload / Service.CreateContexts down a cancellation path
+// ctxAwareResolver honors ctx.Done(), letting us drive Service.Upload and
+// Service.CreateContexts down a cancellation path
 // without setting up real provider plumbing.
 type ctxAwareResolver struct{}
 
@@ -27,6 +27,14 @@ func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOpti
 }
 
 func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]types.BigInt, _ *UploadOptions) (UploadContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (ctxAwareResolver) ResolveContexts(ctx context.Context, _ *UploadOptions) ([]*Context, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

@@ -69,16 +69,9 @@ func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(ResolvedUploadContext, *UploadOptions) (UploadContext, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 			contextBuilt = true
-			return &fakeUploadContext{
-				id:       providerID,
-				endpoint: "https://sp-2.example.com",
-				storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
-					t.Fatal("Store must not run for an ended explicit data set")
-					return nil, nil
-				},
-			}, nil
+			return NewContext(selection.Provider, &fakePDPProviderClient{}, mustTestSigner(t))
 		},
 	})
 	if err != nil {
@@ -120,7 +113,7 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 			return NewContext(
 				selection.Provider,
 				&fakePDPProviderClient{},
@@ -209,7 +202,7 @@ func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *
 			}
 			svc := newTestService()
 			svc.dsReader = reader
-			svc.resolver = &fakeResolver{contexts: []UploadContext{rawContext}}
+			svc.contextResolver = &fakeResolver{contextContexts: []*Context{rawContext}}
 
 			got, err := tt.create(svc, context.Background())
 			if err != nil {
@@ -290,7 +283,7 @@ func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload
 				Payer:       testPayer(),
 				SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 				WarmStorage: catalog,
-				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 					return NewContext(
 						selection.Provider,
 						fake,
@@ -1060,9 +1053,11 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 
 type fakeResolver struct {
 	contexts         []UploadContext
+	contextContexts  []*Context
 	explicit         bool
 	replacements     []UploadContext
 	replacementCalls int
+	contextErr       error
 	captureFn        func(*UploadOptions)
 }
 
@@ -1081,6 +1076,37 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.B
 	next := r.replacements[0]
 	r.replacements = r.replacements[1:]
 	return next, nil
+}
+
+func (r *fakeResolver) ResolveContexts(_ context.Context, opts *UploadOptions) ([]*Context, error) {
+	if r.captureFn != nil {
+		r.captureFn(opts)
+	}
+	if r.contextErr != nil {
+		return nil, r.contextErr
+	}
+	if r.contextContexts != nil {
+		return r.contextContexts, nil
+	}
+	out := make([]*Context, 0, len(r.contexts))
+	for _, ctx := range r.contexts {
+		concrete, ok := ctx.(*Context)
+		if !ok {
+			return nil, fmt.Errorf("fakeResolver.ResolveContexts: unexpected context type %T", ctx)
+		}
+		out = append(out, concrete)
+	}
+	return out, nil
+}
+
+type uploadOnlyResolver struct{}
+
+func (uploadOnlyResolver) ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error) {
+	return nil, false, nil
+}
+
+func (uploadOnlyResolver) SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error) {
+	return nil, errors.New("no replacement")
 }
 
 type fakeUploadContext struct {
@@ -1540,11 +1566,14 @@ func (zeroReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func TestWithUploadResolver(t *testing.T) {
+func TestNewSetsUploadResolverAndInheritsContextResolver(t *testing.T) {
 	r := &fakeResolver{}
 	mgr := mustNewService(t, Options{Resolver: r})
 	if mgr.resolver != r {
-		t.Fatal("WithUploadResolver did not set resolver")
+		t.Fatal("New did not set upload resolver")
+	}
+	if mgr.contextResolver != r {
+		t.Fatal("New did not inherit context resolver")
 	}
 }
 

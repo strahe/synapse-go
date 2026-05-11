@@ -56,8 +56,8 @@ type ResolvedUploadContext struct {
 	DataSetMetadata map[string]string // metadata carried into the new data set if created
 }
 
-// ContextFactory builds an UploadContext from a resolved selection.
-type ContextFactory func(ResolvedUploadContext, *UploadOptions) (UploadContext, error)
+// ContextFactory builds a managed Context from a resolved provider selection.
+type ContextFactory func(ResolvedUploadContext, *UploadOptions) (*Context, error)
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
@@ -66,7 +66,7 @@ type ServiceResolverOptions struct {
 	WarmStorage      DataSetCatalog
 	DataSetValidator DataSetValidator
 	DataSetDetails   DataSetDetailsCatalog
-	NewContext       ContextFactory // called per-provider to construct an UploadContext
+	NewContext       ContextFactory // called per-provider to construct a managed Context
 }
 
 // ServiceResolver selects providers and data sets for each upload. Auto-select
@@ -86,6 +86,8 @@ var (
 	_ DataSetCatalog        = (*warmstorage.Service)(nil)
 	_ DataSetValidator      = (*warmstorage.Service)(nil)
 	_ DataSetDetailsCatalog = (*warmstorage.Service)(nil)
+	_ UploadResolver        = (*ServiceResolver)(nil)
+	_ ContextResolver       = (*ServiceResolver)(nil)
 )
 
 // NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
@@ -122,6 +124,12 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	}, nil
 }
 
+// ResolveContexts returns one managed Context per requested copy.
+func (r *ServiceResolver) ResolveContexts(ctx context.Context, opts *UploadOptions) ([]*Context, error) {
+	contexts, _, err := r.resolveContexts(ctx, opts, false, "storage.ServiceResolver.ResolveContexts")
+	return contexts, err
+}
+
 // ResolveUploadContexts returns one UploadContext per requested copy. When
 // neither ProviderIDs nor DataSetIDs are set, providers are auto-selected from
 // the warmstorage-approved and active-PDP intersection. The second return value
@@ -135,16 +143,31 @@ func (r *ServiceResolver) resolveWritableUploadContexts(ctx context.Context, opt
 }
 
 func (r *ServiceResolver) resolveUploadContexts(ctx context.Context, opts *UploadOptions, requireWritable bool) ([]UploadContext, bool, error) {
+	contexts, explicit, err := r.resolveContexts(ctx, opts, requireWritable, "storage.ServiceResolver.ResolveUploadContexts")
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]UploadContext, len(contexts))
+	for i, ctx := range contexts {
+		out[i] = ctx
+	}
+	return out, explicit, nil
+}
+
+func (r *ServiceResolver) resolveContexts(ctx context.Context, opts *UploadOptions, requireWritable bool, method string) ([]*Context, bool, error) {
 	resolved, err := r.resolveSelectionsWithRetry(ctx, opts, nil, requireWritable)
 	if err != nil {
 		return nil, false, err
 	}
 	selections := resolved.selections
-	contexts := make([]UploadContext, 0, len(selections))
+	contexts := make([]*Context, 0, len(selections))
 	for _, selection := range selections {
 		uploadCtx, err := r.newContext(selection, opts)
 		if err != nil {
-			return nil, false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: build context for provider %s: %w", selection.Provider.ID.String(), err)
+			return nil, false, fmt.Errorf("%s: build context for provider %s: %w", method, selection.Provider.ID.String(), err)
+		}
+		if uploadCtx == nil {
+			return nil, false, fmt.Errorf("%s: build context for provider %s: nil context", method, selection.Provider.ID.String())
 		}
 		contexts = append(contexts, uploadCtx)
 	}
@@ -172,6 +195,9 @@ func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders m
 	uploadCtx, err := r.newContext(selections[0], opts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %s: %w", selections[0].Provider.ID.String(), err)
+	}
+	if uploadCtx == nil {
+		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %s: nil context", selections[0].Provider.ID.String())
 	}
 	return uploadCtx, nil
 }

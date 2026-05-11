@@ -3,7 +3,9 @@
 // The central types are [*Service] (high-level upload/download operations),
 // [*Context] (per-provider store/pull/commit/download operations), and
 // [*ServiceResolver] (selection + dataset-reuse wiring against warmstorage and
-// spregistry services).
+// spregistry services). [UploadResolver] is the upload-facing selection
+// contract; [ContextResolver] is the managed-context creation contract used by
+// CreateContext(s) and Prepare's auto-create path.
 //
 // # Manager-level operations
 //
@@ -32,9 +34,9 @@
 //  3. Commit: All providers call AddPieces on-chain with EIP-712 signatures.
 //
 // The Service handles orchestration of the full multi-copy flow, while
-// ServiceResolver reuses provider-local datasets only when metadata matches
-// exactly and the warmstorage-approved provider set intersects active PDP
-// providers from spregistry.
+// ServiceResolver implements both resolver contracts. It reuses provider-local
+// datasets only when metadata matches exactly and the warmstorage-approved
+// provider set intersects active PDP providers from spregistry.
 // Existing data sets that cannot accept writes surface typed errors such as
 // DataSetPDPPaymentTerminatedError. Use errors.AsType to access fields like
 // PDPEndEpoch.

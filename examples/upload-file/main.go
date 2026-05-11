@@ -108,7 +108,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 
 	withCDN := cfg.CDN
 	dataSetMetadata := cfg.DataSetMetadata.Map()
-	contexts, err := svc.CreateUploadContexts(ctx, &storage.CreateContextsOptions{
+	contexts, err := svc.CreateContexts(ctx, &storage.CreateContextsOptions{
 		Copies:          cfg.Copies,
 		DataSetMetadata: dataSetMetadata,
 		WithCDN:         &withCDN,
@@ -116,9 +116,13 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 	if err != nil {
 		return fmt.Errorf("create upload contexts: %w", err)
 	}
+	prepareContexts := make([]storage.UploadContext, len(contexts))
+	for i, c := range contexts {
+		prepareContexts[i] = c
+	}
 	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(info.Size()),
-		Contexts: contexts,
+		Contexts: prepareContexts,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)
@@ -163,7 +167,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 }
 
 type uploadStorage interface {
-	CreateUploadContexts(context.Context, *storage.CreateContextsOptions) ([]storage.UploadContext, error)
+	CreateContexts(context.Context, *storage.CreateContextsOptions) ([]*storage.Context, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
 	Upload(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
 }
@@ -172,16 +176,8 @@ type storageWorkflow struct {
 	svc *storage.Service
 }
 
-func (w storageWorkflow) CreateUploadContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]storage.UploadContext, error) {
-	contexts, err := w.svc.CreateContexts(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]storage.UploadContext, len(contexts))
-	for i, c := range contexts {
-		out[i] = c
-	}
-	return out, nil
+func (w storageWorkflow) CreateContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]*storage.Context, error) {
+	return w.svc.CreateContexts(ctx, opts)
 }
 
 func (w storageWorkflow) Prepare(ctx context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
