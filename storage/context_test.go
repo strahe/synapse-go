@@ -1980,6 +1980,41 @@ func TestContextServiceURL(t *testing.T) {
 	}
 }
 
+func TestContextGoStyleAccessors(t *testing.T) {
+	dataSetID := types.NewBigInt(42)
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) { return nil, 0, nil },
+	}, mustTestSigner(t), WithDataSetID(dataSetID), WithCDN(true))
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	got, ok := ctx.BoundDataSetID()
+	if !ok {
+		t.Fatal("BoundDataSetID ok=false, want true")
+	}
+	if !got.Equal(dataSetID) {
+		t.Fatalf("BoundDataSetID=%s want %s", got.String(), dataSetID.String())
+	}
+	if !ctx.CDNEnabled() {
+		t.Fatal("CDNEnabled=false want true")
+	}
+	if !ctx.WithCDN() {
+		t.Fatal("WithCDN=false want true")
+	}
+
+	unbound, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewContext(unbound): %v", err)
+	}
+	if id, ok := unbound.BoundDataSetID(); ok || !id.IsZero() {
+		t.Fatalf("BoundDataSetID unbound = (%s, %v), want zero,false", id.String(), ok)
+	}
+	if unbound.CDNEnabled() {
+		t.Fatal("CDNEnabled on unbound context=true want false")
+	}
+}
+
 func TestPieceURLFor_InvalidBaseURL(t *testing.T) {
 	ctx := &Context{
 		provider: Provider{

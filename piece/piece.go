@@ -194,16 +194,26 @@ func Validate(c cid.Cid) error {
 	return nil
 }
 
-// ErrRawSizeTooLarge is returned when PaddedSize is called with a rawSize
-// that would overflow int64 arithmetic during padded-size computation.
-var ErrRawSizeTooLarge = errors.New("rawSize too large for padded size computation")
+var (
+	// ErrNegativeRawSize is returned when PaddedSize is called with a
+	// negative rawSize.
+	ErrNegativeRawSize = errors.New("rawSize must be non-negative")
+
+	// ErrRawSizeTooLarge is returned when PaddedSize is called with a rawSize
+	// that would overflow int64 arithmetic during padded-size computation.
+	ErrRawSizeTooLarge = errors.New("rawSize too large for padded size computation")
+)
 
 // PaddedSize returns the smallest power-of-two padded piece size (in bytes)
 // that can hold rawSize bytes after FR32 padding (127 useful bytes per
-// 128-byte leaf). Returns ErrRawSizeTooLarge for inputs near math.MaxInt64
-// where the computation would otherwise silently overflow.
+// 128-byte leaf). Returns ErrNegativeRawSize for negative inputs and
+// ErrRawSizeTooLarge for inputs near math.MaxInt64 where the computation
+// would otherwise silently overflow.
 func PaddedSize(rawSize int64) (int64, error) {
-	if rawSize <= 0 {
+	if rawSize < 0 {
+		return 0, fmt.Errorf("piece.PaddedSize: %w (%d)", ErrNegativeRawSize, rawSize)
+	}
+	if rawSize == 0 {
 		return 128, nil
 	}
 

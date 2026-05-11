@@ -730,8 +730,19 @@ func (c *Context) DataSetID() *types.BigInt {
 	if c.dataSetID == nil {
 		return nil
 	}
-	id := *c.dataSetID
+	id := copyBigInt(*c.dataSetID)
 	return &id
+}
+
+// BoundDataSetID returns the Context's bound data set ID and whether it is
+// set. ok is false when the Context will create a data set on first upload.
+func (c *Context) BoundDataSetID() (id types.BigInt, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.dataSetID == nil {
+		return types.BigInt{}, false
+	}
+	return copyBigInt(*c.dataSetID), true
 }
 
 func (c *Context) setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.BigInt) {
@@ -743,9 +754,16 @@ func (c *Context) setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.B
 	c.clientDataSetID = copyClientDataSetIDPtr(clientDataSetID)
 }
 
-// WithCDN reports whether CDN services are enabled for this Context.
-func (c *Context) WithCDN() bool {
+// CDNEnabled reports whether CDN services are enabled for this Context.
+func (c *Context) CDNEnabled() bool {
 	return c.withCDN
+}
+
+// WithCDN reports whether CDN services are enabled for this Context.
+//
+// Deprecated: use CDNEnabled.
+func (c *Context) WithCDN() bool {
+	return c.CDNEnabled()
 }
 
 func (c *Context) pieceURLFor(pieceCID cid.Cid) string {

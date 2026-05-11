@@ -489,7 +489,6 @@ func TestPaddedSize(t *testing.T) {
 		want    int64
 	}{
 		{0, 128},
-		{-1, 128},
 		{1, 128},
 		{127, 128},
 		{128, 256},
@@ -512,6 +511,10 @@ func TestPaddedSize(t *testing.T) {
 		if _, err := PaddedSize(in); !errors.Is(err, ErrRawSizeTooLarge) {
 			t.Errorf("PaddedSize(%d) expected ErrRawSizeTooLarge, got err=%v", in, err)
 		}
+	}
+
+	if got, err := PaddedSize(-1); !errors.Is(err, ErrNegativeRawSize) {
+		t.Errorf("PaddedSize(-1) = (%d, %v), want ErrNegativeRawSize", got, err)
 	}
 }
 
