@@ -15,7 +15,7 @@ permissions:
 jobs:
   check:
     name: build / vet / lint / test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -44,7 +44,7 @@ jobs:
 
   vuln:
     name: govulncheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
