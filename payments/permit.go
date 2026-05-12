@@ -2,16 +2,19 @@ package payments
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -180,12 +183,23 @@ func (s *Service) depositWithPermit(
 		recipient = owner
 	}
 
-	// Resolve permit deadline: default now + PermitDeadlineDuration.
+	cfg := newWriteConfig(writeOpts)
+	releasePermit, err := s.permits.acquire(ctx, permitKey{chainID: s.chainID, token: token, owner: owner})
+	if err != nil {
+		return nil, fmt.Errorf("payments.%s: permit lock: %w", method, err)
+	}
+	permitOwned := true
+	defer func() {
+		if permitOwned {
+			releasePermit()
+		}
+	}()
+
+	// Resolve the default deadline after waiting for any prior permit write.
 	if deadline == nil || deadline.Sign() <= 0 {
 		deadline = big.NewInt(time.Now().Add(PermitDeadlineDuration).Unix())
 	}
 
-	cfg := newWriteConfig(writeOpts)
 	if !cfg.skipPrecheck {
 		bal, err := s.WalletBalance(ctx, token, owner)
 		if err != nil {
@@ -234,7 +248,93 @@ func (s *Service) depositWithPermit(
 	if err != nil {
 		return nil, fmt.Errorf("payments.%s: %w", method, err)
 	}
-	return s.finalize(ctx, tx, writeOpts)
+	permitOwned = false
+	return s.finalizePermitWrite(ctx, tx, cfg, releasePermit)
+}
+
+func (s *Service) finalizePermitWrite(
+	ctx context.Context,
+	tx *ethtypes.Transaction,
+	cfg writeConfig,
+	releasePermit func(),
+) (*sdktypes.WriteResult, error) {
+	res := &sdktypes.WriteResult{Hash: tx.Hash()}
+	if cfg.waitTimeout <= 0 {
+		s.watchPermitReceiptAndRelease(tx.Hash(), 0, releasePermit)
+		return res, nil
+	}
+	receipt, err := s.waitForWriteReceipt(ctx, tx.Hash(), cfg)
+	if err != nil {
+		if errors.Is(err, txutil.ErrTxFailed) {
+			res.Receipt = receipt
+			releasePermit()
+		} else {
+			s.watchPermitReceiptAndRelease(tx.Hash(), cfg.confirmations, releasePermit)
+		}
+		return res, fmt.Errorf("wait receipt: %w", err)
+	}
+	res.Receipt = receipt
+	releasePermit()
+	return res, nil
+}
+
+func (s *Service) watchPermitReceiptAndRelease(txHash common.Hash, confirmations uint64, releasePermit func()) {
+	go func() {
+		defer releasePermit()
+		cfg := txutil.DefaultReceiptWaitConfig()
+		if s.receiptWait > 0 {
+			cfg.Timeout = s.receiptWait
+		}
+		if cfg.Timeout <= 0 {
+			cfg.Timeout = txutil.DefaultReceiptWaitConfig().Timeout
+		}
+		if cfg.PollInterval <= 0 {
+			cfg.PollInterval = txutil.DefaultReceiptWaitConfig().PollInterval
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+		defer cancel()
+		ticker := time.NewTicker(cfg.PollInterval)
+		defer ticker.Stop()
+
+		var lastErr error
+		for {
+			receipt, err := s.backend.TransactionReceipt(ctx, txHash)
+			if err == nil {
+				switch {
+				case receipt == nil:
+					// Keep polling; some clients may return nil, nil while pending.
+				case receipt.Status != ethtypes.ReceiptStatusSuccessful:
+					return
+				case confirmations == 0:
+					return
+				case receipt.BlockNumber != nil:
+					head, err := s.backend.BlockNumber(ctx)
+					if err == nil {
+						requiredHead := receipt.BlockNumber.Uint64() + confirmations - 1
+						if head >= requiredHead {
+							return
+						}
+					} else {
+						lastErr = err
+					}
+				}
+			} else if !errors.Is(err, ethereum.NotFound) {
+				lastErr = err
+			}
+			select {
+			case <-ctx.Done():
+				if s.logger != nil {
+					err := lastErr
+					if err == nil {
+						err = ctx.Err()
+					}
+					s.logger.Warn("permit receipt watcher released lock before terminal receipt or confirmations", "tx", txHash.Hex(), "err", err)
+				}
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func validatePositive(name string, v *big.Int) error {

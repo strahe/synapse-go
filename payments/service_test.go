@@ -35,6 +35,8 @@ type mockBackend struct {
 	replies map[string][]byte
 	// errors keyed the same way
 	errs map[string]error
+	// callReplyFn, when set, can override a contract call reply.
+	callReplyFn func(contractHex, method string, data []byte) ([]byte, bool, error)
 
 	// per-account balances; nil -> 0
 	balances  map[common.Address]*big.Int
@@ -48,6 +50,8 @@ type mockBackend struct {
 	blockFn   func(context.Context) (uint64, error)
 
 	nonces map[common.Address]uint64
+	// nonceErr, when set, makes PendingNonceAt return this error.
+	nonceErr error
 
 	// sendErr, when set, makes SendTransaction return this error
 	sendErr error
@@ -97,6 +101,11 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blo
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
 			m.lastBlock[key] = copyBig(blockNumber)
+			if m.callReplyFn != nil {
+				if b, handled, err := m.callReplyFn(toHex, name, call.Data); handled {
+					return b, err
+				}
+			}
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -108,6 +117,11 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blo
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
 			m.lastBlock[key] = copyBig(blockNumber)
+			if m.callReplyFn != nil {
+				if b, handled, err := m.callReplyFn(toHex, name, call.Data); handled {
+					return b, err
+				}
+			}
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -119,6 +133,11 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blo
 			key := toHex + ":" + name
 			m.lastIn[key] = append([]byte(nil), call.Data...)
 			m.lastBlock[key] = copyBig(blockNumber)
+			if m.callReplyFn != nil {
+				if b, handled, err := m.callReplyFn(toHex, name, call.Data); handled {
+					return b, err
+				}
+			}
 			if err, ok := m.errs[key]; ok {
 				return nil, err
 			}
@@ -141,6 +160,9 @@ func (m *mockBackend) PendingCodeAt(_ context.Context, _ common.Address) ([]byte
 func (m *mockBackend) PendingNonceAt(_ context.Context, account common.Address) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.nonceErr != nil {
+		return 0, m.nonceErr
+	}
 	return m.nonces[account], nil
 }
 

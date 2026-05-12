@@ -45,6 +45,7 @@ type Service struct {
 	filPayWrite *filpay.FilPayTransactor
 	signer      signer.EVMSigner
 	nonces      *txutil.NonceManager
+	permits     *permitCoordinator
 	logger      *slog.Logger
 	receiptWait time.Duration
 	lifecycle   *lifecycle.Lifecycle
@@ -119,6 +120,7 @@ func New(opts Options) (*Service, error) {
 		signer:      opts.Signer,
 		logger:      opts.Logger,
 		nonces:      opts.NonceManager,
+		permits:     newPermitCoordinator(),
 		receiptWait: opts.ReceiptWait,
 		lifecycle:   opts.Lifecycle,
 	}
@@ -525,22 +527,7 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	if cfg.waitTimeout <= 0 {
 		return res, nil
 	}
-	var (
-		receipt *types.Receipt
-		err     error
-	)
-	if cfg.confirmations > 0 {
-		waitCfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			waitCfg.Timeout = s.receiptWait
-		}
-		if cfg.waitTimeout > 0 {
-			waitCfg.Timeout = cfg.waitTimeout
-		}
-		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
-	} else {
-		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)
-	}
+	receipt, err := s.waitForWriteReceipt(ctx, tx.Hash(), cfg)
 	if err != nil {
 		if errors.Is(err, txutil.ErrTxFailed) {
 			res.Receipt = receipt
@@ -549,6 +536,23 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	}
 	res.Receipt = receipt
 	return res, nil
+}
+
+// waitForWriteReceipt centralizes WithWait and WithConfirmations polling so
+// permit writes can reuse the same wait semantics while managing permit lock
+// ownership separately.
+func (s *Service) waitForWriteReceipt(ctx context.Context, txHash common.Hash, cfg writeConfig) (*types.Receipt, error) {
+	if cfg.confirmations > 0 {
+		waitCfg := txutil.DefaultReceiptWaitConfig()
+		if s.receiptWait > 0 {
+			waitCfg.Timeout = s.receiptWait
+		}
+		if cfg.waitTimeout > 0 {
+			waitCfg.Timeout = cfg.waitTimeout
+		}
+		return txutil.WaitForReceiptWithConfig(ctx, s.backend, txHash, waitCfg, cfg.confirmations)
+	}
+	return txutil.WaitForReceipt(ctx, s.backend, txHash, cfg.waitTimeout)
 }
 
 func copyBig(v *big.Int) *big.Int {
