@@ -230,7 +230,7 @@ func TestGetProviderIDByAddress(t *testing.T) {
 // Unknown addresses return (0, nil) from the contract; this
 // asymmetric behaviour (vs. GetProviderByAddress returning ErrNotFound) is
 // intentional and documented in spregistry/doc.go. Callers must check
-// id == 0.
+// id.IsZero().
 func TestGetProviderIDByAddress_UnknownReturnsZero(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "getProviderIdByAddress", big.NewInt(0))

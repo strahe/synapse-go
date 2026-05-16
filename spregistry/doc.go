@@ -43,8 +43,8 @@
 // Errors are returned as wrapped sentinels. Use errors.Is to check:
 //
 //   - ErrNotFound: returned when the queried provider does not exist.
-//     GetProviderIDByAddress is an exception: it returns id.Sign() == 0
-//     (no error) for unknown addresses, mirroring the contract convention.
+//     GetProviderIDByAddress is an exception: it returns a zero ID (check
+//     with id.IsZero()) for unknown addresses, mirroring the contract convention.
 //   - ErrInvalidArgument: returned when required arguments are nil, zero,
 //     or otherwise malformed.
 //   - ErrInvalidOffering: returned by ValidatePDPOffering / write methods

@@ -662,6 +662,27 @@ func TestAuthorizationExpiry_Uint64Overflow(t *testing.T) {
 // IsExpired tests
 // ---------------------------------------------------------------------------
 
+func TestAuthorizationExpired(t *testing.T) {
+	tests := []struct {
+		name string
+		exp  uint64
+		now  uint64
+		want bool
+	}{
+		{name: "past", exp: 99, now: 100, want: true},
+		{name: "same second", exp: 100, now: 100, want: false},
+		{name: "future", exp: 101, now: 100, want: false},
+		{name: "zero before now", exp: 0, now: 1, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := authorizationExpired(tt.exp, tt.now); got != tt.want {
+				t.Fatalf("authorizationExpired(%d, %d) = %v, want %v", tt.exp, tt.now, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsExpired_True(t *testing.T) {
 	mb := newMockBackend(t)
 	sig := newTestSigner(t)
@@ -772,6 +793,26 @@ func TestGetExpirations_DefaultPermissions(t *testing.T) {
 	}
 	if len(expirations) != len(DefaultFWSSPermissions) {
 		t.Fatalf("expected %d entries, got %d", len(DefaultFWSSPermissions), len(expirations))
+	}
+}
+
+func TestGetExpirations_ExplicitEmptyPermissions(t *testing.T) {
+	mb := newMockBackend(t)
+	sig := newTestSigner(t)
+	svc := newTestService(t, mb, sig)
+
+	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(9999))
+
+	expirations, err := svc.GetExpirations(context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		[]Permission{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expirations) != 0 {
+		t.Fatalf("expected empty expirations, got %v", expirations)
 	}
 }
 
@@ -1059,6 +1100,16 @@ func TestResolveLoginOptions_Defaults(t *testing.T) {
 	}
 }
 
+func TestResolveLoginOptions_ExplicitEmptyPermissions(t *testing.T) {
+	lo := resolveLoginOptions(&LoginOptions{Permissions: []Permission{}})
+	if lo.Permissions == nil {
+		t.Fatal("permissions = nil, want explicit empty slice")
+	}
+	if len(lo.Permissions) != 0 {
+		t.Fatalf("permissions count = %d, want 0", len(lo.Permissions))
+	}
+}
+
 func TestResolveRevokeOptions_Defaults(t *testing.T) {
 	ro := resolveRevokeOptions(nil)
 
@@ -1067,6 +1118,16 @@ func TestResolveRevokeOptions_Defaults(t *testing.T) {
 	}
 	if ro.Origin != "synapse" {
 		t.Errorf("origin = %q, want %q", ro.Origin, "synapse")
+	}
+}
+
+func TestResolveRevokeOptions_ExplicitEmptyPermissions(t *testing.T) {
+	ro := resolveRevokeOptions(&RevokeOptions{Permissions: []Permission{}})
+	if ro.Permissions == nil {
+		t.Fatal("permissions = nil, want explicit empty slice")
+	}
+	if len(ro.Permissions) != 0 {
+		t.Fatalf("permissions count = %d, want 0", len(ro.Permissions))
 	}
 }
 

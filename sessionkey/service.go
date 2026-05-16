@@ -271,7 +271,11 @@ func (s *Service) IsExpired(ctx context.Context, rootAddr, sessionKeyAddr common
 	if err != nil {
 		return false, err
 	}
-	return exp <= uint64(time.Now().Unix()), nil
+	return authorizationExpired(exp, uint64(time.Now().Unix())), nil
+}
+
+func authorizationExpired(exp, now uint64) bool {
+	return exp < now
 }
 
 // GetExpirations queries the on-chain authorization expiry for each of the
@@ -293,7 +297,7 @@ func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr c
 	if err := s.checkInit(); err != nil {
 		return Expirations{}, err
 	}
-	if len(permissions) == 0 {
+	if permissions == nil {
 		permissions = DefaultFWSSPermissions
 	}
 
@@ -466,7 +470,7 @@ func resolveLoginOptions(opts *LoginOptions) LoginOptions {
 	if opts != nil {
 		lo = *opts
 	}
-	if len(lo.Permissions) == 0 {
+	if lo.Permissions == nil {
 		lo.Permissions = DefaultFWSSPermissions
 	}
 	if lo.ExpiresAt == 0 {
@@ -483,7 +487,7 @@ func resolveRevokeOptions(opts *RevokeOptions) RevokeOptions {
 	if opts != nil {
 		ro = *opts
 	}
-	if len(ro.Permissions) == 0 {
+	if ro.Permissions == nil {
 		ro.Permissions = DefaultFWSSPermissions
 	}
 	if ro.Origin == "" {

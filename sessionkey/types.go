@@ -8,9 +8,10 @@ import (
 )
 
 // LoginOptions configures a Login or LoginAndFund call. All fields are
-// optional; zero values cause sensible defaults to be applied.
+// optional; nil or zero values cause sensible defaults to be applied.
 type LoginOptions struct {
-	// Permissions to authorise. Defaults to DefaultFWSSPermissions.
+	// Permissions to authorise. Nil defaults to DefaultFWSSPermissions;
+	// an explicit empty slice authorises no permissions.
 	Permissions []Permission
 	// ExpiresAt is the Unix timestamp (seconds) when the session key
 	// authorisation expires. Zero defaults to time.Now().Unix() + 3600
@@ -23,7 +24,8 @@ type LoginOptions struct {
 
 // RevokeOptions configures a Revoke call.
 type RevokeOptions struct {
-	// Permissions to revoke. Defaults to DefaultFWSSPermissions.
+	// Permissions to revoke. Nil defaults to DefaultFWSSPermissions;
+	// an explicit empty slice revokes no permissions.
 	Permissions []Permission
 	// Origin is an application identifier stored on-chain. Defaults to
 	// "synapse".

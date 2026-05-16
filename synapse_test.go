@@ -190,11 +190,46 @@ func TestNew_MissingKey(t *testing.T) {
 	}
 }
 
-func TestNew_MissingRPC(t *testing.T) {
+func TestNew_DefaultsToCalibrationRPC(t *testing.T) {
 	key := testKey(t)
-	_, err := New(context.Background(), WithPrivateKey(key))
+	client, err := New(context.Background(), WithPrivateKey(key))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Calibration {
+		t.Errorf("chain = %v, want Calibration", client.Chain())
+	}
+}
+
+func TestNew_WithChainDefaultsToChainRPC(t *testing.T) {
+	key := testKey(t)
+	client, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithChain(chain.Mainnet),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Chain() != chain.Mainnet {
+		t.Errorf("chain = %v, want Mainnet", client.Chain())
+	}
+}
+
+func TestNew_MissingRPCSourceForChainWithoutDefault(t *testing.T) {
+	key := testKey(t)
+	_, err := New(context.Background(),
+		WithPrivateKey(key),
+		WithChain(chain.Chain(255)),
+	)
 	if err == nil {
 		t.Fatal("expected error for missing RPC source")
+	}
+	if !strings.Contains(err.Error(), "missing RPC source") {
+		t.Fatalf("error = %v, want missing RPC source", err)
 	}
 }
 

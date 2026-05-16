@@ -236,8 +236,8 @@ func (s *Service) GetProviderByAddress(ctx context.Context, addr common.Address)
 	return info, nil
 }
 
-// GetProviderIDByAddress returns the provider ID for addr. Returns 0 when
-// addr is not registered (contract convention).
+// GetProviderIDByAddress returns the provider ID for addr. Returns a zero ID
+// when addr is not registered (contract convention).
 func (s *Service) GetProviderIDByAddress(ctx context.Context, addr common.Address) (types.BigInt, error) {
 	if err := s.checkInit(); err != nil {
 		return types.BigInt{}, err

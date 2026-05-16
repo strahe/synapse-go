@@ -365,6 +365,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			detailedDataSets = nil
 		}
 	}
+	hasDetailedCandidates := len(detailedDataSets) > 0
 	requestedMetadata := dataSetMetadataFromOptions(opts)
 	selectionCap := min(count, len(providers))
 	withDataSet := make([]ResolvedUploadContext, 0, selectionCap)
@@ -373,19 +374,21 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		if _, ok := approvedSet[idconv.Key(provider.Info.ID)]; !ok {
 			continue
 		}
+		if !hasDetailedCandidates && len(withoutDataSet) == count {
+			break
+		}
 		var dataSetID, clientDataSetID *types.BigInt
-		metadata := cloneStringMap(requestedMetadata)
-		if r.dataSetDetails != nil {
+		var metadata map[string]string
+		if hasDetailedCandidates {
 			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, detailedDataSets, requestedMetadata)
 		}
-		resolved := buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata)
 		if dataSetID != nil {
-			withDataSet = append(withDataSet, resolved)
+			withDataSet = append(withDataSet, buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata))
 			if len(withDataSet) == count {
 				break
 			}
 		} else if len(withoutDataSet) < count {
-			withoutDataSet = append(withoutDataSet, resolved)
+			withoutDataSet = append(withoutDataSet, buildResolvedUploadContext(provider, nil, nil, requestedMetadata))
 		}
 	}
 
@@ -451,7 +454,7 @@ func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID 
 }
 
 func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context, providerID types.BigInt, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
-	matching := make([]*warmstorage.DataSetInfo, 0)
+	matching := make([]*warmstorage.DataSetInfo, 0, len(dataSets))
 	for _, dataSet := range dataSets {
 		if dataSet == nil {
 			continue
@@ -506,7 +509,7 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 	}
 	wg.Wait()
 	close(errCh)
-	var errs []error
+	errs := make([]error, 0, len(matching))
 	for err := range errCh {
 		errs = append(errs, err)
 	}
@@ -537,13 +540,13 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string) {
 	matching := matchingDetailedDataSets(providerID, dataSets, requestedMetadata)
 	if len(matching) == 0 {
-		return nil, nil, cloneStringMap(requestedMetadata)
+		return nil, nil, nil
 	}
 	return resolvedDetailedDataSet(matching[0])
 }
 
 func matchingDetailedDataSets(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) []*warmstorage.EnhancedDataSetInfo {
-	matching := make([]*warmstorage.EnhancedDataSetInfo, 0)
+	matching := make([]*warmstorage.EnhancedDataSetInfo, 0, len(dataSets))
 	for _, dataSet := range dataSets {
 		if dataSet == nil || dataSet.DataSetInfo == nil {
 			continue
@@ -591,7 +594,7 @@ func (r *ServiceResolver) dataSetAcceptsUpload(ctx context.Context, dataSetID ty
 
 func resolvedDetailedDataSet(dataSet *warmstorage.EnhancedDataSetInfo) (*types.BigInt, *types.BigInt, map[string]string) {
 	dsID := dataSet.DataSetID
-	return &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), cloneStringMap(dataSet.Metadata)
+	return &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), dataSet.Metadata
 }
 
 func buildResolvedUploadContext(provider spregistry.PDPProvider, dataSetID, clientDataSetID *types.BigInt, metadata map[string]string) ResolvedUploadContext {

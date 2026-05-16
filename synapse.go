@@ -107,8 +107,9 @@ func WithEthClient(c *ethclient.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.ethClient = c }
 }
 
-// WithChain overrides automatic chain detection. When omitted, [New]
-// calls eth_chainId on the RPC endpoint.
+// WithChain selects the Filecoin network. When omitted, [New] detects the
+// chain from the RPC endpoint, except when both chain and RPC source are
+// omitted; that path defaults to Calibration.
 func WithChain(c chain.Chain) ClientOption {
 	return func(cfg *clientConfig) {
 		cc := c
@@ -187,8 +188,9 @@ func WithAllowPrivateNetworks(allow bool) ClientOption {
 // New creates a Client, connecting to the given RPC endpoint and
 // resolving the chain and contract addresses.
 //
-// Required options: a private key ([WithPrivateKey] or [WithPrivateKeyHex])
-// and an RPC source ([WithRPCURL] or [WithEthClient]).
+// Required options: a private key ([WithPrivateKey] or [WithPrivateKeyHex]).
+// If no RPC source is provided, the client uses the selected chain's default
+// RPC endpoint, defaulting to Calibration when no chain is selected.
 func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	var cfg clientConfig
 	for _, o := range opts {
@@ -310,6 +312,13 @@ func zeroPrivateKey(key *ecdsa.PrivateKey) {
 }
 
 func resolveEthClient(ctx context.Context, cfg *clientConfig) (*ethclient.Client, bool, error) {
+	if cfg.ethClient == nil && cfg.rpcURL == "" {
+		if cfg.chain == nil {
+			cal := chain.Calibration
+			cfg.chain = &cal
+		}
+		cfg.rpcURL = cfg.chain.DefaultRPCURL()
+	}
 	switch {
 	case cfg.ethClient != nil:
 		return cfg.ethClient, false, nil
