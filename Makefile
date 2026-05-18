@@ -1,4 +1,4 @@
-.PHONY: build test bench lint vet generate generate-contracts clean fmt tidy check test-integration test-integration-readonly test-integration-fast test-integration-cross
+.PHONY: build test bench lint vet generate generate-contracts clean fmt tidy check check-ts-baseline test-integration test-integration-readonly test-integration-fast test-integration-cross
 
 INTEGRATION_PKGS := ./costs ./payments ./sessionkey ./spregistry ./storage ./tests/integration ./warmstorage
 INTEGRATION_READONLY_PKGS := ./costs ./spregistry ./warmstorage
@@ -73,6 +73,10 @@ generate-contracts:
 
 generate:
 	$(MAKE) generate-contracts
+
+# Check the ignored local synapse-sdk/ checkout against the pinned baseline.
+check-ts-baseline:
+	CHECK_TS_SDK_BASELINE=1 go test ./internal/upstream -run '^TestLocalTSSDKBaseline$$' -count=1
 
 # Run all checks (build + vet + lint + test)
 check: build vet lint test
