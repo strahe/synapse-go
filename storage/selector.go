@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -17,11 +16,6 @@ import (
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
-
-// selectorMetadataConcurrency caps fan-out of parallel
-// GetAllDataSetMetadata calls made by ServiceResolver. Kept small because
-// each call hits a public RPC endpoint.
-const selectorMetadataConcurrency = 8
 
 // selectorListPageSize mirrors warmstorage's IterateAll* page size so resolver
 // scans remain explicit after ListOptions started rejecting Limit==0.
@@ -365,30 +359,43 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			detailedDataSets = nil
 		}
 	}
-	hasDetailedCandidates := len(detailedDataSets) > 0
+	var providersWithDetails map[string][]*warmstorage.EnhancedDataSetInfo
+	var hasDetailedCandidates bool
+	if len(detailedDataSets) > 0 {
+		selectableProviders := selectableProviderSet(providers, approvedSet)
+		providersWithDetails = detailedCandidateProviders(detailedDataSets, selectableProviders)
+		hasDetailedCandidates = len(providersWithDetails) > 0
+	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
 	selectionCap := min(count, len(providers))
 	withDataSet := make([]ResolvedUploadContext, 0, selectionCap)
 	withoutDataSet := make([]ResolvedUploadContext, 0, selectionCap)
 	for _, provider := range providers {
-		if _, ok := approvedSet[idconv.Key(provider.Info.ID)]; !ok {
+		providerKey := idconv.Key(provider.Info.ID)
+		if _, ok := approvedSet[providerKey]; !ok {
 			continue
-		}
-		if !hasDetailedCandidates && len(withoutDataSet) == count {
-			break
 		}
 		var dataSetID, clientDataSetID *types.BigInt
 		var metadata map[string]string
 		if hasDetailedCandidates {
-			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, detailedDataSets, requestedMetadata)
+			if providerDataSets, ok := providersWithDetails[providerKey]; ok {
+				dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata)
+				delete(providersWithDetails, providerKey)
+			}
+			if len(providersWithDetails) == 0 {
+				hasDetailedCandidates = false
+			}
 		}
 		if dataSetID != nil {
 			withDataSet = append(withDataSet, buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata))
 			if len(withDataSet) == count {
 				break
 			}
-		} else if len(withoutDataSet) < count {
+		} else if len(withDataSet)+len(withoutDataSet) < count {
 			withoutDataSet = append(withoutDataSet, buildResolvedUploadContext(provider, nil, nil, requestedMetadata))
+		}
+		if !hasDetailedCandidates && len(withDataSet)+len(withoutDataSet) >= count {
+			break
 		}
 	}
 
@@ -449,10 +456,6 @@ func (r *ServiceResolver) getAllApprovedProviderIDs(ctx context.Context) ([]type
 	}
 }
 
-func (r *ServiceResolver) selectMatchingDataSet(ctx context.Context, providerID types.BigInt, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string, error) {
-	return r.selectMatchingDataSetWithWritable(ctx, providerID, dataSets, requestedMetadata, false)
-}
-
 func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context, providerID types.BigInt, dataSets []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
 	matching := make([]*warmstorage.DataSetInfo, 0, len(dataSets))
 	for _, dataSet := range dataSets {
@@ -471,55 +474,12 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 		return nil, nil, cloneStringMap(requestedMetadata), nil
 	}
 
-	// Fetch metadata for all candidates concurrently with a bounded worker
-	// pool. The caller's ctx remains the only time budget; the iteration order
-	// for the match check remains deterministic (sorted by DataSetID).
-	//
-	// Batched metadata fetch would require a new server API; this only
-	// pipelines the existing N+1 calls.
-	metadataByID := make(map[string]map[string]string, len(matching))
-	var mu sync.Mutex
-	workers := selectorMetadataConcurrency
-	if workers > len(matching) {
-		workers = len(matching)
-	}
-	sem := make(chan struct{}, workers)
-	errCh := make(chan error, len(matching))
-	var wg sync.WaitGroup
-	for _, ds := range matching {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
-			return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w", ctx.Err())
-		}
-		wg.Add(1)
-		go func(dsID types.BigInt) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dsID)
-			if err != nil {
-				errCh <- fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %s: %w", dsID.String(), err)
-				return
-			}
-			mu.Lock()
-			metadataByID[idconv.Key(dsID)] = metadata
-			mu.Unlock()
-		}(ds.DataSetID)
-	}
-	wg.Wait()
-	close(errCh)
-	errs := make([]error, 0, len(matching))
-	for err := range errCh {
-		errs = append(errs, err)
-	}
-
-	if len(errs) > 0 {
-		return nil, nil, nil, errors.Join(errs...)
-	}
-
 	for _, dataSet := range matching {
-		if metadata, ok := metadataByID[idconv.Key(dataSet.DataSetID)]; ok && metadataMatches(metadata, requestedMetadata) {
+		metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dataSet.DataSetID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %s: %w", dataSet.DataSetID.String(), err)
+		}
+		if metadataMatches(metadata, requestedMetadata) {
 			if requireWritable {
 				ok, err := r.dataSetAcceptsUpload(ctx, dataSet.DataSetID)
 				if err != nil {
@@ -535,6 +495,36 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 	}
 
 	return nil, nil, cloneStringMap(requestedMetadata), nil
+}
+
+func selectableProviderSet(providers []spregistry.PDPProvider, approvedSet map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, min(len(providers), len(approvedSet)))
+	for _, provider := range providers {
+		key := idconv.Key(provider.Info.ID)
+		if _, ok := approvedSet[key]; !ok {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	return out
+}
+
+func detailedCandidateProviders(dataSets []*warmstorage.EnhancedDataSetInfo, selectableProviders map[string]struct{}) map[string][]*warmstorage.EnhancedDataSetInfo {
+	out := make(map[string][]*warmstorage.EnhancedDataSetInfo, min(len(dataSets), len(selectableProviders)))
+	for _, dataSet := range dataSets {
+		if dataSet == nil || dataSet.DataSetInfo == nil {
+			continue
+		}
+		if dataSet.ProviderID.IsZero() {
+			continue
+		}
+		key := idconv.Key(dataSet.ProviderID)
+		if _, ok := selectableProviders[key]; !ok {
+			continue
+		}
+		out[key] = append(out[key], dataSet)
+	}
+	return out
 }
 
 func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string) {

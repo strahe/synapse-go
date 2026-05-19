@@ -976,6 +976,39 @@ func TestMetadataMatches(t *testing.T) {
 	}
 }
 
+func TestDetailedCandidateProvidersOnlyIncludesSelectableProviders(t *testing.T) {
+	selectable := map[string]struct{}{
+		testIDKey(1): {},
+	}
+	got := detailedCandidateProviders([]*warmstorage.EnhancedDataSetInfo{
+		nil,
+		{DataSetInfo: nil},
+		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(10), ProviderID: testID(0)}},
+		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1)}},
+		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1)}},
+		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(22), ProviderID: testID(2)}},
+	}, selectable)
+	providerDataSets := got[testIDKey(1)]
+	if len(providerDataSets) != 2 {
+		t.Fatalf("provider 1 dataset count=%d want 2: %v", len(providerDataSets), got)
+	}
+	if !providerDataSets[0].DataSetID.Equal(testID(11)) || !providerDataSets[1].DataSetID.Equal(testID(12)) {
+		t.Fatalf("provider 1 datasets=%v want 11,12", providerDataSets)
+	}
+	if _, ok := got[testIDKey(0)]; ok {
+		t.Fatalf("zero provider present in detailed candidate set: %v", got)
+	}
+	if _, ok := got[testIDKey(1)]; !ok {
+		t.Fatalf("provider 1 missing from detailed candidate set: %v", got)
+	}
+	if _, ok := got[testIDKey(2)]; ok {
+		t.Fatalf("provider 2 present in detailed candidate set: %v", got)
+	}
+	if len(got) != 1 {
+		t.Fatalf("detailed candidate set len=%d want 1: %v", len(got), got)
+	}
+}
+
 func TestWithCopies(t *testing.T) {
 	// nil opts
 	got := withCopies(nil, 3)

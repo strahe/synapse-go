@@ -63,6 +63,9 @@ func validatePieceCID(c cid.Cid) error {
 // used, the response body is streamed through a validating reader; the
 // terminal read error from io.ReadAll (or any last Read call that returns
 // io.EOF) carries the integrity check result — callers must not discard it.
+// URL downloads are capped by non-zero [Options.DownloadMaxBytes]. Exceeding
+// the cap returns [ErrMaxBytesExceeded] either before streaming starts, when
+// Content-Length is too large, or as the terminal Read error.
 func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
 	if err := s.checkInit(); err != nil {
 		return io.ReadCloser(nil), err
