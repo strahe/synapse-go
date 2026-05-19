@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/strahe/synapse-go/internal/upstream"
 )
 
 type ContractSpec struct {
@@ -27,10 +29,10 @@ type Config struct {
 
 const (
 	// DefaultRepo is the upstream ABI source of truth for generated bindings.
-	DefaultRepo = "FilOzone/filecoin-services"
+	DefaultRepo = upstream.FilecoinServicesRepo
 	// DefaultRef pins the upstream ABI commit used to regenerate bindings.
 	// Upgrade flow: update this ref, run `make generate-contracts`, then commit abi.json and bindings.go.
-	DefaultRef = "ed85348ebad54196b5bfefc5cb0dbe7e8bfd6f7c"
+	DefaultRef = upstream.FilecoinServicesRef
 )
 
 var manifest = []ContractSpec{
@@ -39,6 +41,7 @@ var manifest = []ContractSpec{
 	{PackageName: "fwssview", UpstreamABI: "FilecoinWarmStorageServiceStateView.abi.json", MergeErrors: true},
 	{PackageName: "spregistry", UpstreamABI: "ServiceProviderRegistry.abi.json", MergeErrors: true},
 	{PackageName: "filpay", UpstreamABI: "FilecoinPayV1.abi.json"},
+	{PackageName: "sessionkeyregistry", UpstreamABI: "SessionKeyRegistry.abi.json"},
 }
 
 func Sync(ctx context.Context, cfg Config) error {

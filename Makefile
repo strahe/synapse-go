@@ -74,7 +74,7 @@ generate-contracts:
 generate:
 	$(MAKE) generate-contracts
 
-# Check the ignored local synapse-sdk/ checkout against the pinned baseline.
+# Check the ignored local synapse-sdk/ checkout, package layering, and ABI ref.
 check-ts-baseline:
 	CHECK_TS_SDK_BASELINE=1 go test ./internal/upstream -run '^TestLocalTSSDKBaseline$$' -count=1
 

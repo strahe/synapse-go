@@ -35,6 +35,8 @@ func TestSyncWritesMergedABIs(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 		case "/service_contracts/abi/PDPVerifier.abi.json":
 			_, _ = w.Write([]byte(`[]`))
+		case "/service_contracts/abi/SessionKeyRegistry.abi.json":
+			_, _ = w.Write([]byte(`[{"type":"function","name":"login","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -73,6 +75,17 @@ func TestSyncWritesMergedABIs(t *testing.T) {
 	}
 	if !bytes.Contains(spregistryData, []byte(`"name": "Boom"`)) {
 		t.Fatalf("spregistry abi missing merged errors entry: %s", spregistryData)
+	}
+
+	sessionKeyData, err := os.ReadFile(filepath.Join(root, "sessionkeyregistry", "abi.json"))
+	if err != nil {
+		t.Fatalf("read sessionkeyregistry abi: %v", err)
+	}
+	if !bytes.Contains(sessionKeyData, []byte(`"name": "login"`)) {
+		t.Fatalf("sessionkeyregistry abi missing primary contract entry: %s", sessionKeyData)
+	}
+	if bytes.Contains(sessionKeyData, []byte(`"name": "Boom"`)) {
+		t.Fatalf("sessionkeyregistry abi unexpectedly merged errors entry: %s", sessionKeyData)
 	}
 }
 
@@ -165,10 +178,12 @@ func TestSyncDoesNotWriteAnyFilesWhenFetchFails(t *testing.T) {
 	root := t.TempDir()
 	existingFWSS := []byte("[{\"name\":\"old-fwss\"}]\n")
 	existingSPRegistry := []byte("[{\"name\":\"old-spregistry\"}]\n")
+	existingSessionKeyRegistry := []byte("[{\"name\":\"old-sessionkeyregistry\"}]\n")
 
 	for path, content := range map[string][]byte{
-		filepath.Join(root, "fwss", "abi.json"):       existingFWSS,
-		filepath.Join(root, "spregistry", "abi.json"): existingSPRegistry,
+		filepath.Join(root, "fwss", "abi.json"):               existingFWSS,
+		filepath.Join(root, "spregistry", "abi.json"):         existingSPRegistry,
+		filepath.Join(root, "sessionkeyregistry", "abi.json"): existingSessionKeyRegistry,
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
@@ -191,6 +206,8 @@ func TestSyncDoesNotWriteAnyFilesWhenFetchFails(t *testing.T) {
 		case "/service_contracts/abi/FilecoinPayV1.abi.json":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		case "/service_contracts/abi/PDPVerifier.abi.json":
+			_, _ = w.Write([]byte(`[]`))
+		case "/service_contracts/abi/SessionKeyRegistry.abi.json":
 			_, _ = w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
@@ -222,5 +239,13 @@ func TestSyncDoesNotWriteAnyFilesWhenFetchFails(t *testing.T) {
 	}
 	if !bytes.Equal(gotSPRegistry, existingSPRegistry) {
 		t.Fatalf("spregistry abi changed on failed sync: got %s want %s", gotSPRegistry, existingSPRegistry)
+	}
+
+	gotSessionKeyRegistry, err := os.ReadFile(filepath.Join(root, "sessionkeyregistry", "abi.json"))
+	if err != nil {
+		t.Fatalf("read sessionkeyregistry abi: %v", err)
+	}
+	if !bytes.Equal(gotSessionKeyRegistry, existingSessionKeyRegistry) {
+		t.Fatalf("sessionkeyregistry abi changed on failed sync: got %s want %s", gotSessionKeyRegistry, existingSessionKeyRegistry)
 	}
 }
