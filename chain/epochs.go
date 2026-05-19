@@ -12,11 +12,20 @@ const (
 	// EpochDurationSeconds is the epoch duration in seconds.
 	EpochDurationSeconds int64 = int64(EpochDuration / time.Second)
 
+	// EpochsPerHour is the number of epochs in a 60-minute hour.
+	EpochsPerHour int64 = int64(time.Hour / EpochDuration)
+
 	// EpochsPerDay is the number of epochs in a 24-hour day.
 	EpochsPerDay int64 = int64((24 * time.Hour) / EpochDuration)
 
 	// EpochsPerMonth is the approximate number of epochs in a 30-day month.
 	EpochsPerMonth int64 = 30 * EpochsPerDay
+)
+
+var (
+	bigEpochsPerHour = big.NewInt(EpochsPerHour)
+	bigEpochsPerDay  = big.NewInt(EpochsPerDay)
+	maxUint256Epoch  = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 )
 
 var genesisTimestamps = [chainCount]int64{
@@ -69,4 +78,24 @@ func TimeToEpoch(c Chain, t time.Time) *big.Int {
 		return new(big.Int)
 	}
 	return big.NewInt((t.Unix() - genesis) / EpochDurationSeconds)
+}
+
+// EpochsToHours converts epochs to whole hours. A nil input returns nil.
+func EpochsToHours(epochs *big.Int) *big.Int {
+	return epochsToUnits(epochs, bigEpochsPerHour)
+}
+
+// EpochsToDays converts epochs to whole days. A nil input returns nil.
+func EpochsToDays(epochs *big.Int) *big.Int {
+	return epochsToUnits(epochs, bigEpochsPerDay)
+}
+
+func epochsToUnits(epochs, units *big.Int) *big.Int {
+	if epochs == nil {
+		return nil
+	}
+	if epochs.Cmp(maxUint256Epoch) == 0 {
+		return new(big.Int).Set(maxUint256Epoch)
+	}
+	return new(big.Int).Quo(epochs, units)
 }

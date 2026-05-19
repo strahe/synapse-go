@@ -196,6 +196,22 @@ func newTestServiceWithPDP(t *testing.T) (*Service, *mockCaller) {
 	return s, mc
 }
 
+func dataSetInfoView(id int64) fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView {
+	return fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		PdpRailId:       big.NewInt(id),
+		CacheMissRailId: big.NewInt(0),
+		CdnRailId:       big.NewInt(0),
+		Payer:           common.HexToAddress("0x1000000000000000000000000000000000000001"),
+		Payee:           common.HexToAddress("0x2000000000000000000000000000000000000002"),
+		ServiceProvider: common.HexToAddress("0x3000000000000000000000000000000000000003"),
+		CommissionBps:   big.NewInt(0),
+		ClientDataSetId: big.NewInt(id),
+		PdpEndEpoch:     big.NewInt(0),
+		ProviderId:      big.NewInt(1),
+		DataSetId:       big.NewInt(id),
+	}
+}
+
 func TestNew_Validation(t *testing.T) {
 	mc := newMockCaller(t)
 	_, err := New(Options{FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")})
@@ -784,6 +800,74 @@ func TestIterateAllClientDataSetIds_Success(t *testing.T) {
 	}
 	if len(ids) != 2 || !ids[0].Equal(types.NewBigInt(10)) || !ids[1].Equal(types.NewBigInt(11)) {
 		t.Errorf("got %+v", ids)
+	}
+}
+
+func TestGetAllClientDataSetIds_CollectsAcrossPages(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.handlers["clientDataSets"] = func(data []byte) ([]byte, error) {
+		args, err := mc.viewABI.Methods["clientDataSets"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		offset := args[1].(*big.Int).Uint64()
+		switch offset {
+		case 0:
+			ids := make([]*big.Int, defaultIteratePageSize)
+			for i := range ids {
+				ids[i] = big.NewInt(int64(i + 1))
+			}
+			return mc.viewABI.Methods["clientDataSets"].Outputs.Pack(ids)
+		case defaultIteratePageSize:
+			return mc.viewABI.Methods["clientDataSets"].Outputs.Pack([]*big.Int{big.NewInt(101)})
+		default:
+			return mc.viewABI.Methods["clientDataSets"].Outputs.Pack([]*big.Int{})
+		}
+	}
+
+	ids, err := s.GetAllClientDataSetIds(context.Background(), common.HexToAddress("0xabcd"))
+	if err != nil {
+		t.Fatalf("GetAllClientDataSetIds: %v", err)
+	}
+	if len(ids) != int(defaultIteratePageSize)+1 {
+		t.Fatalf("len(ids) = %d, want %d", len(ids), defaultIteratePageSize+1)
+	}
+	if !ids[0].Equal(types.NewBigInt(1)) || !ids[len(ids)-1].Equal(types.NewBigInt(101)) {
+		t.Fatalf("ids boundaries = %s ... %s", ids[0].String(), ids[len(ids)-1].String())
+	}
+}
+
+func TestGetAllClientDataSets_CollectsAcrossPages(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.handlers["getClientDataSets"] = func(data []byte) ([]byte, error) {
+		args, err := mc.viewABI.Methods["getClientDataSets"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		offset := args[1].(*big.Int).Uint64()
+		switch offset {
+		case 0:
+			entries := make([]fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView, defaultIteratePageSize)
+			for i := range entries {
+				entries[i] = dataSetInfoView(int64(i + 1))
+			}
+			return mc.viewABI.Methods["getClientDataSets"].Outputs.Pack(entries)
+		case defaultIteratePageSize:
+			return mc.viewABI.Methods["getClientDataSets"].Outputs.Pack([]fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{dataSetInfoView(101)})
+		default:
+			return mc.viewABI.Methods["getClientDataSets"].Outputs.Pack([]fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{})
+		}
+	}
+
+	dataSets, err := s.GetAllClientDataSets(context.Background(), common.HexToAddress("0xabcd"))
+	if err != nil {
+		t.Fatalf("GetAllClientDataSets: %v", err)
+	}
+	if len(dataSets) != int(defaultIteratePageSize)+1 {
+		t.Fatalf("len(dataSets) = %d, want %d", len(dataSets), defaultIteratePageSize+1)
+	}
+	if !dataSets[0].DataSetID.Equal(types.NewBigInt(1)) || !dataSets[len(dataSets)-1].DataSetID.Equal(types.NewBigInt(101)) {
+		t.Fatalf("data set boundaries = %s ... %s", dataSets[0].DataSetID.String(), dataSets[len(dataSets)-1].DataSetID.String())
 	}
 }
 

@@ -26,7 +26,18 @@ const (
 	CapIPNIIPFS           = "ipniIpfs"
 	CapIPNIPeerID         = "ipniPeerId"
 	CapIPNIPeerIDLegacyUC = "IPNIPeerID" // legacy key, still read
+
+	maxProviderNameBytes        = 128
+	maxProviderDescriptionBytes = 256
+	maxLocationBytes            = 128
+	maxCapabilityKeyBytes       = 32
+	maxCapabilityValueBytes     = 128
+	maxCapabilities             = 24
 )
+
+func registrationFeeWei() *big.Int {
+	return big.NewInt(5_000_000_000_000_000_000)
+}
 
 // knownCaps is the set of keys that map into typed PDPOffering fields;
 // everything else ends up in ExtraCapabilities.
@@ -139,7 +150,7 @@ func DecodePDPOffering(caps map[string][]byte) (PDPOffering, error) {
 //
 // All *big.Int fields must be non-nil and non-negative. MinProvingPeriodInEpochs
 // must additionally be strictly positive (zero proving periods are rejected
-// by the on-chain validation). ServiceURL must be non-empty.
+// by the on-chain validation). ServiceURL and Location must be non-empty.
 func ValidatePDPOffering(o PDPOffering) error {
 	if o.ServiceURL == "" {
 		return fmt.Errorf("%w: missing serviceURL", ErrInvalidOffering)
@@ -168,6 +179,12 @@ func ValidatePDPOffering(o PDPOffering) error {
 	if o.MinProvingPeriodInEpochs.Sign() <= 0 {
 		return fmt.Errorf("%w: non-positive minProvingPeriodInEpochs", ErrInvalidOffering)
 	}
+	if o.Location == "" {
+		return fmt.Errorf("%w: missing location", ErrInvalidOffering)
+	}
+	if len(o.Location) > maxLocationBytes {
+		return fmt.Errorf("%w: location too long", ErrInvalidOffering)
+	}
 	return nil
 }
 
@@ -184,7 +201,7 @@ func ValidatePDPOffering(o PDPOffering) error {
 //  5. (optional) ipniIpfs      (single byte 0x01, omitted when false)
 //  6. storagePricePerTibPerDay
 //  7. minProvingPeriodInEpochs
-//  8. location                 (UTF-8 bytes)
+//  8. location                 (required UTF-8 bytes)
 //  9. paymentTokenAddress      (20 bytes)
 //
 // 10. any entries in extras, sorted by key for deterministic output.
@@ -193,7 +210,6 @@ func ValidatePDPOffering(o PDPOffering) error {
 // accepts it for backwards compatibility.
 //
 // For extras values:
-//   - an empty string encodes as the single byte 0x01;
 //   - a "0x"-prefixed string is hex-decoded;
 //   - otherwise the raw UTF-8 bytes are used.
 //
@@ -254,6 +270,9 @@ func EncodePDPCapabilities(o PDPOffering, extras map[string]string) (keys []stri
 		}
 	}
 
+	if err := validateCapabilityLists(keys, values); err != nil {
+		return nil, nil, err
+	}
 	return keys, values, nil
 }
 
@@ -271,7 +290,7 @@ func bigIntBytes(v *big.Int) []byte {
 
 func encodeExtraValue(v string) ([]byte, error) {
 	if v == "" {
-		return []byte{0x01}, nil
+		return nil, fmt.Errorf("empty capability value")
 	}
 	if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
 		decoded, err := hex.DecodeString(v[2:])
@@ -281,4 +300,40 @@ func encodeExtraValue(v string) ([]byte, error) {
 		return decoded, nil
 	}
 	return []byte(v), nil
+}
+
+func validateProviderInfo(name, description string) error {
+	if len(name) > maxProviderNameBytes {
+		return fmt.Errorf("%w: provider name too long", ErrInvalidArgument)
+	}
+	if len(description) > maxProviderDescriptionBytes {
+		return fmt.Errorf("%w: provider description too long", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validateCapabilityLists(keys []string, values [][]byte) error {
+	if len(keys) != len(values) {
+		return fmt.Errorf("%w: capability keys and values length mismatch", ErrInvalidOffering)
+	}
+	if len(keys) > maxCapabilities {
+		return fmt.Errorf("%w: too many capabilities", ErrInvalidOffering)
+	}
+	for i := range keys {
+		keyLen := len(keys[i])
+		if keyLen == 0 {
+			return fmt.Errorf("%w: empty capability key", ErrInvalidOffering)
+		}
+		if keyLen > maxCapabilityKeyBytes {
+			return fmt.Errorf("%w: capability key too long", ErrInvalidOffering)
+		}
+		valueLen := len(values[i])
+		if valueLen == 0 {
+			return fmt.Errorf("%w: empty capability value", ErrInvalidOffering)
+		}
+		if valueLen > maxCapabilityValueBytes {
+			return fmt.Errorf("%w: capability value too long", ErrInvalidOffering)
+		}
+	}
+	return nil
 }

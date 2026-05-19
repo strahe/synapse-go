@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
 
 	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
@@ -269,6 +270,9 @@ func (s *Service) IsProviderActive(ctx context.Context, providerID types.BigInt)
 	}
 	ok, err := s.contract.IsProviderActive(&bind.CallOpts{Context: ctx}, providerID.Big())
 	if err != nil {
+		if isProviderExistsError(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("spregistry.IsProviderActive: %w", err)
 	}
 	return ok, nil
@@ -327,9 +331,15 @@ func (s *Service) GetPDPProvider(ctx context.Context, providerID types.BigInt) (
 	}
 	v, err := s.contract.GetProviderWithProduct(&bind.CallOpts{Context: ctx}, providerID.Big(), uint8(ProductTypePDP))
 	if err != nil {
+		if isProviderExistsError(err) {
+			return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", ErrNotFound)
+		}
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", err)
 	}
 	if (v.ProviderInfo.ServiceProvider == common.Address{}) {
+		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", ErrNotFound)
+	}
+	if !hasActivePDPProduct(v) {
 		return nil, fmt.Errorf("spregistry.GetPDPProvider: %w", ErrNotFound)
 	}
 	provider, err := decodeProviderWithProduct(v)
@@ -442,6 +452,9 @@ func (s *Service) GetPDPProvidersByIDs(ctx context.Context, providerIDs []types.
 		}
 		raw := *gethabi.ConvertType(values[0], new(spr.ServiceProviderRegistryStorageProviderWithProduct)).(*spr.ServiceProviderRegistryStorageProviderWithProduct)
 		if (raw.ProviderInfo.ServiceProvider == common.Address{}) {
+			continue
+		}
+		if !hasActivePDPProduct(raw) {
 			continue
 		}
 		provider, err := decodeProviderWithProduct(raw)
@@ -618,4 +631,16 @@ func decodeProviderWithProduct(v spr.ServiceProviderRegistryStorageProviderWithP
 		},
 		Offering: off,
 	}, nil
+}
+
+func hasActivePDPProduct(v spr.ServiceProviderRegistryStorageProviderWithProduct) bool {
+	return v.Product.IsActive && len(v.Product.CapabilityKeys) > 0
+}
+
+func isProviderExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Provider does not exist") || strings.Contains(msg, "Provider not found")
 }

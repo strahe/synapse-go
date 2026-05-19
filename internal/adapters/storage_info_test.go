@@ -104,6 +104,49 @@ func TestStorageInfoReader_GetStorageInfo_ReturnsPartialProvidersAndError(t *tes
 	}
 }
 
+func TestStorageInfoReader_GetStorageInfo_SkipsStaleApprovedProviders(t *testing.T) {
+	ws, mc := newStorageInfoTestWarmStorage(t)
+	sp := newStorageInfoTestSPRegistry(t, mc)
+
+	mc.setFWSSReply(t, "getServicePrice", fwssbind.FilecoinWarmStorageServiceServicePricing{
+		PricePerTiBPerMonthNoCDN:   big.NewInt(1000),
+		PricePerTiBCdnEgress:       big.NewInt(20),
+		PricePerTiBCacheMissEgress: big.NewInt(30),
+		TokenAddress:               common.HexToAddress("0xabc"),
+		EpochsPerMonth:             big.NewInt(2880),
+		MinimumPricePerMonth:       big.NewInt(0),
+	})
+	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2)})
+	mc.setSPResponder(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		providerID, ok := args[0].(*big.Int)
+		if !ok {
+			t.Fatalf("providerID arg type = %T, want *big.Int", args[0])
+		}
+		switch providerID.Uint64() {
+		case 1:
+			return mc.packSP(t, "getProviderWithProduct", storageInfoPDPProviderView(1, common.HexToAddress("0x1111")))
+		case 2:
+			raw := storageInfoPDPProviderView(2, common.HexToAddress("0x2222"))
+			raw.Product.IsActive = false
+			return mc.packSP(t, "getProviderWithProduct", raw)
+		default:
+			t.Fatalf("unexpected providerID %d", providerID.Uint64())
+			return nil, nil
+		}
+	})
+
+	got, err := (&storageInfoReader{ws: ws, sp: sp}).GetStorageInfo(context.Background(), common.Address{})
+	if err != nil {
+		t.Fatalf("GetStorageInfo: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetStorageInfo result = nil")
+	}
+	if len(got.Providers) != 1 || !got.Providers[0].Info.ID.Equal(types.NewBigInt(1)) {
+		t.Fatalf("Providers = %+v, want only provider 1", got.Providers)
+	}
+}
+
 type storageInfoTestCaller struct {
 	fwssABI      abi.ABI
 	viewABI      abi.ABI

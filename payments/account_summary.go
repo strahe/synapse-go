@@ -108,35 +108,15 @@ func (s *Service) accountStateAt(ctx context.Context, token, owner common.Addres
 }
 
 func summarizeAccount(account *AccountState, fixedLockup, currentEpoch *big.Int) *AccountSummary {
-	funds := copyBigOrZero(nil)
-	lockupCurrent := copyBigOrZero(nil)
-	lockupRate := copyBigOrZero(nil)
-	lockupLastSettledAt := copyBigOrZero(nil)
-	if account != nil {
-		funds = copyBigOrZero(account.Funds)
-		lockupCurrent = copyBigOrZero(account.LockupCurrent)
-		lockupRate = copyBigOrZero(account.LockupRate)
-		lockupLastSettledAt = copyBigOrZero(account.LockupLastSettledAt)
-	}
+	funds, lockupCurrent, lockupRate, lockupLastSettledAt := accountStateParts(account)
 	current := copyBigOrZero(currentEpoch)
 	fixed := copyBigOrZero(fixedLockup)
 
 	fundedUntil := fundedUntilEpoch(funds, lockupCurrent, lockupRate, lockupLastSettledAt)
-	simulatedSettledAt := minBig(fundedUntil, current)
-	elapsed := new(big.Int).Sub(simulatedSettledAt, lockupLastSettledAt)
-	if elapsed.Sign() < 0 {
-		elapsed.SetInt64(0)
-	}
-	simulatedLockup := new(big.Int).Mul(lockupRate, elapsed)
-	simulatedLockup.Add(simulatedLockup, lockupCurrent)
+	resolved := account.ResolveAt(current)
+	debt := account.DebtAt(current)
 
-	available := new(big.Int).Sub(funds, simulatedLockup)
-	if available.Sign() < 0 {
-		available.SetInt64(0)
-	}
-	debt := accountDebt(funds, lockupCurrent, lockupRate, lockupLastSettledAt, current)
-
-	totalLockup := new(big.Int).Sub(funds, available)
+	totalLockup := new(big.Int).Sub(funds, resolved.AvailableFunds)
 	if totalLockup.Sign() < 0 {
 		totalLockup.SetInt64(0)
 	}
@@ -146,16 +126,18 @@ func summarizeAccount(account *AccountState, fixedLockup, currentEpoch *big.Int)
 	}
 
 	return &AccountSummary{
-		Funds:                funds,
-		AvailableFunds:       available,
-		Debt:                 debt,
-		LockupRatePerEpoch:   new(big.Int).Set(lockupRate),
-		LockupRatePerMonth:   new(big.Int).Mul(lockupRate, big.NewInt(chain.EpochsPerMonth)),
-		TotalLockup:          totalLockup,
-		TotalFixedLockup:     fixed,
-		TotalRateBasedLockup: rateBased,
-		FundedUntilEpoch:     fundedUntil,
-		CurrentEpoch:         current,
+		Funds:                 funds,
+		AvailableFunds:        resolved.AvailableFunds,
+		Debt:                  debt,
+		LockupRatePerEpoch:    new(big.Int).Set(lockupRate),
+		LockupRatePerMonth:    new(big.Int).Mul(lockupRate, big.NewInt(chain.EpochsPerMonth)),
+		TotalLockup:           totalLockup,
+		TotalFixedLockup:      fixed,
+		TotalRateBasedLockup:  rateBased,
+		FundedUntilEpoch:      fundedUntil,
+		RunwayInEpochs:        resolved.RunwayInEpochs,
+		GrossCoverageInEpochs: resolved.GrossCoverageInEpochs,
+		CurrentEpoch:          current,
 	}
 }
 
@@ -166,26 +148,6 @@ func fundedUntilEpoch(funds, lockupCurrent, lockupRate, lockupLastSettledAt *big
 	remaining := new(big.Int).Sub(funds, lockupCurrent)
 	epochs := new(big.Int).Quo(remaining, lockupRate)
 	return new(big.Int).Add(lockupLastSettledAt, epochs)
-}
-
-func accountDebt(funds, lockupCurrent, lockupRate, lockupLastSettledAt, currentEpoch *big.Int) *big.Int {
-	if currentEpoch.Cmp(lockupLastSettledAt) < 0 {
-		return new(big.Int)
-	}
-	elapsed := new(big.Int).Sub(currentEpoch, lockupLastSettledAt)
-	totalOwed := new(big.Int).Mul(lockupRate, elapsed)
-	totalOwed.Add(totalOwed, lockupCurrent)
-	if totalOwed.Cmp(funds) <= 0 {
-		return new(big.Int)
-	}
-	return totalOwed.Sub(totalOwed, funds)
-}
-
-func minBig(a, b *big.Int) *big.Int {
-	if a.Cmp(b) < 0 {
-		return new(big.Int).Set(a)
-	}
-	return new(big.Int).Set(b)
 }
 
 func copyBigOrZero(v *big.Int) *big.Int {

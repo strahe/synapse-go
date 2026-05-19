@@ -18,10 +18,8 @@ import (
 // receives payments (typically but not necessarily identical to the caller).
 //
 // Pricing:
-//   - When a WithValue option is provided the supplied *big.Int is used as
-//     msg.value verbatim, even if it does not match REGISTRATION_FEE. This
-//     is useful when the fee is known a priori or when the caller is
-//     funding from an allowance elsewhere.
+//   - When a WithValue option is provided it must equal the current 5 FIL
+//     registration fee mirrored by the SDK.
 //   - Otherwise the current REGISTRATION_FEE() is read from the contract
 //     and used; an RPC error there is wrapped and returned before any
 //     transaction is broadcast.
@@ -45,6 +43,9 @@ func (s *Service) RegisterProvider(ctx context.Context, info ProviderRegistratio
 	if info.Name == "" {
 		return nil, fmt.Errorf("spregistry.RegisterProvider: %w: empty Name", ErrInvalidArgument)
 	}
+	if err := validateProviderInfo(info.Name, info.Description); err != nil {
+		return nil, fmt.Errorf("spregistry.RegisterProvider: %w", err)
+	}
 
 	keys, values, err := EncodePDPCapabilities(info.PDPOffering, info.Capabilities)
 	if err != nil {
@@ -59,6 +60,9 @@ func (s *Service) RegisterProvider(ctx context.Context, info ProviderRegistratio
 		}
 		if cfg.value.Sign() < 0 {
 			return nil, fmt.Errorf("spregistry.RegisterProvider: %w: negative WithValue", ErrInvalidArgument)
+		}
+		if cfg.value.Cmp(registrationFeeWei()) != 0 {
+			return nil, fmt.Errorf("spregistry.RegisterProvider: %w: incorrect registration fee", ErrInvalidArgument)
 		}
 		fee = new(big.Int).Set(cfg.value)
 	} else {
@@ -99,6 +103,9 @@ func (s *Service) UpdateProviderInfo(ctx context.Context, name, description stri
 	}
 	if name == "" {
 		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w: empty name", ErrInvalidArgument)
+	}
+	if err := validateProviderInfo(name, description); err != nil {
+		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w", err)
 	}
 	topts, release, err := s.newTransactOpts(ctx)
 	if err != nil {

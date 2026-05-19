@@ -443,6 +443,12 @@ func TestAccountSummary_ComputesBreakdown(t *testing.T) {
 	if summary.FundedUntilEpoch.Cmp(big.NewInt(150)) != 0 {
 		t.Fatalf("FundedUntilEpoch = %s, want 150", summary.FundedUntilEpoch)
 	}
+	if summary.RunwayInEpochs.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("RunwayInEpochs = %s, want 50", summary.RunwayInEpochs)
+	}
+	if summary.GrossCoverageInEpochs.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("GrossCoverageInEpochs = %s, want 200", summary.GrossCoverageInEpochs)
+	}
 	if summary.CurrentEpoch.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("CurrentEpoch = %s, want 100", summary.CurrentEpoch)
 	}
@@ -468,6 +474,108 @@ func TestFundedUntilEpoch_UnderfundedUsesTruncationTowardZero(t *testing.T) {
 	}
 }
 
+func TestAccountStateResolveAt_IgnoresCachedAvailableFunds(t *testing.T) {
+	state := &AccountState{
+		Funds:               big.NewInt(100),
+		LockupCurrent:       big.NewInt(30),
+		LockupRate:          big.NewInt(2),
+		LockupLastSettledAt: big.NewInt(10),
+		availableFunds:      big.NewInt(999),
+	}
+
+	resolved := state.ResolveAt(big.NewInt(20))
+
+	if resolved.AvailableFunds.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("AvailableFunds = %s, want 50", resolved.AvailableFunds)
+	}
+	if resolved.RunwayInEpochs.Cmp(big.NewInt(25)) != 0 {
+		t.Fatalf("RunwayInEpochs = %s, want 25", resolved.RunwayInEpochs)
+	}
+	if resolved.GrossCoverageInEpochs.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("GrossCoverageInEpochs = %s, want 50", resolved.GrossCoverageInEpochs)
+	}
+
+	resolved.AvailableFunds.SetInt64(1)
+	again := state.ResolveAt(big.NewInt(20))
+	if again.AvailableFunds.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("ResolveAt returned aliased AvailableFunds, got %s", again.AvailableFunds)
+	}
+}
+
+func TestAccountStateResolveAt_DeficitHasNoAvailableFunds(t *testing.T) {
+	state := &AccountState{
+		Funds:               big.NewInt(105),
+		LockupCurrent:       big.NewInt(100),
+		LockupRate:          big.NewInt(10),
+		LockupLastSettledAt: big.NewInt(0),
+	}
+
+	resolved := state.ResolveAt(big.NewInt(1))
+	debt := state.DebtAt(big.NewInt(1))
+
+	if resolved.AvailableFunds.Sign() != 0 {
+		t.Fatalf("AvailableFunds = %s, want 0", resolved.AvailableFunds)
+	}
+	if debt.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("DebtAt = %s, want 5", debt)
+	}
+}
+
+func TestAccountStateResolveAt_ZeroRateRunwayReflectsDeficit(t *testing.T) {
+	tests := []struct {
+		name          string
+		funds         *big.Int
+		lockupCurrent *big.Int
+		wantAvailable *big.Int
+		wantRunway    *big.Int
+		wantDebt      *big.Int
+	}{
+		{
+			name:          "healthy zero-rate account has unlimited runway",
+			funds:         big.NewInt(100),
+			lockupCurrent: big.NewInt(30),
+			wantAvailable: big.NewInt(70),
+			wantRunway:    maxUint256,
+			wantDebt:      big.NewInt(0),
+		},
+		{
+			name:          "underfunded zero-rate account has no runway",
+			funds:         big.NewInt(100),
+			lockupCurrent: big.NewInt(120),
+			wantAvailable: big.NewInt(0),
+			wantRunway:    big.NewInt(0),
+			wantDebt:      big.NewInt(20),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &AccountState{
+				Funds:               tt.funds,
+				LockupCurrent:       tt.lockupCurrent,
+				LockupRate:          big.NewInt(0),
+				LockupLastSettledAt: big.NewInt(10),
+			}
+
+			resolved := state.ResolveAt(big.NewInt(20))
+			debt := state.DebtAt(big.NewInt(20))
+
+			if resolved.AvailableFunds.Cmp(tt.wantAvailable) != 0 {
+				t.Fatalf("AvailableFunds = %s, want %s", resolved.AvailableFunds, tt.wantAvailable)
+			}
+			if resolved.RunwayInEpochs.Cmp(tt.wantRunway) != 0 {
+				t.Fatalf("RunwayInEpochs = %s, want %s", resolved.RunwayInEpochs, tt.wantRunway)
+			}
+			if resolved.GrossCoverageInEpochs.Cmp(maxUint256) != 0 {
+				t.Fatalf("GrossCoverageInEpochs = %s, want maxUint256", resolved.GrossCoverageInEpochs)
+			}
+			if debt.Cmp(tt.wantDebt) != 0 {
+				t.Fatalf("DebtAt = %s, want %s", debt, tt.wantDebt)
+			}
+		})
+	}
+}
+
 func TestSummarizeAccount_CurrentEpochBeforeLastSettledDoesNotIncreaseAvailable(t *testing.T) {
 	summary := summarizeAccount(&AccountState{
 		Funds:               big.NewInt(1000),
@@ -482,16 +590,18 @@ func TestSummarizeAccount_CurrentEpochBeforeLastSettledDoesNotIncreaseAvailable(
 	if summary.TotalLockup.Cmp(big.NewInt(300)) != 0 {
 		t.Fatalf("TotalLockup = %s, want 300", summary.TotalLockup)
 	}
+	if summary.RunwayInEpochs.Cmp(big.NewInt(150)) != 0 {
+		t.Fatalf("RunwayInEpochs = %s, want 150", summary.RunwayInEpochs)
+	}
 }
 
 func TestAccountDebt_CurrentEpochBeforeLastSettledReturnsZero(t *testing.T) {
-	debt := accountDebt(
-		big.NewInt(100),
-		big.NewInt(300),
-		big.NewInt(5),
-		big.NewInt(100),
-		big.NewInt(90),
-	)
+	debt := (&AccountState{
+		Funds:               big.NewInt(100),
+		LockupCurrent:       big.NewInt(300),
+		LockupRate:          big.NewInt(5),
+		LockupLastSettledAt: big.NewInt(100),
+	}).DebtAt(big.NewInt(90))
 
 	if debt.Sign() != 0 {
 		t.Fatalf("Debt = %s, want 0", debt)

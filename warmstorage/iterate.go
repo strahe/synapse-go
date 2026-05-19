@@ -44,6 +44,23 @@ func (s *Service) IterateAllClientDataSets(ctx context.Context, payer common.Add
 	}
 }
 
+// GetAllClientDataSets returns every data set owned by payer across all pages.
+// It materializes the full result set in memory; use IterateAllClientDataSets
+// or GetClientDataSets with explicit pagination for large accounts.
+func (s *Service) GetAllClientDataSets(ctx context.Context, payer common.Address) ([]*DataSetInfo, error) {
+	var out []*DataSetInfo
+	for info, err := range s.IterateAllClientDataSets(ctx, payer) {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, info)
+	}
+	if out == nil {
+		out = []*DataSetInfo{}
+	}
+	return out, nil
+}
+
 // IterateAllClientDataSetIds yields every data set ID owned by payer
 // across all pages. Semantics match IterateAllClientDataSets but returns
 // a shallow list of IDs (lighter-weight than the full DataSetInfo).
@@ -71,6 +88,23 @@ func (s *Service) IterateAllClientDataSetIds(ctx context.Context, payer common.A
 			offset += uint64(len(page))
 		}
 	}
+}
+
+// GetAllClientDataSetIds returns every data set ID owned by payer across all pages.
+// It materializes the full result set in memory; use IterateAllClientDataSetIds
+// or GetClientDataSetIds with explicit pagination for large accounts.
+func (s *Service) GetAllClientDataSetIds(ctx context.Context, payer common.Address) ([]types.BigInt, error) {
+	var out []types.BigInt
+	for id, err := range s.IterateAllClientDataSetIds(ctx, payer) {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	if out == nil {
+		out = []types.BigInt{}
+	}
+	return out, nil
 }
 
 // IterateAllApprovedProviderIDs yields every approved-provider id across all

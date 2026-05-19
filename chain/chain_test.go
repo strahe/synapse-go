@@ -218,8 +218,34 @@ func TestEpochConstants(t *testing.T) {
 		t.Errorf("EpochsPerDay = %d, want %d", EpochsPerDay, got)
 	}
 
+	if got := int64(time.Hour / EpochDuration); got != EpochsPerHour {
+		t.Errorf("EpochsPerHour = %d, want %d", EpochsPerHour, got)
+	}
+
 	if got := 30 * EpochsPerDay; got != EpochsPerMonth {
 		t.Errorf("EpochsPerMonth = %d, want %d", EpochsPerMonth, got)
+	}
+}
+
+func TestEpochConversions(t *testing.T) {
+	if got := EpochsToHours(big.NewInt(240)); got.Cmp(big.NewInt(2)) != 0 {
+		t.Fatalf("EpochsToHours(240) = %s, want 2", got)
+	}
+	if got := EpochsToDays(big.NewInt(8640)); got.Cmp(big.NewInt(3)) != 0 {
+		t.Fatalf("EpochsToDays(8640) = %s, want 3", got)
+	}
+	if got := EpochsToHours(nil); got != nil {
+		t.Fatalf("EpochsToHours(nil) = %v, want nil", got)
+	}
+
+	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	got := EpochsToDays(maxUint256)
+	if got.Cmp(maxUint256) != 0 {
+		t.Fatalf("EpochsToDays(maxUint256) = %s, want unchanged", got)
+	}
+	got.SetInt64(0)
+	if maxUint256.Sign() == 0 {
+		t.Fatal("EpochsToDays returned aliased maxUint256")
 	}
 }
 

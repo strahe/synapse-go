@@ -138,56 +138,54 @@ func CalculateAdditionalLockupRequired(
 // the deposit lands before the payment rail is created so the contract cannot
 // yet drain it.
 //
-// Nil *big.Int arguments are treated as zero. Negative epoch counts are clamped to zero.
-func CalculateDepositNeeded(
-	additionalLockup *big.Int,
-	rateDelta *big.Int,
-	currentLockupRate *big.Int,
-	debt *big.Int,
-	availableFunds *big.Int,
-	runwayEpochs int64,
-	bufferEpochs int64,
-	isNewDataSet bool,
-) *big.Int {
-	if additionalLockup == nil {
-		additionalLockup = new(big.Int)
-	}
-	if rateDelta == nil {
-		rateDelta = new(big.Int)
-	}
-	if currentLockupRate == nil {
-		currentLockupRate = new(big.Int)
-	}
-	if debt == nil {
-		debt = new(big.Int)
-	}
-	if availableFunds == nil {
-		availableFunds = new(big.Int)
-	}
+// Nil *big.Int fields are treated as zero. Negative epoch counts are clamped to zero.
+func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
+	additionalLockup := zeroBig(calc.AdditionalLockup)
+	rateDelta := zeroBig(calc.RateDelta)
+	currentLockupRate := zeroBig(calc.CurrentLockupRate)
+	debt := zeroBig(calc.Debt)
+	availableFunds := zeroBig(calc.AvailableFunds)
+	runwayEpochs := calc.ExtraRunwayEpochs
 	if runwayEpochs < 0 {
 		runwayEpochs = 0
 	}
+	bufferEpochs := calc.BufferEpochs
 	if bufferEpochs < 0 {
 		bufferEpochs = 0
 	}
+	bufferEpochsBig := big.NewInt(bufferEpochs)
 	combinedRate := new(big.Int).Add(currentLockupRate, rateDelta)
 	runway := new(big.Int).Mul(combinedRate, big.NewInt(runwayEpochs))
 
 	raw := new(big.Int).Add(additionalLockup, runway)
 	raw.Sub(raw, availableFunds)
 	raw.Add(raw, debt)
-	if raw.Sign() < 0 {
-		raw.SetInt64(0)
+
+	if currentLockupRate.Sign() == 0 && calc.IsNewDataSet {
+		if raw.Sign() < 0 {
+			return new(big.Int)
+		}
+		return raw
 	}
 
-	var buffer *big.Int
-	if currentLockupRate.Sign() == 0 && isNewDataSet {
-		buffer = new(big.Int)
-	} else {
-		buffer = new(big.Int).Mul(combinedRate, big.NewInt(bufferEpochs))
+	bufferCost := new(big.Int).Mul(combinedRate, bufferEpochsBig)
+	if raw.Sign() > 0 {
+		return raw.Add(raw, bufferCost)
 	}
 
-	return new(big.Int).Add(raw, buffer)
+	remainingAfterRequirements := new(big.Int).Neg(raw)
+	buffer := new(big.Int).Sub(bufferCost, remainingAfterRequirements)
+	if buffer.Sign() < 0 {
+		return new(big.Int)
+	}
+	return buffer
+}
+
+func zeroBig(v *big.Int) *big.Int {
+	if v == nil {
+		return new(big.Int)
+	}
+	return v
 }
 
 // isFWSSMaxApproved returns true when all FWSS approval conditions are met.

@@ -79,6 +79,9 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 				defer providerWG.Done()
 				p, err := a.sp.GetPDPProvider(ctx, id)
 				if err != nil {
+					if errors.Is(err, spregistry.ErrNotFound) {
+						return
+					}
 					appendErr(fmt.Errorf("GetPDPProvider(%s): %w", id.String(), err))
 					return
 				}

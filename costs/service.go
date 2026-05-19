@@ -21,6 +21,7 @@ import (
 // ContractCaller is the subset of ethereum.ContractCaller needed by Service.
 type ContractCaller interface {
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+	BlockNumber(ctx context.Context) (uint64, error)
 }
 
 // WarmStorageReader is the subset of warmstorage.Service used by costs.
@@ -106,15 +107,6 @@ func New(opts Options) (*Service, error) {
 		logger:      opts.Logger,
 		lifecycle:   opts.Lifecycle,
 	}, nil
-}
-
-// computeDebt returns max(0, LockupCurrent - Funds) for the given account state.
-func computeDebt(account *payments.AccountState) *big.Int {
-	if account.LockupCurrent != nil && account.Funds != nil &&
-		account.LockupCurrent.Cmp(account.Funds) > 0 {
-		return new(big.Int).Sub(account.LockupCurrent, account.Funds)
-	}
-	return new(big.Int)
 }
 
 // GetServicePrice delegates to the warmstorage service.
@@ -238,29 +230,29 @@ func (s *Service) GetUploadCosts(
 		opts.EnableCDN,
 	)
 
-	// Compute debt = max(0, LockupCurrent - Funds).
-	debt := computeDebt(account)
-
-	avail := account.AvailableFunds()
-	if avail == nil {
-		avail = new(big.Int)
+	currentEpoch, err := s.currentEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
+	resolved := account.ResolveAt(currentEpoch)
+	debt := account.DebtAt(currentEpoch)
+	avail := resolved.AvailableFunds
 
 	currentRate := account.LockupRate
 	if currentRate == nil {
 		currentRate = new(big.Int)
 	}
 
-	depositNeeded := CalculateDepositNeeded(
-		lockup.TotalLockup,
-		lockup.RateDelta,
-		currentRate,
-		debt,
-		avail,
-		runwayEpochs,
-		bufferEpochs,
-		opts.IsNewDataSet,
-	)
+	depositNeeded := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  lockup.TotalLockup,
+		RateDelta:         lockup.RateDelta,
+		CurrentLockupRate: currentRate,
+		Debt:              debt,
+		AvailableFunds:    avail,
+		ExtraRunwayEpochs: runwayEpochs,
+		BufferEpochs:      bufferEpochs,
+		IsNewDataSet:      opts.IsNewDataSet,
+	})
 
 	needsApproval := !isFWSSMaxApproved(
 		approval.IsApproved,
@@ -292,12 +284,13 @@ func (s *Service) GetAccountSummary(ctx context.Context, owner common.Address) (
 		return nil, fmt.Errorf("costs.GetAccountSummary: %w", err)
 	}
 
-	debt := computeDebt(account)
-
-	avail := account.AvailableFunds()
-	if avail == nil {
-		avail = new(big.Int)
+	currentEpoch, err := s.currentEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetAccountSummary: %w", err)
 	}
+	resolved := account.ResolveAt(currentEpoch)
+	debt := account.DebtAt(currentEpoch)
+	avail := resolved.AvailableFunds
 
 	funds := new(big.Int)
 	if account.Funds != nil {
@@ -312,14 +305,24 @@ func (s *Service) GetAccountSummary(ctx context.Context, owner common.Address) (
 	ratePerMonth := new(big.Int).Mul(rate, big.NewInt(chain.EpochsPerMonth))
 
 	return &AccountSummary{
-		Funds:              funds,
-		AvailableFunds:     avail,
-		Debt:               debt,
-		LockupRatePerEpoch: rate,
-		LockupRatePerMonth: ratePerMonth,
-		FundedUntilEpoch:   account.FundedUntilEpoch,
-		CurrentEpoch:       chain.CurrentEpoch(s.c),
+		Funds:                 funds,
+		AvailableFunds:        avail,
+		Debt:                  debt,
+		LockupRatePerEpoch:    rate,
+		LockupRatePerMonth:    ratePerMonth,
+		FundedUntilEpoch:      account.FundedUntilEpoch,
+		RunwayInEpochs:        resolved.RunwayInEpochs,
+		GrossCoverageInEpochs: resolved.GrossCoverageInEpochs,
+		CurrentEpoch:          currentEpoch,
 	}, nil
+}
+
+func (s *Service) currentEpoch(ctx context.Context) (*big.Int, error) {
+	block, err := s.caller.BlockNumber(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("block number: %w", err)
+	}
+	return new(big.Int).SetUint64(block), nil
 }
 
 const usdfcSybilFeeABIJSON = `[{

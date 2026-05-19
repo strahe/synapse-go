@@ -15,8 +15,7 @@ import (
 
 var (
 	gitCommitRE   = regexp.MustCompile(`^[a-f0-9]{40}$`)
-	semverRE      = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
-	wagmiGitRefRE = regexp.MustCompile(`(?m)^\s*(?:export\s+)?const\s+GIT_REF\s*=\s*['"]([^'"]+)['"]`)
+	wagmiGitRefRE = regexp.MustCompile(`(?m)^\s*(?:export\s+)?const\s+(?:FILECOIN_SERVICES_)?GIT_REF\s*=\s*['"]([^'"]+)['"]`)
 )
 
 func TestTSSDKBaselineRefFormat(t *testing.T) {
@@ -49,8 +48,8 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	if sdkPackage.Name != "@filoz/synapse-sdk" {
 		t.Fatalf("synapse-sdk package name = %q, want @filoz/synapse-sdk", sdkPackage.Name)
 	}
-	if !semverRE.MatchString(sdkPackage.Version) {
-		t.Fatalf("synapse-sdk package version = %q, want valid semver", sdkPackage.Version)
+	if sdkPackage.Version != "0.41.0" {
+		t.Fatalf("synapse-sdk package version = %q, want 0.41.0", sdkPackage.Version)
 	}
 	coreDep := sdkPackage.Dependencies["@filoz/synapse-core"]
 	if coreDep == "" {
@@ -64,8 +63,8 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	if corePackage.Name != "@filoz/synapse-core" {
 		t.Fatalf("synapse-core package name = %q, want @filoz/synapse-core", corePackage.Name)
 	}
-	if !semverRE.MatchString(corePackage.Version) {
-		t.Fatalf("synapse-core package version = %q, want valid semver", corePackage.Version)
+	if corePackage.Version != "0.5.1" {
+		t.Fatalf("synapse-core package version = %q, want 0.5.1", corePackage.Version)
 	}
 	t.Logf("local TS baseline packages: %s@%s depends on %s@%s via %s", sdkPackage.Name, sdkPackage.Version, corePackage.Name, corePackage.Version, coreDep)
 
@@ -77,14 +76,14 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	wagmiConfig := string(wagmiData)
 	matches := wagmiGitRefRE.FindStringSubmatch(wagmiConfig)
 	if len(matches) != 2 {
-		t.Fatalf("locate GIT_REF in %s", wagmiPath)
+		t.Fatalf("locate Filecoin services GIT_REF in %s", wagmiPath)
 	}
 	if matches[1] != FilecoinServicesRef {
-		t.Fatalf("synapse-core wagmi GIT_REF = %q, want %s", matches[1], FilecoinServicesRef)
+		t.Fatalf("synapse-core wagmi Filecoin services GIT_REF = %q, want %s", matches[1], FilecoinServicesRef)
 	}
-	wantBaseURL := "const BASE_URL = `https://raw.githubusercontent.com/" + FilecoinServicesRepo + "/${GIT_REF"
+	wantBaseURL := "const BASE_URL = `https://raw.githubusercontent.com/" + FilecoinServicesRepo + "/${FILECOIN_SERVICES_REF"
 	if !strings.Contains(wagmiConfig, wantBaseURL) || !strings.Contains(wagmiConfig, "}/service_contracts/abi`") {
-		t.Fatalf("synapse-core wagmi BASE_URL must derive raw.githubusercontent.com/%s from GIT_REF", FilecoinServicesRepo)
+		t.Fatalf("synapse-core wagmi BASE_URL must derive raw.githubusercontent.com/%s from FILECOIN_SERVICES_REF", FilecoinServicesRepo)
 	}
 }
 

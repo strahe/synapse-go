@@ -194,29 +194,28 @@ func (s *Service) CalculateMultiContextCosts(
 		totalRatePerMonth.Add(totalRatePerMonth, rate.RatePerMonth)
 	}
 
-	debt := computeDebt(account)
-	avail := account.AvailableFunds()
-	if avail == nil {
-		avail = new(big.Int)
+	currentEpoch, err := s.currentEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w", err)
 	}
+	resolved := account.ResolveAt(currentEpoch)
+	debt := account.DebtAt(currentEpoch)
+	avail := resolved.AvailableFunds
 	currentRate := account.LockupRate
 	if currentRate == nil {
 		currentRate = new(big.Int)
 	}
 
-	// Skip buffer when no existing rails drain and all refs are new datasets.
-	isNewForBuffer := currentRate.Sign() == 0 && allNewDataSets
-
-	depositNeeded := CalculateDepositNeeded(
-		totalLockup,
-		totalRateDelta,
-		currentRate,
-		debt,
-		avail,
-		runwayEpochs,
-		bufferEpochs,
-		isNewForBuffer,
-	)
+	depositNeeded := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  totalLockup,
+		RateDelta:         totalRateDelta,
+		CurrentLockupRate: currentRate,
+		Debt:              debt,
+		AvailableFunds:    avail,
+		ExtraRunwayEpochs: runwayEpochs,
+		BufferEpochs:      bufferEpochs,
+		IsNewDataSet:      allNewDataSets,
+	})
 
 	needsApproval := !isFWSSMaxApproved(
 		approval.IsApproved,

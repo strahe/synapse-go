@@ -548,8 +548,9 @@ func TestIntegration(t *testing.T) {
 			maxEpochs := int64(txWaitTimeout/chain.EpochDuration) + 2
 			maxAccrued.Mul(acct.LockupRate, big.NewInt(maxEpochs))
 		}
-		if diff.Sign() <= 0 {
-			t.Errorf("balance diff = %s, want positive", diff)
+		minDiff := new(big.Int).Sub(depositAmount, maxAccrued)
+		if diff.Cmp(minDiff) < 0 {
+			t.Errorf("balance diff = %s, want >= deposit minus accrued lockup bound %s", diff, minDiff)
 		}
 		if diff.Cmp(depositAmount) > 0 {
 			t.Errorf("balance diff = %s, want <= deposit %s", diff, depositAmount)

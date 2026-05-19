@@ -146,6 +146,10 @@ func (noopContractCaller) CallContract(context.Context, ethereum.CallMsg, *big.I
 	return make([]byte, 32), nil
 }
 
+func (noopContractCaller) BlockNumber(context.Context) (uint64, error) {
+	return 0, nil
+}
+
 type fixedWarmStorageReader struct {
 	price *warmstorage.ServicePrice
 }

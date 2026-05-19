@@ -38,10 +38,21 @@ func (m *mockPay) ServiceApproval(_ context.Context, _, _, _ common.Address) (*p
 	return m.approval, nil
 }
 
-type mockCaller struct{ fee *big.Int }
+type mockCaller struct {
+	fee         *big.Int
+	blockNumber uint64
+	blockErr    error
+}
 
 func (m *mockCaller) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
 	return usdfcSybilFeeABI.Methods["USDFC_SYBIL_FEE"].Outputs.Pack(m.fee)
+}
+
+func (m *mockCaller) BlockNumber(_ context.Context) (uint64, error) {
+	if m.blockErr != nil {
+		return 0, m.blockErr
+	}
+	return m.blockNumber, nil
 }
 
 // mockPayErr is a PaymentsReader that returns errors on all calls.
@@ -231,6 +242,8 @@ func TestAccountSummary_OnlyExposeCompatibilityFields(t *testing.T) {
 		"LockupRatePerEpoch",
 		"LockupRatePerMonth",
 		"FundedUntilEpoch",
+		"RunwayInEpochs",
+		"GrossCoverageInEpochs",
 		"CurrentEpoch",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -270,6 +283,44 @@ func TestGetAccountSummary(t *testing.T) {
 	wantMonthlyRate := new(big.Int).Mul(rate, big.NewInt(chain.EpochsPerMonth))
 	if summary.LockupRatePerMonth.Cmp(wantMonthlyRate) != 0 {
 		t.Errorf("LockupRatePerMonth: got %s, want %s", summary.LockupRatePerMonth, wantMonthlyRate)
+	}
+	if summary.RunwayInEpochs == nil {
+		t.Fatal("RunwayInEpochs is nil")
+	}
+	if summary.GrossCoverageInEpochs == nil {
+		t.Fatal("GrossCoverageInEpochs is nil")
+	}
+}
+
+func TestCurrentEpochPrefersCallerBlockNumber(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}},
+		new(big.Int),
+	)
+	svc.caller = &mockCaller{fee: new(big.Int), blockNumber: 1234}
+
+	got, err := svc.currentEpoch(context.Background())
+	if err != nil {
+		t.Fatalf("currentEpoch: %v", err)
+	}
+
+	if got.Cmp(big.NewInt(1234)) != 0 {
+		t.Fatalf("currentEpoch = %s, want 1234", got)
+	}
+}
+
+func TestCurrentEpochErrorsWhenBlockNumberFails(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}},
+		new(big.Int),
+	)
+	svc.caller = &mockCaller{fee: new(big.Int), blockErr: errors.New("rpc down")}
+
+	_, err := svc.currentEpoch(context.Background())
+	if err == nil {
+		t.Fatal("expected BlockNumber error")
 	}
 }
 
@@ -414,10 +465,18 @@ func (m *mockCallerErr) CallContract(_ context.Context, _ ethereum.CallMsg, _ *b
 	return nil, m.err
 }
 
+func (m *mockCallerErr) BlockNumber(context.Context) (uint64, error) {
+	return 0, nil
+}
+
 type mockCallerBadReturn struct{ data []byte }
 
 func (m *mockCallerBadReturn) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
 	return m.data, nil
+}
+
+func (m *mockCallerBadReturn) BlockNumber(context.Context) (uint64, error) {
+	return 0, nil
 }
 
 func TestReadUsdfcSybilFee_CallContractError(t *testing.T) {

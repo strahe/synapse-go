@@ -71,8 +71,8 @@ type ProviderRegistrationInfo struct {
 	PDPOffering PDPOffering
 	// Capabilities are extra product capability key/value pairs in
 	// addition to the canonical PDP keys. Values starting with "0x"
-	// are hex-decoded; empty values encode as the single byte 0x01
-	// for compatibility with existing capability encoders.
+	// are hex-decoded; other values are UTF-8 encoded. Empty values
+	// are invalid; use "0x01" for flag-style extra capabilities.
 	Capabilities map[string]string
 }
 

@@ -267,52 +267,105 @@ func TestAdditionalLockup_Breakdown_SumsCorrectly(t *testing.T) {
 // --- CalculateDepositNeeded ---
 
 func TestDepositNeeded_InsufficientFunds(t *testing.T) {
-	deposit := CalculateDepositNeeded(
-		usdfc(10),
-		bi(100),
-		bi(50),
-		bi(0),
-		usdfc(1),
-		DefaultExtraRunwayEpochs,
-		DefaultBufferEpochs,
-		false,
-	)
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(50),
+		Debt:              bi(0),
+		AvailableFunds:    usdfc(1),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
 
 	if deposit.Sign() <= 0 {
 		t.Errorf("deposit should be positive when funds are insufficient: got %s", deposit)
 	}
 }
 
-func TestDepositNeeded_SufficientFunds(t *testing.T) {
+func TestDepositNeeded_SufficientFundsAndRunway(t *testing.T) {
 	huge := new(big.Int).Mul(usdfc(1_000_000), bi(1e18))
-	deposit := CalculateDepositNeeded(
-		usdfc(1),
-		bi(1),
-		bi(1),
-		bi(0),
-		huge,
-		DefaultExtraRunwayEpochs,
-		DefaultBufferEpochs,
-		false,
-	)
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(1),
+		RateDelta:         bi(1),
+		CurrentLockupRate: bi(1),
+		Debt:              bi(0),
+		AvailableFunds:    huge,
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
 
-	// raw → clamped to 0; buffer = (1+1) * 5 = 10
-	expectedBuffer := new(big.Int).Mul(bi(2), bi(DefaultBufferEpochs))
-	if deposit.Cmp(expectedBuffer) != 0 {
-		t.Errorf("deposit should equal buffer when funds are sufficient: got %s, want %s",
-			deposit, expectedBuffer)
+	if deposit.Sign() != 0 {
+		t.Errorf("deposit should be zero when funds and runway are sufficient: got %s", deposit)
+	}
+}
+
+func TestDepositNeeded_BufferTopsUpWhenRemainingFundsWithinBuffer(t *testing.T) {
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  bi(10),
+		RateDelta:         bi(2),
+		CurrentLockupRate: bi(3),
+		Debt:              bi(0),
+		AvailableFunds:    bi(20),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
+
+	if deposit.Cmp(bi(15)) != 0 {
+		t.Errorf("deposit should top up buffer shortfall: got %s, want 15", deposit)
+	}
+}
+
+func TestDepositNeeded_BufferUsesFundsAfterRequirements(t *testing.T) {
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  bi(10),
+		RateDelta:         bi(0),
+		CurrentLockupRate: bi(5),
+		Debt:              bi(0),
+		AvailableFunds:    bi(20),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
+
+	if deposit.Cmp(bi(15)) != 0 {
+		t.Errorf("deposit should top up buffer after reserving requirements: got %s, want 15", deposit)
+	}
+}
+
+func TestDepositNeeded_BufferAccountsForUploadUsingRunwayFunds(t *testing.T) {
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  bi(98),
+		RateDelta:         bi(0),
+		CurrentLockupRate: bi(1),
+		Debt:              bi(0),
+		AvailableFunds:    bi(100),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
+
+	if deposit.Cmp(bi(3)) != 0 {
+		t.Errorf("deposit should restore buffer after upload consumes funds: got %s, want 3", deposit)
 	}
 }
 
 func TestDepositNeeded_WithDebt(t *testing.T) {
-	depositNoDebt := CalculateDepositNeeded(
-		usdfc(10), bi(100), bi(50), bi(0), usdfc(1),
-		DefaultExtraRunwayEpochs, DefaultBufferEpochs, false,
-	)
-	depositWithDebt := CalculateDepositNeeded(
-		usdfc(10), bi(100), bi(50), usdfc(5), usdfc(1),
-		DefaultExtraRunwayEpochs, DefaultBufferEpochs, false,
-	)
+	depositNoDebt := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(50),
+		Debt:              bi(0),
+		AvailableFunds:    usdfc(1),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
+	depositWithDebt := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(50),
+		Debt:              usdfc(5),
+		AvailableFunds:    usdfc(1),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
 
 	if depositWithDebt.Cmp(depositNoDebt) <= 0 {
 		t.Errorf("deposit with debt should be larger: debt=%s, noDebt=%s",
@@ -321,16 +374,25 @@ func TestDepositNeeded_WithDebt(t *testing.T) {
 }
 
 func TestDepositNeeded_BufferSkipped_NewDataSet_ZeroRate(t *testing.T) {
-	depositNew := CalculateDepositNeeded(
-		usdfc(10), bi(100), bi(0), bi(0), bi(0),
-		DefaultExtraRunwayEpochs, DefaultBufferEpochs,
-		true, // new dataset, zero current rate → buffer skipped
-	)
-	depositExisting := CalculateDepositNeeded(
-		usdfc(10), bi(100), bi(0), bi(0), bi(0),
-		DefaultExtraRunwayEpochs, DefaultBufferEpochs,
-		false,
-	)
+	depositNew := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(0),
+		Debt:              bi(0),
+		AvailableFunds:    bi(0),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+		IsNewDataSet:      true,
+	})
+	depositExisting := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(0),
+		Debt:              bi(0),
+		AvailableFunds:    bi(0),
+		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
 
 	if depositNew.Cmp(depositExisting) >= 0 {
 		t.Errorf("new dataset with zero rate should skip buffer and be smaller: new=%s, existing=%s",
@@ -339,9 +401,7 @@ func TestDepositNeeded_BufferSkipped_NewDataSet_ZeroRate(t *testing.T) {
 }
 
 func TestDepositNeeded_ZeroEverything(t *testing.T) {
-	deposit := CalculateDepositNeeded(
-		bi(0), bi(0), bi(0), bi(0), bi(0), 0, 0, true,
-	)
+	deposit := CalculateDepositNeeded(DepositCalculation{IsNewDataSet: true})
 	if deposit.Sign() != 0 {
 		t.Errorf("deposit should be zero when all inputs are zero: got %s", deposit)
 	}
@@ -409,18 +469,22 @@ func TestCDNFixedLockupValue_MutationSafety(t *testing.T) {
 // --- CalculateDepositNeeded edge cases ---
 
 func TestDepositNeeded_NilInputs(t *testing.T) {
-	deposit := CalculateDepositNeeded(nil, nil, nil, nil, nil, 0, 0, true)
+	deposit := CalculateDepositNeeded(DepositCalculation{IsNewDataSet: true})
 	if deposit.Sign() != 0 {
 		t.Errorf("expected zero deposit for all-nil inputs, got %s", deposit)
 	}
 }
 
 func TestDepositNeeded_NegativeEpochs(t *testing.T) {
-	deposit := CalculateDepositNeeded(
-		usdfc(10), bi(100), bi(50), bi(0), usdfc(1),
-		-100, -50,
-		false,
-	)
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  usdfc(10),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(50),
+		Debt:              bi(0),
+		AvailableFunds:    usdfc(1),
+		ExtraRunwayEpochs: -100,
+		BufferEpochs:      -50,
+	})
 	// Negative epochs clamped to 0, so runway=0 and buffer=0.
 	// raw = 10e18 + 0 - 1e18 + 0 = 9e18 (clamped to non-negative); buffer = 0
 	// result = 9e18 = usdfc(9)
@@ -432,11 +496,15 @@ func TestDepositNeeded_NegativeEpochs(t *testing.T) {
 
 func TestDepositNeeded_LargeValues(t *testing.T) {
 	huge := new(big.Int).Lsh(big.NewInt(1), 128) // 2^128
-	deposit := CalculateDepositNeeded(
-		huge, huge, huge, huge, new(big.Int),
-		chain.EpochsPerMonth, DefaultBufferEpochs,
-		false,
-	)
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  huge,
+		RateDelta:         huge,
+		CurrentLockupRate: huge,
+		Debt:              huge,
+		AvailableFunds:    new(big.Int),
+		ExtraRunwayEpochs: chain.EpochsPerMonth,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
 	// combinedRate = huge + huge = 2^129
 	// runway = 2^129 * EpochsPerMonth
 	// raw = huge + runway - 0 + huge = 2^129 * (1 + EpochsPerMonth)
@@ -455,15 +523,17 @@ func TestDepositNeeded_LargeValues(t *testing.T) {
 }
 
 func TestDepositNeeded_ZeroTotalLockup(t *testing.T) {
-	deposit := CalculateDepositNeeded(
-		bi(0), bi(100), bi(50), bi(0), usdfc(100),
-		0, DefaultBufferEpochs,
-		false,
-	)
-	// raw = 0 + 0 - availableFunds (clamped to 0); buffer = combinedRate * bufferEpochs = 150 * 5 = 750
-	expected := new(big.Int).Mul(bi(150), bi(DefaultBufferEpochs))
-	if deposit.Cmp(expected) != 0 {
-		t.Errorf("deposit = %s, want %s", deposit, expected)
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  bi(0),
+		RateDelta:         bi(100),
+		CurrentLockupRate: bi(50),
+		Debt:              bi(0),
+		AvailableFunds:    usdfc(100),
+		ExtraRunwayEpochs: 0,
+		BufferEpochs:      DefaultBufferEpochs,
+	})
+	if deposit.Sign() != 0 {
+		t.Errorf("deposit = %s, want 0", deposit)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -312,14 +313,14 @@ func TestRegisterProvider_AllowsEmptyDescription(t *testing.T) {
 	}
 }
 
-func TestRegisterProvider_WithValueSkipsFeeCall(t *testing.T) {
+func TestRegisterProvider_WithExactValueSkipsFeeCall(t *testing.T) {
 	s, backend := newWriteTestService(t)
 	// Do NOT set REGISTRATION_FEE; if the code still fetched it, the
 	// mock would error on missing reply and the test would fail.
 	backend.failRegistrationFee = errors.New("fee fetch should not happen")
 
-	customFee := big.NewInt(42)
-	res, err := s.RegisterProvider(context.Background(), sampleRegistration(), WithValue(customFee))
+	explicitFee := big.NewInt(5_000_000_000_000_000_000)
+	res, err := s.RegisterProvider(context.Background(), sampleRegistration(), WithValue(explicitFee))
 	if err != nil {
 		t.Fatalf("RegisterProvider with value: %v", err)
 	}
@@ -327,8 +328,21 @@ func TestRegisterProvider_WithValueSkipsFeeCall(t *testing.T) {
 		t.Fatal("nil result")
 	}
 	tx := backend.sent[0]
-	if tx.Value().Cmp(customFee) != 0 {
-		t.Errorf("tx.Value = %v, want 42", tx.Value())
+	if tx.Value().Cmp(explicitFee) != 0 {
+		t.Errorf("tx.Value = %v, want %v", tx.Value(), explicitFee)
+	}
+}
+
+func TestRegisterProvider_RejectsIncorrectExplicitValue(t *testing.T) {
+	s, backend := newWriteTestService(t)
+	backend.failRegistrationFee = errors.New("fee fetch should not happen")
+
+	_, err := s.RegisterProvider(context.Background(), sampleRegistration(), WithValue(big.NewInt(42)))
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+	if len(backend.sent) != 0 {
+		t.Fatalf("sent %d transactions, want 0", len(backend.sent))
 	}
 }
 
@@ -362,6 +376,18 @@ func TestRegisterProvider_RejectsInvalidInputs(t *testing.T) {
 	reg.Name = ""
 	if _, err := s.RegisterProvider(ctx, reg); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("empty name: got %v want ErrInvalidArgument", err)
+	}
+
+	reg = sampleRegistration()
+	reg.Name = strings.Repeat("x", 129)
+	if _, err := s.RegisterProvider(ctx, reg); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("long name: got %v want ErrInvalidArgument", err)
+	}
+
+	reg = sampleRegistration()
+	reg.Description = strings.Repeat("x", 257)
+	if _, err := s.RegisterProvider(ctx, reg); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("long description: got %v want ErrInvalidArgument", err)
 	}
 
 	// invalid offering (zero proving period)
@@ -431,6 +457,16 @@ func TestUpdateProviderInfo_RejectsEmptyName(t *testing.T) {
 	_, err := s.UpdateProviderInfo(context.Background(), "", "desc")
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("got %v want ErrInvalidArgument", err)
+	}
+}
+
+func TestUpdateProviderInfo_RejectsOversizedFields(t *testing.T) {
+	s, _ := newWriteTestService(t)
+	if _, err := s.UpdateProviderInfo(context.Background(), strings.Repeat("x", 129), "desc"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("long name: got %v want ErrInvalidArgument", err)
+	}
+	if _, err := s.UpdateProviderInfo(context.Background(), "name", strings.Repeat("x", 257)); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("long description: got %v want ErrInvalidArgument", err)
 	}
 }
 

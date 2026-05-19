@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -128,7 +129,7 @@ func TestEncodePDPCapabilities_IPNIPeerIDNotEncoded(t *testing.T) {
 func TestEncodePDPCapabilities_ExtrasSortedAndValueFormats(t *testing.T) {
 	extras := map[string]string{
 		"zCustom":  "hello",
-		"aPresent": "",
+		"aPresent": "0x01",
 		"bHex":     "0xdeadbeef",
 		"cText":    "plain",
 	}
@@ -157,6 +158,15 @@ func TestEncodePDPCapabilities_ExtrasSortedAndValueFormats(t *testing.T) {
 	}
 }
 
+func TestEncodePDPCapabilities_RejectsEmptyExtraValue(t *testing.T) {
+	_, _, err := EncodePDPCapabilities(sampleOffering(), map[string]string{
+		"aPresent": "",
+	})
+	if !errors.Is(err, ErrInvalidOffering) {
+		t.Fatalf("expected ErrInvalidOffering, got %v", err)
+	}
+}
+
 func TestEncodePDPCapabilities_ExtrasCannotShadowCanonical(t *testing.T) {
 	_, _, err := EncodePDPCapabilities(sampleOffering(), map[string]string{
 		CapServiceURL: "https://evil.example",
@@ -175,7 +185,34 @@ func TestEncodePDPCapabilities_RejectsInvalidHexExtra(t *testing.T) {
 	}
 }
 
-func TestValidatePDPOffering_RejectsNilAndNegativeBigInts(t *testing.T) {
+func TestEncodePDPCapabilities_RejectsOversizedCapabilityFields(t *testing.T) {
+	longLocation := strings.Repeat("x", 129)
+	off := sampleOffering()
+	off.Location = longLocation
+	if _, _, err := EncodePDPCapabilities(off, nil); !errors.Is(err, ErrInvalidOffering) {
+		t.Fatalf("long location: expected ErrInvalidOffering, got %v", err)
+	}
+
+	if _, _, err := EncodePDPCapabilities(sampleOffering(), map[string]string{
+		"": "0x01",
+	}); !errors.Is(err, ErrInvalidOffering) {
+		t.Fatalf("empty key: expected ErrInvalidOffering, got %v", err)
+	}
+
+	if _, _, err := EncodePDPCapabilities(sampleOffering(), map[string]string{
+		strings.Repeat("k", 33): "0x01",
+	}); !errors.Is(err, ErrInvalidOffering) {
+		t.Fatalf("long key: expected ErrInvalidOffering, got %v", err)
+	}
+
+	if _, _, err := EncodePDPCapabilities(sampleOffering(), map[string]string{
+		"large": "0x" + strings.Repeat("00", 129),
+	}); !errors.Is(err, ErrInvalidOffering) {
+		t.Fatalf("long value: expected ErrInvalidOffering, got %v", err)
+	}
+}
+
+func TestValidatePDPOffering_RejectsInvalidRequiredFields(t *testing.T) {
 	cases := []struct {
 		name string
 		mut  func(*PDPOffering)
@@ -189,6 +226,7 @@ func TestValidatePDPOffering_RejectsNilAndNegativeBigInts(t *testing.T) {
 		{"nil MinProvingPeriod", func(o *PDPOffering) { o.MinProvingPeriodInEpochs = nil }},
 		{"zero MinProvingPeriod", func(o *PDPOffering) { o.MinProvingPeriodInEpochs = big.NewInt(0) }},
 		{"empty ServiceURL", func(o *PDPOffering) { o.ServiceURL = "" }},
+		{"empty Location", func(o *PDPOffering) { o.Location = "" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

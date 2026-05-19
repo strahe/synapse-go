@@ -35,8 +35,9 @@ func WithConfirmations(n uint64) WriteOption {
 }
 
 // WithValue overrides the transaction's msg.value for payable calls. It is
-// only consumed by [Service.RegisterProvider]; other writes ignore it. When
-// not provided, RegisterProvider reads the contract's REGISTRATION_FEE.
+// only consumed by [Service.RegisterProvider]; other writes ignore it. For
+// RegisterProvider, an explicit value must equal the 5 FIL registration fee.
+// When not provided, RegisterProvider reads the contract's REGISTRATION_FEE.
 // A non-nil *big.Int is copied defensively before being stored on the
 // transaction options.
 func WithValue(v *big.Int) WriteOption {

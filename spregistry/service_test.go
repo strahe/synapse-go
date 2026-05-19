@@ -260,6 +260,19 @@ func TestIsProviderActive_ZeroProviderID(t *testing.T) {
 	}
 }
 
+func TestIsProviderActive_ProviderDoesNotExistReturnsFalse(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["isProviderActive"] = errors.New("execution reverted: Provider does not exist")
+
+	ok, err := s.IsProviderActive(context.Background(), types.NewBigInt(99))
+	if err != nil {
+		t.Fatalf("IsProviderActive: %v", err)
+	}
+	if ok {
+		t.Fatal("IsProviderActive = true, want false")
+	}
+}
+
 func TestIsRegisteredProvider(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.set(t, "isRegisteredProvider", true)
@@ -409,6 +422,31 @@ func TestGetPDPProvider_MissingReturnsNotFound(t *testing.T) {
 	}
 	if p != nil {
 		t.Errorf("expected nil result with ErrNotFound, got %+v", p)
+	}
+}
+
+func TestGetPDPProvider_InactiveProductReturnsNotFound(t *testing.T) {
+	s, mc := newTestService(t)
+	raw := pdpProviderFixture(77, common.HexToAddress("0x77"), "inactive")
+	raw.Product.IsActive = false
+	mc.set(t, "getProviderWithProduct", raw)
+
+	p, err := s.GetPDPProvider(context.Background(), types.NewBigInt(77))
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, p)
+	}
+	if p != nil {
+		t.Fatalf("provider = %+v, want nil", p)
+	}
+}
+
+func TestGetPDPProvider_ProviderExistsRevertReturnsNotFound(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getProviderWithProduct"] = errors.New("execution reverted: Provider not found")
+
+	p, err := s.GetPDPProvider(context.Background(), types.NewBigInt(77))
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got err=%v result=%+v", err, p)
 	}
 }
 
@@ -593,6 +631,40 @@ func TestGetPDPProvidersByIDs_SkipsFailedAndEmptyProviders(t *testing.T) {
 	}
 }
 
+func TestGetPDPProvidersByIDs_SkipsInactiveProducts(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setHandler(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		providerID := args[0].(*big.Int)
+		switch providerID.Int64() {
+		case 1:
+			return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(1, common.HexToAddress("0x01"), "alpha")), nil
+		case 2:
+			raw := pdpProviderFixture(2, common.HexToAddress("0x02"), "inactive")
+			raw.Product.IsActive = false
+			return mc.pack(t, "getProviderWithProduct", raw), nil
+		case 3:
+			raw := pdpProviderFixture(3, common.HexToAddress("0x03"), "empty")
+			raw.Product.CapabilityKeys = nil
+			raw.ProductCapabilityValues = nil
+			return mc.pack(t, "getProviderWithProduct", raw), nil
+		default:
+			return nil, errors.New("unexpected provider id")
+		}
+	})
+
+	out, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{
+		types.NewBigInt(1),
+		types.NewBigInt(2),
+		types.NewBigInt(3),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Info.Name != "alpha" {
+		t.Fatalf("providers = %+v, want only alpha", out)
+	}
+}
+
 func TestGetPDPProvidersByIDs_DecodeError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setHandler(t, "getProviderWithProduct", func(_ []any) ([]byte, error) {
@@ -647,6 +719,7 @@ func TestDecodePDPOffering_IPNIPeerID(t *testing.T) {
 		CapServiceURL:       []byte("https://x"),
 		CapMinProvingPeriod: big.NewInt(1).Bytes(),
 		CapStoragePrice:     big.NewInt(1).Bytes(),
+		CapLocation:         []byte("US"),
 		CapIPNIPeerID:       peerBytes,
 		"extraKey":          []byte("extraVal"),
 	}

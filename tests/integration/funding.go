@@ -27,11 +27,11 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 	currentLockupRate := (*big.Int)(nil)
 	debt := new(big.Int)
 	if account != nil {
-		availableFunds = account.AvailableFunds()
+		current := chain.CurrentEpoch(chain.Calibration)
+		resolved := account.ResolveAt(current)
+		availableFunds = resolved.AvailableFunds
 		currentLockupRate = account.LockupRate
-		if account.Funds != nil && account.LockupCurrent != nil && account.LockupCurrent.Cmp(account.Funds) > 0 {
-			debt = new(big.Int).Sub(account.LockupCurrent, account.Funds)
-		}
+		debt = account.DebtAt(current)
 	}
 
 	multiplier := big.NewInt(int64(copies))
@@ -43,16 +43,16 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 	totalSybilFee := new(big.Int).Mul(copyBig(base.Lockup.SybilFee), multiplier)
 	totalLockup := new(big.Int).Mul(copyBig(base.Lockup.TotalLockup), multiplier)
 
-	depositNeeded := costs.CalculateDepositNeeded(
-		totalLockup,
-		totalRateDelta,
-		currentLockupRate,
-		debt,
-		availableFunds,
-		integrationFundingExtraRunwayEpochs,
-		integrationFundingBufferEpochs,
-		true,
-	)
+	depositNeeded := costs.CalculateDepositNeeded(costs.DepositCalculation{
+		AdditionalLockup:  totalLockup,
+		RateDelta:         totalRateDelta,
+		CurrentLockupRate: currentLockupRate,
+		Debt:              debt,
+		AvailableFunds:    availableFunds,
+		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+		BufferEpochs:      integrationFundingBufferEpochs,
+		IsNewDataSet:      true,
+	})
 
 	return &costs.UploadCosts{
 		Rate: costs.EffectiveRate{

@@ -44,13 +44,37 @@ type UploadCostOptions struct {
 	CurrentDataSetSizeBytes *big.Int
 }
 
+// DepositCalculation is the input to CalculateDepositNeeded.
+type DepositCalculation struct {
+	// AdditionalLockup is the incremental lockup required by the upload.
+	AdditionalLockup *big.Int
+	// RateDelta is the incremental per-epoch payment rate added by the upload.
+	RateDelta *big.Int
+	// CurrentLockupRate is the account's existing per-epoch payment rate.
+	CurrentLockupRate *big.Int
+	// Debt is already-accrued payment debt that must be covered.
+	Debt *big.Int
+	// AvailableFunds is the account balance available after projected lockup.
+	AvailableFunds *big.Int
+	// ExtraRunwayEpochs is extra epoch runway on top of the required lockup.
+	ExtraRunwayEpochs int64
+	// BufferEpochs is the deposit buffer for execution latency.
+	// Zero means no buffer for direct calculations; service options apply their
+	// own default before calling CalculateDepositNeeded.
+	BufferEpochs int64
+	// IsNewDataSet is true when creating a fresh dataset.
+	IsNewDataSet bool
+}
+
 // AccountSummary is the snapshot of an account's payment state.
 type AccountSummary struct {
-	Funds              *big.Int
-	AvailableFunds     *big.Int
-	Debt               *big.Int
-	LockupRatePerEpoch *big.Int
-	LockupRatePerMonth *big.Int
-	FundedUntilEpoch   *big.Int
-	CurrentEpoch       *big.Int
+	Funds                 *big.Int
+	AvailableFunds        *big.Int
+	Debt                  *big.Int
+	LockupRatePerEpoch    *big.Int
+	LockupRatePerMonth    *big.Int
+	FundedUntilEpoch      *big.Int
+	RunwayInEpochs        *big.Int
+	GrossCoverageInEpochs *big.Int
+	CurrentEpoch          *big.Int
 }
