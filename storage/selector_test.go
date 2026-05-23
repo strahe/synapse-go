@@ -442,6 +442,43 @@ func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSn
 	}
 }
 
+func TestSelectMatchingDetailedDataSet_PrefersActiveThenLowestID(t *testing.T) {
+	providerID := testID(1)
+	dataSetID, clientDataSetID, metadata := selectMatchingDetailedDataSet(providerID, []*warmstorage.EnhancedDataSetInfo{
+		{
+			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(1), ProviderID: providerID, ClientDataSetID: testID(101)},
+			IsLive:           true,
+			IsManaged:        true,
+			ActivePieceCount: new(big.Int),
+			Metadata:         map[string]string{"source": "app"},
+		},
+		{
+			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(3), ProviderID: providerID, ClientDataSetID: testID(103)},
+			IsLive:           true,
+			IsManaged:        true,
+			ActivePieceCount: bigInt(2),
+			Metadata:         map[string]string{"source": "app"},
+		},
+		{
+			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(2), ProviderID: providerID, ClientDataSetID: testID(102)},
+			IsLive:           true,
+			IsManaged:        true,
+			ActivePieceCount: bigInt(1),
+			Metadata:         map[string]string{"source": "app"},
+		},
+	}, map[string]string{"source": "app"})
+
+	if dataSetID == nil || !dataSetID.Equal(testID(2)) {
+		t.Fatalf("DataSetID=%v want 2", dataSetID)
+	}
+	if clientDataSetID == nil || !clientDataSetID.Equal(testID(102)) {
+		t.Fatalf("ClientDataSetID=%v want 102", clientDataSetID)
+	}
+	if metadata["source"] != "app" {
+		t.Fatalf("metadata=%v want source=app", metadata)
+	}
+}
+
 func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEnrichmentFailure(t *testing.T) {
 	fixture := serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1)},

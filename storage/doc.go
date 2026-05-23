@@ -51,8 +51,9 @@
 // boundaries without skipping PieceCID verification. Context.Download can use
 // a CDN-backed retriever first when the context has CDN enabled, then fall back
 // to provider PDP retrieval on ordinary CDN failures. By default the HTTP
-// download client refuses to dial loopback, link-local, or private (RFC1918 /
-// ULA) addresses to guard against SSRF, and it ignores environment-variable
+// download client refuses to dial local, private, multicast, unspecified, or
+// otherwise reserved address ranges to guard against SSRF, and it ignores
+// environment-variable
 // proxies for the same reason; set [Options.AllowPrivateNetworks] when
 // connecting to trusted private infrastructure, or provide [Options.HTTPClient]
 // if you need explicit proxy control. Bound the number of bytes accepted per

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
@@ -152,8 +151,7 @@ func (c *Context) schedulePieceDeletionByID(ctx context.Context, op string, targ
 // encodeSignatureExtraData wraps a raw 65-byte signature as
 // abi.encode(["bytes"], [sig]).
 func encodeSignatureExtraData(sig []byte) ([]byte, error) {
-	args := abi.Arguments{{Type: contextBytesType}}
-	out, err := args.Pack(sig)
+	out, err := bytesArgs.Pack(sig)
 	if err != nil {
 		return nil, fmt.Errorf("encode schedule-removal extraData: %w", err)
 	}

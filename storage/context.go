@@ -31,12 +31,23 @@ import (
 )
 
 var (
-	contextAddressType, _       = abi.NewType("address", "", nil)
-	contextUint256Type, _       = abi.NewType("uint256", "", nil)
-	contextStringArrayType, _   = abi.NewType("string[]", "", nil)
-	contextStringArray2DType, _ = abi.NewType("string[][]", "", nil)
-	contextBytesType, _         = abi.NewType("bytes", "", nil)
+	createDataSetArgs = mustABIArguments("address", "uint256", "string[]", "string[]", "bytes")
+	addPiecesArgs     = mustABIArguments("uint256", "string[][]", "string[][]", "bytes")
+	createAndAddArgs  = mustABIArguments("bytes", "bytes")
+	bytesArgs         = mustABIArguments("bytes")
 )
+
+func mustABIArguments(typeNames ...string) abi.Arguments {
+	args := make(abi.Arguments, len(typeNames))
+	for i, typeName := range typeNames {
+		t, err := abi.NewType(typeName, "", nil)
+		if err != nil {
+			panic("storage: failed to parse " + typeName + " ABI type: " + err.Error())
+		}
+		args[i] = abi.Argument{Type: t}
+	}
+	return args
+}
 
 var randReader io.Reader = rand.Reader
 
@@ -829,14 +840,7 @@ func encodeCreateDataSetExtraData(payer common.Address, clientDataSetID *big.Int
 		keys = append(keys, m.Key)
 		values = append(values, m.Value)
 	}
-	args := abi.Arguments{
-		{Type: contextAddressType},
-		{Type: contextUint256Type},
-		{Type: contextStringArrayType},
-		{Type: contextStringArrayType},
-		{Type: contextBytesType},
-	}
-	out, err := args.Pack(payer, clientDataSetID, keys, values, signature)
+	out, err := createDataSetArgs.Pack(payer, clientDataSetID, keys, values, signature)
 	if err != nil {
 		return nil, fmt.Errorf("storage: encode create dataset extraData: %w", err)
 	}
@@ -854,13 +858,7 @@ func encodeAddPiecesExtraData(nonce *big.Int, metadata [][]ityped.MetadataEntry,
 			values[i][j] = m.Value
 		}
 	}
-	args := abi.Arguments{
-		{Type: contextUint256Type},
-		{Type: contextStringArray2DType},
-		{Type: contextStringArray2DType},
-		{Type: contextBytesType},
-	}
-	out, err := args.Pack(nonce, keys, values, signature)
+	out, err := addPiecesArgs.Pack(nonce, keys, values, signature)
 	if err != nil {
 		return nil, fmt.Errorf("storage: encode add pieces extraData: %w", err)
 	}
@@ -868,8 +866,7 @@ func encodeAddPiecesExtraData(nonce *big.Int, metadata [][]ityped.MetadataEntry,
 }
 
 func encodeCreateAndAddExtraData(createPayload, addPayload []byte) ([]byte, error) {
-	args := abi.Arguments{{Type: contextBytesType}, {Type: contextBytesType}}
-	out, err := args.Pack(createPayload, addPayload)
+	out, err := createAndAddArgs.Pack(createPayload, addPayload)
 	if err != nil {
 		return nil, fmt.Errorf("storage: encode create+add extraData: %w", err)
 	}

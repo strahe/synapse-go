@@ -528,15 +528,8 @@ func detailedCandidateProviders(dataSets []*warmstorage.EnhancedDataSetInfo, sel
 }
 
 func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string) {
-	matching := matchingDetailedDataSets(providerID, dataSets, requestedMetadata)
-	if len(matching) == 0 {
-		return nil, nil, nil
-	}
-	return resolvedDetailedDataSet(matching[0])
-}
-
-func matchingDetailedDataSets(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) []*warmstorage.EnhancedDataSetInfo {
-	matching := make([]*warmstorage.EnhancedDataSetInfo, 0, len(dataSets))
+	var best *warmstorage.EnhancedDataSetInfo
+	var bestHasPieces bool
 	for _, dataSet := range dataSets {
 		if dataSet == nil || dataSet.DataSetInfo == nil {
 			continue
@@ -550,17 +543,18 @@ func matchingDetailedDataSets(providerID types.BigInt, dataSets []*warmstorage.E
 		if !metadataMatches(dataSet.Metadata, requestedMetadata) {
 			continue
 		}
-		matching = append(matching, dataSet)
-	}
-	sort.Slice(matching, func(i, j int) bool {
-		iHasPieces := matching[i].ActivePieceCount != nil && matching[i].ActivePieceCount.Sign() > 0
-		jHasPieces := matching[j].ActivePieceCount != nil && matching[j].ActivePieceCount.Sign() > 0
-		if iHasPieces != jHasPieces {
-			return iHasPieces
+		hasPieces := dataSet.ActivePieceCount != nil && dataSet.ActivePieceCount.Sign() > 0
+		if best == nil ||
+			(hasPieces && !bestHasPieces) ||
+			(hasPieces == bestHasPieces && dataSet.DataSetID.Cmp(best.DataSetID) < 0) {
+			best = dataSet
+			bestHasPieces = hasPieces
 		}
-		return matching[i].DataSetID.Cmp(matching[j].DataSetID) < 0
-	})
-	return matching
+	}
+	if best == nil {
+		return nil, nil, nil
+	}
+	return resolvedDetailedDataSet(best)
 }
 
 func (r *ServiceResolver) dataSetAcceptsUpload(ctx context.Context, dataSetID types.BigInt) (bool, error) {

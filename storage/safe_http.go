@@ -9,7 +9,7 @@ import (
 )
 
 // newSafeHTTPClient returns an *http.Client whose transport refuses to dial
-// private/loopback/link-local/multicast/unspecified addresses. This is the
+// local, private, multicast, unspecified, or reserved addresses. This is the
 // default for Service.httpClient when neither a custom HTTPClient nor
 // AllowPrivateNetworks=true is supplied to prevent SSRF via Service.Download
 // URL-based calls. Environment-variable proxies are intentionally disabled:
@@ -36,10 +36,10 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 }
 
 // safeDialContext returns a DialContext that resolves the target host and,
-// when allowPrivate is false, rejects any IP that falls into loopback,
-// link-local, RFC1918 / ULA, multicast, or unspecified ranges. Resolution is
-// performed once and the resolved IP is dialed directly, eliminating the
-// DNS-rebinding window between check and connect.
+// when allowPrivate is false, rejects any IP in local, private, multicast,
+// unspecified, or reserved ranges. Resolution is performed once and the
+// resolved IP is dialed directly, eliminating the DNS-rebinding window between
+// check and connect.
 func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)

@@ -325,6 +325,16 @@ func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr c
 // distinguish partial-failure from transport failure via errors.Is.
 var errBatchPartial = errors.New("sessionkey.GetExpirations: partial batch failure")
 
+var uint256Args = mustABIArguments("uint256")
+
+func mustABIArguments(typeName string) abi.Arguments {
+	t, err := abi.NewType(typeName, "", nil)
+	if err != nil {
+		panic("sessionkey: failed to parse " + typeName + " ABI type: " + err.Error())
+	}
+	return abi.Arguments{{Type: t}}
+}
+
 func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyAddr common.Address, permissions []Permission, result Expirations) (Expirations, error) {
 	regABI, err := sessionkeyregistry.SessionKeyRegistryMetaData.GetAbi()
 	if err != nil {
@@ -349,11 +359,6 @@ func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyA
 		return nil, fmt.Errorf("sessionkey.GetExpirations: batch call: %w", err)
 	}
 
-	uint256Type, err := abi.NewType("uint256", "", nil)
-	if err != nil {
-		return nil, fmt.Errorf("sessionkey.GetExpirations: build uint256 type: %w", err)
-	}
-	args := abi.Arguments{{Type: uint256Type}}
 	var perCallErrs []error
 	for i, r := range results {
 		if !r.Success {
@@ -364,7 +369,7 @@ func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyA
 			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: empty return data", permissions[i]))
 			continue
 		}
-		vals, err := args.Unpack(r.ReturnData)
+		vals, err := uint256Args.Unpack(r.ReturnData)
 		if err != nil {
 			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: unpack: %w", permissions[i], err))
 			continue

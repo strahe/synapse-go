@@ -170,8 +170,8 @@ func WithFilBeamRetrievalDomain(domain string) ClientOption {
 
 // WithAllowPrivateNetworks disables the built-in SSRF guard for
 // URL-based [storage.Service.Download] calls. When false (the default),
-// the storage service refuses to dial loopback, RFC1918, link-local,
-// ULA, multicast, and unspecified addresses, returning
+// the storage service refuses to dial local, private, multicast,
+// unspecified, or otherwise reserved address ranges, returning
 // [storage.ErrPrivateNetwork].
 //
 // Set to true only when you knowingly need to fetch content from a

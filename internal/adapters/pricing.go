@@ -42,13 +42,14 @@ func perTiBGranularities(perMonth, epochsPerMonth *big.Int) storage.PricePerTiB 
 
 func buildServiceParameters(p *warmstorage.ServicePrice) storage.ServiceParameters {
 	out := storage.ServiceParameters{
-		EpochDuration: chain.EpochDurationSeconds,
-		MinUploadSize: chain.MinUploadSize,
-		MaxUploadSize: chain.MaxUploadSize,
+		EpochsPerMonth: chain.EpochsPerMonth,
+		EpochsPerDay:   chain.EpochsPerDay,
+		EpochDuration:  chain.EpochDurationSeconds,
+		MinUploadSize:  chain.MinUploadSize,
+		MaxUploadSize:  chain.MaxUploadSize,
 	}
-	if p != nil && p.EpochsPerMonth != nil {
+	if p != nil && p.EpochsPerMonth != nil && p.EpochsPerMonth.Sign() > 0 && p.EpochsPerMonth.IsInt64() {
 		out.EpochsPerMonth = p.EpochsPerMonth.Int64()
-		out.EpochsPerDay = out.EpochsPerMonth / daysPerMonth
 	}
 	return out
 }

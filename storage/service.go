@@ -143,8 +143,9 @@ type Options struct {
 
 	// AllowPrivateNetworks disables the default SSRF protection applied to
 	// URL-based Service.Download calls. When false (the default), the
-	// built-in HTTP client refuses to dial loopback / link-local / RFC1918 /
-	// ULA / multicast / unspecified addresses and returns ErrPrivateNetwork.
+	// built-in HTTP client refuses to dial local, private, multicast,
+	// unspecified, or otherwise reserved address ranges and returns
+	// ErrPrivateNetwork.
 	// Set to true only when you knowingly need to download from a private
 	// network (e.g. in-cluster storage). Ignored when HTTPClient is set.
 	AllowPrivateNetworks bool
