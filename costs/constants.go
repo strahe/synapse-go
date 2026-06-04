@@ -26,6 +26,9 @@ var (
 	// Access via CDNFixedLockupValue() to prevent in-place mutation of the global.
 	cdnFixedLockup = big.NewInt(1_000_000_000_000_000_000)
 
+	// usdfcSybilFee is the flat lockup charged for each new dataset (0.1 USDFC).
+	usdfcSybilFee = big.NewInt(100_000_000_000_000_000)
+
 	// maxUint256 is 2^256-1.
 	maxUint256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	// halfMaxUint256 is maxUint256 >> 1.
@@ -34,3 +37,7 @@ var (
 	bigOne = big.NewInt(1)
 	bigTiB = big.NewInt(chain.TiB)
 )
+
+func usdfcSybilFeeValue() *big.Int {
+	return new(big.Int).Set(usdfcSybilFee)
+}

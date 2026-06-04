@@ -85,16 +85,15 @@ func (s *Service) CalculateMultiContextCosts(
 	}
 
 	var (
-		pricing       *warmstorage.ServicePrice
-		account       *payments.AccountState
-		approval      *payments.OperatorApproval
-		usdfcSybilFee *big.Int
-		mu            sync.Mutex
-		errs          []error
-		wg            sync.WaitGroup
+		pricing  *warmstorage.ServicePrice
+		account  *payments.AccountState
+		approval *payments.OperatorApproval
+		mu       sync.Mutex
+		errs     []error
+		wg       sync.WaitGroup
 	)
 
-	wg.Add(4)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -132,18 +131,6 @@ func (s *Service) CalculateMultiContextCosts(
 		approval = ap
 	}()
 
-	go func() {
-		defer wg.Done()
-		fee, err := s.readUsdfcSybilFee(ctx)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("USDFC_SYBIL_FEE: %w", err))
-			return
-		}
-		usdfcSybilFee = fee
-	}()
-
 	wg.Wait()
 
 	if len(errs) > 0 {
@@ -176,7 +163,7 @@ func (s *Service) CalculateMultiContextCosts(
 			currentSize,
 			pricing,
 			DefaultLockupPeriod,
-			usdfcSybilFee,
+			usdfcSybilFeeValue(),
 			ref.IsNewDataSet,
 			ref.WithCDN,
 		)

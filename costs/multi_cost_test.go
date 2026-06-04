@@ -90,6 +90,59 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	}
 }
 
+func TestCalculateMultiContextCosts_AddsLocalSybilFeePerNewDataSet(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPay{
+			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+			approval: maxApproval(),
+		},
+		usdfc(999),
+	)
+	svc.caller = sybilFeeUnavailableCaller{}
+	opts := &UploadCostOptions{BufferEpochs: -1}
+
+	allExisting, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		bi(1024),
+		[]MultiContextRef{{}, {}},
+		opts,
+	)
+	if err != nil {
+		t.Fatalf("all existing CalculateMultiContextCosts: %v", err)
+	}
+	allNew, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		bi(1024),
+		[]MultiContextRef{{IsNewDataSet: true}, {IsNewDataSet: true}},
+		opts,
+	)
+	if err != nil {
+		t.Fatalf("all new CalculateMultiContextCosts: %v", err)
+	}
+	mixed, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		bi(1024),
+		[]MultiContextRef{{IsNewDataSet: true}, {}},
+		opts,
+	)
+	if err != nil {
+		t.Fatalf("mixed CalculateMultiContextCosts: %v", err)
+	}
+
+	twoNewDelta := new(big.Int).Sub(allNew.DepositNeeded, allExisting.DepositNeeded)
+	if twoNewDelta.Cmp(usdfcFrac(2)) != 0 {
+		t.Errorf("two new dataset sybil delta: got %s, want %s", twoNewDelta, usdfcFrac(2))
+	}
+	oneNewDelta := new(big.Int).Sub(mixed.DepositNeeded, allExisting.DepositNeeded)
+	if oneNewDelta.Cmp(usdfcFrac(1)) != 0 {
+		t.Errorf("one new dataset sybil delta: got %s, want %s", oneNewDelta, usdfcFrac(1))
+	}
+}
+
 func TestCalculateMultiContextCosts_EmptyRefs(t *testing.T) {
 	svc := buildSvc(t, &mockWS{price: defaultPrice()}, &mockPay{}, usdfcFrac(1))
 	if _, err := svc.CalculateMultiContextCosts(

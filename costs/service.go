@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"strings"
 	"sync"
 
 	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/lifecycle"
@@ -18,7 +16,9 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// ContractCaller is the subset of ethereum.ContractCaller needed by Service.
+// ContractCaller is the chain reader accepted by Service. CallContract remains
+// part of the public interface for compatibility; current cost calculations
+// only use BlockNumber.
 type ContractCaller interface {
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 	BlockNumber(ctx context.Context) (uint64, error)
@@ -38,15 +38,14 @@ type PaymentsReader interface {
 // Service computes upload costs and account summaries for the FWSS ecosystem.
 // All methods are safe for concurrent use.
 type Service struct {
-	c           chain.Chain
-	ws          WarmStorageReader
-	pay         PaymentsReader
-	caller      ContractCaller
-	pdpVerifier common.Address
-	usdfc       common.Address
-	fwss        common.Address
-	logger      *slog.Logger
-	lifecycle   *lifecycle.Lifecycle
+	c         chain.Chain
+	ws        WarmStorageReader
+	pay       PaymentsReader
+	caller    ContractCaller
+	usdfc     common.Address
+	fwss      common.Address
+	logger    *slog.Logger
+	lifecycle *lifecycle.Lifecycle
 }
 
 // Options configures a [Service].
@@ -61,7 +60,7 @@ type Options struct {
 	// Payments reads account and allowance state. Required.
 	Payments PaymentsReader
 
-	// Caller issues eth_call against the configured chain. Required.
+	// Caller provides chain reads for cost calculations. Required.
 	Caller ContractCaller
 
 	// Logger is the structured logger. If nil, logging is silent.
@@ -92,20 +91,15 @@ func New(opts Options) (*Service, error) {
 	if addrs.USDFC == (common.Address{}) {
 		return nil, fmt.Errorf("costs.New: %w: %v: missing USDFC address", chain.ErrUnknownChain, opts.Chain)
 	}
-	if addrs.PDPVerifier == (common.Address{}) {
-		return nil, fmt.Errorf("costs.New: %w: %v: missing PDPVerifier address", chain.ErrUnknownChain, opts.Chain)
-	}
-
 	return &Service{
-		c:           opts.Chain,
-		ws:          opts.WarmStorage,
-		pay:         opts.Payments,
-		caller:      opts.Caller,
-		pdpVerifier: addrs.PDPVerifier,
-		usdfc:       addrs.USDFC,
-		fwss:        addrs.FWSS,
-		logger:      opts.Logger,
-		lifecycle:   opts.Lifecycle,
+		c:         opts.Chain,
+		ws:        opts.WarmStorage,
+		pay:       opts.Payments,
+		caller:    opts.Caller,
+		usdfc:     addrs.USDFC,
+		fwss:      addrs.FWSS,
+		logger:    opts.Logger,
+		lifecycle: opts.Lifecycle,
 	}, nil
 }
 
@@ -144,16 +138,15 @@ func (s *Service) GetUploadCosts(
 	}
 
 	var (
-		pricing       *warmstorage.ServicePrice
-		account       *payments.AccountState
-		approval      *payments.OperatorApproval
-		usdfcSybilFee *big.Int
-		mu            sync.Mutex
-		errs          []error
-		wg            sync.WaitGroup
+		pricing  *warmstorage.ServicePrice
+		account  *payments.AccountState
+		approval *payments.OperatorApproval
+		mu       sync.Mutex
+		errs     []error
+		wg       sync.WaitGroup
 	)
 
-	wg.Add(4)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -191,18 +184,6 @@ func (s *Service) GetUploadCosts(
 		approval = ap
 	}()
 
-	go func() {
-		defer wg.Done()
-		fee, err := s.readUsdfcSybilFee(ctx)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("USDFC_SYBIL_FEE: %w", err))
-			return
-		}
-		usdfcSybilFee = fee
-	}()
-
 	wg.Wait()
 
 	if len(errs) > 0 {
@@ -225,7 +206,7 @@ func (s *Service) GetUploadCosts(
 		currentDataSetSize,
 		pricing,
 		DefaultLockupPeriod,
-		usdfcSybilFee,
+		usdfcSybilFeeValue(),
 		opts.IsNewDataSet,
 		opts.EnableCDN,
 	)
@@ -323,51 +304,4 @@ func (s *Service) currentEpoch(ctx context.Context) (*big.Int, error) {
 		return nil, fmt.Errorf("block number: %w", err)
 	}
 	return new(big.Int).SetUint64(block), nil
-}
-
-const usdfcSybilFeeABIJSON = `[{
-	"type": "function",
-	"name": "USDFC_SYBIL_FEE",
-	"inputs": [],
-	"outputs": [{"name": "", "type": "uint256"}],
-	"stateMutability": "view"
-}]`
-
-var usdfcSybilFeeABI abi.ABI
-
-func init() {
-	var err error
-	usdfcSybilFeeABI, err = abi.JSON(strings.NewReader(usdfcSybilFeeABIJSON))
-	if err != nil {
-		panic("costs: failed to parse USDFC_SYBIL_FEE ABI: " + err.Error()) //nolint:forbidigo // init() ABI parse: error implies a build/codegen bug, not a runtime condition
-	}
-}
-
-func (s *Service) readUsdfcSybilFee(ctx context.Context) (*big.Int, error) {
-	data, err := usdfcSybilFeeABI.Pack("USDFC_SYBIL_FEE")
-	if err != nil {
-		return nil, fmt.Errorf("costs.readUsdfcSybilFee: pack: %w", err)
-	}
-
-	result, err := s.caller.CallContract(ctx, ethereum.CallMsg{
-		To:   &s.pdpVerifier,
-		Data: data,
-	}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("costs.readUsdfcSybilFee: call: %w", err)
-	}
-
-	values, err := usdfcSybilFeeABI.Unpack("USDFC_SYBIL_FEE", result)
-	if err != nil {
-		return nil, fmt.Errorf("costs.readUsdfcSybilFee: unpack: %w", err)
-	}
-	if len(values) == 0 {
-		return nil, fmt.Errorf("costs.readUsdfcSybilFee: empty result")
-	}
-
-	fee, ok := values[0].(*big.Int)
-	if !ok {
-		return nil, fmt.Errorf("costs.readUsdfcSybilFee: unexpected type %T", values[0])
-	}
-	return fee, nil
 }

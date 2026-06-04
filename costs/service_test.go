@@ -45,7 +45,7 @@ type mockCaller struct {
 }
 
 func (m *mockCaller) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-	return usdfcSybilFeeABI.Methods["USDFC_SYBIL_FEE"].Outputs.Pack(m.fee)
+	return nil, errors.New("unexpected ContractCaller.CallContract")
 }
 
 func (m *mockCaller) BlockNumber(_ context.Context) (uint64, error) {
@@ -53,6 +53,16 @@ func (m *mockCaller) BlockNumber(_ context.Context) (uint64, error) {
 		return 0, m.blockErr
 	}
 	return m.blockNumber, nil
+}
+
+type sybilFeeUnavailableCaller struct{}
+
+func (sybilFeeUnavailableCaller) CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
+	return nil, errors.New("USDFC_SYBIL_FEE reverted")
+}
+
+func (sybilFeeUnavailableCaller) BlockNumber(context.Context) (uint64, error) {
+	return 0, nil
 }
 
 // mockPayErr is a PaymentsReader that returns errors on all calls.
@@ -189,6 +199,36 @@ func TestGetUploadCosts_DepositPositive_WhenUnderfunded(t *testing.T) {
 	}
 	if costs.Ready {
 		t.Error("expected Ready=false when deposit needed")
+	}
+}
+
+func TestGetUploadCosts_UsesLocalSybilFee(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{price: defaultPrice()},
+		&mockPay{
+			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+			approval: maxApproval(),
+		},
+		usdfc(999),
+	)
+	svc.caller = sybilFeeUnavailableCaller{}
+
+	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
+	if err != nil {
+		t.Fatalf("new dataset GetUploadCosts: %v", err)
+	}
+	if newDataSet.Lockup.SybilFee.Cmp(usdfcFrac(1)) != 0 {
+		t.Errorf("new dataset sybil fee: got %s, want %s", newDataSet.Lockup.SybilFee, usdfcFrac(1))
+	}
+
+	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
+		CurrentDataSetSizeBytes: bi(chain.TiB),
+	})
+	if err != nil {
+		t.Fatalf("existing dataset GetUploadCosts: %v", err)
+	}
+	if existingDataSet.Lockup.SybilFee.Sign() != 0 {
+		t.Errorf("existing dataset sybil fee: got %s, want 0", existingDataSet.Lockup.SybilFee)
 	}
 }
 
@@ -454,60 +494,6 @@ func TestNew_UnsupportedChain(t *testing.T) {
 	}
 	if !errors.Is(err, chain.ErrUnknownChain) {
 		t.Fatalf("expected wrapped ErrUnknownChain, got %v", err)
-	}
-}
-
-// --- readUsdfcSybilFee error paths ---
-
-type mockCallerErr struct{ err error }
-
-func (m *mockCallerErr) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-	return nil, m.err
-}
-
-func (m *mockCallerErr) BlockNumber(context.Context) (uint64, error) {
-	return 0, nil
-}
-
-type mockCallerBadReturn struct{ data []byte }
-
-func (m *mockCallerBadReturn) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-	return m.data, nil
-}
-
-func (m *mockCallerBadReturn) BlockNumber(context.Context) (uint64, error) {
-	return 0, nil
-}
-
-func TestReadUsdfcSybilFee_CallContractError(t *testing.T) {
-	svc, err := New(Options{
-		Chain:       chain.Calibration,
-		WarmStorage: &mockWS{},
-		Payments:    &mockPay{},
-		Caller:      &mockCallerErr{err: fmt.Errorf("rpc down")},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = svc.readUsdfcSybilFee(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestReadUsdfcSybilFee_UnpackError(t *testing.T) {
-	svc, err := New(Options{
-		Chain:       chain.Calibration,
-		WarmStorage: &mockWS{},
-		Payments:    &mockPay{},
-		Caller:      &mockCallerBadReturn{data: []byte{0x01, 0x02}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = svc.readUsdfcSybilFee(context.Background())
-	if err == nil {
-		t.Fatal("expected unpack error")
 	}
 }
 
