@@ -65,7 +65,7 @@ func CalculateEffectiveRate(
 
 // CalculateAdditionalLockupRequired returns the incremental lockup needed to
 // store uploadSizeBytes into a dataset that currently holds currentDataSetSizeBytes.
-// usdfcSybilFee may be nil (treated as zero).
+// Nil dataSizeBytes, currentDataSetSizeBytes, pricing, and usdfcSybilFee use zero-value defaults.
 func CalculateAdditionalLockupRequired(
 	dataSizeBytes *big.Int,
 	currentDataSetSizeBytes *big.Int,
@@ -75,23 +75,29 @@ func CalculateAdditionalLockupRequired(
 	isNewDataSet bool,
 	enableCDN bool,
 ) AdditionalLockup {
-	newTotalSize := new(big.Int).Add(currentDataSetSizeBytes, dataSizeBytes)
+	if dataSizeBytes == nil {
+		dataSizeBytes = new(big.Int)
+	}
+	if currentDataSetSizeBytes == nil {
+		currentDataSetSizeBytes = new(big.Int)
+	}
+	if pricing == nil {
+		pricing = &warmstorage.ServicePrice{}
+	}
 	var epm int64
 	if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
 		epm = pricing.EpochsPerMonth.Int64()
 	}
 
-	newRate := CalculateEffectiveRate(
-		newTotalSize,
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
-		epm,
-	)
-
 	var rateDelta *big.Int
-	if isNewDataSet {
-		rateDelta = new(big.Int).Set(newRate.RatePerEpoch)
-	} else {
+	if currentDataSetSizeBytes.Sign() > 0 && !isNewDataSet {
+		newTotalSize := new(big.Int).Add(currentDataSetSizeBytes, dataSizeBytes)
+		newRate := CalculateEffectiveRate(
+			newTotalSize,
+			pricing.PricePerTiBPerMonthNoCDN,
+			pricing.MinimumPricePerMonth,
+			epm,
+		)
 		currentRate := CalculateEffectiveRate(
 			currentDataSetSizeBytes,
 			pricing.PricePerTiBPerMonthNoCDN,
@@ -102,6 +108,14 @@ func CalculateAdditionalLockupRequired(
 		if rateDelta.Sign() < 0 {
 			rateDelta.SetInt64(0)
 		}
+	} else {
+		newRate := CalculateEffectiveRate(
+			dataSizeBytes,
+			pricing.PricePerTiBPerMonthNoCDN,
+			pricing.MinimumPricePerMonth,
+			epm,
+		)
+		rateDelta = new(big.Int).Set(newRate.RatePerEpoch)
 	}
 
 	if lockupPeriod <= 0 {

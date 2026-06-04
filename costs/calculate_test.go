@@ -213,6 +213,139 @@ func TestAdditionalLockup_ExistingDataSet_NilSybilFee(t *testing.T) {
 	}
 }
 
+func TestAdditionalLockup_RateDeltaBranching(t *testing.T) {
+	pricing := defaultPricing()
+	dataSize := bi(chain.TiB)
+
+	fullRate := func(size *big.Int) *big.Int {
+		return CalculateEffectiveRate(
+			size,
+			pricing.PricePerTiBPerMonthNoCDN,
+			pricing.MinimumPricePerMonth,
+			chain.EpochsPerMonth,
+		).RatePerEpoch
+	}
+	marginalRate := func(currentSize, uploadSize *big.Int) *big.Int {
+		newRate := fullRate(new(big.Int).Add(currentSize, uploadSize))
+		currentRate := fullRate(currentSize)
+		delta := new(big.Int).Sub(newRate, currentRate)
+		if delta.Sign() < 0 {
+			return new(big.Int)
+		}
+		return delta
+	}
+
+	tests := []struct {
+		name        string
+		currentSize *big.Int
+		isNew       bool
+		want        *big.Int
+	}{
+		{
+			name:        "existing zero-size dataset uses full upload rate",
+			currentSize: bi(0),
+			want:        fullRate(dataSize),
+		},
+		{
+			name: "existing nil-size dataset uses full upload rate",
+			want: fullRate(dataSize),
+		},
+		{
+			name:        "new dataset uses upload size even with nonzero current size",
+			currentSize: bi(chain.TiB),
+			isNew:       true,
+			want:        fullRate(dataSize),
+		},
+		{
+			name:        "positive existing dataset uses marginal rate",
+			currentSize: bi(chain.TiB),
+			want:        marginalRate(bi(chain.TiB), dataSize),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lockup := CalculateAdditionalLockupRequired(
+				dataSize,
+				tt.currentSize,
+				pricing,
+				DefaultLockupPeriod,
+				nil,
+				tt.isNew,
+				false,
+			)
+			if lockup.RateDelta.Cmp(tt.want) != 0 {
+				t.Fatalf("RateDelta=%s want %s", lockup.RateDelta, tt.want)
+			}
+		})
+	}
+}
+
+func TestAdditionalLockup_NilInputsUseZeroValues(t *testing.T) {
+	pricing := defaultPricing()
+	fullRate := func(pricing *warmstorage.ServicePrice, size *big.Int) *big.Int {
+		var epm int64
+		var pricePerTiBPerMonth, minimumPricePerMonth *big.Int
+		if pricing != nil {
+			pricePerTiBPerMonth = pricing.PricePerTiBPerMonthNoCDN
+			minimumPricePerMonth = pricing.MinimumPricePerMonth
+			if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
+				epm = pricing.EpochsPerMonth.Int64()
+			}
+		}
+		return CalculateEffectiveRate(
+			size,
+			pricePerTiBPerMonth,
+			minimumPricePerMonth,
+			epm,
+		).RatePerEpoch
+	}
+
+	tests := []struct {
+		name        string
+		dataSize    *big.Int
+		currentSize *big.Int
+		pricing     *warmstorage.ServicePrice
+		isNew       bool
+		want        *big.Int
+	}{
+		{
+			name:    "nil data size uses zero upload size",
+			pricing: pricing,
+			want:    fullRate(pricing, bi(0)),
+		},
+		{
+			name:        "nil data size on positive existing dataset adds no rate",
+			currentSize: bi(chain.TiB),
+			pricing:     pricing,
+			want:        bi(0),
+		},
+		{
+			name:     "nil pricing uses zero-value service price",
+			dataSize: bi(chain.TiB),
+			isNew:    true,
+			want:     fullRate(nil, bi(chain.TiB)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lockup := CalculateAdditionalLockupRequired(
+				tt.dataSize,
+				tt.currentSize,
+				tt.pricing,
+				DefaultLockupPeriod,
+				nil,
+				tt.isNew,
+				false,
+			)
+			if lockup.RateDelta.Cmp(tt.want) != 0 {
+				t.Fatalf("RateDelta=%s want %s", lockup.RateDelta, tt.want)
+			}
+		})
+	}
+}
+
 func TestAdditionalLockup_Breakdown_ExistingDataSet(t *testing.T) {
 	pricing := defaultPricing()
 

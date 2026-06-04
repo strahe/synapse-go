@@ -16,6 +16,7 @@ import (
 // path does not touch provider selection.
 //
 // Lifecycle callbacks fired (when opts provides them):
+//   - OnProgress during the store upload stream
 //   - OnStored after Store succeeds
 //   - OnPiecesAdded when the commit transaction is submitted
 //   - OnPiecesConfirmed after commit is confirmed

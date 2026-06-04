@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -467,8 +467,8 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 		}
 		matching = append(matching, dataSet)
 	}
-	sort.Slice(matching, func(i, j int) bool {
-		return matching[i].DataSetID.Cmp(matching[j].DataSetID) < 0
+	slices.SortFunc(matching, func(a, b *warmstorage.DataSetInfo) int {
+		return a.DataSetID.Cmp(b.DataSetID)
 	})
 	if len(matching) == 0 {
 		return nil, nil, cloneStringMap(requestedMetadata), nil
