@@ -18,9 +18,9 @@
 //
 // Epoch — Filecoin block interval (30 seconds on mainnet and calibration).
 // All on-chain rates and durations are denominated in epochs; 120 epochs
-// equal one hour, ~86 400 equal one month. Monthly figures in this
-// package are derived by multiplying per-epoch rates by
-// [github.com/strahe/synapse-go/chain.EpochsPerMonth].
+// equal one hour, ~86 400 equal one month. On-chain lockup rates are
+// per-epoch; effective monthly rates preserve monthly pricing precision for
+// display and comparison.
 //
 // Basis points (bps) — one hundredth of one percent (1 bps = 0.01 %).
 // Commission rates returned by warmstorage are expressed in basis points

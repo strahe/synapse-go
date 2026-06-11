@@ -4,6 +4,7 @@ import "math/big"
 
 // EffectiveRate is the per-epoch and per-month storage rate for a given data size.
 // RatePerEpoch uses integer division to match on-chain Solidity truncation.
+// RatePerMonth preserves monthly pricing precision for display and comparison.
 type EffectiveRate struct {
 	RatePerEpoch *big.Int
 	RatePerMonth *big.Int

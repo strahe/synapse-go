@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -553,8 +553,8 @@ func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter
 		offset += pageSize
 	}
 
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].Info.ID.Cmp(all[j].Info.ID) < 0
+	slices.SortFunc(all, func(a, b PDPProvider) int {
+		return a.Info.ID.Cmp(b.Info.ID)
 	})
 	return all, nil
 }

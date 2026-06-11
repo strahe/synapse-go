@@ -40,7 +40,7 @@ type MultiContextRef struct {
 type MultiContextCosts struct {
 	// RatePerEpoch is the sum of per-context effective rates (post-upload).
 	RatePerEpoch *big.Int
-	// RatePerMonth is RatePerEpoch * EpochsPerMonth.
+	// RatePerMonth is the sum of per-context monthly effective rates.
 	RatePerMonth *big.Int
 	// DepositNeeded is the single USDFC deposit covering all contexts.
 	DepositNeeded *big.Int

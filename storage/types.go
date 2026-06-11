@@ -240,7 +240,8 @@ func (r *UploadResult) PartialSuccess() bool {
 // direct StoreOptions, PullRequest, or CommitRequest hooks.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. Zero means the resolver
-	// default: len(DataSetIDs) or len(ProviderIDs) when those are set, otherwise 2.
+	// default: the number of unique DataSetIDs or ProviderIDs when those are set,
+	// otherwise 2.
 	Copies int
 	// PieceMetadata is stored with each piece on-chain.
 	PieceMetadata map[string]string

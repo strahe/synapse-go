@@ -10,7 +10,7 @@ import (
 // CalculateEffectiveRate computes the storage rate for the given total data size.
 // Integer division is used to match on-chain Solidity truncation.
 // If epochsPerMonth is zero or negative, chain.EpochsPerMonth is used as a safe default.
-// Nil pricePerTiBPerMonth or minMonthlyRate are treated as zero.
+// Nil sizeBytes, pricePerTiBPerMonth, or minMonthlyRate are treated as zero.
 func CalculateEffectiveRate(
 	sizeBytes *big.Int,
 	pricePerTiBPerMonth *big.Int,
@@ -22,6 +22,9 @@ func CalculateEffectiveRate(
 	}
 	epm := big.NewInt(epochsPerMonth)
 
+	if sizeBytes == nil {
+		sizeBytes = new(big.Int)
+	}
 	if pricePerTiBPerMonth == nil {
 		pricePerTiBPerMonth = new(big.Int)
 	}
@@ -31,15 +34,13 @@ func CalculateEffectiveRate(
 
 	ratePerMonth := new(big.Int).Mul(pricePerTiBPerMonth, sizeBytes)
 	ratePerMonth.Div(ratePerMonth, bigTiB)
-	hitMin := ratePerMonth.Cmp(minMonthlyRate) < 0
-	if hitMin {
+	if ratePerMonth.Cmp(minMonthlyRate) < 0 {
 		ratePerMonth.Set(minMonthlyRate)
 	}
 
-	// ratePerEpoch is computed independently to avoid accumulating two division errors.
 	ratePerEpoch := new(big.Int).Mul(pricePerTiBPerMonth, sizeBytes)
-	ratePerEpoch.Div(ratePerEpoch, bigTiB)
-	ratePerEpoch.Div(ratePerEpoch, epm)
+	divisor := new(big.Int).Mul(bigTiB, epm)
+	ratePerEpoch.Div(ratePerEpoch, divisor)
 
 	minEpochRate := new(big.Int).Div(minMonthlyRate, epm)
 	if minEpochRate.Cmp(bigOne) < 0 {
@@ -47,14 +48,6 @@ func CalculateEffectiveRate(
 	}
 	if ratePerEpoch.Cmp(minEpochRate) < 0 {
 		ratePerEpoch.Set(minEpochRate)
-	}
-
-	// At the minimum floor, align ratePerMonth with the epoch-aligned rate so that
-	// ratePerEpoch × epm == ratePerMonth exactly.  Above the floor the two fields
-	// are intentionally computed independently to avoid accumulating two division
-	// truncation errors in the more-common non-minimum case.
-	if hitMin {
-		ratePerMonth.Mul(ratePerEpoch, epm)
 	}
 
 	return EffectiveRate{

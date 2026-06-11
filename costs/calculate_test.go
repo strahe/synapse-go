@@ -60,13 +60,9 @@ func TestCalculateEffectiveRate_SubTiB_HitsMinimum(t *testing.T) {
 		chain.EpochsPerMonth,
 	)
 
-	// At the minimum floor, ratePerMonth is derived from ratePerEpoch × epm so the
-	// two fields are consistent.  ratePerMonth is therefore slightly less than
-	// MinimumPricePerMonth by at most (epm-1) attoUSDFC due to integer truncation.
-	wantMonthly := new(big.Int).Mul(rate.RatePerEpoch, big.NewInt(chain.EpochsPerMonth))
-	if rate.RatePerMonth.Cmp(wantMonthly) != 0 {
-		t.Errorf("ratePerMonth should equal ratePerEpoch*epm at minimum: got %s, want %s",
-			rate.RatePerMonth, wantMonthly)
+	if rate.RatePerMonth.Cmp(pricing.MinimumPricePerMonth) != 0 {
+		t.Errorf("ratePerMonth should equal MinimumPricePerMonth: got %s, want %s",
+			rate.RatePerMonth, pricing.MinimumPricePerMonth)
 	}
 	if rate.RatePerEpoch.Cmp(bi(1)) < 0 {
 		t.Errorf("ratePerEpoch should be at least 1: got %s", rate.RatePerEpoch)
@@ -99,11 +95,9 @@ func TestCalculateEffectiveRate_ZeroSize(t *testing.T) {
 		chain.EpochsPerMonth,
 	)
 
-	// Zero size hits the minimum floor; ratePerMonth must equal ratePerEpoch × epm.
-	wantMonthly := new(big.Int).Mul(rate.RatePerEpoch, big.NewInt(chain.EpochsPerMonth))
-	if rate.RatePerMonth.Cmp(wantMonthly) != 0 {
-		t.Errorf("ratePerMonth should be epoch-aligned for zero size: got %s, want %s",
-			rate.RatePerMonth, wantMonthly)
+	if rate.RatePerMonth.Cmp(pricing.MinimumPricePerMonth) != 0 {
+		t.Errorf("ratePerMonth should equal MinimumPricePerMonth for zero size: got %s, want %s",
+			rate.RatePerMonth, pricing.MinimumPricePerMonth)
 	}
 }
 
@@ -673,11 +667,11 @@ func TestDepositNeeded_ZeroTotalLockup(t *testing.T) {
 // --- CalculateEffectiveRate edge cases ---
 
 func TestCalculateEffectiveRate_NilInputs(t *testing.T) {
-	rate := CalculateEffectiveRate(bi(chain.TiB), nil, nil, 0)
+	rate := CalculateEffectiveRate(nil, nil, nil, 0)
 	if rate.RatePerEpoch == nil || rate.RatePerMonth == nil {
 		t.Fatal("nil rate fields returned")
 	}
-	// nil price and nil minRate both treated as 0; ratePerEpoch is clamped to bigOne=1
+	// nil size, price, and minRate are treated as 0; ratePerEpoch is clamped to bigOne=1.
 	if rate.RatePerEpoch.Cmp(big.NewInt(1)) != 0 {
 		t.Errorf("RatePerEpoch = %s, want 1", rate.RatePerEpoch)
 	}
