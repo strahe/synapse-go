@@ -79,6 +79,17 @@ func TestCreateDataSetAndAddPieces_OK(t *testing.T) {
 	}
 }
 
+func TestCreateDataSetAndAddPieces_TooManyPieces(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach server")
+	}))
+	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize+1)
+	_, err := c.CreateDataSetAndAddPieces(context.Background(), common.HexToAddress("0xabc"), pieces, []byte{1})
+	if !errors.Is(err, ErrTooManyPieces) {
+		t.Fatalf("err=%v want ErrTooManyPieces", err)
+	}
+}
+
 func TestCreateDataSetAndAddPieces_RespectsHTTPClientTimeout(t *testing.T) {
 	info, err := piece.CalculateFromBytes(make([]byte, 256))
 	if err != nil {

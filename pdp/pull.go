@@ -82,8 +82,8 @@ type pullPieceWireItem struct {
 // the status of the existing pull request rather than creating a duplicate.
 // This makes it safe to poll for status using repeated calls.
 func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, error) {
-	if len(req.Pieces) == 0 {
-		return nil, errors.New("pdp.PullPieces: no pieces provided")
+	if err := validateAddPiecesBatch("pdp.PullPieces", len(req.Pieces)); err != nil {
+		return nil, err
 	}
 	if len(req.ExtraData) == 0 {
 		return nil, errors.New("pdp.PullPieces: empty extraData")
@@ -120,7 +120,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 		})
 	}
 
-	_, body, err := c.postJSON(ctx, "pdp/piece/pull", wire, http.StatusOK, http.StatusCreated, http.StatusAccepted)
+	_, body, err := c.postJSONRetryable(ctx, "pdp/piece/pull", wire, http.StatusOK, http.StatusCreated, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}

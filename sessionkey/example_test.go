@@ -23,7 +23,7 @@ func Example() {
 
 	perms := []sessionkey.Permission{
 		sessionkey.AddPiecesPermission,
-		sessionkey.DeleteDataSetPermission,
+		sessionkey.TerminateServicePermission,
 	}
 	exp, err := svc.GetExpirations(ctx, root, sk, perms)
 	for p, epoch := range exp {

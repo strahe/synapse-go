@@ -39,10 +39,10 @@ var AddPiecesPermission = mustPermission("954bdc254591a7eab1b73f03842464d9283a08
 // encodeType: "SchedulePieceRemovals(uint256 clientDataSetId,uint256[] pieceIds)"
 var SchedulePieceRemovalsPermission = mustPermission("5415701e313bb627e755b16924727217bb356574fe20e7061442c200b0822b22")
 
-// DeleteDataSetPermission authorises session keys to delete a dataset.
+// TerminateServicePermission authorises session keys to terminate a service.
 //
-// encodeType: "DeleteDataSet(uint256 dataSetId)"
-var DeleteDataSetPermission = mustPermission("b0988e9a1e5723860e0f59e0469113fb8a0ce9e83f8a1dd9109527eaad225b37")
+// encodeType: "TerminateService(uint256 dataSetId)"
+var TerminateServicePermission = mustPermission("522bd88a11de1cdc6574394dde7a21ae488ff13e16e7408d0ea721dd8479dffc")
 
 // DefaultFWSSPermissions contains all four standard FWSS permissions.
 // This is the default set used by Login when no explicit permissions
@@ -51,7 +51,7 @@ var DefaultFWSSPermissions = []Permission{
 	CreateDataSetPermission,
 	AddPiecesPermission,
 	SchedulePieceRemovalsPermission,
-	DeleteDataSetPermission,
+	TerminateServicePermission,
 }
 
 // Expirations maps each Permission to its expiry timestamp (Unix epoch
@@ -65,8 +65,32 @@ func DefaultEmptyExpirations() Expirations {
 		CreateDataSetPermission:         0,
 		AddPiecesPermission:             0,
 		SchedulePieceRemovalsPermission: 0,
-		DeleteDataSetPermission:         0,
+		TerminateServicePermission:      0,
 	}
+}
+
+// PermissionName returns the EIP-712 primary type name for a standard FWSS
+// permission. Unknown permissions return false and should be rendered by hash.
+func PermissionName(p Permission) (string, bool) {
+	switch p {
+	case CreateDataSetPermission:
+		return "CreateDataSet", true
+	case AddPiecesPermission:
+		return "AddPieces", true
+	case SchedulePieceRemovalsPermission:
+		return "SchedulePieceRemovals", true
+	case TerminateServicePermission:
+		return "TerminateService", true
+	default:
+		return "", false
+	}
+}
+
+func permissionLabel(p Permission) string {
+	if name, ok := PermissionName(p); ok {
+		return fmt.Sprintf("%s (%s)", name, p.Hex())
+	}
+	return p.Hex()
 }
 
 // PermissionFromEncodeType computes a Permission from the full EIP-712

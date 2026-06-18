@@ -6,10 +6,10 @@ const (
 	TSSDKRepo = "FilOzone/synapse-sdk"
 	// TSSDKLocalDir is the local TypeScript SDK checkout path.
 	TSSDKLocalDir = "synapse-sdk"
-	// TSSDKRef is the pinned TypeScript SDK commit for synapse-sdk-v0.41.0.
-	TSSDKRef = "92a799a2641cd2ed35a32763c8cbc77a63ab832e"
+	// TSSDKRef is the pinned TypeScript SDK commit for synapse-sdk-v0.42.0.
+	TSSDKRef = "bb6a6746cf1fb59544472eee5b4dcae000d03c90"
 	// FilecoinServicesRepo is the upstream contract ABI repository.
 	FilecoinServicesRepo = "FilOzone/filecoin-services"
 	// FilecoinServicesRef is the pinned contract ABI commit.
-	FilecoinServicesRef = "d08214e1b3d200e0bc80f0d4f2e5ea3e1e4d603e"
+	FilecoinServicesRef = "4e548903095cfb46bc35af029f2ae0f39f18b8e4"
 )

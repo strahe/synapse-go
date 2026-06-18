@@ -361,22 +361,23 @@ func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyA
 
 	var perCallErrs []error
 	for i, r := range results {
+		label := permissionLabel(permissions[i])
 		if !r.Success {
-			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: sub-call failed", permissions[i]))
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: sub-call failed", label))
 			continue
 		}
 		if len(r.ReturnData) == 0 {
-			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: empty return data", permissions[i]))
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: empty return data", label))
 			continue
 		}
 		vals, err := uint256Args.Unpack(r.ReturnData)
 		if err != nil {
-			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: unpack: %w", permissions[i], err))
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: unpack: %w", label, err))
 			continue
 		}
 		raw, ok := vals[0].(*big.Int)
 		if !ok || !raw.IsUint64() {
-			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: value out of uint64 range", permissions[i]))
+			perCallErrs = append(perCallErrs, fmt.Errorf("permission %s: value out of uint64 range", label))
 			continue
 		}
 		result[permissions[i]] = raw.Uint64()
@@ -392,8 +393,9 @@ func (s *Service) getExpirationsSequential(ctx context.Context, rootAddr, sessio
 	for _, p := range permissions {
 		exp, err := s.AuthorizationExpiry(ctx, rootAddr, sessionKeyAddr, p)
 		if err != nil {
-			s.logWarn("sequential expiry lookup failed", "permission", p, "err", err)
-			errs = append(errs, fmt.Errorf("permission %s: %w", p, err))
+			label := permissionLabel(p)
+			s.logWarn("sequential expiry lookup failed", "permission", label, "err", err)
+			errs = append(errs, fmt.Errorf("permission %s: %w", label, err))
 			continue
 		}
 		result[p] = exp

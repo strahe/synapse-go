@@ -18,12 +18,13 @@
 // errors.AsType[*pdp.HTTPError] to inspect status code, response body, and
 // Retry-After.
 //
-// POST and DELETE requests are executed exactly once. These verbs may
-// mutate server state, and a client-side retry after a server-side
-// partial success can cause duplicate work or inconsistent state.
-// Callers that need retry behavior for POST/DELETE must implement it
-// at the business layer with appropriate deduplication (e.g. by
-// polling the resulting resource via a GET endpoint before retrying).
+// POST and DELETE requests are executed exactly once unless an endpoint
+// documents server-side idempotency. The PullPieces POST is retried for
+// transient failures because the provider de-duplicates by request body
+// and returns the existing pull status for repeated calls. Other
+// state-changing POST/DELETE endpoints are not retried: a client-side
+// retry after a server-side partial success can cause duplicate work or
+// inconsistent state.
 //
 // # Response size cap
 //

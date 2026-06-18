@@ -57,7 +57,7 @@ var Types = apitypes.Types{
 		{Name: "clientDataSetId", Type: "uint256"},
 		{Name: "pieceIds", Type: "uint256[]"},
 	},
-	"DeleteDataSet": {
+	"TerminateService": {
 		{Name: "dataSetId", Type: "uint256"},
 	},
 }
@@ -121,8 +121,8 @@ func AddPiecesMessage(clientDataSetID, nonce *big.Int, pieceCIDs []cid.Cid, meta
 	}, nil
 }
 
-// DeleteDataSetMessage builds the EIP-712 message for dataset deletion.
-func DeleteDataSetMessage(dataSetID *big.Int) apitypes.TypedDataMessage {
+// TerminateServiceMessage builds the EIP-712 message for service termination.
+func TerminateServiceMessage(dataSetID *big.Int) apitypes.TypedDataMessage {
 	return apitypes.TypedDataMessage{
 		"dataSetId": (*math.HexOrDecimal256)(dataSetID),
 	}

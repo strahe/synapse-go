@@ -88,7 +88,8 @@ type rawCreateDataSetStatus struct {
 	DataSetID         json.Number `json:"dataSetId,omitempty"`
 }
 
-// GetDataSetCreationStatus polls the status URL once.
+// GetDataSetCreationStatus polls the status URL once. Providers may return
+// either HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string) (*CreateDataSetStatus, error) {
 	if statusURL == "" {
 		return nil, errors.New("pdp.GetDataSetCreationStatus: empty statusURL")
@@ -100,7 +101,7 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 		}
 		req.Header.Set("Accept", "application/json")
 		return req, nil
-	}, http.StatusOK)
+	}, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}

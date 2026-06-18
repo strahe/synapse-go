@@ -342,6 +342,28 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, expect 
 	return c.do(req, expect...)
 }
 
+// postJSONRetryable builds a fresh POST request for each retry attempt.
+// It is only safe for endpoints whose server-side idempotency key is part
+// of the payload.
+func (c *Client) postJSONRetryable(ctx context.Context, path string, payload any, expect ...int) (*http.Response, []byte, error) {
+	u, err := c.resolve(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pdp: resolve %s: %w", path, err)
+	}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pdp: marshal %s: %w", path, err)
+	}
+	return c.doRetryable(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
+		if err != nil {
+			return nil, fmt.Errorf("pdp: build POST %s: %w", path, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	}, expect...)
+}
+
 // getJSON performs GET and decodes the JSON response into dst (may be nil
 // to ignore the body).
 func (c *Client) getJSON(ctx context.Context, path string, dst any) error {

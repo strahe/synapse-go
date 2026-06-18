@@ -16,6 +16,10 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
+// MaxAddPiecesBatchSize is the maximum number of pieces accepted by
+// add-pieces style PDP requests.
+const MaxAddPiecesBatchSize = 40
+
 // AddPieceInput mirrors one entry of the pieces array for
 // POST /pdp/data-sets/{id}/pieces. The wire format uses the piece CID
 // as its own single sub-piece.
@@ -47,8 +51,8 @@ type AddPiecesResult struct {
 // AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData must be
 // caller-provided EIP-712 signed data encoded as the PDP provider expects.
 func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
-	if len(pieces) == 0 {
-		return nil, errors.New("pdp.AddPieces: no pieces provided")
+	if err := validateAddPiecesBatch("pdp.AddPieces", len(pieces)); err != nil {
+		return nil, err
 	}
 	if len(extraData) == 0 {
 		return nil, errors.New("pdp.AddPieces: empty extraData")
@@ -113,7 +117,8 @@ type rawAddPiecesStatus struct {
 	ConfirmedPieceIDs []json.Number `json:"confirmedPieceIds,omitempty"`
 }
 
-// GetAddPiecesStatus polls the status URL once.
+// GetAddPiecesStatus polls the status URL once. Providers may return either
+// HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*AddPiecesStatus, error) {
 	if statusURL == "" {
 		return nil, errors.New("pdp.GetAddPiecesStatus: empty statusURL")
@@ -125,7 +130,7 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 		}
 		req.Header.Set("Accept", "application/json")
 		return req, nil
-	}, http.StatusOK)
+	}, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -209,4 +214,14 @@ func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID t
 		return common.Hash{}, fmt.Errorf("pdp.SchedulePieceDeletion: empty txHash in response")
 	}
 	return h, nil
+}
+
+func validateAddPiecesBatch(op string, count int) error {
+	if count == 0 {
+		return fmt.Errorf("%s: no pieces provided", op)
+	}
+	if count > MaxAddPiecesBatchSize {
+		return fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, count, MaxAddPiecesBatchSize)
+	}
+	return nil
 }

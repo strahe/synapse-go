@@ -53,9 +53,9 @@ var randReader io.Reader = rand.Reader
 
 const (
 	maxMetadataKeyLength   = 32
-	maxMetadataValueLength = 128
+	maxMetadataValueLength = 96
 	maxDataSetMetadataKeys = 10
-	maxPieceMetadataKeys   = 5
+	maxPieceMetadataKeys   = 3
 )
 
 // PDPProviderClient is the provider HTTP API surface required by Context.
@@ -346,6 +346,9 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: no pieces provided", ErrInvalidArgument)
 	}
+	if err := validateAddPiecesBatch("storage.Context.PresignForCommit", len(pieces)); err != nil {
+		return nil, err
+	}
 	if c.signer == nil {
 		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil signer", ErrInvalidArgument)
 	}
@@ -488,6 +491,9 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	if len(req.Pieces) == 0 {
 		return nil, fmt.Errorf("storage.Context.Pull: %w: no pieces provided", ErrInvalidArgument)
 	}
+	if err := validateAddPiecesBatch("storage.Context.Pull", len(req.Pieces)); err != nil {
+		return nil, err
+	}
 	if req.From == nil {
 		return nil, fmt.Errorf("storage.Context.Pull: %w: nil source resolver", ErrInvalidArgument)
 	}
@@ -563,6 +569,9 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
 	if len(req.Pieces) == 0 {
 		return nil, fmt.Errorf("storage.Context.Commit: %w: no pieces provided", ErrInvalidArgument)
+	}
+	if err := validateAddPiecesBatch("storage.Context.Commit", len(req.Pieces)); err != nil {
+		return nil, err
 	}
 	c.mu.RLock()
 	pendingCreate := c.createInFlight || c.pendingCreate != nil
@@ -831,6 +840,13 @@ func metadataEntries(metadata map[string]string, maxKeys int) ([]ityped.Metadata
 		out = append(out, ityped.MetadataEntry{Key: k, Value: metadata[k]})
 	}
 	return out, nil
+}
+
+func validateAddPiecesBatch(op string, count int) error {
+	if count > pdp.MaxAddPiecesBatchSize {
+		return fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, count, pdp.MaxAddPiecesBatchSize)
+	}
+	return nil
 }
 
 func encodeCreateDataSetExtraData(payer common.Address, clientDataSetID *big.Int, metadata []ityped.MetadataEntry, signature []byte) ([]byte, error) {

@@ -88,6 +88,10 @@ var ErrPieceNotFound = errors.New("pdp: piece not found")
 // the piece is known but not yet parked and queryable.
 var ErrPieceProcessing = errors.New("pdp: piece still processing")
 
+// ErrTooManyPieces is returned when an add-pieces style request exceeds
+// MaxAddPiecesBatchSize.
+var ErrTooManyPieces = errors.New("pdp: too many pieces")
+
 // ErrStillPending is returned by status-polling helpers when the server
 // reports the transaction is still pending. It is the sentinel callers
 // should loop on while waiting.

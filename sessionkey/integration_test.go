@@ -85,15 +85,15 @@ func TestIntegration_SessionKey(t *testing.T) {
 		}
 
 		// GetExpirations with default (empty) slice — should return the
-		// default FWSS permission set. DeleteDataSet was not authorised
+		// default FWSS permission set. TerminateService was not authorised
 		// here so its expiry should be 0.
 		defaultExps, err := sk.GetExpirations(ctx, rootAddr, skAddr, nil)
 		if err != nil {
 			t.Fatalf("GetExpirations(default): %v", err)
 		}
-		if defaultExps[sessionkey.DeleteDataSetPermission] != 0 {
-			t.Errorf("DeleteDataSet expiry = %d, want 0 (not authorised)",
-				defaultExps[sessionkey.DeleteDataSetPermission])
+		if defaultExps[sessionkey.TerminateServicePermission] != 0 {
+			t.Errorf("TerminateService expiry = %d, want 0 (not authorised)",
+				defaultExps[sessionkey.TerminateServicePermission])
 		}
 		if defaultExps[sessionkey.CreateDataSetPermission] == 0 {
 			t.Error("CreateDataSet expiry = 0, want > 0 after login")

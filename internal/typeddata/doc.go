@@ -4,7 +4,7 @@
 // Supported message types:
 //   - CreateDataSet: authorize dataset creation on a provider
 //   - AddPieces: authorize adding pieces to a dataset
-//   - DeleteDataSet: authorize dataset deletion
+//   - TerminateService: authorize service termination
 //   - SchedulePieceRemovals: authorize piece removal scheduling
 //
 // Domain: FilecoinWarmStorageService with chain-specific separation.

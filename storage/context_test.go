@@ -2214,6 +2214,51 @@ func TestContextPresignForCommit_ZeroPayer(t *testing.T) {
 	}
 }
 
+func TestContextPresignForCommit_MaxBatchSizeAccepted(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+		WithChainID(types.ChainID(1)),
+		WithRecordKeeper(testRecordKeeper()),
+		WithPayer(testPayer()),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	if _, err := ctx.PresignForCommit(context.Background(), repeatedPieceInputs(t, pdp.MaxAddPiecesBatchSize)); err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+}
+
+func TestContextPresignForCommit_TooManyPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, nil)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.PresignForCommit(context.Background(), repeatedPieceInputs(t, pdp.MaxAddPiecesBatchSize+1))
+	assertTooManyPieces(t, err)
+}
+
+func TestContextCommit_TooManyPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, nil)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Commit(context.Background(), CommitRequest{
+		Pieces: repeatedPieceInputs(t, pdp.MaxAddPiecesBatchSize+1),
+	})
+	assertTooManyPieces(t, err)
+}
+
+func TestContextPull_TooManyPieces(t *testing.T) {
+	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, nil)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+	_, err = ctx.Pull(context.Background(), PullRequest{
+		Pieces: repeatedPieceCIDs(t, pdp.MaxAddPiecesBatchSize+1),
+	})
+	assertTooManyPieces(t, err)
+}
+
 func TestMetadataEntries_KeyTooLong(t *testing.T) {
 	longKey := strings.Repeat("k", maxMetadataKeyLength+1)
 	_, err := metadataEntries(map[string]string{longKey: "v"}, 10)
@@ -2230,6 +2275,15 @@ func TestMetadataEntries_ValueTooLong(t *testing.T) {
 	}
 }
 
+func TestMetadataEntries_MaxKeyAndValueLengthAccepted(t *testing.T) {
+	meta := map[string]string{
+		strings.Repeat("k", maxMetadataKeyLength): strings.Repeat("v", maxMetadataValueLength),
+	}
+	if _, err := metadataEntries(meta, 1); err != nil {
+		t.Fatalf("metadataEntries: %v", err)
+	}
+}
+
 func TestMetadataEntries_TooManyKeys(t *testing.T) {
 	m := make(map[string]string)
 	for i := 0; i < 11; i++ {
@@ -2239,6 +2293,62 @@ func TestMetadataEntries_TooManyKeys(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for too many keys")
 	}
+}
+
+func TestDataSetMetadataEntries_KeyLimit(t *testing.T) {
+	if _, err := dataSetMetadataEntries(numberedMetadata(maxDataSetMetadataKeys), false); err != nil {
+		t.Fatalf("dataSetMetadataEntries at limit: %v", err)
+	}
+	if _, err := dataSetMetadataEntries(numberedMetadata(maxDataSetMetadataKeys+1), false); err == nil {
+		t.Fatal("expected error above data set metadata key limit")
+	}
+}
+
+func TestPieceMetadataEntries_KeyLimit(t *testing.T) {
+	if _, err := pieceMetadataEntries(numberedMetadata(maxPieceMetadataKeys)); err != nil {
+		t.Fatalf("pieceMetadataEntries at limit: %v", err)
+	}
+	if _, err := pieceMetadataEntries(numberedMetadata(maxPieceMetadataKeys + 1)); err == nil {
+		t.Fatal("expected error above piece metadata key limit")
+	}
+}
+
+func repeatedPieceInputs(t *testing.T, count int) []PieceInput {
+	t.Helper()
+	cids := repeatedPieceCIDs(t, count)
+	pieces := make([]PieceInput, count)
+	for i, pieceCID := range cids {
+		pieces[i] = PieceInput{PieceCID: pieceCID}
+	}
+	return pieces
+}
+
+func repeatedPieceCIDs(t *testing.T, count int) []cid.Cid {
+	t.Helper()
+	info := mustPieceInfo(t)
+	pieces := make([]cid.Cid, count)
+	for i := range pieces {
+		pieces[i] = info.CIDv2
+	}
+	return pieces
+}
+
+func assertTooManyPieces(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, pdp.ErrTooManyPieces) {
+		t.Fatalf("err=%v want pdp.ErrTooManyPieces", err)
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err=%v want ErrInvalidArgument", err)
+	}
+}
+
+func numberedMetadata(count int) map[string]string {
+	metadata := make(map[string]string, count)
+	for i := 0; i < count; i++ {
+		metadata[fmt.Sprintf("k%d", i)] = "v"
+	}
+	return metadata
 }
 
 func TestContextStore_UploadError(t *testing.T) {

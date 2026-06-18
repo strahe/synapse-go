@@ -33,8 +33,8 @@ func (c *Client) CreateDataSetAndAddPieces(
 	if (recordKeeper == common.Address{}) {
 		return nil, errors.New("pdp.CreateDataSetAndAddPieces: zero recordKeeper")
 	}
-	if len(pieces) == 0 {
-		return nil, errors.New("pdp.CreateDataSetAndAddPieces: no pieces provided")
+	if err := validateAddPiecesBatch("pdp.CreateDataSetAndAddPieces", len(pieces)); err != nil {
+		return nil, err
 	}
 	if len(extraData) == 0 {
 		return nil, errors.New("pdp.CreateDataSetAndAddPieces: empty extraData")

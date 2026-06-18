@@ -110,10 +110,10 @@ func SignAddPieces(signHash func([]byte) ([]byte, error), domain apitypes.TypedD
 	return Sign(signHash, domain, "AddPieces", msg)
 }
 
-// SignDeleteDataSet signs a DeleteDataSet EIP-712 message.
-func SignDeleteDataSet(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain, dataSetID *big.Int) (*Signature, error) {
-	msg := DeleteDataSetMessage(dataSetID)
-	return Sign(signHash, domain, "DeleteDataSet", msg)
+// SignTerminateService signs a TerminateService EIP-712 message.
+func SignTerminateService(signHash func([]byte) ([]byte, error), domain apitypes.TypedDataDomain, dataSetID *big.Int) (*Signature, error) {
+	msg := TerminateServiceMessage(dataSetID)
+	return Sign(signHash, domain, "TerminateService", msg)
 }
 
 // SignSchedulePieceRemovals signs a SchedulePieceRemovals EIP-712 message.

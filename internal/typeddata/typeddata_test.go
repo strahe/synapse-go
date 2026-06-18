@@ -154,11 +154,11 @@ func TestSign_AddPieces(t *testing.T) {
 	}
 }
 
-func TestSign_DeleteDataSet(t *testing.T) {
+func TestSign_TerminateService(t *testing.T) {
 	signHash, addr := testSignHash(t)
 	domain := testDomain()
 
-	sig, err := SignDeleteDataSet(signHash, domain, big.NewInt(99))
+	sig, err := SignTerminateService(signHash, domain, big.NewInt(99))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,17 +167,17 @@ func TestSign_DeleteDataSet(t *testing.T) {
 		t.Errorf("V = %d, want >= 27", sig.V)
 	}
 
-	msg := DeleteDataSetMessage(big.NewInt(99))
+	msg := TerminateServiceMessage(big.NewInt(99))
 	if len(msg) != 1 {
-		t.Fatalf("DeleteDataSetMessage fields=%d want 1", len(msg))
+		t.Fatalf("TerminateServiceMessage fields=%d want 1", len(msg))
 	}
 	if _, ok := msg["dataSetId"]; !ok {
-		t.Fatal("DeleteDataSetMessage missing dataSetId field")
+		t.Fatal("TerminateServiceMessage missing dataSetId field")
 	}
 	if _, ok := msg["clientDataSetId"]; ok {
-		t.Fatal("DeleteDataSetMessage includes clientDataSetId field")
+		t.Fatal("TerminateServiceMessage includes clientDataSetId field")
 	}
-	recovered := recoverAddress(t, domain, "DeleteDataSet", msg, sig)
+	recovered := recoverAddress(t, domain, "TerminateService", msg, sig)
 	if recovered != addr {
 		t.Errorf("recovered address %s != expected %s", recovered.Hex(), addr.Hex())
 	}
@@ -208,12 +208,12 @@ func TestSign_DeterministicSignature(t *testing.T) {
 	signHash, _ := testSignHash(t)
 	domain := testDomain()
 
-	sig1, err := SignDeleteDataSet(signHash, domain, big.NewInt(7))
+	sig1, err := SignTerminateService(signHash, domain, big.NewInt(7))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sig2, err := SignDeleteDataSet(signHash, domain, big.NewInt(7))
+	sig2, err := SignTerminateService(signHash, domain, big.NewInt(7))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,12 +227,12 @@ func TestSign_DifferentMessages(t *testing.T) {
 	signHash, _ := testSignHash(t)
 	domain := testDomain()
 
-	sig1, err := SignDeleteDataSet(signHash, domain, big.NewInt(1))
+	sig1, err := SignTerminateService(signHash, domain, big.NewInt(1))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sig2, err := SignDeleteDataSet(signHash, domain, big.NewInt(2))
+	sig2, err := SignTerminateService(signHash, domain, big.NewInt(2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestSign_DifferentMessages(t *testing.T) {
 func TestSign_InvalidSignatureLength(t *testing.T) {
 	domain := testDomain()
 
-	_, err := SignDeleteDataSet(func([]byte) ([]byte, error) {
+	_, err := SignTerminateService(func([]byte) ([]byte, error) {
 		return make([]byte, 64), nil
 	}, domain, big.NewInt(1))
 	if err == nil {
@@ -257,7 +257,7 @@ func TestSign_InvalidRecoveryID(t *testing.T) {
 	signHash, _ := testSignHash(t)
 	domain := testDomain()
 
-	_, err := SignDeleteDataSet(func(hash []byte) ([]byte, error) {
+	_, err := SignTerminateService(func(hash []byte) ([]byte, error) {
 		sig, err := signHash(hash)
 		if err != nil {
 			return nil, err

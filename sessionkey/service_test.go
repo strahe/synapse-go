@@ -983,7 +983,7 @@ func TestSessionKey_HasPermission(t *testing.T) {
 	if sk.HasPermission(AddPiecesPermission) {
 		t.Error("expected HasPermission=false for past expiry")
 	}
-	if sk.HasPermission(DeleteDataSetPermission) {
+	if sk.HasPermission(TerminateServicePermission) {
 		t.Error("expected HasPermission=false for missing permission")
 	}
 }
@@ -1019,7 +1019,7 @@ func TestSessionKey_HasPermissions(t *testing.T) {
 	if !sk.HasPermissions([]Permission{CreateDataSetPermission, AddPiecesPermission}) {
 		t.Error("expected HasPermissions=true")
 	}
-	if sk.HasPermissions([]Permission{CreateDataSetPermission, DeleteDataSetPermission}) {
+	if sk.HasPermissions([]Permission{CreateDataSetPermission, TerminateServicePermission}) {
 		t.Error("expected HasPermissions=false when one permission missing")
 	}
 }
@@ -1033,7 +1033,7 @@ func TestDedup(t *testing.T) {
 		CreateDataSetPermission,
 		AddPiecesPermission,
 		CreateDataSetPermission,
-		DeleteDataSetPermission,
+		TerminateServicePermission,
 		AddPiecesPermission,
 	}
 	got := dedup(input)
@@ -1047,8 +1047,8 @@ func TestDedup(t *testing.T) {
 	if Permission(got[1]) != AddPiecesPermission {
 		t.Error("second should be AddPieces")
 	}
-	if Permission(got[2]) != DeleteDataSetPermission {
-		t.Error("third should be DeleteDataSet")
+	if Permission(got[2]) != TerminateServicePermission {
+		t.Error("third should be TerminateService")
 	}
 }
 

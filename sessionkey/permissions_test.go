@@ -13,7 +13,7 @@ var encodeTypeStrings = map[string]string{
 	"CreateDataSet":         "CreateDataSet(uint256 clientDataSetId,address payee,MetadataEntry[] metadata)MetadataEntry(string key,string value)",
 	"AddPieces":             "AddPieces(uint256 clientDataSetId,uint256 nonce,Cid[] pieceData,PieceMetadata[] pieceMetadata)Cid(bytes data)MetadataEntry(string key,string value)PieceMetadata(uint256 pieceIndex,MetadataEntry[] metadata)",
 	"SchedulePieceRemovals": "SchedulePieceRemovals(uint256 clientDataSetId,uint256[] pieceIds)",
-	"DeleteDataSet":         "DeleteDataSet(uint256 dataSetId)",
+	"TerminateService":      "TerminateService(uint256 dataSetId)",
 }
 
 func TestPermissionHashes(t *testing.T) {
@@ -42,10 +42,10 @@ func TestPermissionHashes(t *testing.T) {
 			wantHex:  "0x5415701e313bb627e755b16924727217bb356574fe20e7061442c200b0822b22",
 		},
 		{
-			name:     "DeleteDataSet",
-			encType:  encodeTypeStrings["DeleteDataSet"],
-			wantPerm: DeleteDataSetPermission,
-			wantHex:  "0xb0988e9a1e5723860e0f59e0469113fb8a0ce9e83f8a1dd9109527eaad225b37",
+			name:     "TerminateService",
+			encType:  encodeTypeStrings["TerminateService"],
+			wantPerm: TerminateServicePermission,
+			wantHex:  "0x522bd88a11de1cdc6574394dde7a21ae488ff13e16e7408d0ea721dd8479dffc",
 		},
 	}
 	for _, tt := range tests {
@@ -69,7 +69,7 @@ func TestDefaultFWSSPermissions(t *testing.T) {
 		CreateDataSetPermission,
 		AddPiecesPermission,
 		SchedulePieceRemovalsPermission,
-		DeleteDataSetPermission,
+		TerminateServicePermission,
 	}
 	for i, p := range DefaultFWSSPermissions {
 		if p != expected[i] {
@@ -97,5 +97,32 @@ func TestPermissionString(t *testing.T) {
 	s := p.String()
 	if s != p.Hex() {
 		t.Errorf("String() = %q, Hex() = %q, want equal", s, p.Hex())
+	}
+}
+
+func TestPermissionName(t *testing.T) {
+	tests := []struct {
+		permission Permission
+		want       string
+	}{
+		{CreateDataSetPermission, "CreateDataSet"},
+		{AddPiecesPermission, "AddPieces"},
+		{SchedulePieceRemovalsPermission, "SchedulePieceRemovals"},
+		{TerminateServicePermission, "TerminateService"},
+	}
+	for _, tt := range tests {
+		got, ok := PermissionName(tt.permission)
+		if !ok {
+			t.Fatalf("PermissionName(%s) ok=false", tt.permission.Hex())
+		}
+		if got != tt.want {
+			t.Fatalf("PermissionName(%s)=%q want %q", tt.permission.Hex(), got, tt.want)
+		}
+	}
+
+	var unknown Permission
+	unknown[0] = 1
+	if got, ok := PermissionName(unknown); ok || got != "" {
+		t.Fatalf("PermissionName(unknown)=(%q, %v), want empty false", got, ok)
 	}
 }

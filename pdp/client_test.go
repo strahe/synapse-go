@@ -565,6 +565,21 @@ func TestWaitForDataSetCreated(t *testing.T) {
 	}
 }
 
+func TestGetDataSetCreationStatus_Accepts202(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x1","service":"svc","txStatus":"pending","dataSetCreated":false,"ok":null}`)
+	}))
+	status, err := c.GetDataSetCreationStatus(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.TxStatus != "pending" {
+		t.Fatalf("txStatus=%q want pending", status.TxStatus)
+	}
+}
+
 func TestWaitForDataSetCreated_ConfirmedFalseStillPending(t *testing.T) {
 	var calls int
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -671,6 +686,44 @@ func TestAddPieces(t *testing.T) {
 	}
 }
 
+func TestAddPieces_MaxBatchSizeAccepted(t *testing.T) {
+	pcInfo, err := piece.CalculateFromBytes([]byte("hi"))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize)
+	for i := range pieces {
+		pieces[i] = AddPieceInput{PieceCID: pcInfo.CIDv1}
+	}
+	var gotPieces int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body addPiecesRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		gotPieces = len(body.Pieces)
+		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0xdead000000000000000000000000000000000000000000000000000000000000")
+		w.WriteHeader(http.StatusCreated)
+	}))
+	if _, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1}); err != nil {
+		t.Fatalf("AddPieces: %v", err)
+	}
+	if gotPieces != MaxAddPiecesBatchSize {
+		t.Fatalf("pieces len=%d want %d", gotPieces, MaxAddPiecesBatchSize)
+	}
+}
+
+func TestAddPieces_TooManyPieces(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach server")
+	}))
+	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize+1)
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1})
+	if !errors.Is(err, ErrTooManyPieces) {
+		t.Fatalf("err=%v want ErrTooManyPieces", err)
+	}
+}
+
 func TestAddPieces_RootRelativeLocationPreservesBaseOrigin(t *testing.T) {
 	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
 	pc := pcInfo.CIDv1
@@ -714,6 +767,21 @@ func TestWaitForPiecesAdded(t *testing.T) {
 	}
 	if len(status.ConfirmedPieceIDs) != 2 {
 		t.Fatalf("len=%d", len(status.ConfirmedPieceIDs))
+	}
+}
+
+func TestGetAddPiecesStatus_Accepts202(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"pending","dataSetId":5,"pieceCount":1,"addMessageOk":null,"piecesAdded":false}`)
+	}))
+	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.TxStatus != "pending" {
+		t.Fatalf("txStatus=%q want pending", status.TxStatus)
 	}
 }
 

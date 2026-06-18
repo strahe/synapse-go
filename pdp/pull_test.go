@@ -239,6 +239,39 @@ func TestPullPieces_ServerError(t *testing.T) {
 	}
 }
 
+func TestPullPieces_RetriesTransientHTTP(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	var calls int
+	c, _ := pullTestServer(t, func(_ pullPiecesBody, callCount int) (int, pullResponse) {
+		calls = callCount
+		if callCount == 1 {
+			return http.StatusTooManyRequests, pullResponse{}
+		}
+		return http.StatusOK, pullResponse{
+			Status: "pending",
+			Pieces: []pullPieceRespItem{{PieceCid: pc.String(), Status: "pending"}},
+		}
+	})
+
+	res, err := c.PullPieces(context.Background(), PullRequest{
+		RecordKeeper: common.HexToAddress("0xabc"),
+		ExtraData:    []byte{0x01},
+		Pieces: []PullPieceInput{{
+			PieceCID:  pc,
+			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PullPieces: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d want 2", calls)
+	}
+	if res.Status != PullStatusPending {
+		t.Fatalf("status=%q want pending", res.Status)
+	}
+}
+
 func TestWaitForPullComplete_CompletesImmediately(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
 	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
@@ -415,5 +448,20 @@ func TestPullPieces_RejectsV1(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected PieceCIDv2 validation error")
+	}
+}
+
+func TestPullPieces_TooManyPieces(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
+	}))
+	reqPieces := make([]PullPieceInput, MaxAddPiecesBatchSize+1)
+	_, err := c.PullPieces(context.Background(), PullRequest{
+		RecordKeeper: common.HexToAddress("0xabc"),
+		ExtraData:    []byte{0x01},
+		Pieces:       reqPieces,
+	})
+	if !errors.Is(err, ErrTooManyPieces) {
+		t.Fatalf("err=%v want ErrTooManyPieces", err)
 	}
 }
