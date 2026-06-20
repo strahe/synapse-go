@@ -220,7 +220,7 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		return nil, fmt.Errorf("synapse.New: %w", err)
 	}
 
-	addresses, err := resolveAddresses(selectedChain)
+	addresses, err := resolveAddresses(ctx, ec, selectedChain)
 	if err != nil {
 		return nil, fmt.Errorf("synapse.New: %w", err)
 	}
@@ -351,7 +351,7 @@ func resolveChain(ctx context.Context, ec *ethclient.Client, cfg *clientConfig) 
 	return detected, nil
 }
 
-func resolveAddresses(c chain.Chain) (iabi.ResolvedAddresses, error) {
+func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) (iabi.ResolvedAddresses, error) {
 	addresses := iabi.ResolvedAddressesFromChain(c)
 	zeroAddr := common.Address{}
 	for name, addr := range map[string]common.Address{
@@ -367,7 +367,14 @@ func resolveAddresses(c chain.Chain) (iabi.ResolvedAddresses, error) {
 			return iabi.ResolvedAddresses{}, fmt.Errorf("no %s address for chain %s", name, c)
 		}
 	}
-	return addresses, nil
+	resolved, err := iabi.ResolveAddresses(ctx, ec, addresses.FWSS)
+	if err != nil {
+		return iabi.ResolvedAddresses{}, fmt.Errorf("resolve FWSS addresses: %w", err)
+	}
+	if resolved.Multicall3 == zeroAddr {
+		resolved.Multicall3 = addresses.Multicall3
+	}
+	return *resolved, nil
 }
 
 func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses iabi.ResolvedAddresses) (*Client, error) {

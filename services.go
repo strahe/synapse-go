@@ -56,15 +56,16 @@ func (c *Client) initServices() error {
 	c.spRegistry = spReg
 
 	pay, err := payments.New(payments.Options{
-		Backend:            c.ethClient,
-		ChainID:            types.ChainID(c.selectedChain.ChainID()),
-		FilPayAddress:      c.addresses.Payments,
-		WarmStorageAddress: c.addresses.FWSS,
-		USDFCTokenAddress:  c.addresses.USDFC,
-		Signer:             c.evmSigner,
-		Logger:             c.logger,
-		NonceManager:       c.nonces,
-		Lifecycle:          c.lifecycle,
+		Backend:              c.ethClient,
+		ChainID:              types.ChainID(c.selectedChain.ChainID()),
+		FilPayAddress:        c.addresses.Payments,
+		WarmStorageAddress:   c.addresses.FWSS,
+		USDFCTokenAddress:    c.addresses.USDFC,
+		Signer:               c.evmSigner,
+		ApprovalLockupPeriod: adapters.NewApprovalLockupPeriodReader(ws),
+		Logger:               c.logger,
+		NonceManager:         c.nonces,
+		Lifecycle:            c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create payments service: %w", err)
@@ -102,12 +103,14 @@ func (c *Client) initServices() error {
 	}
 
 	costsvc, err := costs.New(costs.Options{
-		Chain:       c.selectedChain,
-		WarmStorage: ws,
-		Payments:    pay,
-		Caller:      c.ethClient,
-		Logger:      c.logger,
-		Lifecycle:   c.lifecycle,
+		Chain:              c.selectedChain,
+		USDFCTokenAddress:  c.addresses.USDFC,
+		WarmStorageAddress: c.addresses.FWSS,
+		WarmStorage:        ws,
+		Payments:           pay,
+		Caller:             c.ethClient,
+		Logger:             c.logger,
+		Lifecycle:          c.lifecycle,
 	})
 	if err != nil {
 		return fmt.Errorf("create costs service: %w", err)
@@ -155,6 +158,7 @@ func (c *Client) initServices() error {
 				storage.WithFWSSTerminator(ws),
 				storage.WithFWSSDataSetReader(ws),
 				storage.WithDataSetValidator(ws),
+				storage.WithPaymentStateReader(pay, c.ethClient, c.addresses.USDFC),
 			}
 			if sel.DataSetID != nil {
 				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))
@@ -182,13 +186,19 @@ func (c *Client) initServices() error {
 		Lifecycle:            c.lifecycle,
 		Logger:               c.logger,
 
-		DataSetFinder:     adapters.NewDataSetFinder(ws),
-		StorageInfoReader: adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),
-		DataSetTerminator: ws,
-		FWSSDataSetReader: ws,
-		CostCalculator:    adapters.NewCostCalculator(costsvc),
-		PaymentsFunder:    adapters.NewPaymentsFunder(pay),
-		SignerAddress:     c.evmSigner.EVMAddress(),
+		DataSetFinder:      adapters.NewDataSetFinder(ws),
+		StorageInfoReader:  adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),
+		DataSetTerminator:  ws,
+		FWSSDataSetReader:  ws,
+		PaymentStateReader: pay,
+		EpochReader:        c.ethClient,
+		PaymentToken:       c.addresses.USDFC,
+		Signer:             c.evmSigner,
+		ChainID:            types.ChainID(c.selectedChain.ChainID()),
+		RecordKeeper:       c.addresses.FWSS,
+		CostCalculator:     adapters.NewCostCalculator(costsvc),
+		PaymentsFunder:     adapters.NewPaymentsFunder(pay),
+		SignerAddress:      c.evmSigner.EVMAddress(),
 	}
 	if c.pdpReader != nil {
 		storageOpts.DataSetSizeReader = c.pdpReader

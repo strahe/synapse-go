@@ -1224,7 +1224,7 @@ func TestIntegration(t *testing.T) {
 		if uploadedRailID.IsZero() {
 			t.Skip("no uploaded rail id; skipping PaymentsRails")
 		}
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 2*txWaitTimeout+time.Minute)
 		defer cancel()
 
 		rv, err := client.Payments().GetRail(cctx, uploadedRailID)
@@ -1317,7 +1317,7 @@ func TestIntegration(t *testing.T) {
 		t.Logf("filbeam stats: %+v", stats)
 	})
 
-	// --- StorageLifecycle: DeletePiece + storage.Service.TerminateDataSet. ---
+	// --- StorageLifecycle: DeletePiece + storage.Service.TerminateService. ---
 	t.Run("StorageLifecycle", func(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
@@ -1341,17 +1341,26 @@ func TestIntegration(t *testing.T) {
 		// matching TS behaviour; the server schedules the removal.
 		t.Logf("DeletePiece tx=%s", delRes.Hash)
 
-		t.Log("start StorageLifecycle TerminateDataSet")
-		termRes, err := client.Storage().TerminateDataSet(cctx, uploadedDataSetID, &storage.TerminateDataSetOptions{
-			WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
+		t.Log("start StorageLifecycle TerminateService")
+		var submitted common.Hash
+		termRes, err := client.Storage().TerminateService(cctx, uploadedDataSetID, &storage.TerminateServiceOptions{
+			ProviderWaitTimeout: txWaitTimeout,
+			PollInterval:        2 * time.Second,
+			OnSubmitted: func(hash common.Hash) {
+				submitted = hash
+				t.Logf("TerminateService submitted tx=%s", hash)
+			},
 		})
 		if err != nil {
-			t.Fatalf("TerminateDataSet: %v", err)
+			t.Fatalf("TerminateService: %v", err)
 		}
-		if termRes.Receipt == nil || termRes.Receipt.Status != 1 {
-			t.Errorf("TerminateDataSet tx failed: %+v", termRes.Receipt)
+		if termRes.EndEpoch == 0 {
+			t.Errorf("TerminateService EndEpoch=0")
 		}
-		t.Logf("TerminateDataSet tx=%s", termRes.Hash)
+		if termRes.TxHash == nil && submitted == (common.Hash{}) {
+			t.Errorf("TerminateService returned no tx hash")
+		}
+		t.Logf("TerminateService result tx=%v endEpoch=%d", termRes.TxHash, termRes.EndEpoch)
 	})
 
 	// --- DestructiveSuite: gated on INTEGRATION_DESTRUCTIVE_KEY. ---

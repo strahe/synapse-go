@@ -15,679 +15,223 @@ func usdfc(n int64) *big.Int {
 	return new(big.Int).Mul(bi(n), bi(1e18))
 }
 
-// usdfcFrac returns n/10 USDFC (e.g. usdfcFrac(25) = 2.5 USDFC).
+// usdfcFrac returns n/10 USDFC.
 func usdfcFrac(tenths int64) *big.Int {
 	return new(big.Int).Mul(bi(tenths), big.NewInt(1e17))
 }
 
-func defaultPricing() *warmstorage.ServicePrice {
-	return &warmstorage.ServicePrice{
-		PricePerTiBPerMonthNoCDN: usdfcFrac(25), // 2.5 USDFC/TiB/month
-		MinimumPricePerMonth:     usdfcFrac(1),  // 0.1 USDFC/month
-		EpochsPerMonth:           bi(chain.EpochsPerMonth),
+func defaultPriceList() *warmstorage.PriceList {
+	return &warmstorage.PriceList{
+		Rates: warmstorage.PriceListRates{
+			StoragePerTiBPerMonth: usdfcFrac(25),
+			DatasetFeePerMonth:    usdfcFrac(1),
+		},
+		Fees: warmstorage.PriceListFees{
+			CreateDataSetFee:     usdfcFrac(2),
+			AddPiecesBaseFee:     usdfcFrac(3),
+			AddPiecesPerPieceFee: usdfcFrac(1),
+		},
+		Lockups: warmstorage.PriceListLockups{
+			LifecycleReserveTarget: usdfcFrac(4),
+			DefaultLockupPeriod:    bi(DefaultLockupPeriod),
+			CDNLockupAmount:        usdfcFrac(5),
+			CacheMissLockupAmount:  usdfcFrac(6),
+		},
 	}
 }
 
-// --- CalculateEffectiveRate ---
-
-func TestCalculateEffectiveRate_ExactOneTiB(t *testing.T) {
-	pricing := defaultPricing()
+func TestCalculateEffectiveRate_AddsDatasetFeeForNonEmptyDataSets(t *testing.T) {
+	priceList := defaultPriceList()
 	rate := CalculateEffectiveRate(
 		bi(chain.TiB),
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
+		priceList.Rates.StoragePerTiBPerMonth,
+		priceList.Rates.DatasetFeePerMonth,
 		chain.EpochsPerMonth,
 	)
 
-	// ratePerMonth = 2.5 USDFC * 1 TiB / 1 TiB = 2.5 USDFC
-	if rate.RatePerMonth.Cmp(usdfcFrac(25)) != 0 {
-		t.Errorf("ratePerMonth: got %s, want %s", rate.RatePerMonth, usdfcFrac(25))
+	wantMonth := new(big.Int).Add(priceList.Rates.StoragePerTiBPerMonth, priceList.Rates.DatasetFeePerMonth)
+	if rate.RatePerMonth.Cmp(wantMonth) != 0 {
+		t.Fatalf("RatePerMonth=%s want %s", rate.RatePerMonth, wantMonth)
 	}
-
-	// ratePerEpoch = 2.5 USDFC / epochsPerMonth
-	want := new(big.Int).Div(usdfcFrac(25), bi(chain.EpochsPerMonth))
-	if rate.RatePerEpoch.Cmp(want) != 0 {
-		t.Errorf("ratePerEpoch: got %s, want %s", rate.RatePerEpoch, want)
-	}
-}
-
-func TestCalculateEffectiveRate_SubTiB_HitsMinimum(t *testing.T) {
-	pricing := defaultPricing()
-	rate := CalculateEffectiveRate(
-		bi(1),
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
-		chain.EpochsPerMonth,
-	)
-
-	if rate.RatePerMonth.Cmp(pricing.MinimumPricePerMonth) != 0 {
-		t.Errorf("ratePerMonth should equal MinimumPricePerMonth: got %s, want %s",
-			rate.RatePerMonth, pricing.MinimumPricePerMonth)
-	}
-	if rate.RatePerEpoch.Cmp(bi(1)) < 0 {
-		t.Errorf("ratePerEpoch should be at least 1: got %s", rate.RatePerEpoch)
+	wantEpoch := new(big.Int).Div(priceList.Rates.StoragePerTiBPerMonth, bi(chain.EpochsPerMonth))
+	wantEpoch.Add(wantEpoch, new(big.Int).Div(priceList.Rates.DatasetFeePerMonth, bi(chain.EpochsPerMonth)))
+	if rate.RatePerEpoch.Cmp(wantEpoch) != 0 {
+		t.Fatalf("RatePerEpoch=%s want %s", rate.RatePerEpoch, wantEpoch)
 	}
 }
 
-func TestCalculateEffectiveRate_MultiTiB(t *testing.T) {
-	pricing := defaultPricing()
-	size := new(big.Int).Mul(bi(5), bi(chain.TiB)) // 5 TiB
-
-	rate := CalculateEffectiveRate(
-		size,
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
-		chain.EpochsPerMonth,
-	)
-
-	// ratePerMonth = 2.5 * 5 = 12.5 USDFC
-	if rate.RatePerMonth.Cmp(usdfcFrac(125)) != 0 {
-		t.Errorf("ratePerMonth: got %s, want %s", rate.RatePerMonth, usdfcFrac(125))
-	}
-}
-
-func TestCalculateEffectiveRate_ZeroSize(t *testing.T) {
-	pricing := defaultPricing()
+func TestCalculateEffectiveRate_EmptyDataSetHasNoRecurringRate(t *testing.T) {
+	priceList := defaultPriceList()
 	rate := CalculateEffectiveRate(
 		bi(0),
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
+		priceList.Rates.StoragePerTiBPerMonth,
+		priceList.Rates.DatasetFeePerMonth,
 		chain.EpochsPerMonth,
 	)
-
-	if rate.RatePerMonth.Cmp(pricing.MinimumPricePerMonth) != 0 {
-		t.Errorf("ratePerMonth should equal MinimumPricePerMonth for zero size: got %s, want %s",
-			rate.RatePerMonth, pricing.MinimumPricePerMonth)
+	if rate.RatePerEpoch.Sign() != 0 || rate.RatePerMonth.Sign() != 0 {
+		t.Fatalf("rate=%+v want zero recurring rate", rate)
 	}
 }
 
-// --- CalculateAdditionalLockupRequired ---
-
-func TestAdditionalLockup_NewDataSet(t *testing.T) {
-	pricing := defaultPricing()
-	sybilFee := usdfcFrac(1)
-
-	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB), // uploading 1 TiB
-		bi(0),         // empty dataset
-		pricing,
-		DefaultLockupPeriod,
-		sybilFee,
-		true,  // new dataset
-		false, // no CDN
-	)
-
-	if lockup.RateDelta.Sign() <= 0 {
-		t.Errorf("rateDelta should be positive for new dataset: got %s", lockup.RateDelta)
-	}
-
-	expected := new(big.Int).Add(
-		new(big.Int).Mul(lockup.RateDelta, bi(DefaultLockupPeriod)),
-		sybilFee,
-	)
-	if lockup.TotalLockup.Cmp(expected) != 0 {
-		t.Errorf("totalLockup: got %s, want %s", lockup.TotalLockup, expected)
+func TestCalculateEffectiveRate_NilInputsUseZeroValues(t *testing.T) {
+	rate := CalculateEffectiveRate(nil, nil, nil, 0)
+	if rate.RatePerEpoch.Sign() != 0 || rate.RatePerMonth.Sign() != 0 {
+		t.Fatalf("rate=%+v want zero recurring rate", rate)
 	}
 }
 
-func TestAdditionalLockup_NewDataSet_WithCDN(t *testing.T) {
-	pricing := defaultPricing()
-	sybilFee := usdfcFrac(1)
+func TestCalculateUploadFees_UsesCreateFeeAndAddPiecesBatchBoundary(t *testing.T) {
+	priceList := defaultPriceList()
+	within := CalculateUploadFees(priceList, true, bi(40))
+	spill := CalculateUploadFees(priceList, true, bi(41))
 
-	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
-		bi(0),
-		pricing,
-		DefaultLockupPeriod,
-		sybilFee,
-		true,
-		true,
-	)
+	wantWithin := new(big.Int).Set(priceList.Fees.CreateDataSetFee)
+	wantWithin.Add(wantWithin, priceList.Fees.AddPiecesBaseFee)
+	wantWithin.Add(wantWithin, new(big.Int).Mul(priceList.Fees.AddPiecesPerPieceFee, bi(40)))
+	if within.Total.Cmp(wantWithin) != 0 {
+		t.Fatalf("within.Total=%s want %s", within.Total, wantWithin)
+	}
 
-	rateLockup := new(big.Int).Mul(lockup.RateDelta, bi(DefaultLockupPeriod))
-	expected := new(big.Int).Add(rateLockup, cdnFixedLockup)
-	expected.Add(expected, sybilFee)
-
-	if lockup.TotalLockup.Cmp(expected) != 0 {
-		t.Errorf("totalLockup with CDN: got %s, want %s", lockup.TotalLockup, expected)
-	}
-	if lockup.RateLockup.Cmp(rateLockup) != 0 {
-		t.Errorf("RateLockup: got %s, want %s", lockup.RateLockup, rateLockup)
-	}
-	if lockup.CDNFixedLockup.Cmp(cdnFixedLockup) != 0 {
-		t.Errorf("CDNFixedLockup: got %s, want %s", lockup.CDNFixedLockup, cdnFixedLockup)
-	}
-	if lockup.SybilFee.Cmp(sybilFee) != 0 {
-		t.Errorf("SybilFee: got %s, want %s", lockup.SybilFee, sybilFee)
+	wantSpill := new(big.Int).Set(priceList.Fees.CreateDataSetFee)
+	wantSpill.Add(wantSpill, new(big.Int).Mul(priceList.Fees.AddPiecesBaseFee, bi(2)))
+	wantSpill.Add(wantSpill, new(big.Int).Mul(priceList.Fees.AddPiecesPerPieceFee, bi(41)))
+	if spill.Total.Cmp(wantSpill) != 0 {
+		t.Fatalf("spill.Total=%s want %s", spill.Total, wantSpill)
 	}
 }
 
-func TestAdditionalLockup_ExistingDataSet(t *testing.T) {
-	pricing := defaultPricing()
-
-	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
-		bi(chain.TiB),
-		pricing,
-		DefaultLockupPeriod,
-		usdfcFrac(1),
-		false, // existing dataset
-		false,
-	)
-
-	if lockup.RateDelta.Sign() < 0 {
-		t.Errorf("rateDelta should not be negative: got %s", lockup.RateDelta)
-	}
-
-	// No sybil fee or CDN for existing dataset.
-	expectedLockup := new(big.Int).Mul(lockup.RateDelta, bi(DefaultLockupPeriod))
-	if lockup.TotalLockup.Cmp(expectedLockup) != 0 {
-		t.Errorf("totalLockup for existing dataset should not include sybil: got %s, want %s",
-			lockup.TotalLockup, expectedLockup)
+func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) {
+	lockup := CalculateAdditionalLockupRequired(nil, nil, nil, nil, true, true)
+	if lockup.RateDeltaPerEpoch.Sign() != 0 ||
+		lockup.StreamingLockup.Sign() != 0 ||
+		lockup.LifecycleLockup.Sign() != 0 ||
+		lockup.CDNLockup.Sign() != 0 ||
+		lockup.CacheMissLockup.Sign() != 0 ||
+		lockup.Total.Sign() != 0 {
+		t.Fatalf("lockup=%+v want zero values", lockup)
 	}
 }
 
-func TestAdditionalLockup_ExistingDataSet_NilSybilFee(t *testing.T) {
-	pricing := defaultPricing()
-
+func TestCalculateAdditionalLockupRequired_LegacyFieldsDoNotAlias(t *testing.T) {
+	priceList := defaultPriceList()
 	lockup := CalculateAdditionalLockupRequired(
 		bi(chain.TiB),
-		bi(0),
-		pricing,
-		DefaultLockupPeriod,
 		nil,
+		priceList,
+		priceList.Lockups.DefaultLockupPeriod,
 		true,
-		false,
+		true,
 	)
 
-	expectedLockup := new(big.Int).Mul(lockup.RateDelta, bi(DefaultLockupPeriod))
-	if lockup.TotalLockup.Cmp(expectedLockup) != 0 {
-		t.Errorf("totalLockup with nil sybil: got %s, want %s",
-			lockup.TotalLockup, expectedLockup)
+	rateDelta := new(big.Int).Set(lockup.RateDeltaPerEpoch)
+	streaming := new(big.Int).Set(lockup.StreamingLockup)
+	lifecycle := new(big.Int).Set(lockup.LifecycleLockup)
+	total := new(big.Int).Set(lockup.Total)
+
+	lockup.RateDelta.SetInt64(0)
+	lockup.RateLockup.SetInt64(0)
+	lockup.SybilFee.SetInt64(0)
+	lockup.TotalLockup.SetInt64(0)
+
+	if lockup.RateDeltaPerEpoch.Cmp(rateDelta) != 0 {
+		t.Fatalf("RateDeltaPerEpoch changed through legacy alias")
+	}
+	if lockup.StreamingLockup.Cmp(streaming) != 0 {
+		t.Fatalf("StreamingLockup changed through legacy alias")
+	}
+	if lockup.LifecycleLockup.Cmp(lifecycle) != 0 {
+		t.Fatalf("LifecycleLockup changed through legacy alias")
+	}
+	if lockup.Total.Cmp(total) != 0 {
+		t.Fatalf("Total changed through legacy alias")
 	}
 }
 
-func TestAdditionalLockup_RateDeltaBranching(t *testing.T) {
-	pricing := defaultPricing()
-	dataSize := bi(chain.TiB)
+func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) {
+	priceList := defaultPriceList()
+	lockup := CalculateAdditionalLockupRequired(
+		bi(chain.TiB),
+		nil,
+		priceList,
+		priceList.Lockups.DefaultLockupPeriod,
+		true,
+		true,
+	)
 
-	fullRate := func(size *big.Int) *big.Int {
-		return CalculateEffectiveRate(
-			size,
-			pricing.PricePerTiBPerMonthNoCDN,
-			pricing.MinimumPricePerMonth,
-			chain.EpochsPerMonth,
-		).RatePerEpoch
+	wantStreaming := new(big.Int).Mul(lockup.RateDeltaPerEpoch, priceList.Lockups.DefaultLockupPeriod)
+	if lockup.StreamingLockup.Cmp(wantStreaming) != 0 {
+		t.Fatalf("StreamingLockup=%s want %s", lockup.StreamingLockup, wantStreaming)
 	}
-	marginalRate := func(currentSize, uploadSize *big.Int) *big.Int {
-		newRate := fullRate(new(big.Int).Add(currentSize, uploadSize))
-		currentRate := fullRate(currentSize)
-		delta := new(big.Int).Sub(newRate, currentRate)
-		if delta.Sign() < 0 {
-			return new(big.Int)
-		}
-		return delta
+	if lockup.LifecycleLockup.Cmp(priceList.Lockups.LifecycleReserveTarget) != 0 {
+		t.Fatalf("LifecycleLockup=%s want %s", lockup.LifecycleLockup, priceList.Lockups.LifecycleReserveTarget)
 	}
-
-	tests := []struct {
-		name        string
-		currentSize *big.Int
-		isNew       bool
-		want        *big.Int
-	}{
-		{
-			name:        "existing zero-size dataset uses full upload rate",
-			currentSize: bi(0),
-			want:        fullRate(dataSize),
-		},
-		{
-			name: "existing nil-size dataset uses full upload rate",
-			want: fullRate(dataSize),
-		},
-		{
-			name:        "new dataset uses upload size even with nonzero current size",
-			currentSize: bi(chain.TiB),
-			isNew:       true,
-			want:        fullRate(dataSize),
-		},
-		{
-			name:        "positive existing dataset uses marginal rate",
-			currentSize: bi(chain.TiB),
-			want:        marginalRate(bi(chain.TiB), dataSize),
-		},
+	if lockup.CDNLockup.Cmp(priceList.Lockups.CDNLockupAmount) != 0 {
+		t.Fatalf("CDNLockup=%s want %s", lockup.CDNLockup, priceList.Lockups.CDNLockupAmount)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lockup := CalculateAdditionalLockupRequired(
-				dataSize,
-				tt.currentSize,
-				pricing,
-				DefaultLockupPeriod,
-				nil,
-				tt.isNew,
-				false,
-			)
-			if lockup.RateDelta.Cmp(tt.want) != 0 {
-				t.Fatalf("RateDelta=%s want %s", lockup.RateDelta, tt.want)
-			}
-		})
+	if lockup.CacheMissLockup.Cmp(priceList.Lockups.CacheMissLockupAmount) != 0 {
+		t.Fatalf("CacheMissLockup=%s want %s", lockup.CacheMissLockup, priceList.Lockups.CacheMissLockupAmount)
+	}
+	wantTotal := new(big.Int).Add(lockup.StreamingLockup, lockup.LifecycleLockup)
+	wantTotal.Add(wantTotal, lockup.CDNLockup)
+	wantTotal.Add(wantTotal, lockup.CacheMissLockup)
+	if lockup.Total.Cmp(wantTotal) != 0 {
+		t.Fatalf("Total=%s want %s", lockup.Total, wantTotal)
 	}
 }
 
-func TestAdditionalLockup_NilInputsUseZeroValues(t *testing.T) {
-	pricing := defaultPricing()
-	fullRate := func(pricing *warmstorage.ServicePrice, size *big.Int) *big.Int {
-		var epm int64
-		var pricePerTiBPerMonth, minimumPricePerMonth *big.Int
-		if pricing != nil {
-			pricePerTiBPerMonth = pricing.PricePerTiBPerMonthNoCDN
-			minimumPricePerMonth = pricing.MinimumPricePerMonth
-			if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
-				epm = pricing.EpochsPerMonth.Int64()
-			}
-		}
-		return CalculateEffectiveRate(
-			size,
-			pricePerTiBPerMonth,
-			minimumPricePerMonth,
-			epm,
-		).RatePerEpoch
-	}
-
-	tests := []struct {
-		name        string
-		dataSize    *big.Int
-		currentSize *big.Int
-		pricing     *warmstorage.ServicePrice
-		isNew       bool
-		want        *big.Int
-	}{
-		{
-			name:    "nil data size uses zero upload size",
-			pricing: pricing,
-			want:    fullRate(pricing, bi(0)),
-		},
-		{
-			name:        "nil data size on positive existing dataset adds no rate",
-			currentSize: bi(chain.TiB),
-			pricing:     pricing,
-			want:        bi(0),
-		},
-		{
-			name:     "nil pricing uses zero-value service price",
-			dataSize: bi(chain.TiB),
-			isNew:    true,
-			want:     fullRate(nil, bi(chain.TiB)),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lockup := CalculateAdditionalLockupRequired(
-				tt.dataSize,
-				tt.currentSize,
-				tt.pricing,
-				DefaultLockupPeriod,
-				nil,
-				tt.isNew,
-				false,
-			)
-			if lockup.RateDelta.Cmp(tt.want) != 0 {
-				t.Fatalf("RateDelta=%s want %s", lockup.RateDelta, tt.want)
-			}
-		})
-	}
-}
-
-func TestAdditionalLockup_Breakdown_ExistingDataSet(t *testing.T) {
-	pricing := defaultPricing()
-
+func TestCalculateAdditionalLockupRequired_ExistingDataSetUsesRateDeltaOnly(t *testing.T) {
+	priceList := defaultPriceList()
 	lockup := CalculateAdditionalLockupRequired(
 		bi(chain.TiB),
 		bi(chain.TiB),
-		pricing,
-		DefaultLockupPeriod,
-		usdfcFrac(1),
+		priceList,
+		priceList.Lockups.DefaultLockupPeriod,
 		false,
 		true,
 	)
-
-	if lockup.CDNFixedLockup.Sign() != 0 {
-		t.Errorf("CDNFixedLockup should be 0 for existing dataset: got %s", lockup.CDNFixedLockup)
+	if lockup.LifecycleLockup.Sign() != 0 || lockup.CDNLockup.Sign() != 0 || lockup.CacheMissLockup.Sign() != 0 {
+		t.Fatalf("existing lockup=%+v want only streaming lockup", lockup)
 	}
-	if lockup.SybilFee.Sign() != 0 {
-		t.Errorf("SybilFee should be 0 for existing dataset: got %s", lockup.SybilFee)
-	}
-	if lockup.TotalLockup.Cmp(lockup.RateLockup) != 0 {
-		t.Errorf("TotalLockup should equal RateLockup for existing dataset")
+	if lockup.Total.Cmp(lockup.StreamingLockup) != 0 {
+		t.Fatalf("Total=%s want StreamingLockup=%s", lockup.Total, lockup.StreamingLockup)
 	}
 }
 
-func TestAdditionalLockup_Breakdown_SumsCorrectly(t *testing.T) {
-	pricing := defaultPricing()
-
-	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
-		bi(0),
-		pricing,
-		DefaultLockupPeriod,
-		usdfcFrac(1),
-		true,
-		true,
-	)
-
-	expected := new(big.Int).Add(lockup.RateLockup, lockup.CDNFixedLockup)
-	expected.Add(expected, lockup.SybilFee)
-	if lockup.TotalLockup.Cmp(expected) != 0 {
-		t.Errorf("TotalLockup != sum of components: total=%s, sum=%s",
-			lockup.TotalLockup, expected)
-	}
-
-	expectedRate := new(big.Int).Mul(lockup.RateDelta, bi(DefaultLockupPeriod))
-	if lockup.RateLockup.Cmp(expectedRate) != 0 {
-		t.Errorf("RateLockup != rateDelta * lockupPeriod: got %s, want %s",
-			lockup.RateLockup, expectedRate)
-	}
-}
-
-// --- CalculateDepositNeeded ---
-
-func TestDepositNeeded_InsufficientFunds(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(50),
-		Debt:              bi(0),
-		AvailableFunds:    usdfc(1),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if deposit.Sign() <= 0 {
-		t.Errorf("deposit should be positive when funds are insufficient: got %s", deposit)
-	}
-}
-
-func TestDepositNeeded_SufficientFundsAndRunway(t *testing.T) {
-	huge := new(big.Int).Mul(usdfc(1_000_000), bi(1e18))
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(1),
-		RateDelta:         bi(1),
-		CurrentLockupRate: bi(1),
-		Debt:              bi(0),
-		AvailableFunds:    huge,
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if deposit.Sign() != 0 {
-		t.Errorf("deposit should be zero when funds and runway are sufficient: got %s", deposit)
-	}
-}
-
-func TestDepositNeeded_BufferTopsUpWhenRemainingFundsWithinBuffer(t *testing.T) {
+func TestCalculateDepositNeeded_IncludesFees(t *testing.T) {
 	deposit := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  bi(10),
-		RateDelta:         bi(2),
-		CurrentLockupRate: bi(3),
-		Debt:              bi(0),
-		AvailableFunds:    bi(20),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if deposit.Cmp(bi(15)) != 0 {
-		t.Errorf("deposit should top up buffer shortfall: got %s, want 15", deposit)
-	}
-}
-
-func TestDepositNeeded_BufferUsesFundsAfterRequirements(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  bi(10),
+		Fees:              bi(7),
 		RateDelta:         bi(0),
-		CurrentLockupRate: bi(5),
-		Debt:              bi(0),
-		AvailableFunds:    bi(20),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if deposit.Cmp(bi(15)) != 0 {
-		t.Errorf("deposit should top up buffer after reserving requirements: got %s, want 15", deposit)
-	}
-}
-
-func TestDepositNeeded_BufferAccountsForUploadUsingRunwayFunds(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  bi(98),
-		RateDelta:         bi(0),
-		CurrentLockupRate: bi(1),
-		Debt:              bi(0),
-		AvailableFunds:    bi(100),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if deposit.Cmp(bi(3)) != 0 {
-		t.Errorf("deposit should restore buffer after upload consumes funds: got %s, want 3", deposit)
-	}
-}
-
-func TestDepositNeeded_WithDebt(t *testing.T) {
-	depositNoDebt := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(50),
-		Debt:              bi(0),
-		AvailableFunds:    usdfc(1),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-	depositWithDebt := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(50),
-		Debt:              usdfc(5),
-		AvailableFunds:    usdfc(1),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if depositWithDebt.Cmp(depositNoDebt) <= 0 {
-		t.Errorf("deposit with debt should be larger: debt=%s, noDebt=%s",
-			depositWithDebt, depositNoDebt)
-	}
-}
-
-func TestDepositNeeded_BufferSkipped_NewDataSet_ZeroRate(t *testing.T) {
-	depositNew := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
 		CurrentLockupRate: bi(0),
-		Debt:              bi(0),
 		AvailableFunds:    bi(0),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
 		IsNewDataSet:      true,
 	})
-	depositExisting := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(0),
-		Debt:              bi(0),
-		AvailableFunds:    bi(0),
-		ExtraRunwayEpochs: DefaultExtraRunwayEpochs,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-
-	if depositNew.Cmp(depositExisting) >= 0 {
-		t.Errorf("new dataset with zero rate should skip buffer and be smaller: new=%s, existing=%s",
-			depositNew, depositExisting)
+	if deposit.Cmp(bi(17)) != 0 {
+		t.Fatalf("deposit=%s want 17", deposit)
 	}
 }
 
-func TestDepositNeeded_ZeroEverything(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{IsNewDataSet: true})
-	if deposit.Sign() != 0 {
-		t.Errorf("deposit should be zero when all inputs are zero: got %s", deposit)
-	}
-}
-
-// --- isFWSSMaxApproved ---
-
-func TestIsFWSSMaxApproved_AllConditionsMet(t *testing.T) {
-	if !isFWSSMaxApproved(true, maxUint256, maxUint256, bi(DefaultLockupPeriod)) {
-		t.Error("should be approved when all conditions met")
-	}
-}
-
-func TestIsFWSSMaxApproved_NotApproved(t *testing.T) {
-	if isFWSSMaxApproved(false, maxUint256, maxUint256, bi(DefaultLockupPeriod)) {
-		t.Error("should not be approved when approved=false")
-	}
-}
-
-func TestIsFWSSMaxApproved_RateAllowanceTooLow(t *testing.T) {
-	low := new(big.Int).Sub(maxUint256, bi(1))
-	if isFWSSMaxApproved(true, low, maxUint256, bi(DefaultLockupPeriod)) {
-		t.Error("should not be approved when rateAllowance < maxUint256")
-	}
-}
-
-func TestIsFWSSMaxApproved_LockAllowanceAtThreshold(t *testing.T) {
-	if !isFWSSMaxApproved(true, maxUint256, halfMaxUint256, bi(DefaultLockupPeriod)) {
-		t.Error("should be approved at lockAllowance == maxUint256/2")
-	}
-}
-
-func TestIsFWSSMaxApproved_LockAllowanceBelowThreshold(t *testing.T) {
-	below := new(big.Int).Sub(halfMaxUint256, bi(1))
-	if isFWSSMaxApproved(true, maxUint256, below, bi(DefaultLockupPeriod)) {
-		t.Error("should not be approved when lockAllowance < maxUint256/2")
-	}
-}
-
-func TestIsFWSSMaxApproved_MaxLockPeriodTooShort(t *testing.T) {
-	if isFWSSMaxApproved(true, maxUint256, maxUint256, bi(DefaultLockupPeriod-1)) {
-		t.Error("should not be approved when maxLockPeriod < DefaultLockupPeriod")
-	}
-}
-
-// --- CDNFixedLockupValue ---
-
-func TestCDNFixedLockupValue(t *testing.T) {
-	v := CDNFixedLockupValue()
-	want := big.NewInt(1_000_000_000_000_000_000) // 1 USDFC
-	if v.Cmp(want) != 0 {
-		t.Errorf("CDNFixedLockupValue() = %s, want %s", v, want)
-	}
-}
-
-func TestCDNFixedLockupValue_MutationSafety(t *testing.T) {
-	v1 := CDNFixedLockupValue()
-	v1.SetInt64(0) // mutate the returned copy
-	v2 := CDNFixedLockupValue()
-	if v2.Sign() == 0 {
-		t.Fatal("mutation of returned value affected global cdnFixedLockup")
-	}
-}
-
-// --- CalculateDepositNeeded edge cases ---
-
-func TestDepositNeeded_NilInputs(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{IsNewDataSet: true})
-	if deposit.Sign() != 0 {
-		t.Errorf("expected zero deposit for all-nil inputs, got %s", deposit)
-	}
-}
-
-func TestDepositNeeded_NegativeEpochs(t *testing.T) {
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  usdfc(10),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(50),
-		Debt:              bi(0),
-		AvailableFunds:    usdfc(1),
-		ExtraRunwayEpochs: -100,
-		BufferEpochs:      -50,
-	})
-	// Negative epochs clamped to 0, so runway=0 and buffer=0.
-	// raw = 10e18 + 0 - 1e18 + 0 = 9e18 (clamped to non-negative); buffer = 0
-	// result = 9e18 = usdfc(9)
-	expected := usdfc(9)
-	if deposit.Cmp(expected) != 0 {
-		t.Errorf("deposit = %s, want %s", deposit, expected)
-	}
-}
-
-func TestDepositNeeded_LargeValues(t *testing.T) {
-	huge := new(big.Int).Lsh(big.NewInt(1), 128) // 2^128
-	deposit := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  huge,
-		RateDelta:         huge,
-		CurrentLockupRate: huge,
-		Debt:              huge,
-		AvailableFunds:    new(big.Int),
-		ExtraRunwayEpochs: chain.EpochsPerMonth,
-		BufferEpochs:      DefaultBufferEpochs,
-	})
-	// combinedRate = huge + huge = 2^129
-	// runway = 2^129 * EpochsPerMonth
-	// raw = huge + runway - 0 + huge = 2^129 * (1 + EpochsPerMonth)
-	// buffer = 2^129 * DefaultBufferEpochs
-	// result = 2^129 * (1 + EpochsPerMonth + DefaultBufferEpochs)
-	combinedRate := new(big.Int).Lsh(big.NewInt(1), 129) // 2^129
-	expected := new(big.Int).Mul(combinedRate,
-		new(big.Int).Add(
-			big.NewInt(1),
-			big.NewInt(chain.EpochsPerMonth+int64(DefaultBufferEpochs)),
-		),
-	)
-	if deposit.Cmp(expected) != 0 {
-		t.Errorf("deposit = %s, want %s", deposit, expected)
-	}
-}
-
-func TestDepositNeeded_ZeroTotalLockup(t *testing.T) {
+func TestCalculateDepositNeeded_BufferUsesRunwayWindow(t *testing.T) {
 	deposit := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  bi(0),
-		RateDelta:         bi(100),
-		CurrentLockupRate: bi(50),
-		Debt:              bi(0),
-		AvailableFunds:    usdfc(100),
-		ExtraRunwayEpochs: 0,
-		BufferEpochs:      DefaultBufferEpochs,
+		Fees:              bi(0),
+		RateDelta:         bi(1),
+		CurrentLockupRate: bi(4),
+		AvailableFunds:    bi(10),
+		RunwayInEpochs:    bi(3),
+		BufferEpochs:      5,
 	})
-	if deposit.Sign() != 0 {
-		t.Errorf("deposit = %s, want 0", deposit)
+	if deposit.Cmp(bi(15)) != 0 {
+		t.Fatalf("deposit=%s want 15", deposit)
 	}
 }
 
-// --- CalculateEffectiveRate edge cases ---
-
-func TestCalculateEffectiveRate_NilInputs(t *testing.T) {
-	rate := CalculateEffectiveRate(nil, nil, nil, 0)
-	if rate.RatePerEpoch == nil || rate.RatePerMonth == nil {
-		t.Fatal("nil rate fields returned")
+func TestIsFWSSMaxApproved_UsesRequiredLockupPeriod(t *testing.T) {
+	required := bi(DefaultLockupPeriod + 10)
+	if isFWSSMaxApproved(true, maxUint256, maxUint256, bi(DefaultLockupPeriod), required) {
+		t.Fatal("approval should fail when max lockup period is below required period")
 	}
-	// nil size, price, and minRate are treated as 0; ratePerEpoch is clamped to bigOne=1.
-	if rate.RatePerEpoch.Cmp(big.NewInt(1)) != 0 {
-		t.Errorf("RatePerEpoch = %s, want 1", rate.RatePerEpoch)
-	}
-	if rate.RatePerMonth.Sign() != 0 {
-		t.Errorf("RatePerMonth = %s, want 0", rate.RatePerMonth)
-	}
-}
-
-func TestCalculateEffectiveRate_NegativeEpochsPerMonth(t *testing.T) {
-	rate := CalculateEffectiveRate(bi(chain.TiB), usdfcFrac(25), usdfcFrac(1), -1)
-	// -1 falls back to chain.EpochsPerMonth; result must match the explicit positive call
-	expected := CalculateEffectiveRate(bi(chain.TiB), usdfcFrac(25), usdfcFrac(1), chain.EpochsPerMonth)
-	if rate.RatePerEpoch.Cmp(expected.RatePerEpoch) != 0 {
-		t.Errorf("RatePerEpoch = %s, want %s (fallback to EpochsPerMonth)", rate.RatePerEpoch, expected.RatePerEpoch)
-	}
-	if rate.RatePerMonth.Cmp(expected.RatePerMonth) != 0 {
-		t.Errorf("RatePerMonth = %s, want %s (fallback to EpochsPerMonth)", rate.RatePerMonth, expected.RatePerMonth)
+	if !isFWSSMaxApproved(true, maxUint256, maxUint256, required, required) {
+		t.Fatal("approval should pass at required period")
 	}
 }

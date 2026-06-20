@@ -124,6 +124,9 @@ type Context struct {
 	fwssTerminator   FWSSTerminator
 	dataSetValidator DataSetValidator
 	dataSetReader    FWSSDataSetReader
+	paymentReader    PaymentStateReader
+	epochReader      EpochReader
+	paymentToken     common.Address
 }
 
 type commitExtraDataKind uint8
@@ -257,6 +260,16 @@ func WithFWSSDataSetReader(r FWSSDataSetReader) ContextOption {
 // committing pieces to an existing data set.
 func WithDataSetValidator(v DataSetValidator) ContextOption {
 	return func(c *Context) { c.dataSetValidator = normalizeOptional(v) }
+}
+
+// WithPaymentStateReader injects payment readers for provider-relayed
+// termination debt pre-checks.
+func WithPaymentStateReader(pay PaymentStateReader, epochs EpochReader, token common.Address) ContextOption {
+	return func(c *Context) {
+		c.paymentReader = normalizeOptional(pay)
+		c.epochReader = normalizeOptional(epochs)
+		c.paymentToken = token
+	}
 }
 
 // Store streams data to the provider and waits for it to be parked.

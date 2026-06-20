@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum"
@@ -19,10 +20,28 @@ import (
 
 // --- mocks ---
 
-type mockWS struct{ price *warmstorage.ServicePrice }
+type mockWS struct {
+	price              *warmstorage.ServicePrice //nolint:staticcheck // Compatibility test fixture.
+	priceList          *warmstorage.PriceList
+	nilPriceListResult bool
+}
 
+//nolint:staticcheck // Compatibility test fixture for deprecated ServicePrice.
 func (m *mockWS) GetServicePrice(_ context.Context) (*warmstorage.ServicePrice, error) {
+	if m.price == nil {
+		return defaultPrice(), nil
+	}
 	return m.price, nil
+}
+
+func (m *mockWS) GetPriceList(_ context.Context) (*warmstorage.PriceList, error) {
+	if m.nilPriceListResult {
+		return nil, nil
+	}
+	if m.priceList == nil {
+		return defaultPriceList(), nil
+	}
+	return m.priceList, nil
 }
 
 type mockPay struct {
@@ -36,6 +55,52 @@ func (m *mockPay) AccountInfo(_ context.Context, _, _ common.Address) (*payments
 
 func (m *mockPay) ServiceApproval(_ context.Context, _, _, _ common.Address) (*payments.OperatorApproval, error) {
 	return m.approval, nil
+}
+
+type strictPay struct {
+	mu           sync.Mutex
+	wantToken    common.Address
+	wantOwner    common.Address
+	wantOperator common.Address
+	account      *payments.AccountState
+	approval     *payments.OperatorApproval
+	accountCalls int
+	approvalCall int
+}
+
+func (m *strictPay) AccountInfo(_ context.Context, token, owner common.Address) (*payments.AccountState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if token != m.wantToken {
+		return nil, fmt.Errorf("AccountInfo token=%s want %s", token, m.wantToken)
+	}
+	if owner != m.wantOwner {
+		return nil, fmt.Errorf("AccountInfo owner=%s want %s", owner, m.wantOwner)
+	}
+	m.accountCalls++
+	return m.account, nil
+}
+
+func (m *strictPay) ServiceApproval(_ context.Context, token, client, operator common.Address) (*payments.OperatorApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if token != m.wantToken {
+		return nil, fmt.Errorf("ServiceApproval token=%s want %s", token, m.wantToken)
+	}
+	if client != m.wantOwner {
+		return nil, fmt.Errorf("ServiceApproval client=%s want %s", client, m.wantOwner)
+	}
+	if operator != m.wantOperator {
+		return nil, fmt.Errorf("ServiceApproval operator=%s want %s", operator, m.wantOperator)
+	}
+	m.approvalCall++
+	return m.approval, nil
+}
+
+func (m *strictPay) calls() (account, approval int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.accountCalls, m.approvalCall
 }
 
 type mockCaller struct {
@@ -55,16 +120,6 @@ func (m *mockCaller) BlockNumber(_ context.Context) (uint64, error) {
 	return m.blockNumber, nil
 }
 
-type sybilFeeUnavailableCaller struct{}
-
-func (sybilFeeUnavailableCaller) CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
-	return nil, errors.New("USDFC_SYBIL_FEE reverted")
-}
-
-func (sybilFeeUnavailableCaller) BlockNumber(context.Context) (uint64, error) {
-	return 0, nil
-}
-
 // mockPayErr is a PaymentsReader that returns errors on all calls.
 type mockPayErr struct{ err error }
 
@@ -78,6 +133,7 @@ func (m *mockPayErr) ServiceApproval(_ context.Context, _, _, _ common.Address) 
 
 // --- helpers ---
 
+//nolint:staticcheck // Compatibility test fixture for deprecated ServicePrice.
 func defaultPrice() *warmstorage.ServicePrice {
 	return &warmstorage.ServicePrice{
 		PricePerTiBPerMonthNoCDN: usdfcFrac(25),
@@ -124,6 +180,64 @@ func TestGetServicePrice(t *testing.T) {
 	}
 	if price.EpochsPerMonth.Int64() != chain.EpochsPerMonth {
 		t.Errorf("EpochsPerMonth: got %d, want %d", price.EpochsPerMonth.Int64(), chain.EpochsPerMonth)
+	}
+}
+
+func TestService_UsesExplicitPaymentAddresses(t *testing.T) {
+	token := common.HexToAddress("0x0000000000000000000000000000000000000aAa")
+	operator := common.HexToAddress("0x0000000000000000000000000000000000000bBb")
+	owner := common.HexToAddress("0x0000000000000000000000000000000000000cCc")
+	pay := &strictPay{
+		wantToken:    token,
+		wantOwner:    owner,
+		wantOperator: operator,
+		account: &payments.AccountState{
+			Funds:         usdfc(1_000_000),
+			LockupCurrent: new(big.Int),
+			LockupRate:    new(big.Int),
+		},
+		approval: maxApproval(),
+	}
+	svc, err := New(Options{
+		Chain:              chain.Calibration,
+		USDFCTokenAddress:  token,
+		WarmStorageAddress: operator,
+		WarmStorage:        &mockWS{priceList: defaultPriceList()},
+		Payments:           pay,
+		Caller:             &mockCaller{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc.usdfc != token {
+		t.Fatalf("service USDFC=%s want %s", svc.usdfc, token)
+	}
+	if svc.fwss != operator {
+		t.Fatalf("service FWSS=%s want %s", svc.fwss, operator)
+	}
+
+	if _, err := svc.GetUploadCosts(context.Background(), owner, bi(1024), &UploadCostOptions{IsNewDataSet: true}); err != nil {
+		t.Fatalf("GetUploadCosts: %v", err)
+	}
+	if _, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		owner,
+		bi(1024),
+		[]MultiContextRef{{IsNewDataSet: true}},
+		&UploadCostOptions{},
+	); err != nil {
+		t.Fatalf("CalculateMultiContextCosts: %v", err)
+	}
+	if _, err := svc.GetAccountSummary(context.Background(), owner); err != nil {
+		t.Fatalf("GetAccountSummary: %v", err)
+	}
+
+	accountCalls, approvalCalls := pay.calls()
+	if accountCalls != 3 {
+		t.Fatalf("AccountInfo calls=%d want 3", accountCalls)
+	}
+	if approvalCalls != 2 {
+		t.Fatalf("ServiceApproval calls=%d want 2", approvalCalls)
 	}
 }
 
@@ -202,23 +316,30 @@ func TestGetUploadCosts_DepositPositive_WhenUnderfunded(t *testing.T) {
 	}
 }
 
-func TestGetUploadCosts_UsesLocalSybilFee(t *testing.T) {
+func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
+	priceList := defaultPriceList()
 	svc := buildSvc(t,
-		&mockWS{price: defaultPrice()},
+		&mockWS{priceList: priceList},
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
 		},
-		usdfc(999),
+		new(big.Int),
 	)
-	svc.caller = sybilFeeUnavailableCaller{}
 
-	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
+	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
+		IsNewDataSet: true,
+		PieceCount:   bi(41),
+	})
 	if err != nil {
 		t.Fatalf("new dataset GetUploadCosts: %v", err)
 	}
-	if newDataSet.Lockup.SybilFee.Cmp(usdfcFrac(1)) != 0 {
-		t.Errorf("new dataset sybil fee: got %s, want %s", newDataSet.Lockup.SybilFee, usdfcFrac(1))
+	wantFees := CalculateUploadFees(priceList, true, bi(41))
+	if newDataSet.Fees.Total.Cmp(wantFees.Total) != 0 {
+		t.Errorf("new dataset fees: got %s, want %s", newDataSet.Fees.Total, wantFees.Total)
+	}
+	if newDataSet.Lockup.LifecycleLockup.Cmp(priceList.Lockups.LifecycleReserveTarget) != 0 {
+		t.Errorf("new dataset lifecycle lockup: got %s, want %s", newDataSet.Lockup.LifecycleLockup, priceList.Lockups.LifecycleReserveTarget)
 	}
 
 	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
@@ -227,8 +348,12 @@ func TestGetUploadCosts_UsesLocalSybilFee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("existing dataset GetUploadCosts: %v", err)
 	}
-	if existingDataSet.Lockup.SybilFee.Sign() != 0 {
-		t.Errorf("existing dataset sybil fee: got %s, want 0", existingDataSet.Lockup.SybilFee)
+	wantExistingFees := CalculateUploadFees(priceList, false, nil)
+	if existingDataSet.Fees.Total.Cmp(wantExistingFees.Total) != 0 {
+		t.Errorf("existing dataset fees: got %s, want %s", existingDataSet.Fees.Total, wantExistingFees.Total)
+	}
+	if existingDataSet.Lockup.LifecycleLockup.Sign() != 0 {
+		t.Errorf("existing dataset lifecycle lockup: got %s, want 0", existingDataSet.Lockup.LifecycleLockup)
 	}
 }
 
@@ -251,6 +376,25 @@ func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
 	}
 }
 
+func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{nilPriceListResult: true},
+		&mockPay{
+			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+			approval: maxApproval(),
+		},
+		new(big.Int),
+	)
+
+	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
+	if err != nil {
+		t.Fatalf("GetUploadCosts: %v", err)
+	}
+	if got.Rate.RatePerMonth.Sign() != 0 || got.Fees.Total.Sign() != 0 {
+		t.Fatalf("got non-zero price-derived values: rate=%s fees=%s", got.Rate.RatePerMonth, got.Fees.Total)
+	}
+}
+
 func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
 	typ := reflect.TypeOf(UploadCostOptions{})
 	got := make([]string, typ.NumField())
@@ -263,6 +407,7 @@ func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
 		"EnableCDN",
 		"IsNewDataSet",
 		"CurrentDataSetSizeBytes",
+		"PieceCount",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UploadCostOptions fields=%v want %v", got, want)
@@ -392,7 +537,7 @@ func TestGetAccountSummary_Debt(t *testing.T) {
 }
 
 func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
-	// payments goroutines fail; GetServicePrice succeeds. Verify error is propagated.
+	// payments goroutines fail; GetPriceList succeeds. Verify error is propagated.
 	payErr := fmt.Errorf("rpc unavailable")
 	svc := buildSvc(t,
 		&mockWS{price: defaultPrice()},

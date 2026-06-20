@@ -160,18 +160,28 @@ func (s *Service) ViewAddress() common.Address { return s.viewAddr }
 // the Service was constructed without a PDPVerifier.
 func (s *Service) PDPVerifierAddress() common.Address { return s.pdpVerifierAdr }
 
-// ServicePrice is the FWSS pricing view. All amounts are in base units of
-// the payment token.
+// ServicePrice is the legacy FWSS pricing view. All amounts are in base units
+// of the payment token.
+//
+// Deprecated: Use PriceList returned by GetPriceList. ServicePrice omits
+// one-time fees and lockup parameters required for current cost calculations.
 type ServicePrice struct {
 	PricePerTiBPerMonthNoCDN   *big.Int
 	PricePerTiBCdnEgress       *big.Int
 	PricePerTiBCacheMissEgress *big.Int
 	TokenAddress               common.Address // EVM address of the payment token
 	EpochsPerMonth             *big.Int       // Filecoin epochs per billing month
-	MinimumPricePerMonth       *big.Int
+	DatasetFeePerMonth         *big.Int
+	// MinimumPricePerMonth is kept as a source-compatibility alias for
+	// DatasetFeePerMonth.
+	//
+	// Deprecated: Use DatasetFeePerMonth.
+	MinimumPricePerMonth *big.Int
 }
 
-// GetServicePrice returns the current pricing parameters.
+// GetServicePrice returns the legacy current pricing parameters.
+//
+// Deprecated: Use GetPriceList.
 func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -186,7 +196,79 @@ func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
 		PricePerTiBCacheMissEgress: p.PricePerTiBCacheMissEgress,
 		TokenAddress:               p.TokenAddress,
 		EpochsPerMonth:             p.EpochsPerMonth,
-		MinimumPricePerMonth:       p.MinimumPricePerMonth,
+		DatasetFeePerMonth:         p.DatasetFeePerMonth,
+		MinimumPricePerMonth:       p.DatasetFeePerMonth,
+	}, nil
+}
+
+// PriceList is the canonical warm-storage pricing view. All amounts are in
+// base units of the payment token.
+type PriceList struct {
+	Token   common.Address
+	Rates   PriceListRates
+	Fees    PriceListFees
+	Lockups PriceListLockups
+}
+
+// PriceListRates contains recurring storage and egress rates.
+type PriceListRates struct {
+	StoragePerTiBPerMonth *big.Int
+	DatasetFeePerMonth    *big.Int
+	CDNEgressPerTiB       *big.Int
+	CacheMissEgressPerTiB *big.Int
+}
+
+// PriceListFees contains one-time operation fees.
+type PriceListFees struct {
+	CreateDataSetFee         *big.Int
+	AddPiecesBaseFee         *big.Int
+	AddPiecesPerPieceFee     *big.Int
+	SchedulePieceRemovalsFee *big.Int
+	TerminateFee             *big.Int
+}
+
+// PriceListLockups contains required lockup amounts and periods.
+type PriceListLockups struct {
+	LifecycleReserveTarget *big.Int
+	ReplenishThreshold     *big.Int
+	DefaultLockupPeriod    *big.Int
+	CDNLockupAmount        *big.Int
+	CacheMissLockupAmount  *big.Int
+	CDNLockupPeriod        *big.Int
+}
+
+// GetPriceList returns the canonical warm-storage price list.
+func (s *Service) GetPriceList(ctx context.Context) (*PriceList, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	p, err := s.viewBind.GetPriceList(&bind.CallOpts{Context: ctx})
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetPriceList: %w", err)
+	}
+	return &PriceList{
+		Token: p.Token,
+		Rates: PriceListRates{
+			StoragePerTiBPerMonth: copyBigInt(p.Rates.StoragePerTibPerMonth),
+			DatasetFeePerMonth:    copyBigInt(p.Rates.DatasetFeePerMonth),
+			CDNEgressPerTiB:       copyBigInt(p.Rates.CdnEgressPerTib),
+			CacheMissEgressPerTiB: copyBigInt(p.Rates.CacheMissEgressPerTib),
+		},
+		Fees: PriceListFees{
+			CreateDataSetFee:         copyBigInt(p.Fees.CreateDataSetFee),
+			AddPiecesBaseFee:         copyBigInt(p.Fees.AddPiecesBaseFee),
+			AddPiecesPerPieceFee:     copyBigInt(p.Fees.AddPiecesPerPieceFee),
+			SchedulePieceRemovalsFee: copyBigInt(p.Fees.SchedulePieceRemovalsFee),
+			TerminateFee:             copyBigInt(p.Fees.TerminateFee),
+		},
+		Lockups: PriceListLockups{
+			LifecycleReserveTarget: copyBigInt(p.Lockups.LifecycleReserveTarget),
+			ReplenishThreshold:     copyBigInt(p.Lockups.ReplenishThreshold),
+			DefaultLockupPeriod:    copyBigInt(p.Lockups.DefaultLockupPeriod),
+			CDNLockupAmount:        copyBigInt(p.Lockups.CdnLockupAmount),
+			CacheMissLockupAmount:  copyBigInt(p.Lockups.CacheMissLockupAmount),
+			CDNLockupPeriod:        copyBigInt(p.Lockups.CdnLockupPeriod),
+		},
 	}, nil
 }
 

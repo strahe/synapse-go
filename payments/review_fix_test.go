@@ -51,6 +51,56 @@ func TestFund_WithFundNeedsFwssApprovalFalseSkipsApprovalCheck(t *testing.T) {
 	}
 }
 
+func TestFund_UsesInjectedApprovalLockupPeriod(t *testing.T) {
+	s, mb := newTestService(t)
+	s.warmStorage = operatorAddr
+	s.usdfcToken = tokenAddr
+	s.lockups = &fakeApprovalLockupReader{period: big.NewInt(123)}
+
+	if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
+		t.Fatalf("Fund: %v", err)
+	}
+	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(big.NewInt(123)) != 0 {
+		t.Fatalf("maxLockupPeriod=%s want 123", got)
+	}
+}
+
+func TestFund_ExplicitApprovalLockupPeriodOverridesReader(t *testing.T) {
+	reader := &fakeApprovalLockupReader{period: big.NewInt(123)}
+	s, mb := newTestService(t)
+	s.warmStorage = operatorAddr
+	s.usdfcToken = tokenAddr
+	s.lockups = reader
+
+	if _, err := s.Fund(
+		context.Background(),
+		big.NewInt(0),
+		WithFundNeedsFwssApproval(true),
+		WithFundApprovalLockupPeriod(big.NewInt(456)),
+	); err != nil {
+		t.Fatalf("Fund: %v", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("lockup reader calls=%d want 0", reader.calls)
+	}
+	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(big.NewInt(456)) != 0 {
+		t.Fatalf("maxLockupPeriod=%s want 456", got)
+	}
+}
+
+func TestFund_StandaloneApprovalLockupPeriodFallback(t *testing.T) {
+	s, mb := newTestService(t)
+	s.warmStorage = operatorAddr
+	s.usdfcToken = tokenAddr
+
+	if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
+		t.Fatalf("Fund: %v", err)
+	}
+	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(LockupPeriodEpochs) != 0 {
+		t.Fatalf("maxLockupPeriod=%s want %s", got, LockupPeriodEpochs)
+	}
+}
+
 func TestFundSync_WithExplicitZeroWaitStillWaitsForReceipt(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
@@ -82,6 +132,29 @@ func TestFundSync_WithExplicitZeroWaitStillWaitsForReceipt(t *testing.T) {
 	if receiptCalls != 1 {
 		t.Fatalf("receipt call count = %d, want 1", receiptCalls)
 	}
+}
+
+type fakeApprovalLockupReader struct {
+	period *big.Int
+	calls  int
+}
+
+func (f *fakeApprovalLockupReader) ApprovalLockupPeriod(context.Context) (*big.Int, error) {
+	f.calls++
+	return f.period, nil
+}
+
+func sentApprovalMaxLockupPeriod(t *testing.T, mb *mockBackend) *big.Int {
+	t.Helper()
+	if len(mb.sent) != 1 {
+		t.Fatalf("sent tx count = %d, want 1", len(mb.sent))
+	}
+	method := mb.filPayABI.Methods["setOperatorApproval"]
+	args, err := method.Inputs.Unpack(mb.sent[0].Data()[4:])
+	if err != nil {
+		t.Fatalf("unpack setOperatorApproval: %v", err)
+	}
+	return args[5].(*big.Int)
 }
 
 func TestSettleAuto_NoSignerFailsBeforeFetchingRail(t *testing.T) {

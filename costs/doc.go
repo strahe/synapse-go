@@ -1,8 +1,8 @@
 // Package costs provides cost calculation for storage operations.
 //
-// It computes upload costs based on service pricing, data set sizes,
-// effective rates, lockup requirements, and CDN options. The calculation
-// matches on-chain Solidity integer division for accuracy.
+// It computes upload costs from the warmstorage PriceList, data set sizes,
+// one-time operation fees, lockup requirements, and CDN options. The
+// calculation matches on-chain Solidity integer division for accuracy.
 //
 // # Entry points
 //
@@ -26,12 +26,11 @@
 // Commission rates returned by warmstorage are expressed in basis points
 // out of 10 000 (e.g. 500 bps = 5 %).
 //
-// CDN fee — the optional egress fee charged when a dataset opts in to
-// FilBeam CDN delivery. Applied on top of the base PDP rate and split
-// between cache-hit and cache-miss rails.
+// Fees — one-time operation charges such as dataset creation and add-pieces
+// submission fees. Add-pieces fees are counted per PDP batch.
 //
-// Sybil fee — a small flat USDFC amount that warmstorage locks on
-// dataset creation to deter spam. Added to each upload cost estimate.
+// Lifecycle reserve — the flat lockup required when creating a dataset.
+// It is separate from one-time operation fees.
 //
 // Lockup — funds reserved on the FilecoinPay contract to guarantee a
 // stream of payments. `LockupRatePerEpoch` is the per-epoch drain rate;

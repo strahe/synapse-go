@@ -198,17 +198,19 @@ func newTestServiceWithPDP(t *testing.T) (*Service, *mockCaller) {
 
 func dataSetInfoView(id int64) fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView {
 	return fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		PdpRailId:       big.NewInt(id),
-		CacheMissRailId: big.NewInt(0),
-		CdnRailId:       big.NewInt(0),
-		Payer:           common.HexToAddress("0x1000000000000000000000000000000000000001"),
-		Payee:           common.HexToAddress("0x2000000000000000000000000000000000000002"),
-		ServiceProvider: common.HexToAddress("0x3000000000000000000000000000000000000003"),
-		CommissionBps:   big.NewInt(0),
-		ClientDataSetId: big.NewInt(id),
-		PdpEndEpoch:     big.NewInt(0),
-		ProviderId:      big.NewInt(1),
-		DataSetId:       big.NewInt(id),
+		PdpRailId:               big.NewInt(id),
+		CacheMissRailId:         big.NewInt(0),
+		CdnRailId:               big.NewInt(0),
+		Payer:                   common.HexToAddress("0x1000000000000000000000000000000000000001"),
+		Payee:                   common.HexToAddress("0x2000000000000000000000000000000000000002"),
+		ServiceProvider:         common.HexToAddress("0x3000000000000000000000000000000000000003"),
+		CommissionBps:           big.NewInt(0),
+		ClientDataSetId:         big.NewInt(id),
+		PdpEndEpoch:             big.NewInt(0),
+		ProviderId:              big.NewInt(1),
+		DataSetId:               big.NewInt(id),
+		PendingOneTimePayments:  big.NewInt(0),
+		LifecycleReserveBalance: big.NewInt(0),
 	}
 }
 
@@ -236,31 +238,84 @@ func TestGetServicePrice(t *testing.T) {
 		PricePerTiBCacheMissEgress: big.NewInt(30),
 		TokenAddress:               common.HexToAddress("0xabcd"),
 		EpochsPerMonth:             big.NewInt(86400),
-		MinimumPricePerMonth:       big.NewInt(5),
+		DatasetFeePerMonth:         big.NewInt(5),
 	})
 	p, err := s.GetServicePrice(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.PricePerTiBPerMonthNoCDN.Int64() != 1000 || p.MinimumPricePerMonth.Int64() != 5 {
+	if p.PricePerTiBPerMonthNoCDN.Int64() != 1000 || p.DatasetFeePerMonth.Int64() != 5 || p.MinimumPricePerMonth.Int64() != 5 {
 		t.Errorf("bad: %+v", p)
+	}
+}
+
+func TestGetPriceList(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.setViewReply(t, "getPriceList", fwssviewbind.PriceList{
+		Token: common.HexToAddress("0xabcd"),
+		Rates: fwssviewbind.PriceListRates{
+			StoragePerTibPerMonth: big.NewInt(1),
+			DatasetFeePerMonth:    big.NewInt(2),
+			CdnEgressPerTib:       big.NewInt(3),
+			CacheMissEgressPerTib: big.NewInt(4),
+		},
+		Fees: fwssviewbind.PriceListFees{
+			CreateDataSetFee:         big.NewInt(5),
+			AddPiecesBaseFee:         big.NewInt(6),
+			AddPiecesPerPieceFee:     big.NewInt(7),
+			SchedulePieceRemovalsFee: big.NewInt(8),
+			TerminateFee:             big.NewInt(9),
+		},
+		Lockups: fwssviewbind.PriceListLockups{
+			LifecycleReserveTarget: big.NewInt(10),
+			ReplenishThreshold:     big.NewInt(11),
+			DefaultLockupPeriod:    big.NewInt(12),
+			CdnLockupAmount:        big.NewInt(13),
+			CacheMissLockupAmount:  big.NewInt(14),
+			CdnLockupPeriod:        big.NewInt(15),
+		},
+	})
+
+	p, err := s.GetPriceList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Token != common.HexToAddress("0xabcd") ||
+		p.Rates.StoragePerTiBPerMonth.Int64() != 1 ||
+		p.Rates.DatasetFeePerMonth.Int64() != 2 ||
+		p.Rates.CDNEgressPerTiB.Int64() != 3 ||
+		p.Rates.CacheMissEgressPerTiB.Int64() != 4 ||
+		p.Fees.CreateDataSetFee.Int64() != 5 ||
+		p.Fees.AddPiecesBaseFee.Int64() != 6 ||
+		p.Fees.AddPiecesPerPieceFee.Int64() != 7 ||
+		p.Fees.SchedulePieceRemovalsFee.Int64() != 8 ||
+		p.Fees.TerminateFee.Int64() != 9 ||
+		p.Lockups.LifecycleReserveTarget.Int64() != 10 ||
+		p.Lockups.ReplenishThreshold.Int64() != 11 ||
+		p.Lockups.DefaultLockupPeriod.Int64() != 12 ||
+		p.Lockups.CDNLockupAmount.Int64() != 13 ||
+		p.Lockups.CacheMissLockupAmount.Int64() != 14 ||
+		p.Lockups.CDNLockupPeriod.Int64() != 15 {
+		t.Fatalf("bad price list: %+v", p)
 	}
 }
 
 func TestGetDataSet_FoundAndMissing(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getDataSet", fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		PdpRailId:       big.NewInt(7),
-		CacheMissRailId: big.NewInt(0),
-		CdnRailId:       big.NewInt(0),
-		Payer:           common.HexToAddress("0x33"),
-		Payee:           common.HexToAddress("0x44"),
-		ServiceProvider: common.HexToAddress("0x55"),
-		CommissionBps:   big.NewInt(100),
-		ClientDataSetId: big.NewInt(1),
-		PdpEndEpoch:     big.NewInt(0),
-		ProviderId:      big.NewInt(9),
-		DataSetId:       big.NewInt(42),
+		PdpRailId:               big.NewInt(7),
+		CacheMissRailId:         big.NewInt(0),
+		CdnRailId:               big.NewInt(0),
+		Payer:                   common.HexToAddress("0x33"),
+		Payee:                   common.HexToAddress("0x44"),
+		ServiceProvider:         common.HexToAddress("0x55"),
+		CommissionBps:           big.NewInt(100),
+		ClientDataSetId:         big.NewInt(1),
+		PdpEndEpoch:             big.NewInt(0),
+		ProviderId:              big.NewInt(9),
+		DataSetId:               big.NewInt(42),
+		PendingOneTimePayments:  big.NewInt(0),
+		LifecycleReserveBalance: big.NewInt(0),
 	})
 	got, err := s.GetDataSet(context.Background(), types.NewBigInt(42))
 	if err != nil {
@@ -272,14 +327,16 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 
 	// not found: pdpRailId=0 → ErrNotFound
 	mc.setViewReply(t, "getDataSet", fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		PdpRailId:       big.NewInt(0),
-		CacheMissRailId: big.NewInt(0),
-		CdnRailId:       big.NewInt(0),
-		CommissionBps:   big.NewInt(0),
-		ClientDataSetId: big.NewInt(0),
-		PdpEndEpoch:     big.NewInt(0),
-		ProviderId:      big.NewInt(0),
-		DataSetId:       big.NewInt(0),
+		PdpRailId:               big.NewInt(0),
+		CacheMissRailId:         big.NewInt(0),
+		CdnRailId:               big.NewInt(0),
+		CommissionBps:           big.NewInt(0),
+		ClientDataSetId:         big.NewInt(0),
+		PdpEndEpoch:             big.NewInt(0),
+		ProviderId:              big.NewInt(0),
+		DataSetId:               big.NewInt(0),
+		PendingOneTimePayments:  big.NewInt(0),
+		LifecycleReserveBalance: big.NewInt(0),
 	})
 	got, err = s.GetDataSet(context.Background(), types.NewBigInt(99))
 	if err == nil || !errors.Is(err, ErrNotFound) {
@@ -293,14 +350,16 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 func TestGetDataSet_ZeroDataSetID(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getDataSet", fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		PdpRailId:       big.NewInt(0),
-		CacheMissRailId: big.NewInt(0),
-		CdnRailId:       big.NewInt(0),
-		CommissionBps:   big.NewInt(0),
-		ClientDataSetId: big.NewInt(0),
-		PdpEndEpoch:     big.NewInt(0),
-		ProviderId:      big.NewInt(0),
-		DataSetId:       big.NewInt(0),
+		PdpRailId:               big.NewInt(0),
+		CacheMissRailId:         big.NewInt(0),
+		CdnRailId:               big.NewInt(0),
+		CommissionBps:           big.NewInt(0),
+		ClientDataSetId:         big.NewInt(0),
+		PdpEndEpoch:             big.NewInt(0),
+		ProviderId:              big.NewInt(0),
+		DataSetId:               big.NewInt(0),
+		PendingOneTimePayments:  big.NewInt(0),
+		LifecycleReserveBalance: big.NewInt(0),
 	})
 	_, err := s.GetDataSet(context.Background(), types.NewBigInt(0))
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
@@ -311,16 +370,16 @@ func TestGetDataSet_ZeroDataSetID(t *testing.T) {
 func TestGetClientDataSets(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getClientDataSets0", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		{PdpRailId: big.NewInt(1), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(1)},
-		{PdpRailId: big.NewInt(2), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(2)},
+		{PdpRailId: big.NewInt(1), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(1), PendingOneTimePayments: big.NewInt(0), LifecycleReserveBalance: big.NewInt(0)},
+		{PdpRailId: big.NewInt(2), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(2), PendingOneTimePayments: big.NewInt(0), LifecycleReserveBalance: big.NewInt(0)},
 	})
 	// The overloaded getClientDataSets has two variants. We call the
 	// (address,offset,limit) one, which abigen exposes as GetClientDataSets
 	// (first overload -> "getClientDataSets", second -> "getClientDataSets0").
 	// Pack correctly:
 	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		{PdpRailId: big.NewInt(1), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(1)},
-		{PdpRailId: big.NewInt(2), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(2)},
+		{PdpRailId: big.NewInt(1), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(1), PendingOneTimePayments: big.NewInt(0), LifecycleReserveBalance: big.NewInt(0)},
+		{PdpRailId: big.NewInt(2), CacheMissRailId: big.NewInt(0), CdnRailId: big.NewInt(0), CommissionBps: big.NewInt(0), ClientDataSetId: big.NewInt(0), PdpEndEpoch: big.NewInt(0), ProviderId: big.NewInt(0), DataSetId: big.NewInt(2), PendingOneTimePayments: big.NewInt(0), LifecycleReserveBalance: big.NewInt(0)},
 	})
 	list, err := s.GetClientDataSets(context.Background(), common.HexToAddress("0xaa"), types.ListOptions{Offset: 0, Limit: 10})
 	if err != nil {

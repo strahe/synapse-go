@@ -514,7 +514,7 @@ func TestContextUpload_Callbacks(t *testing.T) {
 			piecesAddedProviderID = providerID
 			piecesAddedPieces = append([]SubmittedPiece(nil), pieces...)
 		},
-		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece) {
 			piecesConfirmedDSID = dataSetID
 			piecesConfirmedProvider = providerID
 			piecesConfirmedPieces = append([]ConfirmedPiece(nil), pieces...)
@@ -602,7 +602,7 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 
 	var confirmed []ConfirmedPiece
 	opts := &UploadOptions{
-		OnPiecesConfirmed: func(_ types.BigInt, _ types.BigInt, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(_, _ types.BigInt, pieces []ConfirmedPiece) {
 			confirmed = append([]ConfirmedPiece(nil), pieces...)
 		},
 	}
@@ -720,7 +720,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 				pieces:     append([]SubmittedPiece(nil), pieces...),
 			})
 		},
-		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece) {
 			mu.Lock()
 			defer mu.Unlock()
 			piecesConfirmedEvt = append(piecesConfirmedEvt, confirmedEvent{
@@ -848,7 +848,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	var confirmed []confirmedEvent
 	opts := &UploadOptions{
 		Copies: 1,
-		OnPiecesConfirmed: func(dataSetID types.BigInt, providerID types.BigInt, pieces []ConfirmedPiece) {
+		OnPiecesConfirmed: func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece) {
 			confirmed = append(confirmed, confirmedEvent{
 				providerID: providerID,
 				dataSetID:  dataSetID,

@@ -26,6 +26,11 @@ type ContractCaller interface {
 
 // WarmStorageReader is the subset of warmstorage.Service used by costs.
 type WarmStorageReader interface {
+	GetPriceList(ctx context.Context) (*warmstorage.PriceList, error)
+}
+
+//nolint:staticcheck // Compatibility surface for the deprecated ServicePrice API.
+type legacyServicePriceReader interface {
 	GetServicePrice(ctx context.Context) (*warmstorage.ServicePrice, error)
 }
 
@@ -51,8 +56,17 @@ type Service struct {
 // Options configures a [Service].
 type Options struct {
 	// Chain selects the network whose contract addresses are used.
-	// Zero value is chain.Mainnet.
+	// Zero value is chain.Mainnet. Explicit addresses below override the
+	// chain registry for callers that resolve current contracts dynamically.
 	Chain chain.Chain
+
+	// USDFCTokenAddress is the payment token used for account and approval
+	// reads. Zero falls back to Chain.Addresses().USDFC.
+	USDFCTokenAddress common.Address
+
+	// WarmStorageAddress is the FWSS operator used for approval reads. Zero
+	// falls back to Chain.Addresses().FWSS.
+	WarmStorageAddress common.Address
 
 	// WarmStorage reads on-chain service pricing. Required.
 	WarmStorage WarmStorageReader
@@ -72,7 +86,7 @@ type Options struct {
 	Lifecycle *lifecycle.Lifecycle
 }
 
-// New constructs a [Service] using addresses from opts.Chain.Addresses().
+// New constructs a [Service].
 // WarmStorage, Payments and Caller must be non-nil.
 func New(opts Options) (*Service, error) {
 	if opts.WarmStorage == nil {
@@ -85,10 +99,18 @@ func New(opts Options) (*Service, error) {
 		return nil, fmt.Errorf("costs.New: Caller is nil")
 	}
 	addrs := opts.Chain.Addresses()
-	if addrs.FWSS == (common.Address{}) {
+	fwss := opts.WarmStorageAddress
+	if fwss == (common.Address{}) {
+		fwss = addrs.FWSS
+	}
+	if fwss == (common.Address{}) {
 		return nil, fmt.Errorf("costs.New: %w: %v", chain.ErrUnknownChain, opts.Chain)
 	}
-	if addrs.USDFC == (common.Address{}) {
+	usdfc := opts.USDFCTokenAddress
+	if usdfc == (common.Address{}) {
+		usdfc = addrs.USDFC
+	}
+	if usdfc == (common.Address{}) {
 		return nil, fmt.Errorf("costs.New: %w: %v: missing USDFC address", chain.ErrUnknownChain, opts.Chain)
 	}
 	return &Service{
@@ -96,19 +118,33 @@ func New(opts Options) (*Service, error) {
 		ws:        opts.WarmStorage,
 		pay:       opts.Payments,
 		caller:    opts.Caller,
-		usdfc:     addrs.USDFC,
-		fwss:      addrs.FWSS,
+		usdfc:     usdfc,
+		fwss:      fwss,
 		logger:    opts.Logger,
 		lifecycle: opts.Lifecycle,
 	}, nil
 }
 
 // GetServicePrice delegates to the warmstorage service.
+//
+// Deprecated: Use GetPriceList.
 func (s *Service) GetServicePrice(ctx context.Context) (*warmstorage.ServicePrice, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	return s.ws.GetServicePrice(ctx)
+	reader, ok := s.ws.(legacyServicePriceReader)
+	if !ok {
+		return nil, fmt.Errorf("costs.GetServicePrice: warmstorage reader does not support legacy GetServicePrice")
+	}
+	return reader.GetServicePrice(ctx)
+}
+
+// GetPriceList delegates to the warmstorage service.
+func (s *Service) GetPriceList(ctx context.Context) (*warmstorage.PriceList, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	return s.ws.GetPriceList(ctx)
 }
 
 // GetUploadCosts returns cost and deposit information for an upload.
@@ -138,26 +174,26 @@ func (s *Service) GetUploadCosts(
 	}
 
 	var (
-		pricing  *warmstorage.ServicePrice
-		account  *payments.AccountState
-		approval *payments.OperatorApproval
-		mu       sync.Mutex
-		errs     []error
-		wg       sync.WaitGroup
+		priceList *warmstorage.PriceList
+		account   *payments.AccountState
+		approval  *payments.OperatorApproval
+		mu        sync.Mutex
+		errs      []error
+		wg        sync.WaitGroup
 	)
 
 	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
-		p, err := s.ws.GetServicePrice(ctx)
+		p, err := s.ws.GetPriceList(ctx)
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("GetServicePrice: %w", err))
+			errs = append(errs, fmt.Errorf("GetPriceList: %w", err))
 			return
 		}
-		pricing = p
+		priceList = p
 	}()
 
 	go func() {
@@ -189,24 +225,28 @@ func (s *Service) GetUploadCosts(
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", errors.Join(errs...))
 	}
-
-	var epm int64
-	if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
-		epm = pricing.EpochsPerMonth.Int64()
+	if priceList == nil {
+		priceList = &warmstorage.PriceList{}
 	}
+
 	rate := CalculateEffectiveRate(
 		new(big.Int).Add(currentDataSetSize, dataSizeBytes),
-		pricing.PricePerTiBPerMonthNoCDN,
-		pricing.MinimumPricePerMonth,
-		epm,
+		priceList.Rates.StoragePerTiBPerMonth,
+		priceList.Rates.DatasetFeePerMonth,
+		chain.EpochsPerMonth,
 	)
 
+	pieceCount := opts.PieceCount
+	if pieceCount == nil {
+		pieceCount = bigOne
+	}
+	fees := CalculateUploadFees(priceList, opts.IsNewDataSet, pieceCount)
+	requiredLockupPeriod := requiredLockupPeriod(priceList)
 	lockup := CalculateAdditionalLockupRequired(
 		dataSizeBytes,
 		currentDataSetSize,
-		pricing,
-		DefaultLockupPeriod,
-		usdfcSybilFeeValue(),
+		priceList,
+		requiredLockupPeriod,
 		opts.IsNewDataSet,
 		opts.EnableCDN,
 	)
@@ -225,11 +265,13 @@ func (s *Service) GetUploadCosts(
 	}
 
 	depositNeeded := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  lockup.TotalLockup,
-		RateDelta:         lockup.RateDelta,
+		AdditionalLockup:  lockup.Total,
+		Fees:              fees.Total,
+		RateDelta:         lockup.RateDeltaPerEpoch,
 		CurrentLockupRate: currentRate,
 		Debt:              debt,
 		AvailableFunds:    avail,
+		RunwayInEpochs:    resolved.RunwayInEpochs,
 		ExtraRunwayEpochs: runwayEpochs,
 		BufferEpochs:      bufferEpochs,
 		IsNewDataSet:      opts.IsNewDataSet,
@@ -240,13 +282,16 @@ func (s *Service) GetUploadCosts(
 		approval.RateAllowance,
 		approval.LockupAllowance,
 		approval.MaxLockupPeriod,
+		requiredLockupPeriod,
 	)
 	ready := depositNeeded.Sign() == 0 && !needsApproval
 
 	return &UploadCosts{
 		Rate:                 rate,
+		Fees:                 fees,
 		Lockup:               lockup,
 		DepositNeeded:        depositNeeded,
+		RequiredLockupPeriod: requiredLockupPeriod,
 		NeedsFWSSMaxApproval: needsApproval,
 		Ready:                ready,
 	}, nil

@@ -13,7 +13,8 @@
 //
 //   - [Service.FindDataSets] — enumerate the caller's data sets.
 //   - [Service.GetStorageInfo] — aggregated pricing / providers / allowances view.
-//   - [Service.TerminateDataSet] — terminate an FWSS-managed data set.
+//   - [Service.TerminateService] — terminate service through the provider relay by default.
+//   - [Service.TerminateDataSet] — legacy direct FWSS termination write.
 //   - [Service.CalculateMultiContextCosts] — aggregate cost calculation across refs.
 //   - [Service.CreateContext] / [Service.CreateContexts] / [Service.GetDefaultContext] —
 //     build upload contexts without invoking the full upload pipeline.
@@ -29,7 +30,9 @@
 // Per-context manager operations live on [*Context]: [Context.Upload]
 // (single-copy), [Context.DeletePieceByID], [Context.DeletePiece],
 // [Context.PieceStatus], [Context.GetScheduledRemovals] and
-// [Context.Terminate].
+// [Context.Terminate] and [Context.TerminateService]. TerminateService asks
+// the provider to relay by default; pass SkipProvider for the direct FWSS
+// transaction path while still receiving EndEpoch from the receipt.
 //
 // # Upload Flow
 //

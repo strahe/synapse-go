@@ -82,6 +82,7 @@ var (
 	_ DataSetDetailsCatalog = (*warmstorage.Service)(nil)
 	_ UploadResolver        = (*ServiceResolver)(nil)
 	_ ContextResolver       = (*ServiceResolver)(nil)
+	_ ProviderResolver      = (*ServiceResolver)(nil)
 )
 
 // NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
@@ -122,6 +123,21 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 func (r *ServiceResolver) ResolveContexts(ctx context.Context, opts *UploadOptions) ([]*Context, error) {
 	contexts, _, err := r.resolveContexts(ctx, opts, false, "storage.ServiceResolver.ResolveContexts")
 	return contexts, err
+}
+
+// ResolveProvider resolves one PDP provider by ID.
+func (r *ServiceResolver) ResolveProvider(ctx context.Context, providerID types.BigInt) (Provider, error) {
+	if providerID.IsZero() {
+		return Provider{}, fmt.Errorf("storage.ServiceResolver.ResolveProvider: %w: zero providerID", ErrInvalidArgument)
+	}
+	provider, err := r.spRegistry.GetPDPProvider(ctx, providerID)
+	if err != nil {
+		return Provider{}, fmt.Errorf("storage.ServiceResolver.ResolveProvider: %w", err)
+	}
+	if provider == nil {
+		return Provider{}, fmt.Errorf("storage.ServiceResolver.ResolveProvider: nil provider")
+	}
+	return buildProvider(*provider), nil
 }
 
 // ResolveUploadContexts returns one UploadContext per requested copy. When
@@ -583,15 +599,19 @@ func resolvedDetailedDataSet(dataSet *warmstorage.EnhancedDataSetInfo) (*types.B
 
 func buildResolvedUploadContext(provider spregistry.PDPProvider, dataSetID, clientDataSetID *types.BigInt, metadata map[string]string) ResolvedUploadContext {
 	return ResolvedUploadContext{
-		Provider: Provider{
-			ID:              provider.Info.ID,
-			ServiceURL:      provider.Offering.ServiceURL,
-			ServiceProvider: provider.Info.ServiceProvider,
-			Payee:           provider.Info.Payee,
-		},
+		Provider:        buildProvider(provider),
 		DataSetID:       copyIDPtr(dataSetID),
 		ClientDataSetID: copyBigIntPtr(clientDataSetID),
 		DataSetMetadata: cloneStringMap(metadata),
+	}
+}
+
+func buildProvider(provider spregistry.PDPProvider) Provider {
+	return Provider{
+		ID:              provider.Info.ID,
+		ServiceURL:      provider.Offering.ServiceURL,
+		ServiceProvider: provider.Info.ServiceProvider,
+		Payee:           provider.Info.Payee,
 	}
 }
 

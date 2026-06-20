@@ -279,7 +279,10 @@ Common management calls:
 - `Context.DeletePieceByID`: schedule exact removal by on-chain piece ID.
 - `Context.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
   `DeletePieceByID` when available, because repeated uploads can share a CID.
-- `Context.Terminate` / `Service.TerminateDataSet`: terminate an FWSS dataset.
+- `Context.TerminateService` / `Service.TerminateService`: terminate service
+  through the provider by default; use `SkipProvider` for direct FWSS fallback.
+- `Context.Terminate` / `Service.TerminateDataSet`: legacy direct FWSS
+  termination write.
 
 Termination and removal are storage lifecycle actions. Treat them as
 application-level destructive operations and gate them accordingly.

@@ -1659,6 +1659,8 @@ type fakePDPProviderClient struct {
 	createAndAddFn        func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	scheduleDeletionFn    func(context.Context, types.BigInt, types.BigInt, []byte) (common.Hash, error)
+	terminateServiceFn    func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
+	waitTerminateFn       func(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
 }
 
 type failingReader struct {
@@ -1717,6 +1719,20 @@ func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataS
 		return common.Hash{}, fmt.Errorf("fakePDPProviderClient.SchedulePieceDeletion: not configured")
 	}
 	return f.scheduleDeletionFn(ctx, dataSetID, pieceID, extraData)
+}
+
+func (f *fakePDPProviderClient) TerminateService(ctx context.Context, req pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error) {
+	if f.terminateServiceFn == nil {
+		return nil, fmt.Errorf("fakePDPProviderClient.TerminateService: not configured")
+	}
+	return f.terminateServiceFn(ctx, req)
+}
+
+func (f *fakePDPProviderClient) WaitForTerminateService(ctx context.Context, dataSetID types.BigInt, pollInterval time.Duration, onHash func(common.Hash)) (*pdp.TerminateServiceStatus, error) {
+	if f.waitTerminateFn == nil {
+		return nil, fmt.Errorf("fakePDPProviderClient.WaitForTerminateService: not configured")
+	}
+	return f.waitTerminateFn(ctx, dataSetID, pollInterval, onHash)
 }
 
 // TestContextCommit_ExistingDataSet_LargeIDPreserved proves that a DataSetID

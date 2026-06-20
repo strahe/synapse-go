@@ -90,16 +90,16 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	}
 }
 
-func TestCalculateMultiContextCosts_AddsLocalSybilFeePerNewDataSet(t *testing.T) {
+func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t *testing.T) {
+	priceList := defaultPriceList()
 	svc := buildSvc(t,
-		&mockWS{price: defaultPrice()},
+		&mockWS{priceList: priceList},
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
 		},
-		usdfc(999),
+		new(big.Int),
 	)
-	svc.caller = sybilFeeUnavailableCaller{}
 	opts := &UploadCostOptions{BufferEpochs: -1}
 
 	allExisting, err := svc.CalculateMultiContextCosts(
@@ -134,12 +134,78 @@ func TestCalculateMultiContextCosts_AddsLocalSybilFeePerNewDataSet(t *testing.T)
 	}
 
 	twoNewDelta := new(big.Int).Sub(allNew.DepositNeeded, allExisting.DepositNeeded)
-	if twoNewDelta.Cmp(usdfcFrac(2)) != 0 {
-		t.Errorf("two new dataset sybil delta: got %s, want %s", twoNewDelta, usdfcFrac(2))
+	wantPerNew := new(big.Int).Add(priceList.Fees.CreateDataSetFee, priceList.Lockups.LifecycleReserveTarget)
+	wantTwoNew := new(big.Int).Mul(wantPerNew, big.NewInt(2))
+	if twoNewDelta.Cmp(wantTwoNew) != 0 {
+		t.Errorf("two new dataset delta: got %s, want %s", twoNewDelta, wantTwoNew)
 	}
 	oneNewDelta := new(big.Int).Sub(mixed.DepositNeeded, allExisting.DepositNeeded)
-	if oneNewDelta.Cmp(usdfcFrac(1)) != 0 {
-		t.Errorf("one new dataset sybil delta: got %s, want %s", oneNewDelta, usdfcFrac(1))
+	if oneNewDelta.Cmp(wantPerNew) != 0 {
+		t.Errorf("one new dataset delta: got %s, want %s", oneNewDelta, wantPerNew)
+	}
+
+	wantCreateFees := new(big.Int).Mul(priceList.Fees.CreateDataSetFee, big.NewInt(2))
+	if allNew.Fees.CreateDataSetFee.Cmp(wantCreateFees) != 0 {
+		t.Errorf("create dataset fees: got %s, want %s", allNew.Fees.CreateDataSetFee, wantCreateFees)
+	}
+	wantLifecycle := new(big.Int).Mul(priceList.Lockups.LifecycleReserveTarget, big.NewInt(2))
+	if allNew.Lockup.LifecycleLockup.Cmp(wantLifecycle) != 0 {
+		t.Errorf("lifecycle lockup: got %s, want %s", allNew.Lockup.LifecycleLockup, wantLifecycle)
+	}
+}
+
+func TestCalculateMultiContextCosts_UsesPieceCountForAddPiecesFees(t *testing.T) {
+	priceList := defaultPriceList()
+	svc := buildSvc(t,
+		&mockWS{priceList: priceList},
+		&mockPay{
+			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+			approval: maxApproval(),
+		},
+		new(big.Int),
+	)
+
+	got, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		bi(1024),
+		[]MultiContextRef{{IsNewDataSet: true}, {}},
+		&UploadCostOptions{BufferEpochs: -1, PieceCount: bi(41)},
+	)
+	if err != nil {
+		t.Fatalf("CalculateMultiContextCosts: %v", err)
+	}
+
+	newFees := CalculateUploadFees(priceList, true, bi(41))
+	existingFees := CalculateUploadFees(priceList, false, bi(41))
+	wantAddPieces := new(big.Int).Add(newFees.AddPiecesFee, existingFees.AddPiecesFee)
+	if got.Fees.AddPiecesFee.Cmp(wantAddPieces) != 0 {
+		t.Fatalf("AddPiecesFee=%s want %s", got.Fees.AddPiecesFee, wantAddPieces)
+	}
+}
+
+func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
+	svc := buildSvc(t,
+		&mockWS{nilPriceListResult: true},
+		&mockPay{
+			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+			approval: maxApproval(),
+		},
+		new(big.Int),
+	)
+
+	got, err := svc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		bi(1024),
+		[]MultiContextRef{{IsNewDataSet: true}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CalculateMultiContextCosts: %v", err)
+	}
+	if got.RatePerMonth.Sign() != 0 || got.Fees.Total.Sign() != 0 {
+		t.Fatalf("got non-zero price-derived values: rate=%s fees=%s", got.RatePerMonth, got.Fees.Total)
 	}
 }
 

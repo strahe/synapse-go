@@ -4,17 +4,18 @@ import (
 	"math/big"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
 // CalculateEffectiveRate computes the storage rate for the given total data size.
 // Integer division is used to match on-chain Solidity truncation.
 // If epochsPerMonth is zero or negative, chain.EpochsPerMonth is used as a safe default.
-// Nil sizeBytes, pricePerTiBPerMonth, or minMonthlyRate are treated as zero.
+// Nil sizeBytes, pricePerTiBPerMonth, or datasetFeePerMonth are treated as zero.
 func CalculateEffectiveRate(
 	sizeBytes *big.Int,
 	pricePerTiBPerMonth *big.Int,
-	minMonthlyRate *big.Int,
+	datasetFeePerMonth *big.Int,
 	epochsPerMonth int64,
 ) EffectiveRate {
 	if epochsPerMonth <= 0 {
@@ -28,27 +29,25 @@ func CalculateEffectiveRate(
 	if pricePerTiBPerMonth == nil {
 		pricePerTiBPerMonth = new(big.Int)
 	}
-	if minMonthlyRate == nil {
-		minMonthlyRate = new(big.Int)
+	if datasetFeePerMonth == nil {
+		datasetFeePerMonth = new(big.Int)
+	}
+
+	if sizeBytes.Sign() == 0 {
+		return EffectiveRate{
+			RatePerEpoch: new(big.Int),
+			RatePerMonth: new(big.Int),
+		}
 	}
 
 	ratePerMonth := new(big.Int).Mul(pricePerTiBPerMonth, sizeBytes)
 	ratePerMonth.Div(ratePerMonth, bigTiB)
-	if ratePerMonth.Cmp(minMonthlyRate) < 0 {
-		ratePerMonth.Set(minMonthlyRate)
-	}
+	ratePerMonth.Add(ratePerMonth, datasetFeePerMonth)
 
 	ratePerEpoch := new(big.Int).Mul(pricePerTiBPerMonth, sizeBytes)
 	divisor := new(big.Int).Mul(bigTiB, epm)
 	ratePerEpoch.Div(ratePerEpoch, divisor)
-
-	minEpochRate := new(big.Int).Div(minMonthlyRate, epm)
-	if minEpochRate.Cmp(bigOne) < 0 {
-		minEpochRate.Set(bigOne)
-	}
-	if ratePerEpoch.Cmp(minEpochRate) < 0 {
-		ratePerEpoch.Set(minEpochRate)
-	}
+	ratePerEpoch.Add(ratePerEpoch, new(big.Int).Div(datasetFeePerMonth, epm))
 
 	return EffectiveRate{
 		RatePerEpoch: ratePerEpoch,
@@ -56,15 +55,43 @@ func CalculateEffectiveRate(
 	}
 }
 
+// CalculateUploadFees computes one-time upload fees from the price list.
+func CalculateUploadFees(priceList *warmstorage.PriceList, isNewDataSet bool, pieceCount *big.Int) UploadFees {
+	if priceList == nil {
+		priceList = &warmstorage.PriceList{}
+	}
+	pieces := copyBigOrDefault(pieceCount, bigOne)
+	if pieces.Sign() <= 0 {
+		pieces.SetInt64(1)
+	}
+
+	maxBatch := big.NewInt(pdp.MaxAddPiecesBatchSize)
+	addPiecesOperationCount := new(big.Int).Add(pieces, new(big.Int).Sub(maxBatch, bigOne))
+	addPiecesOperationCount.Div(addPiecesOperationCount, maxBatch)
+
+	createDataSetFee := new(big.Int)
+	if isNewDataSet {
+		createDataSetFee.Set(zeroBig(priceList.Fees.CreateDataSetFee))
+	}
+	addPiecesFee := new(big.Int).Mul(zeroBig(priceList.Fees.AddPiecesBaseFee), addPiecesOperationCount)
+	addPiecesFee.Add(addPiecesFee, new(big.Int).Mul(zeroBig(priceList.Fees.AddPiecesPerPieceFee), pieces))
+	total := new(big.Int).Add(createDataSetFee, addPiecesFee)
+
+	return UploadFees{
+		CreateDataSetFee: createDataSetFee,
+		AddPiecesFee:     addPiecesFee,
+		Total:            total,
+	}
+}
+
 // CalculateAdditionalLockupRequired returns the incremental lockup needed to
 // store uploadSizeBytes into a dataset that currently holds currentDataSetSizeBytes.
-// Nil dataSizeBytes, currentDataSetSizeBytes, pricing, and usdfcSybilFee use zero-value defaults.
+// Nil dataSizeBytes, currentDataSetSizeBytes, and priceList use zero-value defaults.
 func CalculateAdditionalLockupRequired(
 	dataSizeBytes *big.Int,
 	currentDataSetSizeBytes *big.Int,
-	pricing *warmstorage.ServicePrice,
-	lockupPeriod int64,
-	usdfcSybilFee *big.Int,
+	priceList *warmstorage.PriceList,
+	lockupPeriod *big.Int,
 	isNewDataSet bool,
 	enableCDN bool,
 ) AdditionalLockup {
@@ -74,12 +101,8 @@ func CalculateAdditionalLockupRequired(
 	if currentDataSetSizeBytes == nil {
 		currentDataSetSizeBytes = new(big.Int)
 	}
-	if pricing == nil {
-		pricing = &warmstorage.ServicePrice{}
-	}
-	var epm int64
-	if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
-		epm = pricing.EpochsPerMonth.Int64()
+	if priceList == nil {
+		priceList = &warmstorage.PriceList{}
 	}
 
 	var rateDelta *big.Int
@@ -87,15 +110,15 @@ func CalculateAdditionalLockupRequired(
 		newTotalSize := new(big.Int).Add(currentDataSetSizeBytes, dataSizeBytes)
 		newRate := CalculateEffectiveRate(
 			newTotalSize,
-			pricing.PricePerTiBPerMonthNoCDN,
-			pricing.MinimumPricePerMonth,
-			epm,
+			priceList.Rates.StoragePerTiBPerMonth,
+			priceList.Rates.DatasetFeePerMonth,
+			chain.EpochsPerMonth,
 		)
 		currentRate := CalculateEffectiveRate(
 			currentDataSetSizeBytes,
-			pricing.PricePerTiBPerMonthNoCDN,
-			pricing.MinimumPricePerMonth,
-			epm,
+			priceList.Rates.StoragePerTiBPerMonth,
+			priceList.Rates.DatasetFeePerMonth,
+			chain.EpochsPerMonth,
 		)
 		rateDelta = new(big.Int).Sub(newRate.RatePerEpoch, currentRate.RatePerEpoch)
 		if rateDelta.Sign() < 0 {
@@ -104,37 +127,48 @@ func CalculateAdditionalLockupRequired(
 	} else {
 		newRate := CalculateEffectiveRate(
 			dataSizeBytes,
-			pricing.PricePerTiBPerMonthNoCDN,
-			pricing.MinimumPricePerMonth,
-			epm,
+			priceList.Rates.StoragePerTiBPerMonth,
+			priceList.Rates.DatasetFeePerMonth,
+			chain.EpochsPerMonth,
 		)
 		rateDelta = new(big.Int).Set(newRate.RatePerEpoch)
 	}
 
-	if lockupPeriod <= 0 {
-		lockupPeriod = DefaultLockupPeriod
+	effectiveLockupPeriod := copyBigOrDefault(lockupPeriod, priceList.Lockups.DefaultLockupPeriod)
+	if effectiveLockupPeriod.Sign() <= 0 {
+		effectiveLockupPeriod.SetInt64(DefaultLockupPeriod)
 	}
-	rateLockup := new(big.Int).Mul(rateDelta, big.NewInt(lockupPeriod))
+	streamingLockup := new(big.Int).Mul(rateDelta, effectiveLockupPeriod)
+
+	lifecycleLockup := new(big.Int)
+	if isNewDataSet {
+		lifecycleLockup.Set(zeroBig(priceList.Lockups.LifecycleReserveTarget))
+	}
 
 	cdnLockup := new(big.Int)
+	cacheMissLockup := new(big.Int)
 	if isNewDataSet && enableCDN {
-		cdnLockup.Set(cdnFixedLockup)
+		cdnLockup.Set(zeroBig(priceList.Lockups.CDNLockupAmount))
+		cacheMissLockup.Set(zeroBig(priceList.Lockups.CacheMissLockupAmount))
 	}
 
-	sybilFee := new(big.Int)
-	if isNewDataSet && usdfcSybilFee != nil {
-		sybilFee.Set(usdfcSybilFee)
-	}
-
-	totalLockup := new(big.Int).Add(rateLockup, cdnLockup)
-	totalLockup.Add(totalLockup, sybilFee)
+	totalLockup := new(big.Int).Add(streamingLockup, lifecycleLockup)
+	totalLockup.Add(totalLockup, cdnLockup)
+	totalLockup.Add(totalLockup, cacheMissLockup)
+	cdnFixedAlias := new(big.Int).Add(cdnLockup, cacheMissLockup)
 
 	return AdditionalLockup{
-		RateDelta:      rateDelta,
-		RateLockup:     rateLockup,
-		CDNFixedLockup: cdnLockup,
-		SybilFee:       sybilFee,
-		TotalLockup:    totalLockup,
+		RateDeltaPerEpoch: rateDelta,
+		StreamingLockup:   streamingLockup,
+		LifecycleLockup:   lifecycleLockup,
+		CDNLockup:         cdnLockup,
+		CacheMissLockup:   cacheMissLockup,
+		Total:             totalLockup,
+		RateDelta:         copyBigOrDefault(rateDelta, nil),
+		RateLockup:        copyBigOrDefault(streamingLockup, nil),
+		CDNFixedLockup:    cdnFixedAlias,
+		SybilFee:          copyBigOrDefault(lifecycleLockup, nil),
+		TotalLockup:       copyBigOrDefault(totalLockup, nil),
 	}
 }
 
@@ -148,10 +182,12 @@ func CalculateAdditionalLockupRequired(
 // Nil *big.Int fields are treated as zero. Negative epoch counts are clamped to zero.
 func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	additionalLockup := zeroBig(calc.AdditionalLockup)
+	fees := zeroBig(calc.Fees)
 	rateDelta := zeroBig(calc.RateDelta)
 	currentLockupRate := zeroBig(calc.CurrentLockupRate)
 	debt := zeroBig(calc.Debt)
 	availableFunds := zeroBig(calc.AvailableFunds)
+	runwayInEpochs := zeroBig(calc.RunwayInEpochs)
 	runwayEpochs := calc.ExtraRunwayEpochs
 	if runwayEpochs < 0 {
 		runwayEpochs = 0
@@ -165,25 +201,26 @@ func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	runway := new(big.Int).Mul(combinedRate, big.NewInt(runwayEpochs))
 
 	raw := new(big.Int).Add(additionalLockup, runway)
+	raw.Add(raw, fees)
 	raw.Sub(raw, availableFunds)
 	raw.Add(raw, debt)
 
-	if currentLockupRate.Sign() == 0 && calc.IsNewDataSet {
-		if raw.Sign() < 0 {
-			return new(big.Int)
+	skipBuffer := currentLockupRate.Sign() == 0 && calc.IsNewDataSet
+	buffer := new(big.Int)
+	if !skipBuffer {
+		if raw.Sign() > 0 {
+			buffer.Mul(combinedRate, bufferEpochsBig)
+		} else if runwayInEpochs.Cmp(bufferEpochsBig) <= 0 {
+			buffer.Mul(combinedRate, bufferEpochsBig)
+			buffer.Sub(buffer, availableFunds)
+			if buffer.Sign() < 0 {
+				buffer.SetInt64(0)
+			}
 		}
-		return raw
 	}
 
-	bufferCost := new(big.Int).Mul(combinedRate, bufferEpochsBig)
 	if raw.Sign() > 0 {
-		return raw.Add(raw, bufferCost)
-	}
-
-	remainingAfterRequirements := new(big.Int).Neg(raw)
-	buffer := new(big.Int).Sub(bufferCost, remainingAfterRequirements)
-	if buffer.Sign() < 0 {
-		return new(big.Int)
+		return raw.Add(raw, buffer)
 	}
 	return buffer
 }
@@ -197,7 +234,7 @@ func zeroBig(v *big.Int) *big.Int {
 
 // isFWSSMaxApproved returns true when all FWSS approval conditions are met.
 // Nil *big.Int fields are treated as zero (not approved).
-func isFWSSMaxApproved(approved bool, rateAllowance, lockAllowance, maxLockPeriod *big.Int) bool {
+func isFWSSMaxApproved(approved bool, rateAllowance, lockAllowance, maxLockPeriod, requiredLockupPeriod *big.Int) bool {
 	if !approved {
 		return false
 	}
@@ -208,8 +245,52 @@ func isFWSSMaxApproved(approved bool, rateAllowance, lockAllowance, maxLockPerio
 	if lockAllowance == nil || lockAllowance.Cmp(halfMaxUint256) < 0 {
 		return false
 	}
-	if maxLockPeriod == nil || maxLockPeriod.Cmp(big.NewInt(DefaultLockupPeriod)) < 0 {
+	required := copyBigOrDefault(requiredLockupPeriod, big.NewInt(DefaultLockupPeriod))
+	if required.Sign() <= 0 {
+		required.SetInt64(DefaultLockupPeriod)
+	}
+	if maxLockPeriod == nil || maxLockPeriod.Cmp(required) < 0 {
 		return false
 	}
 	return true
+}
+
+func copyBigOrDefault(v, def *big.Int) *big.Int {
+	if v != nil {
+		return new(big.Int).Set(v)
+	}
+	if def != nil {
+		return new(big.Int).Set(def)
+	}
+	return new(big.Int)
+}
+
+func requiredLockupPeriod(priceList *warmstorage.PriceList) *big.Int {
+	if priceList != nil && priceList.Lockups.DefaultLockupPeriod != nil && priceList.Lockups.DefaultLockupPeriod.Sign() > 0 {
+		return new(big.Int).Set(priceList.Lockups.DefaultLockupPeriod)
+	}
+	return big.NewInt(DefaultLockupPeriod)
+}
+
+func aggregateLockup(rateDelta, streaming, lifecycle, cdn, cacheMiss, total *big.Int) AdditionalLockup {
+	rateDeltaOut := copyBigOrDefault(rateDelta, nil)
+	streamingOut := copyBigOrDefault(streaming, nil)
+	lifecycleOut := copyBigOrDefault(lifecycle, nil)
+	cdnOut := copyBigOrDefault(cdn, nil)
+	cacheMissOut := copyBigOrDefault(cacheMiss, nil)
+	totalOut := copyBigOrDefault(total, nil)
+	cdnFixedAlias := new(big.Int).Add(cdnOut, cacheMissOut)
+	return AdditionalLockup{
+		RateDeltaPerEpoch: rateDeltaOut,
+		StreamingLockup:   streamingOut,
+		LifecycleLockup:   lifecycleOut,
+		CDNLockup:         cdnOut,
+		CacheMissLockup:   cacheMissOut,
+		Total:             totalOut,
+		RateDelta:         copyBigOrDefault(rateDeltaOut, nil),
+		RateLockup:        copyBigOrDefault(streamingOut, nil),
+		CDNFixedLockup:    cdnFixedAlias,
+		SybilFee:          copyBigOrDefault(lifecycleOut, nil),
+		TotalLockup:       copyBigOrDefault(totalOut, nil),
+	}
 }

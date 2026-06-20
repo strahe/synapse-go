@@ -262,6 +262,16 @@
             "internalType": "uint256"
           },
           {
+            "name": "pendingOneTimePayments",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
+            "name": "lifecycleReserveBalance",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
             "name": "dataSetId",
             "type": "uint256",
             "internalType": "uint256"
@@ -338,6 +348,16 @@
             "internalType": "uint256"
           },
           {
+            "name": "pendingOneTimePayments",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
+            "name": "lifecycleReserveBalance",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
             "name": "dataSetId",
             "type": "uint256",
             "internalType": "uint256"
@@ -377,7 +397,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "minimumRate",
+        "name": "datasetFee",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -449,6 +469,16 @@
             "name": "providerId",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "pendingOneTimePayments",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
+            "name": "lifecycleReserveBalance",
+            "type": "uint96",
+            "internalType": "uint96"
           },
           {
             "name": "dataSetId",
@@ -585,6 +615,122 @@
         "name": "value",
         "type": "string",
         "internalType": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getPriceList",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "list",
+        "type": "tuple",
+        "internalType": "struct PriceList",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "contract IERC20"
+          },
+          {
+            "name": "rates",
+            "type": "tuple",
+            "internalType": "struct PriceListRates",
+            "components": [
+              {
+                "name": "storagePerTibPerMonth",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "datasetFeePerMonth",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cdnEgressPerTib",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cacheMissEgressPerTib",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct PriceListFees",
+            "components": [
+              {
+                "name": "createDataSetFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "addPiecesBaseFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "addPiecesPerPieceFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "schedulePieceRemovalsFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "terminateFee",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "lockups",
+            "type": "tuple",
+            "internalType": "struct PriceListLockups",
+            "components": [
+              {
+                "name": "lifecycleReserveTarget",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "replenishThreshold",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "defaultLockupPeriod",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cdnLockupAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cacheMissLockupAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "cdnLockupPeriod",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -795,11 +941,6 @@
   },
   {
     "type": "error",
-    "name": "AtLeastOnePriceMustBeNonZero",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "CDNPaymentAlreadyTerminated",
     "inputs": [
       {
@@ -885,6 +1026,27 @@
   },
   {
     "type": "error",
+    "name": "CallerNotServiceProvider",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expectedServiceProvider",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ChallengeWindowTooEarly",
     "inputs": [
       {
@@ -931,6 +1093,27 @@
       },
       {
         "name": "actual",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DataSetNotAbandoned",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requiredEpoch",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "currentBlock",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -989,11 +1172,6 @@
         "internalType": "uint256"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "DivisionByZero",
-    "inputs": []
   },
   {
     "type": "error",
@@ -1079,7 +1257,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "minimumLockupRequired",
+        "name": "lockupRequired",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1095,7 +1273,7 @@
         "internalType": "address"
       },
       {
-        "name": "minimumRequired",
+        "name": "required",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -1157,7 +1335,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "minimumRateRequired",
+        "name": "rateRequired",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1525,27 +1703,6 @@
       },
       {
         "name": "pdpEndEpoch",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "PriceExceedsMaximum",
-    "inputs": [
-      {
-        "name": "priceType",
-        "type": "uint8",
-        "internalType": "enum Errors.PriceType"
-      },
-      {
-        "name": "maxAllowed",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "actual",
         "type": "uint256",
         "internalType": "uint256"
       }

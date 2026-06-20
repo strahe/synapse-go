@@ -2,6 +2,7 @@ package payments
 
 import (
 	"errors"
+	"math/big"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type writeConfig struct {
 	confirmations         uint64
 	skipPrecheck          bool
 	fundNeedsFwssApproval *bool
+	fundApprovalLockup    *big.Int
 }
 
 func newWriteConfig(opts []WriteOption) writeConfig {
@@ -63,4 +65,16 @@ func WithSkipPrecheck() WriteOption {
 // directly so prepare/execute flows can reuse a previously computed result.
 func WithFundNeedsFwssApproval(needs bool) WriteOption {
 	return func(c *writeConfig) { c.fundNeedsFwssApproval = &needs }
+}
+
+// WithFundApprovalLockupPeriod overrides the max lockup period used when
+// Fund / FundSync writes or checks FWSS approval.
+func WithFundApprovalLockupPeriod(period *big.Int) WriteOption {
+	return func(c *writeConfig) {
+		if period == nil {
+			c.fundApprovalLockup = nil
+			return
+		}
+		c.fundApprovalLockup = new(big.Int).Set(period)
+	}
 }

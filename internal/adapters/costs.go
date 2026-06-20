@@ -46,6 +46,7 @@ func (a *costCalculator) CalculateMultiContextCosts(
 	got, err := a.c.CalculateMultiContextCosts(ctx, payer, dataSizeBytes, out, &costs.UploadCostOptions{
 		ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
 		BufferEpochs:      opts.BufferEpochs,
+		PieceCount:        opts.PieceCount,
 	})
 	if err != nil {
 		return nil, err
@@ -53,7 +54,10 @@ func (a *costCalculator) CalculateMultiContextCosts(
 	return &storage.MultiContextCosts{
 		RatePerEpoch:         got.RatePerEpoch,
 		RatePerMonth:         got.RatePerMonth,
+		Fees:                 storage.UploadFees{CreateDataSetFee: got.Fees.CreateDataSetFee, AddPiecesFee: got.Fees.AddPiecesFee, Total: got.Fees.Total},
+		Lockup:               storage.UploadLockup{RateDeltaPerEpoch: got.Lockup.RateDeltaPerEpoch, StreamingLockup: got.Lockup.StreamingLockup, LifecycleLockup: got.Lockup.LifecycleLockup, CDNLockup: got.Lockup.CDNLockup, CacheMissLockup: got.Lockup.CacheMissLockup, Total: got.Lockup.Total},
 		DepositNeeded:        got.DepositNeeded,
+		RequiredLockupPeriod: got.RequiredLockupPeriod,
 		NeedsFWSSMaxApproval: got.NeedsFWSSMaxApproval,
 		Ready:                got.Ready,
 	}, nil

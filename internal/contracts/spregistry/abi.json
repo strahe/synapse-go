@@ -1495,11 +1495,6 @@
   },
   {
     "type": "error",
-    "name": "AtLeastOnePriceMustBeNonZero",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "CDNPaymentAlreadyTerminated",
     "inputs": [
       {
@@ -1585,6 +1580,27 @@
   },
   {
     "type": "error",
+    "name": "CallerNotServiceProvider",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expectedServiceProvider",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ChallengeWindowTooEarly",
     "inputs": [
       {
@@ -1631,6 +1647,27 @@
       },
       {
         "name": "actual",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DataSetNotAbandoned",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requiredEpoch",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "currentBlock",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1689,11 +1726,6 @@
         "internalType": "uint256"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "DivisionByZero",
-    "inputs": []
   },
   {
     "type": "error",
@@ -1779,7 +1811,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "minimumLockupRequired",
+        "name": "lockupRequired",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1795,7 +1827,7 @@
         "internalType": "address"
       },
       {
-        "name": "minimumRequired",
+        "name": "required",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -1857,7 +1889,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "minimumRateRequired",
+        "name": "rateRequired",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2225,27 +2257,6 @@
       },
       {
         "name": "pdpEndEpoch",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "PriceExceedsMaximum",
-    "inputs": [
-      {
-        "name": "priceType",
-        "type": "uint8",
-        "internalType": "enum Errors.PriceType"
-      },
-      {
-        "name": "maxAllowed",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "actual",
         "type": "uint256",
         "internalType": "uint256"
       }

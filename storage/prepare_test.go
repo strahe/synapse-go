@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -119,6 +120,13 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "costs with piece count",
+			opts: &PrepareOptions{
+				Costs:      readyCosts,
+				PieceCount: big.NewInt(2),
+			},
+		},
+		{
 			name: "costs with enable cdn",
 			opts: &PrepareOptions{
 				Costs:     readyCosts,
@@ -201,6 +209,38 @@ func TestPrepare_BuildsExecuteWhenNotReady(t *testing.T) {
 	}
 	if funder.gotOpt != 1 {
 		t.Fatalf("funder got %d opts, want 1 (approval)", funder.gotOpt)
+	}
+}
+
+func TestPrepareExecute_UsesComputedApprovalOptionsWithCallerWriteOptions(t *testing.T) {
+	funder := &stubFunder{}
+	svc := newTestService()
+	svc.funder = funder
+	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	res, err := svc.Prepare(context.Background(), &PrepareOptions{
+		Costs: &MultiContextCosts{
+			Ready:                false,
+			DepositNeeded:        big.NewInt(1234),
+			NeedsFWSSMaxApproval: true,
+			RequiredLockupPeriod: big.NewInt(456),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if _, err := res.Transaction.Execute(
+		context.Background(),
+		payments.WithWait(time.Second),
+		payments.WithConfirmations(2),
+	); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !funder.called {
+		t.Fatal("funder.FundSync not invoked")
+	}
+	if funder.gotOpt != 4 {
+		t.Fatalf("funder got %d opts, want 4 (2 caller + approval decision + lockup period)", funder.gotOpt)
 	}
 }
 
@@ -329,6 +369,7 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize:          128,
 		Contexts:          []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+		PieceCount:        big.NewInt(41),
 		ExtraRunwayEpochs: 7,
 		BufferEpochs:      9,
 	})
@@ -340,6 +381,9 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 	}
 	if costCalc.gotOpts.BufferEpochs != 9 {
 		t.Fatalf("BufferEpochs=%d want 9", costCalc.gotOpts.BufferEpochs)
+	}
+	if costCalc.gotOpts.PieceCount.Cmp(big.NewInt(41)) != 0 {
+		t.Fatalf("PieceCount=%s want 41", costCalc.gotOpts.PieceCount)
 	}
 	if len(costCalc.gotRefs) != 1 {
 		t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))

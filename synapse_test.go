@@ -20,6 +20,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
@@ -52,9 +53,9 @@ func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 	return fn(req)
 }
 
-// fakeRPCServer creates an httptest.Server that responds to eth_chainId with
-// the given chain ID hex string (e.g. "0x4cb2f"). Returns the server (caller
-// must Close) and an ethclient connected to it.
+// fakeRPCServer creates an httptest.Server that responds to eth_chainId and
+// the FWSS address-resolution multicall. Returns the server (caller must
+// Close) and an ethclient connected to it.
 func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclient.Client) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +68,8 @@ func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclien
 		switch req.Method {
 		case "eth_chainId":
 			result = fmt.Sprintf(`"%s"`, chainIDHex)
+		case "eth_call":
+			result = fmt.Sprintf("%q", testutil.FWSSAddressResolutionResultHex(t, fakeRPCAddressChain(chainIDHex)))
 		default:
 			result = "null"
 		}
@@ -79,6 +82,15 @@ func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclien
 		t.Fatalf("dial fake RPC: %v", err)
 	}
 	return srv, ec
+}
+
+func fakeRPCAddressChain(chainIDHex string) chain.Chain {
+	switch strings.ToLower(chainIDHex) {
+	case "0x13a":
+		return chain.Mainnet
+	default:
+		return chain.Calibration
+	}
 }
 
 func TestNew_WithEthClient_Calibration(t *testing.T) {
@@ -106,17 +118,9 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 }
 
 func TestNew_WithRPCURL(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req jsonRPCReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad json-rpc", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		// Calibration
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
-	}))
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
+	defer ec.Close()
 
 	key := testKey(t)
 	client, err := New(context.Background(),
@@ -249,13 +253,9 @@ func TestNew_UnsupportedChain(t *testing.T) {
 }
 
 func TestClose_OwnedClient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req jsonRPCReq
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
-	}))
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
+	defer ec.Close()
 
 	key := testKey(t)
 	client, err := New(context.Background(),
@@ -360,8 +360,11 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	if _, err := client.Payments().Balance(ctx, addr, addr); !errors.Is(err, ErrClosed) {
 		t.Errorf("Payments.Balance: got %v, want ErrClosed", err)
 	}
-	if _, err := client.WarmStorage().GetServicePrice(ctx); !errors.Is(err, ErrClosed) {
+	if _, err := client.WarmStorage().GetServicePrice(ctx); !errors.Is(err, ErrClosed) { //nolint:staticcheck // Deprecated compatibility method must honor Close.
 		t.Errorf("WarmStorage.GetServicePrice: got %v, want ErrClosed", err)
+	}
+	if _, err := client.WarmStorage().GetPriceList(ctx); !errors.Is(err, ErrClosed) {
+		t.Errorf("WarmStorage.GetPriceList: got %v, want ErrClosed", err)
 	}
 	if _, err := client.SPRegistry().GetProviderIDByAddress(ctx, addr); !errors.Is(err, ErrClosed) {
 		t.Errorf("SPRegistry.GetProviderIDByAddress: got %v, want ErrClosed", err)
@@ -369,8 +372,11 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	if _, err := client.SessionKey().Login(ctx, addr, nil); !errors.Is(err, ErrClosed) {
 		t.Errorf("SessionKey.Login: got %v, want ErrClosed", err)
 	}
-	if _, err := client.Costs().GetServicePrice(ctx); !errors.Is(err, ErrClosed) {
+	if _, err := client.Costs().GetServicePrice(ctx); !errors.Is(err, ErrClosed) { //nolint:staticcheck // Deprecated compatibility method must honor Close.
 		t.Errorf("Costs.GetServicePrice: got %v, want ErrClosed", err)
+	}
+	if _, err := client.Costs().GetPriceList(ctx); !errors.Is(err, ErrClosed) {
+		t.Errorf("Costs.GetPriceList: got %v, want ErrClosed", err)
 	}
 	if _, err := client.FilBeam().GetDataSetStats(ctx, types.NewBigInt(1)); !errors.Is(err, ErrClosed) {
 		t.Errorf("FilBeam.GetDataSetStats: got %v, want ErrClosed", err)
@@ -619,6 +625,43 @@ func TestNew_ChainDetectionFailure(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error for chain detection failure")
+	}
+}
+
+func TestNew_AddressResolutionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json-rpc", http.StatusBadRequest)
+			return
+		}
+		var result string
+		switch req.Method {
+		case "eth_chainId":
+			result = `"0x4cb2f"`
+		default:
+			result = "null"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+	}))
+	defer srv.Close()
+	ec, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ec.Close()
+
+	key := testKey(t)
+	_, err = New(context.Background(),
+		WithPrivateKey(key),
+		WithEthClient(ec),
+	)
+	if err == nil {
+		t.Fatal("expected error for address resolution failure")
+	}
+	if !strings.Contains(err.Error(), "resolve FWSS addresses") {
+		t.Fatalf("error = %v, want resolve FWSS addresses", err)
 	}
 }
 

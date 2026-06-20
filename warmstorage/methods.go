@@ -100,7 +100,7 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Bi
 }
 
 // GetPieceMetadata returns the (exists, value) pair for (dataSetID, pieceID, key).
-func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID sdktypes.BigInt, pieceID sdktypes.BigInt, key string) (bool, string, error) {
+func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt, key string) (bool, string, error) {
 	if err := s.checkInit(); err != nil {
 		return false, "", err
 	}
@@ -116,7 +116,7 @@ func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID sdktypes.BigIn
 
 // GetAllPieceMetadata returns a key/value map of all metadata for a
 // specific (dataSetID, pieceID) pair.
-func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID sdktypes.BigInt, pieceID sdktypes.BigInt) (map[string]string, error) {
+func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt) (map[string]string, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}

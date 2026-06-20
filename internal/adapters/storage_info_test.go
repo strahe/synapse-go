@@ -23,14 +23,7 @@ import (
 
 func TestStorageInfoReader_GetStorageInfo_UsesValidApprovedProviderPagination(t *testing.T) {
 	ws, mc := newStorageInfoTestWarmStorage(t)
-	mc.setFWSSReply(t, "getServicePrice", fwssbind.FilecoinWarmStorageServiceServicePricing{
-		PricePerTiBPerMonthNoCDN:   big.NewInt(1000),
-		PricePerTiBCdnEgress:       big.NewInt(20),
-		PricePerTiBCacheMissEgress: big.NewInt(30),
-		TokenAddress:               common.HexToAddress("0xabc"),
-		EpochsPerMonth:             big.NewInt(2880),
-		MinimumPricePerMonth:       big.NewInt(0),
-	})
+	mc.setStorageInfoPriceList(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{})
 
 	got, err := (&storageInfoReader{ws: ws}).GetStorageInfo(context.Background(), common.Address{})
@@ -61,14 +54,7 @@ func TestStorageInfoReader_GetStorageInfo_ReturnsPartialProvidersAndError(t *tes
 	ws, mc := newStorageInfoTestWarmStorage(t)
 	sp := newStorageInfoTestSPRegistry(t, mc)
 
-	mc.setFWSSReply(t, "getServicePrice", fwssbind.FilecoinWarmStorageServiceServicePricing{
-		PricePerTiBPerMonthNoCDN:   big.NewInt(1000),
-		PricePerTiBCdnEgress:       big.NewInt(20),
-		PricePerTiBCacheMissEgress: big.NewInt(30),
-		TokenAddress:               common.HexToAddress("0xabc"),
-		EpochsPerMonth:             big.NewInt(2880),
-		MinimumPricePerMonth:       big.NewInt(0),
-	})
+	mc.setStorageInfoPriceList(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2)})
 	mc.setSPResponder(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
 		providerID, ok := args[0].(*big.Int)
@@ -108,14 +94,7 @@ func TestStorageInfoReader_GetStorageInfo_SkipsStaleApprovedProviders(t *testing
 	ws, mc := newStorageInfoTestWarmStorage(t)
 	sp := newStorageInfoTestSPRegistry(t, mc)
 
-	mc.setFWSSReply(t, "getServicePrice", fwssbind.FilecoinWarmStorageServiceServicePricing{
-		PricePerTiBPerMonthNoCDN:   big.NewInt(1000),
-		PricePerTiBCdnEgress:       big.NewInt(20),
-		PricePerTiBCacheMissEgress: big.NewInt(30),
-		TokenAddress:               common.HexToAddress("0xabc"),
-		EpochsPerMonth:             big.NewInt(2880),
-		MinimumPricePerMonth:       big.NewInt(0),
-	})
+	mc.setStorageInfoPriceList(t)
 	mc.setViewReply(t, "getApprovedProviders", []*big.Int{big.NewInt(1), big.NewInt(2)})
 	mc.setSPResponder(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
 		providerID, ok := args[0].(*big.Int)
@@ -261,21 +240,6 @@ func (m *storageInfoTestCaller) CallContract(_ context.Context, call ethereum.Ca
 	return nil, errors.New("no method matches selector")
 }
 
-func (m *storageInfoTestCaller) setFWSSReply(t *testing.T, method string, values ...any) {
-	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	mth, ok := m.fwssABI.Methods[method]
-	if !ok {
-		t.Fatalf("fwss method %q not found", method)
-	}
-	b, err := mth.Outputs.Pack(values...)
-	if err != nil {
-		t.Fatalf("pack %s: %v", method, err)
-	}
-	m.replies[method] = b
-}
-
 func (m *storageInfoTestCaller) setViewReply(t *testing.T, method string, values ...any) {
 	t.Helper()
 	m.mu.Lock()
@@ -289,6 +253,34 @@ func (m *storageInfoTestCaller) setViewReply(t *testing.T, method string, values
 		t.Fatalf("pack %s: %v", method, err)
 	}
 	m.replies[method] = b
+}
+
+func (m *storageInfoTestCaller) setStorageInfoPriceList(t *testing.T) {
+	t.Helper()
+	m.setViewReply(t, "getPriceList", fwssviewbind.PriceList{
+		Token: common.HexToAddress("0xabc"),
+		Rates: fwssviewbind.PriceListRates{
+			StoragePerTibPerMonth: big.NewInt(1000),
+			DatasetFeePerMonth:    big.NewInt(10),
+			CdnEgressPerTib:       big.NewInt(20),
+			CacheMissEgressPerTib: big.NewInt(30),
+		},
+		Fees: fwssviewbind.PriceListFees{
+			CreateDataSetFee:         big.NewInt(1),
+			AddPiecesBaseFee:         big.NewInt(2),
+			AddPiecesPerPieceFee:     big.NewInt(3),
+			SchedulePieceRemovalsFee: big.NewInt(4),
+			TerminateFee:             big.NewInt(5),
+		},
+		Lockups: fwssviewbind.PriceListLockups{
+			LifecycleReserveTarget: big.NewInt(6),
+			ReplenishThreshold:     big.NewInt(7),
+			DefaultLockupPeriod:    big.NewInt(8),
+			CdnLockupAmount:        big.NewInt(9),
+			CacheMissLockupAmount:  big.NewInt(10),
+			CdnLockupPeriod:        big.NewInt(11),
+		},
+	})
 }
 
 func (m *storageInfoTestCaller) setPDPReply(t *testing.T, method string, values ...any) {

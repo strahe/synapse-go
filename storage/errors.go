@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/ipfs/go-cid"
 
@@ -58,6 +59,22 @@ func (e *DataSetPDPPaymentTerminatedError) Error() string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("storage: data set %s cannot accept uploads: has PDP payment rail end epoch %d", e.DataSetID.String(), e.PDPEndEpoch)
+}
+
+// TerminateServiceDebtError is returned before provider-relayed termination
+// when the payer account already has debt.
+type TerminateServiceDebtError struct {
+	Shortfall *big.Int
+}
+
+func (e *TerminateServiceDebtError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Shortfall == nil {
+		return "storage: terminate service requires settling existing payment debt"
+	}
+	return fmt.Sprintf("storage: terminate service requires settling existing payment debt: shortfall %s", e.Shortfall.String())
 }
 
 // StoreError is returned when the primary store operation fails.

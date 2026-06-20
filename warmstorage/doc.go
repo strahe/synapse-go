@@ -1,5 +1,5 @@
 // Package warmstorage provides the WarmStorage (FWSS) service for managing
-// storage contracts, data sets, and service pricing.
+// storage contracts, data sets, and pricing.
 //
 // FWSS (Filecoin Warm Storage Service) is the canonical storage contract.
 // The root synapse Client supplies the chain's known FWSS, StateView, and
@@ -7,8 +7,9 @@
 // that instantiate Service directly must provide those addresses explicitly.
 //
 // Key operations: data set management (including [Service.TerminateDataSet]
-// for FWSS-initiated teardown), service price queries, approved-provider
-// reads, and provider allocation.
+// for direct FWSS teardown), PriceList reads, approved-provider reads, and
+// provider allocation. [Service.GetServicePrice] remains as a compatibility
+// view; [Service.GetPriceList] is the canonical pricing entry point.
 //
 // The root synapse Client wires WarmStorage together with the other
 // write-capable services so transaction nonce allocation is coordinated for

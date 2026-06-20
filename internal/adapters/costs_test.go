@@ -18,10 +18,18 @@ import (
 func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
 		Chain: chain.Calibration,
-		WarmStorage: fixedWarmStorageReader{price: &warmstorage.ServicePrice{
-			PricePerTiBPerMonthNoCDN: big.NewInt(288000),
-			TokenAddress:             common.HexToAddress("0xbeef"),
-			EpochsPerMonth:           big.NewInt(2880),
+		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
+			Token: common.HexToAddress("0xbeef"),
+			Rates: warmstorage.PriceListRates{
+				StoragePerTiBPerMonth: big.NewInt(288000),
+			},
+			Fees: warmstorage.PriceListFees{
+				AddPiecesBaseFee:     big.NewInt(10),
+				AddPiecesPerPieceFee: big.NewInt(1),
+			},
+			Lockups: warmstorage.PriceListLockups{
+				DefaultLockupPeriod: big.NewInt(costs.DefaultLockupPeriod),
+			},
 		}},
 		Payments: fixedPaymentsReader{
 			account: &payments.AccountState{
@@ -50,7 +58,7 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 		common.Address{},
 		big.NewInt(1024),
 		[]storage.ContextCostRef{{CurrentDataSetSizeBytes: new(big.Int)}},
-		storage.MultiCostOptions{EnableCDN: true},
+		storage.MultiCostOptions{EnableCDN: true, PieceCount: big.NewInt(41)},
 	)
 	if err != nil {
 		t.Fatalf("adapter.CalculateMultiContextCosts: %v", err)
@@ -61,7 +69,7 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 		common.Address{},
 		big.NewInt(1024),
 		[]costs.MultiContextRef{{IsNewDataSet: true, WithCDN: true}},
-		&costs.UploadCostOptions{},
+		&costs.UploadCostOptions{PieceCount: big.NewInt(41)},
 	)
 	if err != nil {
 		t.Fatalf("costSvc.CalculateMultiContextCosts: %v", err)
@@ -78,10 +86,14 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 func TestCostCalculator_CalculateMultiContextCosts_IgnoresCurrentSizeForNewDataSets(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
 		Chain: chain.Calibration,
-		WarmStorage: fixedWarmStorageReader{price: &warmstorage.ServicePrice{
-			PricePerTiBPerMonthNoCDN: big.NewInt(1000),
-			TokenAddress:             common.HexToAddress("0xbeef"),
-			EpochsPerMonth:           big.NewInt(2880),
+		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
+			Token: common.HexToAddress("0xbeef"),
+			Rates: warmstorage.PriceListRates{
+				StoragePerTiBPerMonth: big.NewInt(1000),
+			},
+			Lockups: warmstorage.PriceListLockups{
+				DefaultLockupPeriod: big.NewInt(costs.DefaultLockupPeriod),
+			},
 		}},
 		Payments: fixedPaymentsReader{
 			account: &payments.AccountState{
@@ -151,11 +163,11 @@ func (noopContractCaller) BlockNumber(context.Context) (uint64, error) {
 }
 
 type fixedWarmStorageReader struct {
-	price *warmstorage.ServicePrice
+	priceList *warmstorage.PriceList
 }
 
-func (r fixedWarmStorageReader) GetServicePrice(context.Context) (*warmstorage.ServicePrice, error) {
-	return r.price, nil
+func (r fixedWarmStorageReader) GetPriceList(context.Context) (*warmstorage.PriceList, error) {
+	return r.priceList, nil
 }
 
 type fixedPaymentsReader struct {

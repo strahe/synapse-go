@@ -29,6 +29,12 @@ type Backend interface {
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
+// ApprovalLockupPeriodReader returns the max lockup period Fund should grant
+// to the WarmStorage operator.
+type ApprovalLockupPeriodReader interface {
+	ApprovalLockupPeriod(ctx context.Context) (*big.Int, error)
+}
+
 // Service provides read and write access to the Filecoin Pay contract
 // plus convenience wrappers around ERC20 allowance management.
 //
@@ -46,6 +52,7 @@ type Service struct {
 	signer      signer.EVMSigner
 	nonces      *txutil.NonceManager
 	permits     *permitCoordinator
+	lockups     ApprovalLockupPeriodReader
 	logger      *slog.Logger
 	receiptWait time.Duration
 	lifecycle   *lifecycle.Lifecycle
@@ -72,6 +79,9 @@ type Options struct {
 	// Signer is used to sign transactions. Required for write methods;
 	// may be nil when the Service is used for reads only.
 	Signer signer.EVMSigner
+	// ApprovalLockupPeriod reads the default WarmStorage approval lockup
+	// period. Optional; Fund falls back to LockupPeriodEpochs when omitted.
+	ApprovalLockupPeriod ApprovalLockupPeriodReader
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
 	// NonceManager is optional. The root synapse Client injects a shared
@@ -118,6 +128,7 @@ func New(opts Options) (*Service, error) {
 		filPayCall:  caller,
 		filPayWrite: writer,
 		signer:      opts.Signer,
+		lockups:     opts.ApprovalLockupPeriod,
 		logger:      opts.Logger,
 		nonces:      opts.NonceManager,
 		permits:     newPermitCoordinator(),

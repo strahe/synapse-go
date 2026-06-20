@@ -22,6 +22,9 @@ type PrepareOptions struct {
 	// contexts. It is valid only when Costs is nil. When set, EnableCDN
 	// must be nil because each context already carries its own CDN state.
 	Contexts []UploadContext
+	// PieceCount is the number of pieces added to each context. Nil or
+	// non-positive values default to one.
+	PieceCount *big.Int
 	// Costs short-circuits cost calculation. When set, no other
 	// PrepareOptions fields are accepted.
 	Costs *MultiContextCosts
@@ -51,9 +54,10 @@ type PrepareTransaction struct {
 	// IncludesApproval reports whether the call will also set the FWSS
 	// operator to max allowance.
 	IncludesApproval bool
-	// Execute performs the funding operation. Additional
-	// payments.WriteOption values are appended to the built-in
-	// WithFundNeedsFwssApproval option when applicable.
+	// Execute performs the funding operation. When approval is required,
+	// Prepare fixes the approval decision and max lockup period from Costs;
+	// caller-provided payments.WriteOption values should be limited to write
+	// controls such as wait, confirmations, or precheck behavior.
 	Execute func(ctx context.Context, opts ...payments.WriteOption) (*types.WriteResult, error)
 }
 
@@ -92,6 +96,7 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		}
 		size := new(big.Int).SetUint64(opts.DataSize)
 		costs, err = s.costCalc.CalculateMultiContextCosts(ctx, payer, size, refs, MultiCostOptions{
+			PieceCount:        opts.PieceCount,
 			ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
 			BufferEpochs:      opts.BufferEpochs,
 		})
@@ -131,6 +136,9 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 				optsOut := extraOpts
 				if needsApproval {
 					optsOut = append(optsOut, payments.WithFundNeedsFwssApproval(true))
+					if costs.RequiredLockupPeriod != nil {
+						optsOut = append(optsOut, payments.WithFundApprovalLockupPeriod(costs.RequiredLockupPeriod))
+					}
 				}
 				return funder.FundSync(ctx, deposit, optsOut...)
 			},
@@ -154,6 +162,9 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 		}
 		if opts.DataSize != 0 {
 			return fmt.Errorf("%w: DataSize cannot be set when Costs is set", ErrInvalidArgument)
+		}
+		if opts.PieceCount != nil {
+			return fmt.Errorf("%w: PieceCount cannot be set when Costs is set", ErrInvalidArgument)
 		}
 		if opts.EnableCDN != nil {
 			return fmt.Errorf("%w: EnableCDN cannot be set when Costs is set", ErrInvalidArgument)

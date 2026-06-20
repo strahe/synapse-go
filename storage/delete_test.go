@@ -182,7 +182,7 @@ func TestContext_DeletePieceByID_UsesSnapshotDataSetID(t *testing.T) {
 func TestContext_DeletePieceByID_AllowsZeroPieceID(t *testing.T) {
 	var gotPieceID types.BigInt
 	fake := &fakePDPProviderClient{
-		scheduleDeletionFn: func(_ context.Context, _ types.BigInt, pID types.BigInt, _ []byte) (common.Hash, error) {
+		scheduleDeletionFn: func(_ context.Context, _, pID types.BigInt, _ []byte) (common.Hash, error) {
 			gotPieceID = pID
 			return common.HexToHash("0xabc123"), nil
 		},
@@ -211,7 +211,7 @@ func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
 	var gotPieceID types.BigInt
 	validator := &fakeDataSetValidator{err: want}
 	fake := &fakePDPProviderClient{
-		scheduleDeletionFn: func(_ context.Context, _ types.BigInt, pID types.BigInt, _ []byte) (common.Hash, error) {
+		scheduleDeletionFn: func(_ context.Context, _, pID types.BigInt, _ []byte) (common.Hash, error) {
 			gotPieceID = pID
 			return common.HexToHash("0xabc123"), nil
 		},

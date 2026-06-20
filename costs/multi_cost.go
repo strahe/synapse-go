@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -19,18 +20,18 @@ import (
 // across the aggregate.
 type MultiContextRef struct {
 	// IsNewDataSet is true when the target will create a new data set
-	// on this provider (contributes Sybil fee and optional CDN fixed
+	// on this provider (contributes lifecycle and optional CDN/cache-miss
 	// lockup). When false, CurrentDataSetSizeBytes is consulted so the
-	// marginal rate is computed above the existing floor.
+	// marginal rate is computed above the existing size.
 	IsNewDataSet bool
 
 	// CurrentDataSetSizeBytes is the current on-chain size of the
 	// existing data set (zero or nil when IsNewDataSet is true). When
-	// unknown, pass nil and the floor-price rate is used.
+	// unknown, pass nil and the marginal rate is computed from zero size.
 	CurrentDataSetSizeBytes *big.Int
 
-	// WithCDN toggles CDN fixed lockup for this target. Only meaningful
-	// when IsNewDataSet is true — CDN lockup is only charged on creation.
+	// WithCDN toggles CDN and cache-miss lockup for this target. Only
+	// meaningful when IsNewDataSet is true.
 	WithCDN bool
 }
 
@@ -42,8 +43,15 @@ type MultiContextCosts struct {
 	RatePerEpoch *big.Int
 	// RatePerMonth is the sum of per-context monthly effective rates.
 	RatePerMonth *big.Int
+	// Fees is the aggregate one-time fee breakdown.
+	Fees UploadFees
+	// Lockup is the aggregate lockup breakdown.
+	Lockup AdditionalLockup
 	// DepositNeeded is the single USDFC deposit covering all contexts.
 	DepositNeeded *big.Int
+	// RequiredLockupPeriod is the max lockup period required for FWSS
+	// approval, sourced from the price list.
+	RequiredLockupPeriod *big.Int
 	// NeedsFWSSMaxApproval is true when the FWSS operator does not yet
 	// hold max approval for the payer.
 	NeedsFWSSMaxApproval bool
@@ -85,26 +93,26 @@ func (s *Service) CalculateMultiContextCosts(
 	}
 
 	var (
-		pricing  *warmstorage.ServicePrice
-		account  *payments.AccountState
-		approval *payments.OperatorApproval
-		mu       sync.Mutex
-		errs     []error
-		wg       sync.WaitGroup
+		priceList *warmstorage.PriceList
+		account   *payments.AccountState
+		approval  *payments.OperatorApproval
+		mu        sync.Mutex
+		errs      []error
+		wg        sync.WaitGroup
 	)
 
 	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
-		p, err := s.ws.GetServicePrice(ctx)
+		p, err := s.ws.GetPriceList(ctx)
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("GetServicePrice: %w", err))
+			errs = append(errs, fmt.Errorf("GetPriceList: %w", err))
 			return
 		}
-		pricing = p
+		priceList = p
 	}()
 
 	go func() {
@@ -136,17 +144,22 @@ func (s *Service) CalculateMultiContextCosts(
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w", errors.Join(errs...))
 	}
-
-	var epm int64
-	if pricing.EpochsPerMonth != nil && pricing.EpochsPerMonth.Sign() > 0 {
-		epm = pricing.EpochsPerMonth.Int64()
+	if priceList == nil {
+		priceList = &warmstorage.PriceList{}
 	}
 
 	totalRateDelta := new(big.Int)
 	totalLockup := new(big.Int)
+	totalLifecycleLockup := new(big.Int)
+	totalStreamingLockup := new(big.Int)
+	totalCDNLockup := new(big.Int)
+	totalCacheMissLockup := new(big.Int)
 	totalRatePerEpoch := new(big.Int)
 	totalRatePerMonth := new(big.Int)
+	totalCreateDataSetFee := new(big.Int)
+	totalAddPiecesFee := new(big.Int)
 	allNewDataSets := true
+	requiredLockupPeriod := requiredLockupPeriod(priceList)
 
 	for i := range refs {
 		ref := &refs[i]
@@ -161,21 +174,27 @@ func (s *Service) CalculateMultiContextCosts(
 		lockup := CalculateAdditionalLockupRequired(
 			dataSizeBytes,
 			currentSize,
-			pricing,
-			DefaultLockupPeriod,
-			usdfcSybilFeeValue(),
+			priceList,
+			requiredLockupPeriod,
 			ref.IsNewDataSet,
 			ref.WithCDN,
 		)
-		totalRateDelta.Add(totalRateDelta, lockup.RateDelta)
-		totalLockup.Add(totalLockup, lockup.TotalLockup)
+		fees := CalculateUploadFees(priceList, ref.IsNewDataSet, opts.PieceCount)
+		totalRateDelta.Add(totalRateDelta, lockup.RateDeltaPerEpoch)
+		totalLockup.Add(totalLockup, lockup.Total)
+		totalLifecycleLockup.Add(totalLifecycleLockup, lockup.LifecycleLockup)
+		totalStreamingLockup.Add(totalStreamingLockup, lockup.StreamingLockup)
+		totalCDNLockup.Add(totalCDNLockup, lockup.CDNLockup)
+		totalCacheMissLockup.Add(totalCacheMissLockup, lockup.CacheMissLockup)
+		totalCreateDataSetFee.Add(totalCreateDataSetFee, fees.CreateDataSetFee)
+		totalAddPiecesFee.Add(totalAddPiecesFee, fees.AddPiecesFee)
 
 		totalSize := new(big.Int).Add(currentSize, dataSizeBytes)
 		rate := CalculateEffectiveRate(
 			totalSize,
-			pricing.PricePerTiBPerMonthNoCDN,
-			pricing.MinimumPricePerMonth,
-			epm,
+			priceList.Rates.StoragePerTiBPerMonth,
+			priceList.Rates.DatasetFeePerMonth,
+			chain.EpochsPerMonth,
 		)
 		totalRatePerEpoch.Add(totalRatePerEpoch, rate.RatePerEpoch)
 		totalRatePerMonth.Add(totalRatePerMonth, rate.RatePerMonth)
@@ -195,10 +214,12 @@ func (s *Service) CalculateMultiContextCosts(
 
 	depositNeeded := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  totalLockup,
+		Fees:              new(big.Int).Add(totalCreateDataSetFee, totalAddPiecesFee),
 		RateDelta:         totalRateDelta,
 		CurrentLockupRate: currentRate,
 		Debt:              debt,
 		AvailableFunds:    avail,
+		RunwayInEpochs:    resolved.RunwayInEpochs,
 		ExtraRunwayEpochs: runwayEpochs,
 		BufferEpochs:      bufferEpochs,
 		IsNewDataSet:      allNewDataSets,
@@ -209,13 +230,20 @@ func (s *Service) CalculateMultiContextCosts(
 		approval.RateAllowance,
 		approval.LockupAllowance,
 		approval.MaxLockupPeriod,
+		requiredLockupPeriod,
 	)
 	ready := depositNeeded.Sign() == 0 && !needsApproval
+
+	totalFees := new(big.Int).Add(totalCreateDataSetFee, totalAddPiecesFee)
+	aggregateLockup := aggregateLockup(totalRateDelta, totalStreamingLockup, totalLifecycleLockup, totalCDNLockup, totalCacheMissLockup, totalLockup)
 
 	return &MultiContextCosts{
 		RatePerEpoch:         totalRatePerEpoch,
 		RatePerMonth:         totalRatePerMonth,
+		Fees:                 UploadFees{CreateDataSetFee: totalCreateDataSetFee, AddPiecesFee: totalAddPiecesFee, Total: totalFees},
+		Lockup:               aggregateLockup,
 		DepositNeeded:        depositNeeded,
+		RequiredLockupPeriod: requiredLockupPeriod,
 		NeedsFWSSMaxApproval: needsApproval,
 		Ready:                ready,
 	}, nil

@@ -30,6 +30,7 @@ type PricingInfo struct {
 	WithCDN      PricePerTiB
 	TokenAddress common.Address
 	TokenSymbol  string
+	PriceList    *warmstorage.PriceList
 }
 
 // ServiceParameters captures the immutable chain/service geometry that
@@ -67,7 +68,7 @@ type StorageInfo struct {
 // multi-context cost aggregation. A nil DataSetID means "a new data set
 // will be created on this provider". CurrentDataSetSizeBytes is used
 // only when DataSetID is non-nil; zero means the caller does not have
-// the current size handy and wants the floor-price rate. WithCDN
+// the current size handy and wants a zero-size estimate. WithCDN
 // determines whether the CDN-fixed lockup is included for this ref.
 type ContextCostRef struct {
 	DataSetID               *types.BigInt

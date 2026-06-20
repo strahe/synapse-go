@@ -59,6 +59,21 @@ type FWSSDataSetReader interface {
 	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }
 
+// ProviderResolver resolves a storage provider by provider ID.
+type ProviderResolver interface {
+	ResolveProvider(ctx context.Context, providerID sdktypes.BigInt) (Provider, error)
+}
+
+// PaymentStateReader reads payment account state for termination pre-checks.
+type PaymentStateReader interface {
+	AccountInfo(ctx context.Context, token, owner common.Address) (*payments.AccountState, error)
+}
+
+// EpochReader returns the current chain epoch.
+type EpochReader interface {
+	BlockNumber(ctx context.Context) (uint64, error)
+}
+
 // DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
 // by *warmstorage.Service via GetClientDataSetsWithDetails.
 type DataSetFinder interface {
@@ -76,6 +91,9 @@ type MultiCostOptions struct {
 	// per-ref `WithCDN` flag) and governs whether the CDN-fixed lockup
 	// is added for new datasets.
 	EnableCDN bool
+	// PieceCount is the number of pieces added per context. Nil or non-positive
+	// values default to one.
+	PieceCount *big.Int
 	// ExtraRunwayEpochs is additional runway (epochs) on top of the
 	// minimum lockup period. Defaults to 0 when unset.
 	ExtraRunwayEpochs int64
@@ -110,7 +128,27 @@ type PaymentsFunder interface {
 type MultiContextCosts struct {
 	RatePerEpoch         *big.Int
 	RatePerMonth         *big.Int
+	Fees                 UploadFees
+	Lockup               UploadLockup
 	DepositNeeded        *big.Int
+	RequiredLockupPeriod *big.Int
 	NeedsFWSSMaxApproval bool
 	Ready                bool
+}
+
+// UploadFees is the one-time fee breakdown for a prepared upload.
+type UploadFees struct {
+	CreateDataSetFee *big.Int
+	AddPiecesFee     *big.Int
+	Total            *big.Int
+}
+
+// UploadLockup is the lockup breakdown for a prepared upload.
+type UploadLockup struct {
+	RateDeltaPerEpoch *big.Int
+	StreamingLockup   *big.Int
+	LifecycleLockup   *big.Int
+	CDNLockup         *big.Int
+	CacheMissLockup   *big.Int
+	Total             *big.Int
 }

@@ -34,7 +34,7 @@ func NewStorageInfoReader(ws *warmstorage.Service, sp *spregistry.Service, pay *
 
 func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Address) (*storage.StorageInfo, error) {
 	var (
-		price     *warmstorage.ServicePrice
+		priceList *warmstorage.PriceList
 		providers []spregistry.PDPProvider
 		approval  *payments.OperatorApproval
 		mu        sync.Mutex
@@ -51,14 +51,14 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 
 	go func() {
 		defer wg.Done()
-		p, err := a.ws.GetServicePrice(ctx)
+		p, err := a.ws.GetPriceList(ctx)
 		if err != nil {
-			appendErr(fmt.Errorf("GetServicePrice: %w", err))
+			appendErr(fmt.Errorf("GetPriceList: %w", err))
 			return
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		price = p
+		priceList = p
 	}()
 
 	go func() {
@@ -134,9 +134,9 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 	}
 
 	info := &storage.StorageInfo{
-		Pricing:           buildPricingInfo(price),
+		Pricing:           buildPricingInfo(priceList),
 		Providers:         providers,
-		ServiceParameters: buildServiceParameters(price),
+		ServiceParameters: buildServiceParameters(),
 		Allowances:        allowances,
 	}
 	if len(errs) > 0 {

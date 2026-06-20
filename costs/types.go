@@ -10,21 +10,42 @@ type EffectiveRate struct {
 	RatePerMonth *big.Int
 }
 
-// AdditionalLockup is the incremental lockup required when adding data to a dataset.
-// TotalLockup = RateLockup + CDNFixedLockup + SybilFee.
+// UploadFees is the one-time fee breakdown for an upload.
+type UploadFees struct {
+	CreateDataSetFee *big.Int
+	AddPiecesFee     *big.Int
+	Total            *big.Int
+}
+
+// AdditionalLockup is the incremental lockup required when adding data to a
+// dataset.
 type AdditionalLockup struct {
-	RateDelta      *big.Int // marginal rate per epoch added by this upload
-	RateLockup     *big.Int // RateDelta * lockupPeriod
-	CDNFixedLockup *big.Int // 1.0 USDFC for new CDN datasets, 0 otherwise
-	SybilFee       *big.Int // anti-sybil fee for new datasets, 0 otherwise
-	TotalLockup    *big.Int // sum of all components
+	RateDeltaPerEpoch *big.Int
+	StreamingLockup   *big.Int
+	LifecycleLockup   *big.Int
+	CDNLockup         *big.Int
+	CacheMissLockup   *big.Int
+	Total             *big.Int
+
+	// Deprecated: Use RateDeltaPerEpoch.
+	RateDelta *big.Int
+	// Deprecated: Use StreamingLockup.
+	RateLockup *big.Int
+	// Deprecated: Use CDNLockup and CacheMissLockup.
+	CDNFixedLockup *big.Int
+	// Deprecated: Use LifecycleLockup.
+	SybilFee *big.Int
+	// Deprecated: Use Total.
+	TotalLockup *big.Int
 }
 
 // UploadCosts is the result of GetUploadCosts.
 type UploadCosts struct {
 	Rate                 EffectiveRate
+	Fees                 UploadFees
 	Lockup               AdditionalLockup
 	DepositNeeded        *big.Int
+	RequiredLockupPeriod *big.Int
 	NeedsFWSSMaxApproval bool
 	Ready                bool
 }
@@ -37,18 +58,23 @@ type UploadCostOptions struct {
 	// Zero (the zero value) uses DefaultBufferEpochs (5); there is no way to
 	// request a zero-epoch buffer via this field.
 	BufferEpochs int64
-	// EnableCDN adds CDN_FIXED_LOCKUP (1 USDFC) for a new dataset.
+	// EnableCDN adds CDN and cache-miss lockup for a new dataset.
 	EnableCDN bool
-	// IsNewDataSet must be true when creating a fresh dataset (affects sybil fee and CDN lockup).
+	// IsNewDataSet must be true when creating a fresh dataset.
 	IsNewDataSet bool
 	// CurrentDataSetSizeBytes is the existing payload in the dataset (0 for new datasets).
 	CurrentDataSetSizeBytes *big.Int
+	// PieceCount is the number of pieces added by this upload. Zero defaults
+	// to one piece.
+	PieceCount *big.Int
 }
 
 // DepositCalculation is the input to CalculateDepositNeeded.
 type DepositCalculation struct {
 	// AdditionalLockup is the incremental lockup required by the upload.
 	AdditionalLockup *big.Int
+	// Fees are one-time operation fees required by the upload.
+	Fees *big.Int
 	// RateDelta is the incremental per-epoch payment rate added by the upload.
 	RateDelta *big.Int
 	// CurrentLockupRate is the account's existing per-epoch payment rate.
@@ -57,6 +83,8 @@ type DepositCalculation struct {
 	Debt *big.Int
 	// AvailableFunds is the account balance available after projected lockup.
 	AvailableFunds *big.Int
+	// RunwayInEpochs is the current account runway after projection.
+	RunwayInEpochs *big.Int
 	// ExtraRunwayEpochs is extra epoch runway on top of the required lockup.
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit buffer for execution latency.

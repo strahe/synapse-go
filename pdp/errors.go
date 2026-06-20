@@ -7,6 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/types"
 )
 
 // HTTPError wraps a non-success response from the PDP provider API.
@@ -100,3 +104,61 @@ var ErrStillPending = errors.New("pdp: still pending")
 // ErrTxRejected is returned when an on-chain operation posted by the SP
 // was rejected by the network.
 var ErrTxRejected = errors.New("pdp: transaction rejected")
+
+// ServiceAlreadyTerminatedError is returned when the provider reports the
+// service is already terminated on chain.
+type ServiceAlreadyTerminatedError struct {
+	ServiceTerminationEpoch types.Epoch
+	Message                 string
+}
+
+func (e *ServiceAlreadyTerminatedError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("pdp: service already terminated at epoch %d: %s", e.ServiceTerminationEpoch, e.Message)
+	}
+	return fmt.Sprintf("pdp: service already terminated at epoch %d", e.ServiceTerminationEpoch)
+}
+
+// TerminateServicePendingError is returned when a termination request is
+// already queued.
+type TerminateServicePendingError struct {
+	Message string
+}
+
+func (e *TerminateServicePendingError) Error() string {
+	if e.Message != "" {
+		return "pdp: terminate service already pending: " + e.Message
+	}
+	return "pdp: terminate service already pending"
+}
+
+// TerminateServiceNotSupportedError is returned when the provider does not
+// support provider-relayed termination.
+type TerminateServiceNotSupportedError struct {
+	Body string
+}
+
+func (e *TerminateServiceNotSupportedError) Error() string {
+	if e.Body != "" {
+		return "pdp: terminate service not supported: " + e.Body
+	}
+	return "pdp: terminate service not supported"
+}
+
+// WaitForTerminateServiceNotFoundError is returned when no provider
+// termination request is visible before a tx hash is observed.
+type WaitForTerminateServiceNotFoundError struct{}
+
+func (e *WaitForTerminateServiceNotFoundError) Error() string {
+	return "pdp: terminate service status not found"
+}
+
+// WaitForTerminateServiceRejectedError is returned when a provider tx hash
+// was observed and the status later disappears.
+type WaitForTerminateServiceRejectedError struct {
+	TxHash common.Hash
+}
+
+func (e *WaitForTerminateServiceRejectedError) Error() string {
+	return "pdp: terminate service transaction rejected: " + e.TxHash.Hex()
+}

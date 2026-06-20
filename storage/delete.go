@@ -153,7 +153,7 @@ func (c *Context) schedulePieceDeletionByID(ctx context.Context, op string, targ
 func encodeSignatureExtraData(sig []byte) ([]byte, error) {
 	out, err := bytesArgs.Pack(sig)
 	if err != nil {
-		return nil, fmt.Errorf("encode schedule-removal extraData: %w", err)
+		return nil, fmt.Errorf("encode signature extraData: %w", err)
 	}
 	return out, nil
 }

@@ -12,9 +12,11 @@ import (
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
-// LockupPeriodEpochs is the default client-operator max lockup period
-// granted when Fund auto-approves the WarmStorage operator: 30 days at
-// 2880 epochs per day.
+// LockupPeriodEpochs is the fallback client-operator max lockup period granted
+// when Fund auto-approves the WarmStorage operator.
+//
+// Deprecated: Fund uses ApprovalLockupPeriod when configured and only falls
+// back to this constant for standalone services without a price-list reader.
 var LockupPeriodEpochs = big.NewInt(30 * 2880)
 
 // maxUint256 is the ERC-2612-style "unlimited" allowance used by Fund.
@@ -70,10 +72,16 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 
 	cfg := newWriteConfig(opts)
 	needsApproval := false
+	var approvalLockupPeriod *big.Int
 	if cfg.fundNeedsFwssApproval != nil {
 		needsApproval = *cfg.fundNeedsFwssApproval
 	} else {
-		approved, err := s.isFwssMaxApproved(ctx)
+		var err error
+		approvalLockupPeriod, err = s.resolveFundApprovalLockupPeriod(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("payments.Fund: %w", err)
+		}
+		approved, err := s.isFwssMaxApproved(ctx, approvalLockupPeriod)
 		if err != nil {
 			return nil, fmt.Errorf("payments.Fund: check approval: %w", err)
 		}
@@ -81,6 +89,13 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 	}
 
 	if needsApproval {
+		if approvalLockupPeriod == nil {
+			var err error
+			approvalLockupPeriod, err = s.resolveFundApprovalLockupPeriod(ctx, cfg)
+			if err != nil {
+				return nil, fmt.Errorf("payments.Fund: %w", err)
+			}
+		}
 		if amount.Sign() > 0 {
 			return s.DepositWithPermitAndApproveOperator(
 				ctx,
@@ -89,11 +104,11 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 				amount,
 				nil,
 				s.warmStorage,
-				maxUint256, maxUint256, LockupPeriodEpochs,
+				maxUint256, maxUint256, approvalLockupPeriod,
 				opts...,
 			)
 		}
-		return s.ApproveService(ctx, s.usdfcToken, s.warmStorage, maxUint256, maxUint256, LockupPeriodEpochs, opts...)
+		return s.ApproveService(ctx, s.usdfcToken, s.warmStorage, maxUint256, maxUint256, approvalLockupPeriod, opts...)
 	}
 	if amount.Sign() > 0 {
 		return s.DepositWithPermit(ctx, s.usdfcToken, common.Address{}, amount, nil, opts...)
@@ -123,7 +138,7 @@ var waitIfUnset WriteOption = func(c *writeConfig) {
 
 // isFwssMaxApproved reports whether WarmStorage holds sufficient operator
 // allowances to skip the approve-step of Fund.
-func (s *Service) isFwssMaxApproved(ctx context.Context) (bool, error) {
+func (s *Service) isFwssMaxApproved(ctx context.Context, requiredLockupPeriod *big.Int) (bool, error) {
 	approval, err := s.ServiceApproval(ctx, s.usdfcToken, s.signer.EVMAddress(), s.warmStorage)
 	if err != nil {
 		return false, err
@@ -138,8 +153,39 @@ func (s *Service) isFwssMaxApproved(ctx context.Context) (bool, error) {
 	if approval.LockupAllowance == nil || approval.LockupAllowance.Cmp(halfMax) < 0 {
 		return false, nil
 	}
-	if approval.MaxLockupPeriod == nil || approval.MaxLockupPeriod.Cmp(LockupPeriodEpochs) < 0 {
+	required := copyBigOrFallback(requiredLockupPeriod, LockupPeriodEpochs)
+	if approval.MaxLockupPeriod == nil || approval.MaxLockupPeriod.Cmp(required) < 0 {
 		return false, nil
 	}
 	return true, nil
+}
+
+func (s *Service) resolveFundApprovalLockupPeriod(ctx context.Context, cfg writeConfig) (*big.Int, error) {
+	if cfg.fundApprovalLockup != nil {
+		if cfg.fundApprovalLockup.Sign() <= 0 {
+			return nil, fmt.Errorf("%w: approval lockup period must be > 0", ErrInvalidArgument)
+		}
+		return new(big.Int).Set(cfg.fundApprovalLockup), nil
+	}
+	if s.lockups != nil {
+		period, err := s.lockups.ApprovalLockupPeriod(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if period == nil || period.Sign() <= 0 {
+			return nil, fmt.Errorf("%w: approval lockup period must be > 0", ErrInvalidArgument)
+		}
+		return new(big.Int).Set(period), nil
+	}
+	return new(big.Int).Set(LockupPeriodEpochs), nil
+}
+
+func copyBigOrFallback(v, fallback *big.Int) *big.Int {
+	if v != nil {
+		return new(big.Int).Set(v)
+	}
+	if fallback != nil {
+		return new(big.Int).Set(fallback)
+	}
+	return new(big.Int)
 }

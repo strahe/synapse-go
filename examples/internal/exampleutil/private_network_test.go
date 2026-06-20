@@ -13,6 +13,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 )
@@ -78,17 +80,20 @@ func fakeChainRPCServer(t *testing.T) *httptest.Server {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if req.Method != "eth_chainId" {
-			t.Errorf("unexpected JSON-RPC method %q", req.Method)
-			http.Error(w, "unexpected method", http.StatusBadRequest)
-			return
-		}
 		id := req.ID
 		if len(id) == 0 {
 			id = []byte("null")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, id)
+		switch req.Method {
+		case "eth_chainId":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, id)
+		case "eth_call":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%q}`, id, testutil.FWSSAddressResolutionResultHex(t, chain.Calibration))
+		default:
+			t.Errorf("unexpected JSON-RPC method %q", req.Method)
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server

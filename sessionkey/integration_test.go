@@ -127,7 +127,6 @@ func TestIntegration_SessionKey(t *testing.T) {
 		if exp == 0 {
 			t.Error("CreateDataSet should still be authorised after partial revoke")
 		}
-
 	})
 
 	t.Run("LoginAndFund+LoginAndFundWithOptions", func(t *testing.T) {
@@ -183,6 +182,5 @@ func TestIntegration_SessionKey(t *testing.T) {
 		if expAdd != 0 {
 			t.Errorf("AddPieces expiry = %d, want 0 (only CreateDataSet was requested)", expAdd)
 		}
-
 	})
 }

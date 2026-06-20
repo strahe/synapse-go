@@ -208,7 +208,7 @@ func TestIsFwssMaxApproved_AllApproved(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		true, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background())
+	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestIsFwssMaxApproved_Unapproved(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		false, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background())
+	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestIsFwssMaxApproved_RateTooLow(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		true, big.NewInt(1), maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background())
+	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestIsFwssMaxApproved_LockupTooLow(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		true, maxUint256, big.NewInt(1), big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background())
+	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestIsFwssMaxApproved_MaxLockupPeriodTooShort(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		true, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), big.NewInt(0),
 	)
-	ok, err := s.isFwssMaxApproved(context.Background())
+	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}

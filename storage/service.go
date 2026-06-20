@@ -15,6 +15,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -82,13 +83,20 @@ type Service struct {
 
 	// Manager-level collaborators (all optional). When unset, the
 	// corresponding public method returns a descriptive error.
-	finder     DataSetFinder
-	info       StorageInfoReader
-	terminator FWSSTerminator
-	costCalc   MultiCostCalculator
-	funder     PaymentsFunder
-	sizeReader DataSetSizeReader
-	dsReader   FWSSDataSetReader
+	finder       DataSetFinder
+	info         StorageInfoReader
+	terminator   FWSSTerminator
+	costCalc     MultiCostCalculator
+	funder       PaymentsFunder
+	sizeReader   DataSetSizeReader
+	dsReader     FWSSDataSetReader
+	providers    ProviderResolver
+	payments     PaymentStateReader
+	epochs       EpochReader
+	signer       signer.EVMSigner
+	chainID      types.ChainID
+	recordKeeper common.Address
+	paymentToken common.Address
 
 	// signerAddr is the default client/payer used by manager-level
 	// helpers when the caller does not explicitly supply one. Zero
@@ -183,7 +191,7 @@ type Options struct {
 
 	// DataSetSizeReader backs the per-dataset size lookup performed by
 	// Service.Prepare for existing-dataset contexts. Optional; when
-	// nil, Prepare falls back to zero sizes (floor-price lockup). For
+	// nil, Prepare falls back to zero-size estimates. For
 	// accurate add-pieces pricing, wire an implementation backed by
 	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
 	DataSetSizeReader DataSetSizeReader
@@ -193,6 +201,23 @@ type Options struct {
 	// and to equip returned contexts with upload-time ended-dataset
 	// checks. When nil, those safety nets are skipped.
 	FWSSDataSetReader FWSSDataSetReader
+
+	// ProviderResolver resolves provider endpoints for manager-level
+	// provider-relayed termination. Optional.
+	ProviderResolver ProviderResolver
+
+	// PaymentStateReader and EpochReader back the provider-relayed termination
+	// debt pre-check. Optional.
+	PaymentStateReader PaymentStateReader
+	EpochReader        EpochReader
+	PaymentToken       common.Address
+
+	// Signer, ChainID and RecordKeeper are required for manager-level
+	// provider-relayed termination. Existing context/direct paths can leave
+	// them unset.
+	Signer       signer.EVMSigner
+	ChainID      types.ChainID
+	RecordKeeper common.Address
 
 	// SignerAddress is the default payer/client used by manager-level
 	// helpers (FindDataSets, GetStorageInfo, CreateContext{s}, Prepare)
@@ -216,11 +241,21 @@ func New(opts Options) (*Service, error) {
 	if opts.DownloadMaxBytes < 0 {
 		opts.DownloadMaxBytes = 0
 	}
+	signerAddr := opts.SignerAddress
+	if signerAddr == (common.Address{}) && opts.Signer != nil {
+		signerAddr = opts.Signer.EVMAddress()
+	}
 	resolver := normalizeOptional(opts.Resolver)
 	contextResolver := normalizeOptional(opts.ContextResolver)
 	if contextResolver == nil {
 		if inherited, ok := resolver.(ContextResolver); ok {
 			contextResolver = inherited
+		}
+	}
+	providers := normalizeOptional(opts.ProviderResolver)
+	if providers == nil {
+		if inherited, ok := contextResolver.(ProviderResolver); ok {
+			providers = inherited
 		}
 	}
 	return &Service{
@@ -241,7 +276,14 @@ func New(opts Options) (*Service, error) {
 		funder:               normalizeOptional(opts.PaymentsFunder),
 		sizeReader:           normalizeOptional(opts.DataSetSizeReader),
 		dsReader:             normalizeOptional(opts.FWSSDataSetReader),
-		signerAddr:           opts.SignerAddress,
+		providers:            providers,
+		payments:             normalizeOptional(opts.PaymentStateReader),
+		epochs:               normalizeOptional(opts.EpochReader),
+		signer:               opts.Signer,
+		chainID:              opts.ChainID,
+		recordKeeper:         opts.RecordKeeper,
+		paymentToken:         opts.PaymentToken,
+		signerAddr:           signerAddr,
 	}, nil
 }
 

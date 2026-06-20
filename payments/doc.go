@@ -9,8 +9,11 @@
 //
 // The root synapse Client wires payments together with the other
 // write-capable services so transaction nonce allocation is coordinated for
-// a shared signer. Standalone services create their own nonce coordinator
-// when constructed with write dependencies.
+// a shared signer. It also wires Fund approval lockup periods from the
+// warmstorage PriceList. Standalone services create their own nonce
+// coordinator when constructed with write dependencies and use the legacy
+// Fund lockup-period fallback unless an ApprovalLockupPeriod reader is
+// supplied.
 //
 // # Stability
 //
