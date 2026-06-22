@@ -295,21 +295,46 @@ func TestRegisterProvider_UsesBackendForRegistrationFee(t *testing.T) {
 	}
 }
 
-func TestRegisterProvider_AllowsEmptyDescription(t *testing.T) {
-	s, backend := newWriteTestService(t)
-	backend.set(t, "REGISTRATION_FEE", big.NewInt(1))
+func TestRegisterProvider_AllowsEmptyDisplayFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*ProviderRegistrationInfo)
+		argIndex int
+	}{
+		{
+			name: "name",
+			mutate: func(reg *ProviderRegistrationInfo) {
+				reg.Name = ""
+			},
+			argIndex: 1,
+		},
+		{
+			name: "description",
+			mutate: func(reg *ProviderRegistrationInfo) {
+				reg.Description = ""
+			},
+			argIndex: 2,
+		},
+	}
 
-	reg := sampleRegistration()
-	reg.Description = ""
-	if _, err := s.RegisterProvider(context.Background(), reg); err != nil {
-		t.Fatalf("RegisterProvider: %v", err)
-	}
-	name, args := decodeLastSentCalldata(t, backend)
-	if name != "registerProvider" {
-		t.Fatalf("called %s, want registerProvider", name)
-	}
-	if got := args[2].(string); got != "" {
-		t.Fatalf("description = %q, want empty", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, backend := newWriteTestService(t)
+			backend.set(t, "REGISTRATION_FEE", big.NewInt(1))
+
+			reg := sampleRegistration()
+			tc.mutate(&reg)
+			if _, err := s.RegisterProvider(context.Background(), reg); err != nil {
+				t.Fatalf("RegisterProvider: %v", err)
+			}
+			name, args := decodeLastSentCalldata(t, backend)
+			if name != "registerProvider" {
+				t.Fatalf("called %s, want registerProvider", name)
+			}
+			if got := args[tc.argIndex].(string); got != "" {
+				t.Fatalf("%s = %q, want empty", tc.name, got)
+			}
+		})
 	}
 }
 
@@ -371,13 +396,6 @@ func TestRegisterProvider_RejectsInvalidInputs(t *testing.T) {
 		t.Errorf("zero payee: got %v want ErrInvalidArgument", err)
 	}
 
-	// empty name
-	reg = sampleRegistration()
-	reg.Name = ""
-	if _, err := s.RegisterProvider(ctx, reg); !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("empty name: got %v want ErrInvalidArgument", err)
-	}
-
 	reg = sampleRegistration()
 	reg.Name = strings.Repeat("x", 129)
 	if _, err := s.RegisterProvider(ctx, reg); !errors.Is(err, ErrInvalidArgument) {
@@ -397,7 +415,8 @@ func TestRegisterProvider_RejectsInvalidInputs(t *testing.T) {
 		t.Errorf("invalid offering: got %v want ErrInvalidOffering", err)
 	}
 
-	// empty description is intentionally allowed; see TestRegisterProvider_AllowsEmptyDescription.
+	// Empty display fields are intentionally allowed; see
+	// TestRegisterProvider_AllowsEmptyDisplayFields.
 
 	// negative WithValue
 	reg = sampleRegistration()
@@ -437,26 +456,32 @@ func TestUpdateProviderInfo_BroadcastsDecodedArgs(t *testing.T) {
 	}
 }
 
-func TestUpdateProviderInfo_AllowsEmptyDescription(t *testing.T) {
-	s, backend := newWriteTestService(t)
+func TestUpdateProviderInfo_AllowsEmptyDisplayFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		displayName string
+		description string
+		argIndex    int
+	}{
+		{name: "name", displayName: "", description: "desc", argIndex: 0},
+		{name: "description", displayName: "new-name", description: "", argIndex: 1},
+	}
 
-	if _, err := s.UpdateProviderInfo(context.Background(), "new-name", ""); err != nil {
-		t.Fatalf("UpdateProviderInfo: %v", err)
-	}
-	name, args := decodeLastSentCalldata(t, backend)
-	if name != "updateProviderInfo" {
-		t.Fatalf("called %s", name)
-	}
-	if got := args[1].(string); got != "" {
-		t.Fatalf("description = %q, want empty", got)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, backend := newWriteTestService(t)
 
-func TestUpdateProviderInfo_RejectsEmptyName(t *testing.T) {
-	s, _ := newWriteTestService(t)
-	_, err := s.UpdateProviderInfo(context.Background(), "", "desc")
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("got %v want ErrInvalidArgument", err)
+			if _, err := s.UpdateProviderInfo(context.Background(), tc.displayName, tc.description); err != nil {
+				t.Fatalf("UpdateProviderInfo: %v", err)
+			}
+			name, args := decodeLastSentCalldata(t, backend)
+			if name != "updateProviderInfo" {
+				t.Fatalf("called %s", name)
+			}
+			if got := args[tc.argIndex].(string); got != "" {
+				t.Fatalf("%s = %q, want empty", tc.name, got)
+			}
+		})
 	}
 }
 

@@ -26,6 +26,8 @@ import (
 //
 // The PDP offering is validated and encoded before broadcast: an invalid
 // offering surfaces as ErrInvalidOffering with no on-chain side effects.
+// Name and Description are display metadata; either may be empty, but both
+// remain subject to their UTF-8 byte-length limits.
 //
 // Returns a WriteResult carrying the broadcast tx hash. Use WithWait to
 // block for the receipt; when the transaction reverts on-chain the
@@ -39,9 +41,6 @@ func (s *Service) RegisterProvider(ctx context.Context, info ProviderRegistratio
 	}
 	if (info.Payee == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.RegisterProvider: %w: zero Payee", ErrInvalidArgument)
-	}
-	if info.Name == "" {
-		return nil, fmt.Errorf("spregistry.RegisterProvider: %w: empty Name", ErrInvalidArgument)
 	}
 	if err := validateProviderInfo(info.Name, info.Description); err != nil {
 		return nil, fmt.Errorf("spregistry.RegisterProvider: %w", err)
@@ -93,16 +92,14 @@ func (s *Service) RegisterProvider(ctx context.Context, info ProviderRegistratio
 }
 
 // UpdateProviderInfo updates the caller's on-chain display metadata. Name
-// must be non-empty; description may be empty to clear the current value.
+// and description may be empty to clear the current values, but both remain
+// subject to their UTF-8 byte-length limits.
 func (s *Service) UpdateProviderInfo(ctx context.Context, name, description string, opts ...WriteOption) (*WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
 	if err := s.requireSigner(); err != nil {
 		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w", err)
-	}
-	if name == "" {
-		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w: empty name", ErrInvalidArgument)
 	}
 	if err := validateProviderInfo(name, description); err != nil {
 		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w", err)

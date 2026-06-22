@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -589,20 +590,56 @@ func TestManagerDownload_RejectsLoopbackByDefault(t *testing.T) {
 	}
 }
 
-func TestManagerDownload_RejectsZeroNetworkByDefault(t *testing.T) {
+func TestManagerDownload_RejectsReservedNetworksByDefault(t *testing.T) {
 	data := bytes.Repeat([]byte("z"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
 
-	mgr := mustNewService(t, Options{})
-	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: "http://0.0.0.1:8080/foo"})
-	if err == nil {
-		t.Fatal("expected ErrPrivateNetwork, got nil")
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "zero IPv4 network", url: "http://0.0.0.1:8080/foo"},
+		{name: "IETF protocol assignments", url: "http://192.0.0.1:8080/foo"},
+		{name: "IPv4 dummy address", url: "http://192.0.0.8:8080/foo"},
+		{name: "NAT64/DNS64 discovery", url: "http://192.0.0.170:8080/foo"},
+		{name: "6a44 relay anycast", url: "http://192.88.99.2:8080/foo"},
+		{name: "local-use NAT64", url: "http://[64:ff9b:1::c000:201]:8080/foo"},
+		{name: "discard-only prefix", url: "http://[100::1]:8080/foo"},
+		{name: "dummy IPv6 prefix", url: "http://[100:0:0:1::1]:8080/foo"},
+		{name: "benchmarking IPv6 prefix", url: "http://[2001:2::1]:8080/foo"},
+		{name: "documentation IPv6 prefix", url: "http://[2001:db8::1]:8080/foo"},
+		{name: "documentation IPv6 prefix 2", url: "http://[3fff::1]:8080/foo"},
+		{name: "segment routing SIDs", url: "http://[5f00::1]:8080/foo"},
+		{name: "well-known NAT64 to private IPv4", url: "http://[64:ff9b::10.0.0.1]:8080/foo"},
+		{name: "well-known NAT64 to CGNAT IPv4", url: "http://[64:ff9b::100.64.0.1]:8080/foo"},
+		{name: "well-known NAT64 to documentation IPv4", url: "http://[64:ff9b::192.0.2.1]:8080/foo"},
 	}
-	if !errors.Is(err, ErrPrivateNetwork) {
-		t.Fatalf("expected ErrPrivateNetwork, got: %v", err)
+
+	mgr := mustNewService(t, Options{})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			_, err := mgr.Download(ctx, info.CIDv2, &DownloadOptions{URL: tc.url})
+			if err == nil {
+				t.Fatal("expected ErrPrivateNetwork, got nil")
+			}
+			if !errors.Is(err, ErrPrivateNetwork) {
+				t.Fatalf("expected ErrPrivateNetwork, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSafeDialContext_AllowsWellKnownNAT64PublicIPv4(t *testing.T) {
+	dial := safeDialContext(&net.Dialer{}, false)
+	_, err := dial(context.Background(), "unsupported-network", "[64:ff9b::8.8.8.8]:80")
+	if errors.Is(err, ErrPrivateNetwork) {
+		t.Fatalf("public IPv4 through well-known NAT64 prefix was rejected: %v", err)
 	}
 }
 

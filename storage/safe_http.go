@@ -5,8 +5,32 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 )
+
+var forbiddenFetchPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/29"),
+	netip.MustParsePrefix("192.0.0.8/32"),
+	netip.MustParsePrefix("192.0.0.170/31"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.2/32"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("100:0:0:1::/64"),
+	netip.MustParsePrefix("2001:2::/48"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("3fff::/20"),
+	netip.MustParsePrefix("5f00::/16"),
+}
+
+var nat64WellKnownPrefix = netip.MustParsePrefix("64:ff9b::/96")
 
 // newSafeHTTPClient returns an *http.Client whose transport refuses to dial
 // local, private, multicast, unspecified, or reserved addresses. This is the
@@ -82,44 +106,32 @@ func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Conte
 
 // isPrivateAddress returns true for IPs that should never be dialed from
 // SDK-initiated downloads of remote provider URLs: loopback, link-local,
-// RFC1918 / ULA (net.IP.IsPrivate), RFC6598 (CGNAT), multicast, unspecified,
-// and zero IPv4 network addresses.
+// RFC1918 / ULA, multicast, unspecified, and selected special-use prefixes.
 func isPrivateAddress(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsPrivate() {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
 		return true
 	}
-	// RFC6598 CGNAT range: 100.64.0.0/10
-	if v4 := ip.To4(); v4 != nil {
-		// Zero IPv4 network: 0.0.0.0/8
-		if v4[0] == 0 {
+	addr = addr.Unmap()
+	return isForbiddenFetchAddr(addr)
+}
+
+func isForbiddenFetchAddr(addr netip.Addr) bool {
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() ||
+		addr.IsLinkLocalUnicast() || addr.IsPrivate() {
+		return true
+	}
+	if nat64WellKnownPrefix.Contains(addr) {
+		b := addr.As16()
+		if isForbiddenFetchAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})) {
 			return true
 		}
-		if v4[0] == 100 && (v4[1]&0xc0) == 64 {
-			return true
-		}
-		// TEST-NET-1: 192.0.2.0/24
-		if v4[0] == 192 && v4[1] == 0 && v4[2] == 2 {
-			return true
-		}
-		// TEST-NET-2: 198.51.100.0/24
-		if v4[0] == 198 && v4[1] == 51 && v4[2] == 100 {
-			return true
-		}
-		// TEST-NET-3: 203.0.113.0/24
-		if v4[0] == 203 && v4[1] == 0 && v4[2] == 113 {
-			return true
-		}
-		// Benchmarking: 198.18.0.0/15
-		if v4[0] == 198 && (v4[1]&0xfe) == 18 {
-			return true
-		}
-		// Reserved: 240.0.0.0/4
-		if (v4[0] & 0xf0) == 0xf0 {
+	}
+	for _, prefix := range forbiddenFetchPrefixes {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}

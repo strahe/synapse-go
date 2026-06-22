@@ -126,7 +126,7 @@ func WithLogger(l *slog.Logger) ClientOption {
 // WithHTTPClient sets the HTTP client used by every service that makes HTTP
 // calls:
 //
-//   - filbeam.Service (stats API)
+//   - filbeam.Service (stats API and CDN downloads)
 //   - storage.Service (URL-based downloads via Service.HTTPClient)
 //   - provider HTTP clients constructed by the storage resolver for upload,
 //     pull, and provider RPC calls
