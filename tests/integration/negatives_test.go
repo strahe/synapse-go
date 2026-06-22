@@ -51,7 +51,7 @@ func testInsufficientFundsDeposit(ctx context.Context, t *testing.T, client *syn
 		t.Skip("payments service not available on client")
 	}
 
-	addrs := client.Chain().Addresses()
+	addrs := client.ResolvedAddresses()
 	usdfc := addrs.USDFC
 	to := client.Address()
 
@@ -87,7 +87,7 @@ func testNonceConflictRecovery(ctx context.Context, t *testing.T, client *synaps
 		t.Skip("payments service not available on client")
 	}
 
-	addrs := client.Chain().Addresses()
+	addrs := client.ResolvedAddresses()
 	usdfc := addrs.USDFC
 	to := client.Address()
 

@@ -7,18 +7,17 @@ package abi
 import (
 	"context"
 	"fmt"
+	"math/big"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/contracts/fwss"
 )
 
-// ContractCaller is the subset of bind.ContractCaller used by helpers here.
-// It is satisfied by *ethclient.Client.
+// ContractCaller is the RPC surface used by address and multicall helpers.
 type ContractCaller interface {
-	bind.ContractCaller
+	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 }
 
 // ResolvedAddresses holds the set of contract addresses that FWSS points to,
@@ -32,15 +31,10 @@ type ResolvedAddresses struct {
 	ViewContract       common.Address
 	FilBeamBeneficiary common.Address
 	SessionKeyRegistry common.Address
-	Multicall3         common.Address // propagated from chain fallback, if known
 }
 
 // ResolveAddresses reads address pointers directly from the FWSS contract.
-// fwssAddr must be non-zero; callers that want a registry fallback should use
-// ResolvedAddressesFromChain separately.
-//
-// On any RPC/call failure the function returns an error; callers may choose
-// to fall back to ResolvedAddressesFromChain.
+// fwssAddr must be non-zero. Any RPC or decoding failure returns an error.
 func ResolveAddresses(ctx context.Context, caller ContractCaller, fwssAddr common.Address) (*ResolvedAddresses, error) {
 	if caller == nil {
 		return nil, fmt.Errorf("abi.ResolveAddresses: nil caller")
@@ -138,23 +132,5 @@ func ResolveAddresses(ctx context.Context, caller ContractCaller, fwssAddr commo
 		ViewContract:       view,
 		FilBeamBeneficiary: beam,
 		SessionKeyRegistry: skr,
-		Multicall3:         multicall3Address,
 	}, nil
-}
-
-// ResolvedAddressesFromChain builds a ResolvedAddresses from the hard-coded
-// chain registry. Intended as a fallback when on-chain resolution fails.
-// ViewContract and FilBeamBeneficiary are left zero when unknown.
-func ResolvedAddressesFromChain(c chain.Chain) ResolvedAddresses {
-	a := c.Addresses()
-	return ResolvedAddresses{
-		FWSS:               a.FWSS,
-		PDPVerifier:        a.PDPVerifier,
-		SPRegistry:         a.SPRegistry,
-		USDFC:              a.USDFC,
-		Payments:           a.Payments,
-		ViewContract:       a.StateView,
-		SessionKeyRegistry: a.SessionKeyRegistry,
-		Multicall3:         a.Multicall3,
-	}
 }

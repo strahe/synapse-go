@@ -37,10 +37,6 @@ type fakeMulticallCaller struct {
 	checkMsg      func(t *testing.T, msg ethereum.CallMsg)
 }
 
-func (f *fakeMulticallCaller) CodeAt(context.Context, common.Address, *big.Int) ([]byte, error) {
-	return []byte{0x1}, nil
-}
-
 func (f *fakeMulticallCaller) CallContract(_ context.Context, msg ethereum.CallMsg, _ *big.Int) ([]byte, error) {
 	if msg.To == nil {
 		return nil, fmt.Errorf("nil call target")
@@ -172,42 +168,6 @@ func TestResolveAddresses_AllowsPerMethodFailuresInMulticall(t *testing.T) {
 	}
 }
 
-func TestResolvedAddressesFromChain_Calibration(t *testing.T) {
-	a := ResolvedAddressesFromChain(chain.Calibration)
-	want := chain.Calibration.Addresses()
-	if a.FWSS != want.FWSS {
-		t.Errorf("FWSS: got %s want %s", a.FWSS, want.FWSS)
-	}
-	if a.PDPVerifier != want.PDPVerifier {
-		t.Errorf("PDPVerifier mismatch")
-	}
-	if a.SPRegistry != want.SPRegistry {
-		t.Errorf("SPRegistry mismatch")
-	}
-	if a.USDFC != want.USDFC {
-		t.Errorf("USDFC mismatch")
-	}
-	if a.Payments != want.Payments {
-		t.Errorf("Payments mismatch")
-	}
-	if a.ViewContract != want.StateView {
-		t.Errorf("ViewContract mismatch")
-	}
-	if a.SessionKeyRegistry != want.SessionKeyRegistry {
-		t.Errorf("SessionKeyRegistry mismatch")
-	}
-	if a.Multicall3 != want.Multicall3 {
-		t.Errorf("Multicall3 mismatch")
-	}
-}
-
-func TestResolvedAddressesFromChain_Mainnet(t *testing.T) {
-	a := ResolvedAddressesFromChain(chain.Mainnet)
-	if a.FWSS != chain.Mainnet.Addresses().FWSS {
-		t.Fatal("FWSS mismatch for mainnet")
-	}
-}
-
 func TestResolveAddresses_BatchCallError(t *testing.T) {
 	caller := &errorCallerAddresses{err: fmt.Errorf("batch fail")}
 	_, err := ResolveAddresses(context.Background(), caller, common.HexToAddress("0x2000000000000000000000000000000000000001"))
@@ -247,10 +207,6 @@ func TestResolveAddresses_WrongResultCount(t *testing.T) {
 
 // errorCallerAddresses returns an error from CallContract.
 type errorCallerAddresses struct{ err error }
-
-func (c *errorCallerAddresses) CodeAt(context.Context, common.Address, *big.Int) ([]byte, error) {
-	return nil, nil
-}
 
 func (c *errorCallerAddresses) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
 	return nil, c.err

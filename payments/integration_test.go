@@ -61,7 +61,7 @@ func TestIntegration_Payments(t *testing.T) {
 	}
 
 	// GetRailsAsPayer — should succeed even if zero rails.
-	addrs := client.Chain().Addresses()
+	addrs := client.ResolvedAddresses()
 	page, err := p.GetRailsAsPayer(ctx, client.Address(), addrs.USDFC)
 	if err != nil {
 		t.Fatalf("GetRailsAsPayer: %v", err)

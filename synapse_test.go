@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ipfs/go-cid"
@@ -53,10 +55,31 @@ func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 	return fn(req)
 }
 
+type contractCallerFunc func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
+
+func (fn contractCallerFunc) CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	return fn(ctx, call, blockNumber)
+}
+
 // fakeRPCServer creates an httptest.Server that responds to eth_chainId and
 // the FWSS address-resolution multicall. Returns the server (caller must
 // Close) and an ethclient connected to it.
 func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclient.Client) {
+	t.Helper()
+	c := fakeRPCAddressChain(chainIDHex)
+	a := c.Addresses()
+	return fakeRPCServerWithResolvedAddresses(t, chainIDHex, ResolvedAddresses{
+		FWSS:               a.FWSS,
+		PDPVerifier:        a.PDPVerifier,
+		SPRegistry:         a.SPRegistry,
+		USDFC:              a.USDFC,
+		Payments:           a.Payments,
+		ViewContract:       a.StateView,
+		SessionKeyRegistry: a.SessionKeyRegistry,
+	})
+}
+
+func fakeRPCServerWithResolvedAddresses(t *testing.T, chainIDHex string, addresses ResolvedAddresses) (*httptest.Server, *ethclient.Client) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCReq
@@ -69,7 +92,14 @@ func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclien
 		case "eth_chainId":
 			result = fmt.Sprintf(`"%s"`, chainIDHex)
 		case "eth_call":
-			result = fmt.Sprintf("%q", testutil.FWSSAddressResolutionResultHex(t, fakeRPCAddressChain(chainIDHex)))
+			result = fmt.Sprintf("%q", testutil.FWSSAddressResolutionResultHexFor(t, chain.ContractAddresses{
+				PDPVerifier:        addresses.PDPVerifier,
+				SPRegistry:         addresses.SPRegistry,
+				USDFC:              addresses.USDFC,
+				Payments:           addresses.Payments,
+				StateView:          addresses.ViewContract,
+				SessionKeyRegistry: addresses.SessionKeyRegistry,
+			}, addresses.FilBeamBeneficiary))
 		default:
 			result = "null"
 		}
@@ -84,6 +114,19 @@ func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclien
 	return srv, ec
 }
 
+func testResolvedAddresses(c chain.Chain) ResolvedAddresses {
+	return ResolvedAddresses{
+		FWSS:               c.Addresses().FWSS,
+		PDPVerifier:        common.HexToAddress("0x1000000000000000000000000000000000000001"),
+		SPRegistry:         common.HexToAddress("0x1000000000000000000000000000000000000002"),
+		USDFC:              common.HexToAddress("0x1000000000000000000000000000000000000003"),
+		Payments:           common.HexToAddress("0x1000000000000000000000000000000000000004"),
+		ViewContract:       common.HexToAddress("0x1000000000000000000000000000000000000005"),
+		FilBeamBeneficiary: common.HexToAddress("0x1000000000000000000000000000000000000006"),
+		SessionKeyRegistry: common.HexToAddress("0x1000000000000000000000000000000000000007"),
+	}
+}
+
 func fakeRPCAddressChain(chainIDHex string) chain.Chain {
 	switch strings.ToLower(chainIDHex) {
 	case "0x13a":
@@ -93,8 +136,102 @@ func fakeRPCAddressChain(chainIDHex string) chain.Chain {
 	}
 }
 
+func TestResolveAddresses(t *testing.T) {
+	want := testResolvedAddresses(chain.Calibration)
+	srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x4cb2f", want)
+	defer srv.Close()
+	defer ec.Close()
+
+	got, err := ResolveAddresses(context.Background(), ec, want.FWSS)
+	if err != nil {
+		t.Fatalf("ResolveAddresses: %v", err)
+	}
+	if got != want {
+		t.Fatalf("addresses = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveAddresses_InvalidArguments(t *testing.T) {
+	validCaller := contractCallerFunc(func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
+		return nil, errors.New("unexpected call")
+	})
+	tests := []struct {
+		name   string
+		caller ContractCaller
+		fwss   common.Address
+	}{
+		{name: "nil caller", fwss: testResolvedAddresses(chain.Calibration).FWSS},
+		{name: "zero FWSS", caller: validCaller},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResolveAddresses(context.Background(), tc.caller, tc.fwss)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error = %v, want ErrInvalidArgument", err)
+			}
+			if !strings.HasPrefix(err.Error(), "synapse.ResolveAddresses:") {
+				t.Fatalf("error = %v, want synapse.ResolveAddresses prefix", err)
+			}
+		})
+	}
+}
+
+func TestResolveAddresses_PreservesContextCancellation(t *testing.T) {
+	caller := contractCallerFunc(func(ctx context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+		return nil, ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ResolveAddresses(ctx, caller, testResolvedAddresses(chain.Calibration).FWSS)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestResolveAddresses_ValidatesResolvedAddresses(t *testing.T) {
+	tests := []struct {
+		name  string
+		clear func(*ResolvedAddresses)
+	}{
+		{name: "SPRegistry", clear: func(a *ResolvedAddresses) { a.SPRegistry = common.Address{} }},
+		{name: "USDFC", clear: func(a *ResolvedAddresses) { a.USDFC = common.Address{} }},
+		{name: "Payments", clear: func(a *ResolvedAddresses) { a.Payments = common.Address{} }},
+		{name: "ViewContract", clear: func(a *ResolvedAddresses) { a.ViewContract = common.Address{} }},
+		{name: "SessionKeyRegistry", clear: func(a *ResolvedAddresses) { a.SessionKeyRegistry = common.Address{} }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			addresses := testResolvedAddresses(chain.Calibration)
+			tc.clear(&addresses)
+			srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x4cb2f", addresses)
+			defer srv.Close()
+			defer ec.Close()
+
+			got, err := ResolveAddresses(context.Background(), ec, addresses.FWSS)
+			if err == nil || !strings.Contains(err.Error(), tc.name+" returned zero address") {
+				t.Fatalf("error = %v, want zero %s error", err, tc.name)
+			}
+			if got != (ResolvedAddresses{}) {
+				t.Fatalf("addresses = %+v, want zero result", got)
+			}
+		})
+	}
+
+	addresses := testResolvedAddresses(chain.Calibration)
+	addresses.PDPVerifier = common.Address{}
+	addresses.FilBeamBeneficiary = common.Address{}
+	srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x4cb2f", addresses)
+	defer srv.Close()
+	defer ec.Close()
+	if _, err := ResolveAddresses(context.Background(), ec, addresses.FWSS); err != nil {
+		t.Fatalf("optional zero addresses: %v", err)
+	}
+}
+
 func TestNew_WithEthClient_Calibration(t *testing.T) {
-	srv, ec := fakeRPCServer(t, "0x4cb2f") // Calibration chain ID = 314159
+	wantAddresses := testResolvedAddresses(chain.Calibration)
+	srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x4cb2f", wantAddresses) // Calibration chain ID = 314159
 	defer srv.Close()
 	defer ec.Close()
 
@@ -114,6 +251,27 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	want := ethcrypto.PubkeyToAddress(key.PublicKey)
 	if client.Address() != want {
 		t.Errorf("address = %v, want %v", client.Address(), want)
+	}
+	if got := client.ResolvedAddresses(); got != wantAddresses {
+		t.Fatalf("ResolvedAddresses = %+v, want %+v", got, wantAddresses)
+	}
+	if got := client.WarmStorage().FWSSAddress(); got != wantAddresses.FWSS {
+		t.Errorf("WarmStorage FWSS = %s, want %s", got, wantAddresses.FWSS)
+	}
+	if got := client.WarmStorage().ViewAddress(); got != wantAddresses.ViewContract {
+		t.Errorf("WarmStorage view = %s, want %s", got, wantAddresses.ViewContract)
+	}
+	if got := client.WarmStorage().PDPVerifierAddress(); got != wantAddresses.PDPVerifier {
+		t.Errorf("WarmStorage PDPVerifier = %s, want %s", got, wantAddresses.PDPVerifier)
+	}
+	if got := client.SPRegistry().Address(); got != wantAddresses.SPRegistry {
+		t.Errorf("SPRegistry = %s, want %s", got, wantAddresses.SPRegistry)
+	}
+	if got := client.Payments().Address(); got != wantAddresses.Payments {
+		t.Errorf("Payments = %s, want %s", got, wantAddresses.Payments)
+	}
+	if got := client.SessionKey().RegistryAddress(); got != wantAddresses.SessionKeyRegistry {
+		t.Errorf("SessionKeyRegistry = %s, want %s", got, wantAddresses.SessionKeyRegistry)
 	}
 }
 
@@ -660,8 +818,8 @@ func TestNew_AddressResolutionFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for address resolution failure")
 	}
-	if !strings.Contains(err.Error(), "resolve FWSS addresses") {
-		t.Fatalf("error = %v, want resolve FWSS addresses", err)
+	if !strings.Contains(err.Error(), "synapse.ResolveAddresses") {
+		t.Fatalf("error = %v, want synapse.ResolveAddresses", err)
 	}
 }
 

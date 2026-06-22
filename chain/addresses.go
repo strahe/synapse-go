@@ -2,7 +2,9 @@ package chain
 
 import "github.com/ethereum/go-ethereum/common"
 
-// ContractAddresses holds the well-known contract addresses for a chain.
+// ContractAddresses holds the built-in deployment snapshot for a chain. FWSS
+// is the bootstrap root for resolving the current dependent contract
+// addresses; the other fields may lag behind an on-chain FWSS upgrade.
 type ContractAddresses struct {
 	FWSS               common.Address // Filecoin Warm Storage Service (root of trust)
 	Payments           common.Address
@@ -37,8 +39,9 @@ var knownAddresses = [chainCount]ContractAddresses{
 	},
 }
 
-// Addresses returns the well-known contract addresses for this chain.
-// Returns a zero-value struct for chains without known addresses.
+// Addresses returns the built-in deployment snapshot for this chain. Runtime
+// consumers should resolve current dependent addresses from FWSS. It returns a
+// zero-value struct for chains without known addresses.
 func (c Chain) Addresses() ContractAddresses {
 	if c < chainCount {
 		return knownAddresses[c]

@@ -384,7 +384,7 @@ func TestIntegration(t *testing.T) {
 	}
 	t.Logf("client address: %s, chain: %s (ID %d)", addr, client.Chain(), client.Chain().ChainID())
 
-	addrs := client.Chain().Addresses()
+	addrs := client.ResolvedAddresses()
 	usdfc := addrs.USDFC
 	filPay := addrs.Payments
 	fwss := addrs.FWSS

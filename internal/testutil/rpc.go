@@ -16,6 +16,13 @@ import (
 // result for the FWSS address-resolution calls used by synapse.New tests.
 func FWSSAddressResolutionResultHex(t testing.TB, c chain.Chain) string {
 	t.Helper()
+	return FWSSAddressResolutionResultHexFor(t, c.Addresses(), common.Address{})
+}
+
+// FWSSAddressResolutionResultHexFor returns an ABI-encoded Multicall3
+// aggregate3 result for the supplied child-contract addresses.
+func FWSSAddressResolutionResultHexFor(t testing.TB, addresses chain.ContractAddresses, filBeamBeneficiary common.Address) string {
+	t.Helper()
 
 	fwssABI, err := fwss.FWSSMetaData.GetAbi()
 	if err != nil {
@@ -38,14 +45,13 @@ func FWSSAddressResolutionResultHex(t testing.TB, c chain.Chain) string {
 		Success    bool
 		ReturnData []byte
 	}
-	addresses := c.Addresses()
 	out, err := multicallABI.Methods["aggregate3"].Outputs.Pack([]result{
 		{Success: true, ReturnData: pack("pdpVerifierAddress", addresses.PDPVerifier)},
 		{Success: true, ReturnData: pack("serviceProviderRegistry", addresses.SPRegistry)},
 		{Success: true, ReturnData: pack("usdfcTokenAddress", addresses.USDFC)},
 		{Success: true, ReturnData: pack("paymentsContractAddress", addresses.Payments)},
 		{Success: true, ReturnData: pack("viewContractAddress", addresses.StateView)},
-		{Success: true, ReturnData: pack("filBeamBeneficiaryAddress", common.Address{})},
+		{Success: true, ReturnData: pack("filBeamBeneficiaryAddress", filBeamBeneficiary)},
 		{Success: true, ReturnData: pack("sessionKeyRegistry", addresses.SessionKeyRegistry)},
 	})
 	if err != nil {

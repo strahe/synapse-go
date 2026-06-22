@@ -18,7 +18,6 @@ import (
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
-	iabi "github.com/strahe/synapse-go/internal/abi"
 	"github.com/strahe/synapse-go/internal/adapters"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
@@ -40,7 +39,7 @@ type Client struct {
 	ownsClient             bool
 	evmSigner              signer.EVMSigner
 	selectedChain          chain.Chain
-	addresses              iabi.ResolvedAddresses
+	addresses              ResolvedAddresses
 	nonces                 *txutil.NonceManager
 	logger                 *slog.Logger
 	httpClient             *http.Client
@@ -351,33 +350,15 @@ func resolveChain(ctx context.Context, ec *ethclient.Client, cfg *clientConfig) 
 	return detected, nil
 }
 
-func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) (iabi.ResolvedAddresses, error) {
-	addresses := iabi.ResolvedAddressesFromChain(c)
-	zeroAddr := common.Address{}
-	for name, addr := range map[string]common.Address{
-		"FWSS":               addresses.FWSS,
-		"Payments":           addresses.Payments,
-		"PDPVerifier":        addresses.PDPVerifier,
-		"SPRegistry":         addresses.SPRegistry,
-		"USDFC":              addresses.USDFC,
-		"ViewContract":       addresses.ViewContract,
-		"SessionKeyRegistry": addresses.SessionKeyRegistry,
-	} {
-		if addr == zeroAddr {
-			return iabi.ResolvedAddresses{}, fmt.Errorf("no %s address for chain %s", name, c)
-		}
+func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) (ResolvedAddresses, error) {
+	fwss := c.Addresses().FWSS
+	if fwss == (common.Address{}) {
+		return ResolvedAddresses{}, fmt.Errorf("no FWSS address for chain %s", c)
 	}
-	resolved, err := iabi.ResolveAddresses(ctx, ec, addresses.FWSS)
-	if err != nil {
-		return iabi.ResolvedAddresses{}, fmt.Errorf("resolve FWSS addresses: %w", err)
-	}
-	if resolved.Multicall3 == zeroAddr {
-		resolved.Multicall3 = addresses.Multicall3
-	}
-	return *resolved, nil
+	return ResolveAddresses(ctx, ec, fwss)
 }
 
-func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses iabi.ResolvedAddresses) (*Client, error) {
+func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses ResolvedAddresses) (*Client, error) {
 	evmSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("create signer: %w", err)
