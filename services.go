@@ -129,15 +129,15 @@ func (c *Client) initServices() error {
 		Payer:       c.evmSigner.EVMAddress(),
 		SPRegistry:  spReg,
 		WarmStorage: ws,
+		ProviderPing: func(ctx context.Context, serviceURL string) error {
+			pdpClient, err := c.newPDPClient(serviceURL, pdp.WithMaxRetries(0))
+			if err != nil {
+				return err
+			}
+			return pdpClient.Ping(ctx)
+		},
 		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (*storage.Context, error) {
-			var pdpOpts []pdp.Option
-			if c.logger != nil {
-				pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
-			}
-			if c.httpClient != nil {
-				pdpOpts = append(pdpOpts, pdp.WithHTTPClient(c.httpClient))
-			}
-			pdpClient, err := pdp.New(sel.Provider.ServiceURL, pdpOpts...)
+			pdpClient, err := c.newPDPClient(sel.Provider.ServiceURL)
 			if err != nil {
 				return nil, fmt.Errorf("create PDP client for %s: %w", sel.Provider.ServiceURL, err)
 			}
@@ -210,6 +210,18 @@ func (c *Client) initServices() error {
 	c.storage = svc
 
 	return nil
+}
+
+func (c *Client) newPDPClient(serviceURL string, opts ...pdp.Option) (*pdp.Client, error) {
+	pdpOpts := make([]pdp.Option, 0, len(opts)+2)
+	if c.logger != nil {
+		pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
+	}
+	if c.httpClient != nil {
+		pdpOpts = append(pdpOpts, pdp.WithHTTPClient(c.httpClient))
+	}
+	pdpOpts = append(pdpOpts, opts...)
+	return pdp.New(serviceURL, pdpOpts...)
 }
 
 // WarmStorage returns the [warmstorage.Service].

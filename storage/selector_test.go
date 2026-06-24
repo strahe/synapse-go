@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -27,6 +30,10 @@ func testIDKey(v uint64) string {
 
 func bigInt(v int64) *big.Int {
 	return big.NewInt(v)
+}
+
+func healthyProviderPing(context.Context, string) error {
+	return nil
 }
 
 func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReusesMatchingDataSet(t *testing.T) {
@@ -103,6 +110,10 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 
 func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacement(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providerPing: func(context.Context, string) error {
+			t.Fatal("explicit provider selection called ProviderPing")
+			return nil
+		},
 		providersByID: map[string]*spregistry.PDPProvider{
 			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
 			testIDKey(8): ptrPDPProvider(testPDPProvider(testID(8), "https://sp-8.example.com")),
@@ -200,11 +211,18 @@ func TestServiceResolverResolveWritableUploadContexts_ProviderIDsCreateNewWhenVa
 
 func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3)},
+		approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3), testID(4)},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(testID(1), "https://sp-1.example.com"),
 			testPDPProvider(testID(2), "https://sp-2.example.com"),
 			testPDPProvider(testID(3), "https://sp-3.example.com"),
+			testPDPProvider(testID(4), "https://sp-4.example.com"),
+		},
+		providerPing: func(_ context.Context, serviceURL string) error {
+			if serviceURL == "https://sp-3.example.com" {
+				return errors.New("provider unavailable")
+			}
+			return nil
 		},
 	})
 
@@ -216,8 +234,256 @@ func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 		t.Fatalf("SelectReplacement: %v", err)
 	}
 	got := replacement.(*Context)
-	if !got.ProviderID().Equal(testID(3)) {
-		t.Fatalf("replacement provider=%s want 3", got.ProviderID())
+	if !got.ProviderID().Equal(testID(4)) {
+		t.Fatalf("replacement provider=%s want 4", got.ProviderID())
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(t *testing.T) {
+	t.Run("skips failed candidates and fetches selection inputs once", func(t *testing.T) {
+		var approvedCalls, activeCalls, detailsCalls atomic.Int32
+		var pinged []string
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3)},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(1), "https://sp-1-duplicate.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+				testPDPProvider(testID(3), "https://sp-3.example.com"),
+			},
+			detailedDataSets:      []*warmstorage.EnhancedDataSetInfo{},
+			approvedProviderCalls: &approvedCalls,
+			activeProviderCalls:   &activeCalls,
+			dataSetDetailsCalls:   &detailsCalls,
+			providerPing: func(ctx context.Context, serviceURL string) error {
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("ProviderPing context has no deadline")
+				}
+				remaining := time.Until(deadline)
+				if remaining <= 0 || remaining > providerPingTimeout {
+					t.Fatalf("ProviderPing deadline remaining=%s want within %s", remaining, providerPingTimeout)
+				}
+				pinged = append(pinged, serviceURL)
+				if serviceURL == "https://sp-1.example.com" {
+					return context.DeadlineExceeded
+				}
+				return nil
+			},
+		})
+
+		contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		if err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", err)
+		}
+		if explicit {
+			t.Fatal("explicit=true want false")
+		}
+		got := contextsToFake(t, contexts)
+		if len(got) != 2 || !got[0].ProviderID().Equal(testID(2)) || !got[1].ProviderID().Equal(testID(3)) {
+			t.Fatalf("providers=%v want [2 3]", providerIDs(got))
+		}
+		wantPinged := []string{
+			"https://sp-1.example.com",
+			"https://sp-2.example.com",
+			"https://sp-3.example.com",
+		}
+		if fmt.Sprint(pinged) != fmt.Sprint(wantPinged) {
+			t.Fatalf("pinged=%v want %v", pinged, wantPinged)
+		}
+		if approvedCalls.Load() != 1 || activeCalls.Load() != 1 || detailsCalls.Load() != 1 {
+			t.Fatalf("selection input calls approved=%d active=%d details=%d want 1 each", approvedCalls.Load(), activeCalls.Load(), detailsCalls.Load())
+		}
+	})
+
+	t.Run("returns partial healthy candidates", func(t *testing.T) {
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+			},
+			providerPing: func(_ context.Context, serviceURL string) error {
+				if serviceURL == "https://sp-2.example.com" {
+					return errors.New("provider unavailable")
+				}
+				return nil
+			},
+		})
+
+		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		if err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", err)
+		}
+		got := contextsToFake(t, contexts)
+		if len(got) != 1 || !got[0].ProviderID().Equal(testID(1)) {
+			t.Fatalf("providers=%v want [1]", providerIDs(got))
+		}
+	})
+
+	t.Run("non-positive copies use default", func(t *testing.T) {
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+			},
+		})
+
+		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: -1})
+		if err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", err)
+		}
+		got := contextsToFake(t, contexts)
+		if len(got) != 2 || !got[0].ProviderID().Equal(testID(1)) || !got[1].ProviderID().Equal(testID(2)) {
+			t.Fatalf("providers=%v want [1 2]", providerIDs(got))
+		}
+	})
+
+	t.Run("preserves data set preference before fallback providers", func(t *testing.T) {
+		var pinged []string
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3)},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+				testPDPProvider(testID(3), "https://sp-3.example.com"),
+			},
+			detailedDataSets: []*warmstorage.EnhancedDataSetInfo{{
+				DataSetInfo: &warmstorage.DataSetInfo{
+					DataSetID:  testID(22),
+					ProviderID: testID(2),
+				},
+				IsLive:    true,
+				IsManaged: true,
+				Metadata:  map[string]string{},
+			}},
+			providerPing: func(_ context.Context, serviceURL string) error {
+				pinged = append(pinged, serviceURL)
+				if serviceURL == "https://sp-2.example.com" {
+					return errors.New("provider unavailable")
+				}
+				return nil
+			},
+		})
+
+		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		if err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", err)
+		}
+		got := contextsToFake(t, contexts)
+		if len(got) != 1 || !got[0].ProviderID().Equal(testID(1)) {
+			t.Fatalf("providers=%v want [1]", providerIDs(got))
+		}
+		wantPinged := []string{"https://sp-2.example.com", "https://sp-1.example.com"}
+		if fmt.Sprint(pinged) != fmt.Sprint(wantPinged) {
+			t.Fatalf("pinged=%v want %v", pinged, wantPinged)
+		}
+	})
+
+	t.Run("returns ErrNoHealthyProviders when all candidates fail", func(t *testing.T) {
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+			},
+			providerPing: func(context.Context, string) error {
+				return errors.New("provider unavailable")
+			},
+		})
+
+		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		if !errors.Is(err, ErrNoHealthyProviders) {
+			t.Fatalf("ResolveUploadContexts error=%v want ErrNoHealthyProviders", err)
+		}
+		if !strings.Contains(err.Error(), "provider IDs: 1, 2") {
+			t.Fatalf("ResolveUploadContexts error=%q want failed provider IDs", err)
+		}
+	})
+}
+
+func TestServiceResolverResolveUploadContexts_HealthCheckHonorsParentCancellation(t *testing.T) {
+	started := make(chan struct{})
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+		},
+		providerPing: func(ctx context.Context, _ string) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		errCh <- err
+	}()
+	<-started
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResolveUploadContexts error=%v want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ResolveUploadContexts did not stop after parent cancellation")
+	}
+}
+
+func TestServiceResolverResolveUploadContexts_DefaultProviderPing(t *testing.T) {
+	var failedRequests, healthyRequests atomic.Int32
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failedRequests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/pdp/ping" {
+			t.Errorf("failed provider request=%s %s want GET /pdp/ping", r.Method, r.URL.Path)
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer failed.Close()
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyRequests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/pdp/ping" {
+			t.Errorf("healthy provider request=%s %s want GET /pdp/ping", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer healthy.Close()
+
+	fixture := serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), failed.URL),
+			testPDPProvider(testID(2), healthy.URL),
+		},
+	}
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: &fakeDataSetCatalog{fixture: fixture},
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+			return newResolvedTestContext(selection)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+
+	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	if err != nil {
+		t.Fatalf("ResolveUploadContexts: %v", err)
+	}
+	got := contextsToFake(t, contexts)
+	if len(got) != 1 || !got[0].ProviderID().Equal(testID(2)) {
+		t.Fatalf("providers=%v want [2]", providerIDs(got))
+	}
+	if failedRequests.Load() != 1 || healthyRequests.Load() != 1 {
+		t.Fatalf("ping requests failed=%d healthy=%d want 1 each", failedRequests.Load(), healthyRequests.Load())
 	}
 }
 
@@ -295,6 +561,10 @@ func TestServiceResolverResolveUploadContexts_RejectsProviderIDsWithDataSetIDs(t
 
 func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsAllowEndedRailWhenValidatorPasses(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		providerPing: func(context.Context, string) error {
+			t.Fatal("explicit data set selection called ProviderPing")
+			return nil
+		},
 		dataSetsByID: map[string]*warmstorage.DataSetInfo{
 			testIDKey(55): {
 				DataSetID:       testID(55),
@@ -503,9 +773,10 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		firstErr: want,
 	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
+		Payer:        testPayer(),
+		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
+		WarmStorage:  catalog,
+		ProviderPing: healthyProviderPing,
 		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 			return newResolvedTestContext(selection)
 		},
@@ -654,9 +925,10 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 		fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
 	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
+		Payer:        testPayer(),
+		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
+		WarmStorage:  catalog,
+		ProviderPing: healthyProviderPing,
 		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 			return newResolvedTestContext(selection)
 		},
@@ -691,18 +963,27 @@ type serviceResolverFixture struct {
 	validatorErr              error
 	validatorErrByID          map[string]error
 	requirePositiveListLimit  bool
+	providerPing              func(context.Context, string) error
+	approvedProviderCalls     *atomic.Int32
+	activeProviderCalls       *atomic.Int32
+	dataSetDetailsCalls       *atomic.Int32
 }
 
 func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
 	t.Helper()
+	providerPing := fixture.providerPing
+	if providerPing == nil {
+		providerPing = healthyProviderPing
+	}
 	var catalog DataSetCatalog = &fakeDataSetCatalog{fixture: fixture}
 	if fixture.validatorEnabled || fixture.detailedDataSets != nil || fixture.dataSetDetailsErr != nil {
 		catalog = &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
 	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
+		Payer:        testPayer(),
+		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
+		WarmStorage:  catalog,
+		ProviderPing: providerPing,
 		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
 			return newResolvedTestContext(selection)
 		},
@@ -715,10 +996,15 @@ func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *Servi
 
 func newNilContextServiceResolver(t *testing.T, fixture serviceResolverFixture) *ServiceResolver {
 	t.Helper()
+	providerPing := fixture.providerPing
+	if providerPing == nil {
+		providerPing = healthyProviderPing
+	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: &fakeDataSetCatalog{fixture: fixture},
+		Payer:        testPayer(),
+		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
+		WarmStorage:  &fakeDataSetCatalog{fixture: fixture},
+		ProviderPing: providerPing,
 		NewContext: func(ResolvedUploadContext, *UploadOptions) (*Context, error) {
 			return nil, nil
 		},
@@ -752,6 +1038,9 @@ func (f *fakePDPProviderSource) GetPDPProvider(_ context.Context, providerID typ
 }
 
 func (f *fakePDPProviderSource) SelectActivePDPProviders(_ context.Context, filter spregistry.ProviderFilter) ([]spregistry.PDPProvider, error) {
+	if f.fixture.activeProviderCalls != nil {
+		f.fixture.activeProviderCalls.Add(1)
+	}
 	var out []spregistry.PDPProvider
 	for _, provider := range f.fixture.activeProviders {
 		if containsExcludedProvider(filter.ExcludeIDs, provider.Info.ID) {
@@ -784,6 +1073,9 @@ func (f *fakeEnhancedDataSetCatalog) ValidateDataSet(_ context.Context, dataSetI
 }
 
 func (f *fakeEnhancedDataSetCatalog) GetClientDataSetsWithDetails(_ context.Context, _ common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error) {
+	if f.fixture.dataSetDetailsCalls != nil {
+		f.fixture.dataSetDetailsCalls.Add(1)
+	}
 	if f.fixture.dataSetDetailsOnlyManaged != nil {
 		value := onlyManaged
 		*f.fixture.dataSetDetailsOnlyManaged = &value
@@ -839,6 +1131,9 @@ func (f *flakyDetailsCatalog) GetClientDataSetsWithDetails(ctx context.Context, 
 }
 
 func (f *fakeDataSetCatalog) GetApprovedProviderIDs(_ context.Context, opts types.ListOptions) ([]types.BigInt, error) {
+	if f.fixture.approvedProviderCalls != nil {
+		f.fixture.approvedProviderCalls.Add(1)
+	}
 	if f.fixture.requirePositiveListLimit {
 		if err := opts.Validate(); err != nil {
 			return nil, err
@@ -940,6 +1235,14 @@ func contextsToFake(t *testing.T, contexts []UploadContext) []*Context {
 		out = append(out, concrete)
 	}
 	return out
+}
+
+func providerIDs(contexts []*Context) []string {
+	ids := make([]string, len(contexts))
+	for i, ctx := range contexts {
+		ids[i] = ctx.ProviderID().String()
+	}
+	return ids
 }
 
 func newResolvedTestContext(selection ResolvedUploadContext) (*Context, error) {

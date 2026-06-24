@@ -607,7 +607,15 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	defer ec.Close()
 
 	key := testKey(t)
-	hc := &http.Client{}
+	seenRequests := map[string]bool{}
+	hc := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		seenRequests[req.URL.Host+req.URL.Path] = true
+		var body io.ReadCloser = http.NoBody
+		if req.URL.Host == "calibration.stats.filbeam.com" {
+			body = io.NopCloser(strings.NewReader(`{"cdnEgressQuota":"1","cacheMissEgressQuota":"2"}`))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: req}, nil
+	})}
 
 	client, err := New(context.Background(),
 		WithPrivateKey(key),
@@ -619,9 +627,26 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// HTTP client gets passed to sub-services.
-	_ = client.FilBeam()
-	_ = client.Storage()
+	providerClient, err := client.newPDPClient("https://provider.example")
+	if err != nil {
+		t.Fatalf("newPDPClient: %v", err)
+	}
+	if err := providerClient.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if !seenRequests["provider.example/pdp/ping"] {
+		t.Fatalf("custom HTTP client did not see provider ping request: %v", seenRequests)
+	}
+
+	if _, err := client.FilBeam().GetDataSetStats(context.Background(), types.NewBigInt(123)); err != nil {
+		t.Fatalf("GetDataSetStats: %v", err)
+	}
+	if !seenRequests["calibration.stats.filbeam.com/data-set/123"] {
+		t.Fatalf("custom HTTP client did not see filbeam request: %v", seenRequests)
+	}
+	if client.Storage() == nil {
+		t.Fatal("Storage() returned nil")
+	}
 }
 
 func TestNew_WithFilBeamRetrievalDomain(t *testing.T) {

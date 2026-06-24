@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -12,6 +13,7 @@ import (
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/internal/txutil"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -23,9 +25,18 @@ const selectorListPageSize = 100
 
 const selectorRetryInitialDelay = 200 * time.Millisecond
 
+const providerPingTimeout = 2 * time.Second
+
 type selectionResult struct {
 	selections []ResolvedUploadContext
 	explicit   bool
+}
+
+type autoSelectCandidate struct {
+	provider        *spregistry.PDPProvider
+	dataSetID       *types.BigInt
+	clientDataSetID *types.BigInt
+	metadata        map[string]string
 }
 
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
@@ -60,7 +71,12 @@ type ServiceResolverOptions struct {
 	WarmStorage      DataSetCatalog
 	DataSetValidator DataSetValidator
 	DataSetDetails   DataSetDetailsCatalog
-	NewContext       ContextFactory // called per-provider to construct a managed Context
+	// ProviderPing checks one automatically selected provider endpoint. The
+	// resolver passes a context with a two-second deadline; the implementation
+	// is responsible for honoring it. nil uses an unretried [pdp.Client.Ping]
+	// request.
+	ProviderPing func(context.Context, string) error
+	NewContext   ContextFactory // called per-provider to construct a managed Context
 }
 
 // ServiceResolver selects providers and data sets for each upload. Auto-select
@@ -72,6 +88,7 @@ type ServiceResolver struct {
 	warmStorage      DataSetCatalog
 	dataSetValidator DataSetValidator
 	dataSetDetails   DataSetDetailsCatalog
+	providerPing     func(context.Context, string) error
 	newContext       ContextFactory
 }
 
@@ -88,6 +105,7 @@ var (
 // NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
 // WarmStorage, and NewContext are required. DataSetValidator and
 // DataSetDetails are optional and auto-detected from WarmStorage when present.
+// ProviderPing is optional and defaults to an unretried PDP ping request.
 func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.Payer == (common.Address{}) {
 		return nil, fmt.Errorf("storage.NewServiceResolver: %w: zero payer", ErrInvalidArgument)
@@ -109,17 +127,30 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if details == nil {
 		details, _ = opts.WarmStorage.(DataSetDetailsCatalog)
 	}
+	providerPing := opts.ProviderPing
+	if providerPing == nil {
+		providerPing = defaultProviderPing
+	}
 	return &ServiceResolver{
 		payer:            opts.Payer,
 		spRegistry:       opts.SPRegistry,
 		warmStorage:      opts.WarmStorage,
 		dataSetValidator: validator,
 		dataSetDetails:   details,
+		providerPing:     providerPing,
 		newContext:       opts.NewContext,
 	}, nil
 }
 
-// ResolveContexts returns one managed Context per requested copy.
+func defaultProviderPing(ctx context.Context, serviceURL string) error {
+	client, err := pdp.New(serviceURL, pdp.WithMaxRetries(0))
+	if err != nil {
+		return err
+	}
+	return client.Ping(ctx)
+}
+
+// ResolveContexts returns up to one managed Context per requested copy.
 func (r *ServiceResolver) ResolveContexts(ctx context.Context, opts *UploadOptions) ([]*Context, error) {
 	contexts, _, err := r.resolveContexts(ctx, opts, false, "storage.ServiceResolver.ResolveContexts")
 	return contexts, err
@@ -142,8 +173,11 @@ func (r *ServiceResolver) ResolveProvider(ctx context.Context, providerID types.
 
 // ResolveUploadContexts returns one UploadContext per requested copy. When
 // neither ProviderIDs nor DataSetIDs are set, providers are auto-selected from
-// the warmstorage-approved and active-PDP intersection. The second return value
-// is true when providers were explicitly specified by opts.
+// the warmstorage-approved and active-PDP intersection. Auto-selection may
+// return fewer contexts than requested when only a subset of eligible providers
+// pass the health check; it returns [ErrNoHealthyProviders] only when every
+// probed candidate fails. The second return value is true when providers were
+// explicitly specified by opts.
 func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
 	return r.resolveUploadContexts(ctx, opts, false)
 }
@@ -342,7 +376,7 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 
 func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, requireWritable bool) ([]ResolvedUploadContext, error) {
 	count := opts.Copies
-	if count == 0 {
+	if count <= 0 {
 		count = 2
 	}
 	approvedIDs, err := r.getAllApprovedProviderIDs(ctx)
@@ -376,58 +410,116 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		}
 	}
 	var providersWithDetails map[string][]*warmstorage.EnhancedDataSetInfo
-	var hasDetailedCandidates bool
 	if len(detailedDataSets) > 0 {
 		selectableProviders := selectableProviderSet(providers, approvedSet)
 		providersWithDetails = detailedCandidateProviders(detailedDataSets, selectableProviders)
-		hasDetailedCandidates = len(providersWithDetails) > 0
 	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
-	selectionCap := min(count, len(providers))
-	withDataSet := make([]ResolvedUploadContext, 0, selectionCap)
-	withoutDataSet := make([]ResolvedUploadContext, 0, selectionCap)
-	for _, provider := range providers {
+	selected := make([]ResolvedUploadContext, 0, min(count, len(providers)))
+	failedProviderIDs := make([]types.BigInt, 0, min(count, len(providers)))
+	probeCandidate := func(candidate autoSelectCandidate) (bool, error) {
+		pingCtx, cancel := context.WithTimeout(ctx, providerPingTimeout)
+		pingErr := r.providerPing(pingCtx, candidate.provider.Offering.ServiceURL)
+		cancel()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check provider %s: %w", candidate.provider.Info.ID.String(), ctxErr)
+		}
+		if pingErr != nil {
+			failedProviderIDs = append(failedProviderIDs, candidate.provider.Info.ID)
+			return false, nil
+		}
+		selected = append(selected, buildResolvedUploadContext(
+			*candidate.provider,
+			candidate.dataSetID,
+			candidate.clientDataSetID,
+			candidate.metadata,
+		))
+		return len(selected) == count, nil
+	}
+
+	deferWithoutDataSet := len(providersWithDetails) > 0
+	withoutDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
+	seenProviderIDs := make(map[string]struct{}, min(count, len(providers)))
+	for i := range providers {
+		provider := &providers[i]
 		providerKey := idconv.Key(provider.Info.ID)
 		if _, ok := approvedSet[providerKey]; !ok {
 			continue
 		}
+		if _, ok := seenProviderIDs[providerKey]; ok {
+			continue
+		}
+		seenProviderIDs[providerKey] = struct{}{}
+
 		var dataSetID, clientDataSetID *types.BigInt
 		var metadata map[string]string
-		if hasDetailedCandidates {
-			if providerDataSets, ok := providersWithDetails[providerKey]; ok {
-				dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata)
-				delete(providersWithDetails, providerKey)
+		if providerDataSets, ok := providersWithDetails[providerKey]; ok {
+			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata)
+			delete(providersWithDetails, providerKey)
+		}
+		candidate := autoSelectCandidate{
+			provider:        provider,
+			dataSetID:       dataSetID,
+			clientDataSetID: clientDataSetID,
+			metadata:        metadata,
+		}
+		switch {
+		case dataSetID != nil:
+			done, err := probeCandidate(candidate)
+			if err != nil {
+				return nil, err
 			}
-			if len(providersWithDetails) == 0 {
-				hasDetailedCandidates = false
+			if done {
+				return selected, nil
+			}
+		case deferWithoutDataSet:
+			candidate.metadata = requestedMetadata
+			withoutDataSet = append(withoutDataSet, candidate)
+		default:
+			candidate.metadata = requestedMetadata
+			done, err := probeCandidate(candidate)
+			if err != nil {
+				return nil, err
+			}
+			if done {
+				return selected, nil
 			}
 		}
-		if dataSetID != nil {
-			withDataSet = append(withDataSet, buildResolvedUploadContext(provider, dataSetID, clientDataSetID, metadata))
-			if len(withDataSet) == count {
-				break
+
+		if deferWithoutDataSet && len(providersWithDetails) == 0 {
+			deferWithoutDataSet = false
+			for _, deferred := range withoutDataSet {
+				done, err := probeCandidate(deferred)
+				if err != nil {
+					return nil, err
+				}
+				if done {
+					return selected, nil
+				}
 			}
-		} else if len(withDataSet)+len(withoutDataSet) < count {
-			withoutDataSet = append(withoutDataSet, buildResolvedUploadContext(provider, nil, nil, requestedMetadata))
-		}
-		if !hasDetailedCandidates && len(withDataSet)+len(withoutDataSet) >= count {
-			break
+			withoutDataSet = nil
 		}
 	}
 
-	selected := make([]ResolvedUploadContext, 0, selectionCap)
-	selected = append(selected, withDataSet...)
-	if len(selected) < count {
-		remaining := count - len(selected)
-		if remaining > len(withoutDataSet) {
-			remaining = len(withoutDataSet)
-		}
-		selected = append(selected, withoutDataSet[:remaining]...)
-	}
 	if len(selected) == 0 {
-		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
+		if len(failedProviderIDs) == 0 {
+			return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
+		}
+		return nil, fmt.Errorf(
+			"storage.ServiceResolver.ResolveUploadContexts: %w (provider IDs: %s)",
+			ErrNoHealthyProviders,
+			formatProviderIDs(failedProviderIDs),
+		)
 	}
 	return selected, nil
+}
+
+func formatProviderIDs(ids []types.BigInt) string {
+	values := make([]string, len(ids))
+	for i, id := range ids {
+		values[i] = id.String()
+	}
+	return strings.Join(values, ", ")
 }
 
 func (r *ServiceResolver) getAllClientDataSets(ctx context.Context) ([]*warmstorage.DataSetInfo, error) {

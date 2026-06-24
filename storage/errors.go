@@ -30,6 +30,10 @@ var ErrClosed = lifecycle.ErrClosed
 // only matches genuine caller-supplied validation failures.
 var ErrInvalidArgument = errors.New("storage: invalid argument")
 
+// ErrNoHealthyProviders is returned when every eligible automatically selected
+// provider fails its PDP health check.
+var ErrNoHealthyProviders = errors.New("storage: no healthy providers")
+
 // ErrPrivateNetwork is returned by Service.Download when the target URL
 // resolves to a loopback / link-local / RFC1918 / ULA / multicast /
 // unspecified address and the Service was constructed without

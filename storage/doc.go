@@ -45,7 +45,11 @@
 // The Service handles orchestration of the full multi-copy flow, while
 // ServiceResolver implements both resolver contracts. It reuses provider-local
 // datasets only when metadata matches exactly and the warmstorage-approved
-// provider set intersects active PDP providers from spregistry.
+// provider set intersects active PDP providers from spregistry. Automatically
+// selected providers must also pass a bounded PDP health check before a context
+// is created; explicitly selected provider and data set IDs are not probed. If
+// only some automatically selected providers are healthy, the resolver returns
+// the healthy subset so upload callers can surface partial-copy results.
 // Existing data sets that cannot accept writes surface typed errors such as
 // DataSetPDPPaymentTerminatedError. Use errors.AsType to access fields like
 // PDPEndEpoch.
