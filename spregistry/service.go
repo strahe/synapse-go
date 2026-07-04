@@ -553,10 +553,23 @@ func (s *Service) SelectActivePDPProviders(ctx context.Context, f ProviderFilter
 		offset += pageSize
 	}
 
-	slices.SortFunc(all, func(a, b PDPProvider) int {
-		return a.Info.ID.Cmp(b.Info.ID)
+	if len(all) < 2 {
+		return all, nil
+	}
+
+	order := make([]int, len(all))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int {
+		return all[a].Info.ID.Cmp(all[b].Info.ID)
 	})
-	return all, nil
+
+	sorted := make([]PDPProvider, len(all))
+	for i, idx := range order {
+		sorted[i] = all[idx]
+	}
+	return sorted, nil
 }
 
 // matchesFilter returns true when p satisfies all criteria in f.
