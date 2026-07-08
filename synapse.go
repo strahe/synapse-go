@@ -132,7 +132,10 @@ func WithLogger(l *slog.Logger) ClientOption {
 //
 // Services communicating over Ethereum JSON-RPC (payments, sessionkey,
 // warmstorage, spregistry, costs) reuse the chain client instead and are not
-// affected by this option. If nil, each HTTP service uses its own default.
+// affected by this option. If nil, storage.Service URL downloads use the
+// built-in safe HTTP client, filbeam.Service uses http.DefaultClient, and
+// provider PDP clients use the pdp package default client. The filbeam and PDP
+// defaults do not install SSRF guards.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.httpClient = c }
 }
