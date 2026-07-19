@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ipfs/go-cid"
 
@@ -57,7 +55,7 @@ func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdk
 		new(big.Int).SetUint64(limit),
 	)
 	if err != nil {
-		if isDataSetUnavailable(err) {
+		if pdpverifier.IsDataSetUnavailable(err) {
 			return []sdktypes.BigInt{}, nil
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", err)
@@ -72,7 +70,7 @@ func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdk
 func (a *pdpVerifierReader) GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.BigInt) ([]sdktypes.BigInt, error) {
 	raw, err := a.caller.GetScheduledRemovals(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
-		if isDataSetUnavailable(err) {
+		if pdpverifier.IsDataSetUnavailable(err) {
 			return []sdktypes.BigInt{}, nil
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetScheduledRemovals: %w", err)
@@ -87,7 +85,7 @@ func (a *pdpVerifierReader) GetScheduledRemovals(ctx context.Context, dataSetID 
 func (a *pdpVerifierReader) GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	v, err := a.caller.GetNextChallengeEpoch(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
-		if isDataSetUnavailable(err) {
+		if pdpverifier.IsDataSetUnavailable(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetNextChallengeEpoch: %w", err)
@@ -113,7 +111,7 @@ func (a *pdpVerifierReader) BlockNumber(ctx context.Context) (uint64, error) {
 func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	leafCount, err := a.caller.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
-		if isDataSetUnavailable(err) {
+		if pdpverifier.IsDataSetUnavailable(err) {
 			return new(big.Int), nil
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetSizeBytes: %w", err)
@@ -122,36 +120,6 @@ func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID s
 		return new(big.Int), nil
 	}
 	return new(big.Int).Mul(leafCount, big.NewInt(32)), nil
-}
-
-var (
-	dataSetNotFoundSelector = errorSelector("DataSetNotFound()")
-	dataSetNotLiveSelector  = errorSelector("DataSetNotLive()")
-)
-
-// isDataSetUnavailable reports whether err is the PDPVerifier revert raised
-// for terminated, missing, or otherwise non-readable data sets.
-func isDataSetUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	if strings.Contains(msg, "Data set not live") ||
-		strings.Contains(msg, "DataSetNotLive") ||
-		strings.Contains(msg, "DataSetNotFound") {
-		return true
-	}
-	data, ok := ethclient.RevertErrorData(err)
-	if !ok || len(data) < 4 {
-		return false
-	}
-	selector := [4]byte{data[0], data[1], data[2], data[3]}
-	return selector == dataSetNotFoundSelector || selector == dataSetNotLiveSelector
-}
-
-func errorSelector(signature string) [4]byte {
-	hash := crypto.Keccak256([]byte(signature))
-	return [4]byte{hash[0], hash[1], hash[2], hash[3]}
 }
 
 func dedupeBigInts(values []sdktypes.BigInt) []sdktypes.BigInt {

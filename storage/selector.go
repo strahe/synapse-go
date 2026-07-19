@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/retry"
@@ -26,6 +28,8 @@ const selectorListPageSize = 100
 const selectorRetryInitialDelay = 200 * time.Millisecond
 
 const providerPingTimeout = 2 * time.Second
+
+const resolveConcurrency = 10
 
 type selectionResult struct {
 	selections []ResolvedUploadContext
@@ -51,6 +55,14 @@ type DataSetCatalog interface {
 	GetClientDataSets(context.Context, common.Address, types.ListOptions) ([]*warmstorage.DataSetInfo, error)
 	GetDataSet(context.Context, types.BigInt) (*warmstorage.DataSetInfo, error)
 	GetAllDataSetMetadata(context.Context, types.BigInt) (map[string]string, error)
+}
+
+type dataSetActivityReader interface {
+	HasActivePieces(context.Context, types.BigInt) (bool, error)
+}
+
+type pdpVerifierAddressReader interface {
+	PDPVerifierAddress() common.Address
 }
 
 // ResolvedUploadContext is the pre-selection result for one provider copy.
@@ -80,12 +92,15 @@ type ServiceResolverOptions struct {
 }
 
 // ServiceResolver selects providers and data sets for each upload. Auto-select
-// reuses existing data sets only when enriched liveness details are available;
-// explicit ProviderIDs keep the legacy FWSS-only reuse path.
+// reuses existing data sets only when enriched liveness details are available.
+// Explicit ProviderIDs prefer the oldest matching data set with active pieces
+// when WarmStorage supports activity reads, otherwise they keep the legacy
+// oldest-metadata-match behavior.
 type ServiceResolver struct {
 	payer            common.Address
 	spRegistry       PDPProviderSource
 	warmStorage      DataSetCatalog
+	dataSetActivity  dataSetActivityReader
 	dataSetValidator DataSetValidator
 	dataSetDetails   DataSetDetailsCatalog
 	providerPing     func(context.Context, string) error
@@ -93,19 +108,22 @@ type ServiceResolver struct {
 }
 
 var (
-	_ PDPProviderSource     = (*spregistry.Service)(nil)
-	_ DataSetCatalog        = (*warmstorage.Service)(nil)
-	_ DataSetValidator      = (*warmstorage.Service)(nil)
-	_ DataSetDetailsCatalog = (*warmstorage.Service)(nil)
-	_ UploadResolver        = (*ServiceResolver)(nil)
-	_ ContextResolver       = (*ServiceResolver)(nil)
-	_ ProviderResolver      = (*ServiceResolver)(nil)
+	_ PDPProviderSource        = (*spregistry.Service)(nil)
+	_ DataSetCatalog           = (*warmstorage.Service)(nil)
+	_ dataSetActivityReader    = (*warmstorage.Service)(nil)
+	_ pdpVerifierAddressReader = (*warmstorage.Service)(nil)
+	_ DataSetValidator         = (*warmstorage.Service)(nil)
+	_ DataSetDetailsCatalog    = (*warmstorage.Service)(nil)
+	_ UploadResolver           = (*ServiceResolver)(nil)
+	_ ContextResolver          = (*ServiceResolver)(nil)
+	_ ProviderResolver         = (*ServiceResolver)(nil)
 )
 
 // NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
-// WarmStorage, and NewContext are required. DataSetValidator and
-// DataSetDetails are optional and auto-detected from WarmStorage when present.
-// ProviderPing is optional and defaults to an unretried PDP ping request.
+// WarmStorage, and NewContext are required. DataSetValidator, DataSetDetails,
+// and active-piece reads are optional and auto-detected from WarmStorage when
+// available and configured. ProviderPing is optional and defaults to an
+// unretried PDP ping request.
 func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.Payer == (common.Address{}) {
 		return nil, fmt.Errorf("storage.NewServiceResolver: %w: zero payer", ErrInvalidArgument)
@@ -127,6 +145,13 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if details == nil {
 		details, _ = opts.WarmStorage.(DataSetDetailsCatalog)
 	}
+	activity, _ := opts.WarmStorage.(dataSetActivityReader)
+	if addresses, ok := opts.WarmStorage.(pdpVerifierAddressReader); ok {
+		addresses = normalizeOptional(addresses)
+		if addresses != nil && addresses.PDPVerifierAddress() == (common.Address{}) {
+			activity = nil
+		}
+	}
 	providerPing := opts.ProviderPing
 	if providerPing == nil {
 		providerPing = defaultProviderPing
@@ -135,6 +160,7 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 		payer:            opts.Payer,
 		spRegistry:       opts.SPRegistry,
 		warmStorage:      opts.WarmStorage,
+		dataSetActivity:  activity,
 		dataSetValidator: validator,
 		dataSetDetails:   details,
 		providerPing:     providerPing,
@@ -581,7 +607,13 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 	if len(matching) == 0 {
 		return nil, nil, cloneStringMap(requestedMetadata), nil
 	}
+	if r.dataSetActivity == nil {
+		return r.selectFirstMatchingDataSet(ctx, matching, requestedMetadata, requireWritable)
+	}
+	return r.selectPreferredMatchingDataSet(ctx, matching, requestedMetadata, requireWritable)
+}
 
+func (r *ServiceResolver) selectFirstMatchingDataSet(ctx context.Context, matching []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
 	for _, dataSet := range matching {
 		metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dataSet.DataSetID)
 		if err != nil {
@@ -603,6 +635,161 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 	}
 
 	return nil, nil, cloneStringMap(requestedMetadata), nil
+}
+
+type evaluatedDataSet struct {
+	dataSet  *warmstorage.DataSetInfo
+	metadata map[string]string
+}
+
+func (r *ServiceResolver) selectPreferredMatchingDataSet(ctx context.Context, matching []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	results := make([]*evaluatedDataSet, len(matching))
+	firstMatch := len(matching)
+	bestNonEmpty := len(matching)
+	var mu sync.Mutex
+
+	err := runResolveWindow(
+		ctx,
+		len(matching),
+		func(index int) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return index <= bestNonEmpty
+		},
+		func(groupCtx context.Context, index int) error {
+			dataSet := matching[index]
+			mu.Lock()
+			if index > bestNonEmpty {
+				mu.Unlock()
+				return nil
+			}
+			mu.Unlock()
+
+			metadata, err := r.warmStorage.GetAllDataSetMetadata(groupCtx, dataSet.DataSetID)
+			if err != nil {
+				return fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %s: %w", dataSet.DataSetID.String(), err)
+			}
+			if !metadataMatches(metadata, requestedMetadata) {
+				return nil
+			}
+
+			mu.Lock()
+			if index > bestNonEmpty {
+				mu.Unlock()
+				return nil
+			}
+			mu.Unlock()
+
+			if requireWritable {
+				ok, err := r.dataSetAcceptsUpload(groupCtx, dataSet.DataSetID)
+				if err != nil {
+					return fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: validate data set %s: %w", dataSet.DataSetID.String(), err)
+				}
+				if !ok {
+					return nil
+				}
+			}
+
+			mu.Lock()
+			if index < firstMatch {
+				firstMatch = index
+			}
+			if index > bestNonEmpty {
+				mu.Unlock()
+				return nil
+			}
+			mu.Unlock()
+
+			hasPieces, err := r.dataSetActivity.HasActivePieces(groupCtx, dataSet.DataSetID)
+			if err != nil {
+				return fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: check active pieces for data set %s: %w", dataSet.DataSetID.String(), err)
+			}
+
+			mu.Lock()
+			results[index] = &evaluatedDataSet{dataSet: dataSet, metadata: metadata}
+			if hasPieces && index < bestNonEmpty {
+				bestNonEmpty = index
+			}
+			mu.Unlock()
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	selected := firstMatch
+	if bestNonEmpty < len(matching) {
+		selected = bestNonEmpty
+	}
+	if selected == len(matching) {
+		return nil, nil, cloneStringMap(requestedMetadata), nil
+	}
+	result := results[selected]
+	if result == nil {
+		return nil, nil, nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: selected data set index %d was not evaluated", selected)
+	}
+	dsID := result.dataSet.DataSetID
+	return &dsID, copyClientDataSetIDPtr(result.dataSet.ClientDataSetID), result.metadata, nil
+}
+
+// runResolveWindow keeps a sliding set of evaluations in flight and consults
+// shouldStart after every completion before filling the newly available slot.
+func runResolveWindow(ctx context.Context, count int, shouldStart func(int) bool, evaluate func(context.Context, int) error) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(resolveConcurrency)
+	completed := make(chan struct{}, resolveConcurrency)
+	nextIndex := 0
+	inFlight := 0
+	failed := false
+	var mu sync.Mutex
+
+	for nextIndex < count || inFlight > 0 {
+		for inFlight < resolveConcurrency && nextIndex < count {
+			mu.Lock()
+			stop := failed
+			mu.Unlock()
+			if stop || groupCtx.Err() != nil || !shouldStart(nextIndex) {
+				break
+			}
+
+			index := nextIndex
+			nextIndex++
+			inFlight++
+			group.Go(func() error {
+				err := evaluate(groupCtx, index)
+				if err != nil {
+					mu.Lock()
+					failed = true
+					mu.Unlock()
+				}
+				completed <- struct{}{}
+				return err
+			})
+		}
+
+		if inFlight == 0 {
+			break
+		}
+		<-completed
+		inFlight--
+
+		mu.Lock()
+		stop := failed
+		mu.Unlock()
+		if stop || groupCtx.Err() != nil {
+			break
+		}
+	}
+
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func selectableProviderSet(providers []spregistry.PDPProvider, approvedSet map[string]struct{}) map[string]struct{} {

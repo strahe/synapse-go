@@ -1,5 +1,5 @@
-// Package pdpverifier contains the generated Go bindings for the
-// PDPVerifier smart contract.
+// Package pdpverifier contains generated Go bindings and internal error
+// helpers for the PDPVerifier smart contract.
 //
 // Regenerate with: go generate ./internal/contracts/...
 package pdpverifier

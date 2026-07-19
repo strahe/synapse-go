@@ -7,7 +7,8 @@
 // that instantiate Service directly must provide those addresses explicitly.
 //
 // Key operations: data set management (including [Service.TerminateDataSet]
-// for direct FWSS teardown), PriceList reads, approved-provider reads, and
+// for direct FWSS teardown), bounded active-piece checks through
+// [Service.HasActivePieces], PriceList reads, approved-provider reads, and
 // provider allocation. [Service.GetServicePrice] remains as a compatibility
 // view; [Service.GetPriceList] is the canonical pricing entry point.
 //

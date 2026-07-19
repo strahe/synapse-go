@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/txutil"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -97,6 +98,34 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Bi
 		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", err)
 	}
 	return n, nil
+}
+
+// HasActivePieces reports whether the data set contains at least one active
+// piece. It reads at most one piece, so its cost does not grow with the total
+// number of pieces. Missing and non-live data sets report false.
+func (s *Service) HasActivePieces(ctx context.Context, dataSetID sdktypes.BigInt) (bool, error) {
+	if err := s.checkInit(); err != nil {
+		return false, err
+	}
+	if dataSetID.IsZero() {
+		return false, fmt.Errorf("warmstorage.HasActivePieces: %w: zero dataSetID", ErrInvalidArgument)
+	}
+	if s.pdpBind == nil {
+		return false, fmt.Errorf("warmstorage.HasActivePieces: %w", ErrPDPVerifierNotConfigured)
+	}
+	result, err := s.pdpBind.GetActivePieces(
+		&bind.CallOpts{Context: ctx},
+		dataSetID.Big(),
+		new(big.Int),
+		big.NewInt(1),
+	)
+	if err != nil {
+		if pdpverifier.IsDataSetUnavailable(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("warmstorage.HasActivePieces: %w", err)
+	}
+	return len(result.Pieces) > 0, nil
 }
 
 // GetPieceMetadata returns the (exists, value) pair for (dataSetID, pieceID, key).

@@ -48,8 +48,8 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	if sdkPackage.Name != "@filoz/synapse-sdk" {
 		t.Fatalf("synapse-sdk package name = %q, want @filoz/synapse-sdk", sdkPackage.Name)
 	}
-	if sdkPackage.Version != "1.0.1" {
-		t.Fatalf("synapse-sdk package version = %q, want 1.0.1", sdkPackage.Version)
+	if sdkPackage.Version != "1.1.0" {
+		t.Fatalf("synapse-sdk package version = %q, want 1.1.0", sdkPackage.Version)
 	}
 	coreDep := sdkPackage.Dependencies["@filoz/synapse-core"]
 	if coreDep == "" {

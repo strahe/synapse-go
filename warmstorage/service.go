@@ -69,8 +69,8 @@ type Options struct {
 	ViewContract common.Address
 	// PDPVerifier is the PDPVerifier contract address. Optional. Required
 	// only for methods that call PDPVerifier directly (ValidateDataSet,
-	// GetActivePieceCount, GetScheduledRemovals, and the isLive / listener
-	// decorators on GetClientDataSetsWithDetails).
+	// GetActivePieceCount, HasActivePieces, GetScheduledRemovals, and the
+	// isLive / listener decorators on GetClientDataSetsWithDetails).
 	PDPVerifier common.Address
 	// ChainID is required only when writes are used (TopUpCDNPaymentRails).
 	ChainID types.ChainID

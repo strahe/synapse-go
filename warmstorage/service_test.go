@@ -678,6 +678,90 @@ func TestGetActivePieceCount_NoPDP(t *testing.T) {
 	}
 }
 
+func TestHasActivePieces(t *testing.T) {
+	tests := []struct {
+		name   string
+		pieces []pdpbind.CidsCid
+		want   bool
+	}{
+		{name: "has piece", pieces: []pdpbind.CidsCid{{Data: []byte{0x01}}}, want: true},
+		{name: "empty", pieces: []pdpbind.CidsCid{}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mc := newTestServiceWithPDP(t)
+			mc.setPDPReply(t, "getActivePieces", tt.pieces, []*big.Int{}, false)
+
+			got, err := s.HasActivePieces(context.Background(), types.NewBigInt(42))
+			if err != nil {
+				t.Fatalf("HasActivePieces: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("HasActivePieces() = %t, want %t", got, tt.want)
+			}
+
+			method := mc.pdpABI.Methods["getActivePieces"]
+			args, err := method.Inputs.Unpack(mc.lastIn["getActivePieces"][4:])
+			if err != nil {
+				t.Fatalf("unpack getActivePieces input: %v", err)
+			}
+			if len(args) != 3 || args[0].(*big.Int).Cmp(big.NewInt(42)) != 0 ||
+				args[1].(*big.Int).Sign() != 0 || args[2].(*big.Int).Cmp(big.NewInt(1)) != 0 {
+				t.Fatalf("getActivePieces args = %v, want [42 0 1]", args)
+			}
+		})
+	}
+}
+
+func TestHasActivePieces_UnavailableDataSet(t *testing.T) {
+	tests := []error{
+		errors.New("execution reverted: Data set not live"),
+		errors.New("execution reverted: DataSetNotFound()"),
+	}
+	for _, wantErr := range tests {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			s, mc := newTestServiceWithPDP(t)
+			mc.errs["getActivePieces"] = wantErr
+
+			got, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
+			if err != nil {
+				t.Fatalf("HasActivePieces: %v", err)
+			}
+			if got {
+				t.Fatal("HasActivePieces() = true, want false")
+			}
+		})
+	}
+}
+
+func TestHasActivePieces_PropagatesError(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	want := errors.New("rpc unavailable")
+	mc.errs["getActivePieces"] = want
+
+	_, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
+	if !errors.Is(err, want) {
+		t.Fatalf("HasActivePieces error = %v, want wrapped %v", err, want)
+	}
+}
+
+func TestHasActivePieces_ZeroID(t *testing.T) {
+	s, _ := newTestServiceWithPDP(t)
+	_, err := s.HasActivePieces(context.Background(), types.BigInt{})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("HasActivePieces error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestHasActivePieces_NoPDP(t *testing.T) {
+	s, _ := newTestService(t)
+	_, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
+	if !errors.Is(err, ErrPDPVerifierNotConfigured) {
+		t.Fatalf("HasActivePieces error = %v, want ErrPDPVerifierNotConfigured", err)
+	}
+}
+
 func TestGetPieceMetadata(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getPieceMetadata", true, "value-1")
