@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	ethereum "github.com/ethereum/go-ethereum"
@@ -297,6 +298,14 @@ func TestGetPriceList(t *testing.T) {
 		p.Lockups.CacheMissLockupAmount.Int64() != 14 ||
 		p.Lockups.CDNLockupPeriod.Int64() != 15 {
 		t.Fatalf("bad price list: %+v", p)
+	}
+}
+
+func TestGetPriceList_RPCError(t *testing.T) {
+	s, mc := newTestService(t)
+	mc.errs["getPriceList"] = errors.New("rpc down")
+	if _, err := s.GetPriceList(context.Background()); err == nil || !strings.Contains(err.Error(), "rpc down") {
+		t.Fatalf("GetPriceList error = %v", err)
 	}
 }
 

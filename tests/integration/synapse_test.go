@@ -31,6 +31,7 @@ import (
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/storage"
@@ -106,6 +107,17 @@ func isIntegrationReadTransient(err error) bool {
 		}
 	}
 	return false
+}
+
+func retryIntegrationRead[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
+	return retry.Do(
+		ctx,
+		fn,
+		retry.WithMaxRetries(2),
+		retry.WithInitialDelay(time.Second),
+		retry.WithMaxDelay(3*time.Second),
+		retry.WithRetryIf(isIntegrationReadTransient),
+	)
 }
 
 type recordedFilBeamRequest struct {
@@ -289,8 +301,12 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		t.Fatal("Upload returned no copies")
 	}
 	cleanupDataSetID := result.Copies[0].DataSetID
+	terminated := false
 	if !cleanupDataSetID.IsZero() {
 		t.Cleanup(func() {
+			if terminated {
+				return
+			}
 			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 
@@ -300,6 +316,10 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 			})
 			if err != nil {
 				t.Logf("cleanup TerminateDataSet(%s): %v", cleanupDataSetID, err)
+				return
+			}
+			if termRes == nil {
+				t.Logf("cleanup TerminateDataSet(%s) returned nil result", cleanupDataSetID)
 				return
 			}
 			if termRes.Receipt != nil && termRes.Receipt.Status != 1 {
@@ -364,11 +384,29 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 			continue
 		}
 		t.Logf("CDN context download verified through FilBeam: cid=%s dataset=%s", result.PieceCID, result.Copies[0].DataSetID)
+
+		t.Logf("start CDNContextDownload TerminateDataSet(%s)", cleanupDataSetID)
+		termRes, err := client.Storage().TerminateDataSet(cctx, cleanupDataSetID, &storage.TerminateDataSetOptions{
+			WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
+		})
+		if err != nil {
+			t.Fatalf("TerminateDataSet(%s): %v", cleanupDataSetID, err)
+		}
+		if termRes == nil || termRes.Receipt == nil || termRes.Receipt.Status != 1 {
+			t.Fatalf("TerminateDataSet(%s) receipt = %+v", cleanupDataSetID, termRes)
+		}
+		terminated = true
+		t.Logf("done CDNContextDownload TerminateDataSet(%s) tx=%s", cleanupDataSetID, termRes.Hash)
 		return
 	}
 	t.Fatalf("CDN context download did not complete through FilBeam: %v", lastErr)
 }
 
+// TestIntegration classifies network coverage as follows: service and context
+// methods called below are direct coverage; PDP create/add/pull/delete/
+// terminate writes reached through storage are real delegated coverage; SP
+// owner writes, CDN rail debt and destructive permit scenarios remain explicit
+// external-condition coverage in their dedicated subtests.
 func TestIntegration(t *testing.T) {
 	ctx := context.Background()
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -922,83 +960,120 @@ func TestIntegration(t *testing.T) {
 	// --- StorageManagerSurface: every storage.Service read method. ---
 	t.Run("StorageManagerSurface", func(t *testing.T) {
 		sm := client.Storage()
-		failOrSkipTransient := func(label string, err error) {
+		checkRead := func(t *testing.T, label string, err error) {
 			t.Helper()
 			if err == nil {
 				return
 			}
-			if isIntegrationReadTransient(err) {
-				t.Skipf("%s transient read failure: %v", label, err)
-			}
 			t.Fatalf("%s: %v", label, err)
 		}
 
-		var sets []*storage.DataSetInfo
-		{
+		t.Run("FindDataSets", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 
-			var err error
-			sets, err = sm.FindDataSets(cctx, nil)
-			failOrSkipTransient("FindDataSets(default)", err)
+			sets, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetInfo, error) {
+				return sm.FindDataSets(ctx, nil)
+			})
+			checkRead(t, "FindDataSets(default)", err)
 			t.Logf("FindDataSets(default): %d", len(sets))
 
 			start := time.Now()
-			setsManaged, err := sm.FindDataSets(cctx, &storage.FindDataSetsOptions{OnlyManaged: true})
+			setsManaged, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetInfo, error) {
+				return sm.FindDataSets(ctx, &storage.FindDataSetsOptions{OnlyManaged: true})
+			})
 			t.Logf("done FindDataSets(onlyManaged) elapsed=%s", time.Since(start).Round(time.Second))
-			failOrSkipTransient("FindDataSets(onlyManaged)", err)
+			checkRead(t, "FindDataSets(onlyManaged)", err)
 			if len(setsManaged) > len(sets) {
 				t.Errorf("OnlyManaged returned %d > total %d", len(setsManaged), len(sets))
 			}
-		}
+		})
 
-		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
+		t.Run("GetStorageInfo", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			info, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.StorageInfo, error) {
+				return sm.GetStorageInfo(ctx, nil)
+			})
+			checkRead(t, "GetStorageInfo", err)
+			if len(info.Providers) == 0 {
+				t.Error("StorageInfo.Providers empty")
+			}
+			if info.Allowances == nil {
+				t.Error("StorageInfo.Allowances nil for configured signer")
+			}
+		})
 
-		info, err := sm.GetStorageInfo(cctx, nil)
-		failOrSkipTransient("GetStorageInfo", err)
-		if len(info.Providers) == 0 {
-			t.Errorf("StorageInfo.Providers empty")
-		}
-		if info.Allowances == nil {
-			t.Errorf("StorageInfo.Allowances nil for configured signer")
-		}
+		t.Run("Prepare", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			prep, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.PrepareResult, error) {
+				return sm.Prepare(ctx, &storage.PrepareOptions{DataSize: 64 * 1024})
+			})
+			checkRead(t, "Prepare", err)
+			if prep == nil || prep.Costs == nil {
+				t.Fatal("Prepare returned nil result/costs")
+			}
+			if prep.Transaction != nil {
+				t.Logf("Prepare reports funding required: deposit=%s includesApproval=%v",
+					prep.Transaction.DepositAmount, prep.Transaction.IncludesApproval)
+			}
+		})
 
-		prep, err := sm.Prepare(cctx, &storage.PrepareOptions{DataSize: 64 * 1024})
-		failOrSkipTransient("Prepare", err)
-		if prep == nil || prep.Costs == nil {
-			t.Fatal("Prepare returned nil result/costs")
-		}
-		if prep.Transaction != nil {
-			t.Logf("Prepare reports funding required: deposit=%s includesApproval=%v",
-				prep.Transaction.DepositAmount, prep.Transaction.IncludesApproval)
-		}
+		t.Run("CalculateMultiContextCosts", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			info, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.StorageInfo, error) {
+				return sm.GetStorageInfo(ctx, nil)
+			})
+			checkRead(t, "GetStorageInfo(prerequisite)", err)
+			if len(info.Providers) == 0 {
+				t.Fatal("StorageInfo.Providers empty")
+			}
+			mc, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.MultiContextCosts, error) {
+				return sm.CalculateMultiContextCosts(ctx, 64*1024, []storage.ContextCostRef{
+					{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
+				}, storage.MultiCostOptions{}, addr)
+			})
+			checkRead(t, "CalculateMultiContextCosts", err)
+			if mc == nil || mc.RatePerEpoch == nil {
+				t.Fatal("MultiContextCosts missing RatePerEpoch")
+			}
+		})
 
-		mc, err := sm.CalculateMultiContextCosts(cctx, 64*1024, []storage.ContextCostRef{
-			{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
-		}, storage.MultiCostOptions{}, addr)
-		failOrSkipTransient("CalculateMultiContextCosts", err)
-		if mc == nil || mc.RatePerEpoch == nil {
-			t.Fatal("MultiContextCosts missing RatePerEpoch")
-		}
+		t.Run("GetDefaultContext", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			def, err := retryIntegrationRead(cctx, sm.GetDefaultContext)
+			checkRead(t, "GetDefaultContext", err)
+			if def == nil || def.ProviderID().IsZero() {
+				t.Fatal("GetDefaultContext returned invalid context")
+			}
+		})
 
-		def, err := sm.GetDefaultContext(cctx)
-		failOrSkipTransient("GetDefaultContext", err)
-		if def == nil || def.ProviderID().IsZero() {
-			t.Fatal("GetDefaultContext returned invalid context")
-		}
+		t.Run("CreateContexts", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			ctxs, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.Context, error) {
+				return sm.CreateContexts(ctx, &storage.CreateContextsOptions{Copies: 1})
+			})
+			checkRead(t, "CreateContexts", err)
+			if len(ctxs) != 1 {
+				t.Errorf("CreateContexts returned %d contexts, want 1", len(ctxs))
+			}
+		})
 
-		ctxs, err := sm.CreateContexts(cctx, &storage.CreateContextsOptions{Copies: 1})
-		failOrSkipTransient("CreateContexts", err)
-		if len(ctxs) != 1 {
-			t.Errorf("CreateContexts returned %d contexts, want 1", len(ctxs))
-		}
-
-		single, err := sm.CreateContext(cctx, nil)
-		failOrSkipTransient("CreateContext(nil)", err)
-		if single == nil || single.ProviderID().IsZero() {
-			t.Fatal("CreateContext returned invalid context")
-		}
+		t.Run("CreateContext", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			single, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.Context, error) {
+				return sm.CreateContext(ctx, nil)
+			})
+			checkRead(t, "CreateContext(nil)", err)
+			if single == nil || single.ProviderID().IsZero() {
+				t.Fatal("CreateContext returned invalid context")
+			}
+		})
 	})
 
 	// --- ContextInspection: read methods on the Context produced by Upload. ---
@@ -1064,6 +1139,101 @@ func TestIntegration(t *testing.T) {
 		}
 		if int64(len(got)) != int64(len(testData)) {
 			t.Errorf("downloaded size = %d, want %d", len(got), len(testData))
+		}
+	})
+
+	// --- PDPDirect: direct provider HTTP reads for the uploaded fixture. ---
+	t.Run("PDPDirect", func(t *testing.T) {
+		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
+			t.Skip("Upload subtest did not produce dataset/cid; skipping direct PDP reads")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+		defer cancel()
+
+		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
+			DataSetID: &uploadedDataSetID,
+		})
+		if err != nil {
+			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+		}
+		provider, err := pdp.New(uctx.ServiceURL())
+		if err != nil {
+			t.Fatalf("pdp.New: %v", err)
+		}
+		if err := provider.Ping(cctx); err != nil {
+			t.Fatalf("pdp.Ping: %v", err)
+		}
+
+		deadline := time.Now().Add(3 * time.Minute)
+		var dataSet *pdp.DataSet
+		for {
+			dataSet, err = provider.GetDataSet(cctx, uploadedDataSetID)
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pdp.GetDataSet(%s) was not indexed within 3m: %v", uploadedDataSetID, err)
+			}
+			select {
+			case <-cctx.Done():
+				t.Fatalf("wait for pdp.GetDataSet: %v", cctx.Err())
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if dataSet == nil || !dataSet.ID.Equal(uploadedDataSetID) {
+			t.Fatalf("pdp.GetDataSet returned %+v, want id %s", dataSet, uploadedDataSetID)
+		}
+		foundInDataSet := false
+		for _, dataSetPiece := range dataSet.Pieces {
+			if dataSetPiece.PieceCID == uploadedCID.String() {
+				foundInDataSet = true
+				break
+			}
+		}
+		if !foundInDataSet {
+			t.Fatalf("pdp.GetDataSet(%s) does not contain piece %s", uploadedDataSetID, uploadedCID)
+		}
+
+		deadline = time.Now().Add(3 * time.Minute)
+		var found *pdp.FindPieceResult
+		for {
+			found, err = provider.FindPiece(cctx, uploadedCID)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, pdp.ErrPieceNotFound) && !errors.Is(err, pdp.ErrPieceProcessing) && !isIntegrationReadTransient(err) {
+				t.Fatalf("pdp.FindPiece(%s): %v", uploadedCID, err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pdp.FindPiece(%s) was not ready within 3m: %v", uploadedCID, err)
+			}
+			select {
+			case <-cctx.Done():
+				t.Fatalf("wait for pdp.FindPiece: %v", cctx.Err())
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if found == nil || found.PieceCID != uploadedCID.String() {
+			t.Fatalf("pdp.FindPiece returned %+v, want %s", found, uploadedCID)
+		}
+
+		rc, contentLength, err := provider.DownloadPiece(cctx, uploadedCID)
+		if err != nil {
+			t.Fatalf("pdp.DownloadPiece(%s): %v", uploadedCID, err)
+		}
+		downloaded, readErr := io.ReadAll(rc)
+		closeErr := rc.Close()
+		if readErr != nil {
+			t.Fatalf("read pdp.DownloadPiece: %v", readErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close pdp.DownloadPiece: %v", closeErr)
+		}
+		if contentLength >= 0 && contentLength != int64(len(testData)) {
+			t.Errorf("pdp.DownloadPiece content length = %d, want %d", contentLength, len(testData))
+		}
+		if !bytes.Equal(downloaded, testData) {
+			t.Fatal("pdp.DownloadPiece data mismatch")
 		}
 	})
 
@@ -1224,70 +1394,70 @@ func TestIntegration(t *testing.T) {
 		if uploadedRailID.IsZero() {
 			t.Skip("no uploaded rail id; skipping PaymentsRails")
 		}
-		cctx, cancel := context.WithTimeout(ctx, 2*txWaitTimeout+time.Minute)
-		defer cancel()
 
-		rv, err := client.Payments().GetRail(cctx, uploadedRailID)
-		if err != nil {
-			t.Fatalf("GetRail(%s): %v", uploadedRailID, err)
-		}
-		if rv == nil {
-			t.Fatal("GetRail returned nil")
-		}
-		t.Logf("rail %s: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
-
-		payee := rv.To
-		page, err := client.Payments().GetRailsAsPayee(cctx, payee, usdfc)
-		if err != nil {
-			t.Fatalf("GetRailsAsPayee: %v", err)
-		}
-		t.Logf("payee %s has %d rails (USDFC)", payee, len(page.Rails))
-
-		amts, err := client.Payments().GetSettlementAmounts(cctx, uploadedRailID, nil)
-		if err != nil {
-			if isNoProgressInSettlement(err) {
-				t.Skipf("settlement preview has no progress for rail %s: %v", uploadedRailID, err)
+		t.Run("RailReads", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+			rv, err := client.Payments().GetRail(cctx, uploadedRailID)
+			if err != nil {
+				t.Fatalf("GetRail(%s): %v", uploadedRailID, err)
 			}
-			t.Fatalf("GetSettlementAmounts: %v", err)
-		}
-		t.Logf("settlement preview: settled=%s netPayee=%s commission=%s networkFee=%s finalEpoch=%s note=%q",
-			amts.TotalSettledAmount, amts.TotalNetPayeeAmount, amts.TotalOperatorCommission,
-			amts.TotalNetworkFee, amts.FinalSettledEpoch, amts.Note)
-
-		// Settle is always safe to call; it's a no-op if nothing accrued.
-		t.Log("start PaymentsRails Settle")
-		settleRes, err := client.Payments().Settle(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
-		if err != nil {
-			t.Fatalf("Settle: %v", err)
-		}
-		if settleRes.Receipt == nil || settleRes.Receipt.Status != 1 {
-			t.Errorf("Settle tx not successful: %+v", settleRes.Receipt)
-		}
-		t.Logf("Settle tx=%s", settleRes.Hash)
-
-		// SettleAuto commonly reverts when the rail state has nothing new
-		// to auto-settle (e.g. already settled up to current epoch). The
-		// call path itself is what we want to cover, so a gas-estimate
-		// revert is logged and tolerated.
-		t.Log("start PaymentsRails SettleAuto")
-		autoRes, err := client.Payments().SettleAuto(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
-		if err != nil {
-			if !isExecutionRevert(err) {
-				t.Fatalf("SettleAuto: %v", err)
+			if rv == nil {
+				t.Fatal("GetRail returned nil")
 			}
-			t.Logf("SettleAuto reverted (tolerated, likely nothing to auto-settle): %v", err)
-			return
-		}
-		if autoRes.Receipt == nil || autoRes.Receipt.Status != 1 {
-			t.Fatalf("SettleAuto tx not successful: %+v", autoRes.Receipt)
-		}
-		t.Logf("SettleAuto tx=%s", autoRes.Hash)
+			t.Logf("rail %s: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
+			page, err := client.Payments().GetRailsAsPayee(cctx, rv.To, usdfc)
+			if err != nil {
+				t.Fatalf("GetRailsAsPayee: %v", err)
+			}
+			t.Logf("payee %s has %d rails (USDFC)", rv.To, len(page.Rails))
+		})
 
-		// SettleTerminatedRail requires a rail in Terminated state with
-		// settled epoch beyond endEpoch — outside the scope of this test
-		// run.
-		t.Run("SettleTerminatedRail", func(t *testing.T) {
-			t.Skip("needs-terminated-rail")
+		t.Run("GetSettlementAmounts", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+			amts, err := client.Payments().GetSettlementAmounts(cctx, uploadedRailID, nil)
+			if err != nil {
+				if isNoProgressInSettlement(err) {
+					t.Skipf("settlement preview has no progress for rail %s: %v", uploadedRailID, err)
+				}
+				t.Fatalf("GetSettlementAmounts: %v", err)
+			}
+			t.Logf("settlement preview: settled=%s netPayee=%s commission=%s networkFee=%s finalEpoch=%s note=%q",
+				amts.TotalSettledAmount, amts.TotalNetPayeeAmount, amts.TotalOperatorCommission,
+				amts.TotalNetworkFee, amts.FinalSettledEpoch, amts.Note)
+		})
+
+		t.Run("Settle", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, txWaitTimeout+time.Minute)
+			defer cancel()
+			t.Log("start PaymentsRails Settle")
+			settleRes, err := client.Payments().Settle(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				t.Fatalf("Settle: %v", err)
+			}
+			if settleRes.Receipt == nil || settleRes.Receipt.Status != 1 {
+				t.Fatalf("Settle tx not successful: %+v", settleRes.Receipt)
+			}
+			t.Logf("Settle tx=%s", settleRes.Hash)
+		})
+
+		t.Run("SettleAutoActive", func(t *testing.T) {
+			cctx, cancel := context.WithTimeout(ctx, txWaitTimeout+time.Minute)
+			defer cancel()
+			t.Log("start PaymentsRails SettleAuto")
+			autoRes, err := client.Payments().SettleAuto(cctx, uploadedRailID, nil, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				if !isExecutionRevert(err) {
+					t.Fatalf("SettleAuto: %v", err)
+				}
+				t.Logf("SettleAuto reverted (tolerated, likely nothing to auto-settle): %v", err)
+				return
+			}
+			if autoRes.Receipt == nil || autoRes.Receipt.Status != 1 {
+				t.Fatalf("SettleAuto tx not successful: %+v", autoRes.Receipt)
+			}
+			t.Logf("SettleAuto tx=%s", autoRes.Hash)
 		})
 	})
 

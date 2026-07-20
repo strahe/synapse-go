@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/integrationtest"
@@ -26,8 +27,15 @@ const (
 	contextIntegrationTxWait   = 180 * time.Second
 )
 
+// TestIntegration_ContextCreateDataSetStagedFlow directly exercises the
+// staged storage.Context surface. Store, create/add, pull, delete and provider
+// termination also provide real delegated coverage of the corresponding PDP
+// HTTP writes. Direct FWSS termination and both terminated-rail settlement
+// routes are asserted from their receipts and on-chain state. Direct termination
+// retains a long lockup period, so an empty provider-terminated fixture supplies
+// the second mature rail needed to exercise both settlement entry points.
 func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -60,8 +68,12 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	secondary := contexts[1]
 
 	var cleanupIDs []types.BigInt
+	terminatedIDs := make(map[string]struct{})
 	t.Cleanup(func() {
 		for _, id := range cleanupIDs {
+			if _, terminated := terminatedIDs[id.String()]; terminated {
+				continue
+			}
 			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			start := time.Now()
 			t.Logf("start storage staged cleanup TerminateDataSet(%s)", id)
@@ -78,7 +90,10 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 
 	executePrepare := func(label string, prepare *storage.PrepareResult) {
 		t.Helper()
-		if prepare == nil || prepare.Transaction == nil {
+		if prepare == nil {
+			t.Fatalf("%s returned nil prepare result", label)
+		}
+		if prepare.Transaction == nil {
 			return
 		}
 		start := time.Now()
@@ -112,26 +127,44 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	executePrepare("Prepare.Execute", prepare)
 
 	start = time.Now()
-	t.Log("start storage staged primary Upload")
-	primaryUpload, err := primary.Upload(ctx, bytes.NewReader(data), nil)
-	t.Logf("done storage staged primary Upload elapsed=%s", time.Since(start).Round(time.Second))
+	t.Log("start storage staged primary Store")
+	primaryStore, err := primary.Store(ctx, bytes.NewReader(data), nil)
+	t.Logf("done storage staged primary Store elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
-		t.Fatalf("primary Upload: %v", err)
+		t.Fatalf("primary Store: %v", err)
 	}
-	if !primaryUpload.PieceCID.Defined() {
-		t.Fatal("primary Upload returned undefined PieceCID")
+	if !primaryStore.PieceCID.Defined() {
+		t.Fatal("primary Store returned undefined PieceCID")
 	}
-	if len(primaryUpload.Copies) != 1 {
-		t.Fatalf("primary Upload copies = %d, want 1", len(primaryUpload.Copies))
+	if primaryStore.Size != int64(len(data)) {
+		t.Fatalf("primary Store size = %d, want %d", primaryStore.Size, len(data))
 	}
-	primaryCopy := primaryUpload.Copies[0]
-	if primaryCopy.DataSetID.IsZero() {
-		t.Fatal("primary Upload returned zero DataSetID")
+	primaryPiece := storage.PieceInput{PieceCID: primaryStore.PieceCID}
+	primaryExtra, err := primary.PresignForCommit(ctx, []storage.PieceInput{primaryPiece})
+	if err != nil {
+		t.Fatalf("primary PresignForCommit: %v", err)
 	}
-	if primaryCopy.RetrievalURL == "" {
-		t.Fatal("primary Upload returned empty RetrievalURL")
+	start = time.Now()
+	t.Log("start storage staged primary Commit")
+	primaryCommit, err := primary.Commit(ctx, storage.CommitRequest{
+		Pieces:    []storage.PieceInput{primaryPiece},
+		ExtraData: primaryExtra,
+	})
+	t.Logf("done storage staged primary Commit elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("primary Commit: %v", err)
 	}
-	cleanupIDs = append(cleanupIDs, primaryCopy.DataSetID)
+	if primaryCommit.DataSetID.IsZero() || !primaryCommit.IsNewDataSet {
+		t.Fatalf("primary Commit = %+v, want a new non-zero data set", primaryCommit)
+	}
+	if len(primaryCommit.PieceIDs) != 1 {
+		t.Fatalf("primary Commit PieceIDs = %d, want 1", len(primaryCommit.PieceIDs))
+	}
+	primaryURL := primary.PieceURL(primaryStore.PieceCID)
+	if primaryURL == "" {
+		t.Fatal("primary PieceURL returned empty URL")
+	}
+	cleanupIDs = append(cleanupIDs, primaryCommit.DataSetID)
 
 	submitCtx, cancelSubmit := context.WithCancel(ctx)
 	defer cancelSubmit()
@@ -195,8 +228,15 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if beforeCount == nil || beforeCount.Sign() != 0 {
 		t.Fatalf("active piece count before commit = %v, want 0", beforeCount)
 	}
+	beforeActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSetID)
+	if err != nil {
+		t.Fatalf("HasActivePieces(before): %v", err)
+	}
+	if beforeActive {
+		t.Fatal("HasActivePieces(before) = true, want false")
+	}
 
-	pieceInput := storage.PieceInput{PieceCID: primaryUpload.PieceCID}
+	pieceInput := storage.PieceInput{PieceCID: primaryStore.PieceCID}
 	extraData, err := recovered.PresignForCommit(ctx, []storage.PieceInput{pieceInput})
 	if err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
@@ -204,9 +244,9 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged Pull")
 	pull, err := recovered.Pull(ctx, storage.PullRequest{
-		Pieces: []cid.Cid{primaryUpload.PieceCID},
+		Pieces: []cid.Cid{primaryStore.PieceCID},
 		From: func(cid.Cid) string {
-			return primaryCopy.RetrievalURL
+			return primaryURL
 		},
 		ExtraData: extraData,
 	})
@@ -263,4 +303,252 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if afterCount == nil || afterCount.Cmp(wantAfter) != 0 {
 		t.Fatalf("active piece count after commit = %v, want %v", afterCount, wantAfter)
 	}
+	afterActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSetID)
+	if err != nil {
+		t.Fatalf("HasActivePieces(after): %v", err)
+	}
+	if !afterActive {
+		t.Fatal("HasActivePieces(after) = false, want true")
+	}
+
+	t.Run("DeletePieceByID", func(t *testing.T) {
+		start := time.Now()
+		t.Log("start storage staged DeletePieceByID")
+		deleted, err := recovered.DeletePieceByID(ctx, commit.PieceIDs[0])
+		t.Logf("done storage staged DeletePieceByID elapsed=%s", time.Since(start).Round(time.Second))
+		if err != nil {
+			t.Fatalf("DeletePieceByID: %v", err)
+		}
+		if deleted == nil || deleted.Hash == (common.Hash{}) {
+			t.Fatalf("DeletePieceByID result = %+v, want non-zero transaction hash", deleted)
+		}
+
+		deadline := time.Now().Add(3 * time.Minute)
+		for {
+			removals, err := recovered.GetScheduledRemovals(ctx)
+			if err == nil {
+				for _, removalID := range removals {
+					if removalID.Equal(commit.PieceIDs[0]) {
+						t.Logf("scheduled removal observed for piece %s", removalID)
+						return
+					}
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("scheduled removal for piece %s was not indexed within 3m (last error: %v)", commit.PieceIDs[0], err)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("wait for scheduled removal: %v", ctx.Err())
+			case <-time.After(2 * time.Second):
+			}
+		}
+	})
+
+	ws := client.WarmStorage()
+	primaryInfo, err := ws.GetDataSet(ctx, primaryCommit.DataSetID)
+	if err != nil {
+		t.Fatalf("GetDataSet(primary before terminate): %v", err)
+	}
+	secondaryInfo, err := ws.GetDataSet(ctx, created.DataSetID)
+	if err != nil {
+		t.Fatalf("GetDataSet(secondary before terminate): %v", err)
+	}
+	if primaryInfo.PDPRailID.IsZero() || secondaryInfo.PDPRailID.IsZero() {
+		t.Fatalf("termination rails must be non-zero: primary=%s secondary=%s", primaryInfo.PDPRailID, secondaryInfo.PDPRailID)
+	}
+
+	start = time.Now()
+	t.Log("start storage staged primary Context.Terminate")
+	directTermination, err := primary.Terminate(ctx, warmstorage.WithWait(contextIntegrationTxWait))
+	t.Logf("done storage staged primary Context.Terminate elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("primary Context.Terminate: %v", err)
+	}
+	if directTermination == nil || directTermination.Receipt == nil || directTermination.Receipt.Status != 1 {
+		t.Fatalf("primary Context.Terminate receipt = %+v", directTermination)
+	}
+	directEvent, err := warmstorage.ExtractPDPPaymentTerminatedEvent(directTermination.Receipt)
+	if err != nil {
+		t.Fatalf("ExtractPDPPaymentTerminatedEvent(primary): %v", err)
+	}
+	if !directEvent.DataSetID.Equal(primaryCommit.DataSetID) || !directEvent.PDPRailID.Equal(primaryInfo.PDPRailID) || directEvent.EndEpoch == 0 {
+		t.Fatalf("primary termination event = %+v, want dataSet=%s rail=%s and non-zero end epoch", directEvent, primaryCommit.DataSetID, primaryInfo.PDPRailID)
+	}
+	terminatedIDs[primaryCommit.DataSetID.String()] = struct{}{}
+
+	start = time.Now()
+	t.Log("start storage staged secondary Context.TerminateService")
+	providerTermination, err := recovered.TerminateService(ctx, &storage.TerminateServiceOptions{
+		ProviderWaitTimeout: 5 * time.Minute,
+		PollInterval:        2 * time.Second,
+	})
+	t.Logf("done storage staged secondary Context.TerminateService elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("secondary Context.TerminateService: %v", err)
+	}
+	if providerTermination == nil || providerTermination.TxHash == nil || providerTermination.DataSetID.IsZero() || providerTermination.EndEpoch == 0 {
+		t.Fatalf("secondary Context.TerminateService result = %+v", providerTermination)
+	}
+	if !providerTermination.DataSetID.Equal(created.DataSetID) {
+		t.Fatalf("secondary termination DataSetID = %s, want %s", providerTermination.DataSetID, created.DataSetID)
+	}
+	terminatedIDs[created.DataSetID.String()] = struct{}{}
+
+	settlementProviderID := secondary.ProviderID()
+	settlementContext, err := sm.CreateContext(ctx, &storage.CreateContextOptions{
+		ProviderID:      &settlementProviderID,
+		DataSetMetadata: map[string]string{"staged-settlement": metadata["staged"]},
+		WithCDN:         &withCDN,
+	})
+	if err != nil {
+		t.Fatalf("CreateContext(settlement fixture): %v", err)
+	}
+	settlementPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
+		DataSize: 1,
+		Contexts: []storage.UploadContext{
+			settlementContext,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prepare(settlement fixture): %v", err)
+	}
+	executePrepare("Prepare(settlement fixture).Execute", settlementPrepare)
+
+	start = time.Now()
+	t.Log("start storage staged settlement fixture CreateDataSet")
+	settlementCreated, err := settlementContext.CreateDataSet(ctx, nil)
+	t.Logf("done storage staged settlement fixture CreateDataSet elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("settlement fixture CreateDataSet: %v", err)
+	}
+	if settlementCreated == nil || settlementCreated.DataSetID.IsZero() {
+		t.Fatalf("settlement fixture CreateDataSet result = %+v", settlementCreated)
+	}
+	cleanupIDs = append(cleanupIDs, settlementCreated.DataSetID)
+
+	settlementInfo, err := ws.GetDataSet(ctx, settlementCreated.DataSetID)
+	if err != nil {
+		t.Fatalf("GetDataSet(settlement fixture): %v", err)
+	}
+	if settlementInfo.PDPRailID.IsZero() {
+		t.Fatal("settlement fixture has zero PDP rail ID")
+	}
+
+	start = time.Now()
+	t.Log("start storage staged settlement fixture Context.TerminateService")
+	settlementTermination, err := settlementContext.TerminateService(ctx, &storage.TerminateServiceOptions{
+		ProviderWaitTimeout: 5 * time.Minute,
+		PollInterval:        2 * time.Second,
+	})
+	t.Logf("done storage staged settlement fixture Context.TerminateService elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("settlement fixture Context.TerminateService: %v", err)
+	}
+	if settlementTermination == nil || settlementTermination.TxHash == nil || settlementTermination.EndEpoch == 0 ||
+		!settlementTermination.DataSetID.Equal(settlementCreated.DataSetID) {
+		t.Fatalf("settlement fixture termination result = %+v", settlementTermination)
+	}
+	terminatedIDs[settlementCreated.DataSetID.String()] = struct{}{}
+
+	directRail, err := client.Payments().GetRail(ctx, primaryInfo.PDPRailID)
+	if err != nil {
+		t.Fatalf("GetRail(direct termination): %v", err)
+	}
+	if directRail.EndEpoch == nil {
+		t.Fatalf("direct terminated rail has no end epoch: %+v", directRail)
+	}
+	if directRail.EndEpoch.Cmp(new(big.Int).SetUint64(uint64(directEvent.EndEpoch))) != 0 {
+		t.Fatalf("direct rail end epoch = %s, termination event = %d", directRail.EndEpoch, directEvent.EndEpoch)
+	}
+
+	providerRail, err := client.Payments().GetRail(ctx, secondaryInfo.PDPRailID)
+	if err != nil {
+		t.Fatalf("GetRail(provider termination): %v", err)
+	}
+	if providerRail.EndEpoch == nil {
+		t.Fatalf("provider terminated rail has no end epoch: %+v", providerRail)
+	}
+	if providerRail.EndEpoch.Cmp(new(big.Int).SetUint64(uint64(providerTermination.EndEpoch))) != 0 {
+		t.Fatalf("provider rail end epoch = %s, termination result = %d", providerRail.EndEpoch, providerTermination.EndEpoch)
+	}
+
+	settlementRail, err := client.Payments().GetRail(ctx, settlementInfo.PDPRailID)
+	if err != nil {
+		t.Fatalf("GetRail(settlement fixture): %v", err)
+	}
+	if settlementRail.EndEpoch == nil || settlementRail.EndEpoch.Cmp(new(big.Int).SetUint64(uint64(settlementTermination.EndEpoch))) != 0 {
+		t.Fatalf("settlement fixture rail end epoch = %v, termination result = %d", settlementRail.EndEpoch, settlementTermination.EndEpoch)
+	}
+
+	var summary *payments.AccountSummary
+	maturityDeadline := time.Now().Add(3 * time.Minute)
+	for {
+		summary, err = client.Payments().AccountSummary(ctx, client.Address())
+		if err != nil {
+			t.Fatalf("AccountSummary(after termination): %v", err)
+		}
+		if summary == nil || summary.CurrentEpoch == nil {
+			t.Fatalf("AccountSummary(after termination) returned no current epoch: %+v", summary)
+		}
+		if summary.CurrentEpoch.Cmp(providerRail.EndEpoch) > 0 && summary.CurrentEpoch.Cmp(settlementRail.EndEpoch) > 0 {
+			break
+		}
+		if time.Now().After(maturityDeadline) {
+			t.Fatalf(
+				"provider-terminated rails did not mature within 3m: current=%s providerEnd=%s fixtureEnd=%s",
+				summary.CurrentEpoch,
+				providerRail.EndEpoch,
+				settlementRail.EndEpoch,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for provider-terminated rail maturity: %v", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if directRail.EndEpoch.Sign() <= 0 {
+		t.Fatalf("direct terminated rail has invalid end epoch: %+v", directRail)
+	}
+	t.Logf("direct termination confirmed; settlement unlocks at epoch %s (current %s)", directRail.EndEpoch, summary.CurrentEpoch)
+
+	assertMatureRail := func(label string, rail *payments.RailView) {
+		t.Helper()
+		if rail.From != client.Address() || rail.Token != client.ResolvedAddresses().USDFC ||
+			rail.EndEpoch == nil || rail.SettledUpTo == nil || rail.PaymentRate == nil ||
+			rail.PaymentRate.Sign() < 0 || rail.SettledUpTo.Cmp(rail.EndEpoch) >= 0 ||
+			summary.CurrentEpoch.Cmp(rail.EndEpoch) <= 0 {
+			t.Fatalf("%s is not a mature unsettled terminated rail: current=%s rail=%+v", label, summary.CurrentEpoch, rail)
+		}
+	}
+	assertMatureRail("provider termination", providerRail)
+	assertMatureRail("settlement fixture", settlementRail)
+
+	directSettle, err := client.Payments().SettleTerminatedRail(
+		ctx,
+		secondaryInfo.PDPRailID,
+		payments.WithWait(contextIntegrationTxWait),
+	)
+	if err != nil {
+		t.Fatalf("SettleTerminatedRail(%s): %v", secondaryInfo.PDPRailID, err)
+	}
+	if directSettle == nil || directSettle.Receipt == nil || directSettle.Receipt.Status != 1 {
+		t.Fatalf("SettleTerminatedRail(%s) receipt = %+v", secondaryInfo.PDPRailID, directSettle.Receipt)
+	}
+	t.Logf("SettleTerminatedRail succeeded for provider-terminated rail %s: tx=%s", secondaryInfo.PDPRailID, directSettle.Hash)
+
+	autoSettle, err := client.Payments().SettleAuto(
+		ctx,
+		settlementInfo.PDPRailID,
+		nil,
+		payments.WithWait(contextIntegrationTxWait),
+	)
+	if err != nil {
+		t.Fatalf("SettleAuto(terminated rail %s): %v", settlementInfo.PDPRailID, err)
+	}
+	if autoSettle == nil || autoSettle.Receipt == nil || autoSettle.Receipt.Status != 1 {
+		t.Fatalf("SettleAuto(terminated rail %s) receipt = %+v", settlementInfo.PDPRailID, autoSettle.Receipt)
+	}
+	t.Logf("SettleAuto routed settlement fixture rail %s: tx=%s", settlementInfo.PDPRailID, autoSettle.Hash)
 }

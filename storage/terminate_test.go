@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +353,68 @@ func TestService_TerminateService_DerivesSignerAddress(t *testing.T) {
 	}
 	if !providers.called {
 		t.Fatal("provider resolver should be called after signer owner check passes")
+	}
+}
+
+func TestService_TerminateService_ProviderRelay(t *testing.T) {
+	signer := mustTestSigner(t)
+	dataSetID := types.NewBigInt(7)
+	txHash := common.HexToHash("0x1234")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/pdp/data-sets/7/terminate" {
+			t.Errorf("request path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"terminationTxHash":"` + txHash.Hex() + `","fwssTerminated":true,"serviceTerminationEpoch":456}`))
+		default:
+			t.Errorf("request method = %s", r.Method)
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	provider := testProvider()
+	provider.ServiceURL = server.URL
+	providers := &fakeTerminationProviderResolver{provider: &provider}
+	mgr := mustNewService(t, Options{
+		HTTPClient: server.Client(),
+		FWSSDataSetReader: fakeTerminationDataSetReader{info: &warmstorage.DataSetInfo{
+			DataSetID:  dataSetID,
+			ProviderID: provider.ID,
+			Payer:      signer.EVMAddress(),
+		}},
+		ProviderResolver: providers,
+		PaymentStateReader: &fakeTerminationPaymentReader{account: &payments.AccountState{
+			Funds:               big.NewInt(100),
+			LockupCurrent:       new(big.Int),
+			LockupRate:          new(big.Int),
+			LockupLastSettledAt: new(big.Int),
+		}},
+		EpochReader:  fakeTerminationEpochReader{block: 10},
+		PaymentToken: common.HexToAddress("0x9999"),
+		Signer:       signer,
+		ChainID:      types.ChainID(314159),
+		RecordKeeper: testRecordKeeper(),
+	})
+
+	var submitted common.Hash
+	res, err := mgr.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{
+		PollInterval: time.Nanosecond,
+		OnSubmitted: func(hash common.Hash) {
+			submitted = hash
+		},
+	})
+	if err != nil {
+		t.Fatalf("TerminateService: %v", err)
+	}
+	if !providers.called || submitted != txHash || res == nil || res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
+		t.Fatalf("TerminateService result=%+v submitted=%s providerCalled=%v", res, submitted, providers.called)
 	}
 }
 

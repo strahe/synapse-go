@@ -15,13 +15,10 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// TestIntegration_WarmStorage covers single-package read-only surface:
-// pricing, PDP config, owner/approval registry and paginated client dataset
-// listings. Methods requiring an uploaded dataset (GetDataSet,
-// GetActivePieceCount, GetPieceMetadata, GetAllPieceMetadata,
-// GetAllDataSetMetadata, ValidateDataSet) are covered by the cross-package
-// WarmStorageInspection subtest in tests/integration. TopUpCDNPaymentRails
-// requires a rail-with-debt and is skipped.
+// TestIntegration_WarmStorage covers the package's provider-independent reads.
+// Dataset reads, active-piece checks, termination and event parsing are covered
+// by the cross-package and staged storage flows. TopUpCDNPaymentRails remains
+// conditional on a real CDN rail debt.
 func TestIntegration_WarmStorage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -53,6 +50,22 @@ func TestIntegration_WarmStorage(t *testing.T) {
 	}
 	if (price.TokenAddress == common.Address{}) {
 		t.Error("TokenAddress is zero")
+	}
+	priceList, err := ws.GetPriceList(ctx)
+	if err != nil {
+		t.Fatalf("GetPriceList: %v", err)
+	}
+	if priceList == nil {
+		t.Fatal("GetPriceList returned nil")
+	}
+	if priceList.Token != price.TokenAddress {
+		t.Errorf("GetPriceList token = %s, GetServicePrice token = %s", priceList.Token, price.TokenAddress)
+	}
+	if priceList.Rates.StoragePerTiBPerMonth == nil || priceList.Rates.StoragePerTiBPerMonth.Sign() <= 0 {
+		t.Errorf("GetPriceList storage rate should be > 0, got %v", priceList.Rates.StoragePerTiBPerMonth)
+	}
+	if priceList.Fees.CreateDataSetFee == nil || priceList.Fees.CreateDataSetFee.Sign() < 0 {
+		t.Errorf("GetPriceList create data set fee should be >= 0, got %v", priceList.Fees.CreateDataSetFee)
 	}
 
 	cfg, err := ws.GetPDPConfig(ctx)

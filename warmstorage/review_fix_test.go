@@ -154,9 +154,13 @@ func TestGetClientDataSetsWithDetails_IncludesParityMetadata(t *testing.T) {
 type mockWriteBackend struct {
 	*mockCaller
 
-	mu     sync.Mutex
-	sent   []*coretypes.Transaction
-	nonces map[common.Address]uint64
+	mu          sync.Mutex
+	sent        []*coretypes.Transaction
+	nonces      map[common.Address]uint64
+	receiptFn   func(context.Context, common.Hash) (*coretypes.Receipt, error)
+	blockNumber uint64
+	nonceErr    error
+	sendErr     error
 }
 
 func newMockWriteBackend(t *testing.T) *mockWriteBackend {
@@ -178,6 +182,9 @@ func (m *mockWriteBackend) PendingCodeAt(_ context.Context, _ common.Address) ([
 func (m *mockWriteBackend) PendingNonceAt(_ context.Context, account common.Address) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.nonceErr != nil {
+		return 0, m.nonceErr
+	}
 	return m.nonces[account], nil
 }
 
@@ -196,6 +203,9 @@ func (m *mockWriteBackend) EstimateGas(_ context.Context, _ ethereum.CallMsg) (u
 func (m *mockWriteBackend) SendTransaction(_ context.Context, tx *coretypes.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sendErr != nil {
+		return m.sendErr
+	}
 	m.sent = append(m.sent, tx)
 	return nil
 }
@@ -208,11 +218,17 @@ func (m *mockWriteBackend) SubscribeFilterLogs(_ context.Context, _ ethereum.Fil
 	return nil, errors.New("subscription not supported")
 }
 
-func (m *mockWriteBackend) TransactionReceipt(context.Context, common.Hash) (*coretypes.Receipt, error) {
+func (m *mockWriteBackend) TransactionReceipt(ctx context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+	if m.receiptFn != nil {
+		return m.receiptFn(ctx, hash)
+	}
 	return nil, ethereum.NotFound
 }
 
 func (m *mockWriteBackend) BlockNumber(context.Context) (uint64, error) {
+	if m.blockNumber != 0 {
+		return m.blockNumber, nil
+	}
 	return 10, nil
 }
 

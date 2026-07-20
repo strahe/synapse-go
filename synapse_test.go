@@ -527,6 +527,12 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	if _, err := client.SPRegistry().GetProviderIDByAddress(ctx, addr); !errors.Is(err, ErrClosed) {
 		t.Errorf("SPRegistry.GetProviderIDByAddress: got %v, want ErrClosed", err)
 	}
+	if _, err := client.GetProviderInfoByID(ctx, types.NewBigInt(1)); !errors.Is(err, ErrClosed) {
+		t.Errorf("Client.GetProviderInfoByID: got %v, want ErrClosed", err)
+	}
+	if _, err := client.GetProviderInfoByAddress(ctx, addr); !errors.Is(err, ErrClosed) {
+		t.Errorf("Client.GetProviderInfoByAddress: got %v, want ErrClosed", err)
+	}
 	if _, err := client.SessionKey().Login(ctx, addr, nil); !errors.Is(err, ErrClosed) {
 		t.Errorf("SessionKey.Login: got %v, want ErrClosed", err)
 	}

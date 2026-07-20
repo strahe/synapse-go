@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -50,6 +51,10 @@ func TestStoreError_Error(t *testing.T) {
 }
 
 func TestStoreError_Unwrap(t *testing.T) {
+	var nilErr *StoreError
+	if nilErr.Unwrap() != nil {
+		t.Fatal("nil StoreError must unwrap to nil")
+	}
 	cause := errors.New("root cause")
 	err := &StoreError{Cause: cause}
 	if !errors.Is(err.Unwrap(), cause) {
@@ -99,6 +104,10 @@ func TestCommitError_Error(t *testing.T) {
 }
 
 func TestCommitError_Unwrap(t *testing.T) {
+	var nilErr *CommitError
+	if nilErr.Unwrap() != nil {
+		t.Fatal("nil CommitError must unwrap to nil")
+	}
 	cause := errors.New("root cause")
 	err := &CommitError{Cause: cause}
 	if !errors.Is(err.Unwrap(), cause) {
@@ -130,6 +139,10 @@ func TestErrInvalidArgument_NegativeMatch(t *testing.T) {
 }
 
 func TestDataSetPDPPaymentTerminatedError_DoesNotMatchInvalidArgument(t *testing.T) {
+	var nilErr *DataSetPDPPaymentTerminatedError
+	if got := nilErr.Error(); got != "<nil>" {
+		t.Fatalf("nil Error() = %q", got)
+	}
 	dataSetID := types.NewBigInt(13269)
 	err := &DataSetPDPPaymentTerminatedError{
 		DataSetID:   dataSetID,
@@ -142,6 +155,63 @@ func TestDataSetPDPPaymentTerminatedError_DoesNotMatchInvalidArgument(t *testing
 	}
 	if strings.Contains(err.Error(), "ended at epoch") {
 		t.Fatalf("Error()=%q must not imply the payment rail already ended", err.Error())
+	}
+}
+
+func TestTerminateServiceDebtError_Error(t *testing.T) {
+	var nilErr *TerminateServiceDebtError
+	if got := nilErr.Error(); got != "<nil>" {
+		t.Fatalf("nil Error() = %q", got)
+	}
+	withoutAmount := (&TerminateServiceDebtError{}).Error()
+	if !strings.Contains(withoutAmount, "settling existing payment debt") {
+		t.Fatalf("Error() = %q", withoutAmount)
+	}
+	withAmount := (&TerminateServiceDebtError{Shortfall: big.NewInt(17)}).Error()
+	if !strings.Contains(withAmount, "shortfall 17") {
+		t.Fatalf("Error() = %q", withAmount)
+	}
+}
+
+func TestDownloadError_ErrorAndUnwrap(t *testing.T) {
+	cause := errors.New("connection reset")
+	tests := []struct {
+		name string
+		err  *DownloadError
+		want string
+	}{
+		{"nil receiver", nil, "<nil>"},
+		{"status and cause", &DownloadError{URL: "https://sp.example/piece", StatusCode: 503, Cause: cause}, "status 503: connection reset"},
+		{"status", &DownloadError{URL: "https://sp.example/piece", StatusCode: 404}, "status 404"},
+		{"cause", &DownloadError{URL: "https://sp.example/piece", Cause: cause}, "connection reset"},
+		{"url", &DownloadError{URL: "https://sp.example/piece"}, "https://sp.example/piece"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); !strings.Contains(got, tt.want) {
+				t.Fatalf("Error() = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
+	wrapped := &DownloadError{Cause: cause}
+	if !errors.Is(wrapped, cause) {
+		t.Fatalf("errors.Is(%v, cause) = false", wrapped)
+	}
+	var nilDownload *DownloadError
+	if nilDownload.Unwrap() != nil {
+		t.Fatal("nil DownloadError must unwrap to nil")
+	}
+}
+
+func TestCIDMismatchError_Error(t *testing.T) {
+	var nilErr *CIDMismatchError
+	if got := nilErr.Error(); got != "<nil>" {
+		t.Fatalf("nil Error() = %q", got)
+	}
+	err := &CIDMismatchError{}
+	got := err.Error()
+	if !strings.Contains(got, "pieceCID mismatch") || !strings.Contains(got, "want") {
+		t.Fatalf("Error() = %q", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package payments
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math/big"
@@ -163,6 +164,60 @@ func TestSettleTerminatedRail_HappyAndInvalid(t *testing.T) {
 	}
 	if _, err := s.SettleTerminatedRail(context.Background(), sdktypes.NewBigInt(0)); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("SettleTerminatedRail(0) err=%v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestSettleAuto_RoutesByRailEndEpoch(t *testing.T) {
+	tests := []struct {
+		name       string
+		endEpoch   int64
+		wantMethod string
+	}{
+		{name: "active rail", endEpoch: 0, wantMethod: "settleRail"},
+		{name: "terminated rail", endEpoch: 99, wantMethod: "settleTerminatedRailWithoutValidation"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			mb.setFilPayReply(t, filPayAddr, "getRail", filpaybind.FilecoinPayV1RailView{
+				Token:               tokenAddr,
+				From:                otherAddr,
+				To:                  operatorAddr,
+				Operator:            operatorAddr,
+				Validator:           common.Address{},
+				PaymentRate:         big.NewInt(1),
+				LockupPeriod:        big.NewInt(10),
+				LockupFixed:         big.NewInt(0),
+				SettledUpTo:         big.NewInt(1),
+				EndEpoch:            big.NewInt(tt.endEpoch),
+				CommissionRateBps:   big.NewInt(0),
+				ServiceFeeRecipient: common.Address{},
+			})
+
+			if _, err := s.SettleAuto(context.Background(), sdktypes.NewBigInt(7), big.NewInt(20)); err != nil {
+				t.Fatalf("SettleAuto: %v", err)
+			}
+			if len(mb.sent) != 1 {
+				t.Fatalf("sent tx count = %d, want 1", len(mb.sent))
+			}
+			method := mb.filPayABI.Methods[tt.wantMethod]
+			if data := mb.sent[0].Data(); len(data) < 4 || !bytes.Equal(data[:4], method.ID) {
+				t.Fatalf("sent selector = %x, want %x (%s)", data[:min(len(data), 4)], method.ID, tt.wantMethod)
+			}
+		})
+	}
+}
+
+func TestSettleAuto_PropagatesRailReadError(t *testing.T) {
+	s, mb := newTestService(t)
+	want := errors.New("rail read failed")
+	mb.errs[filPayAddr.Hex()+":getRail"] = want
+	if _, err := s.SettleAuto(context.Background(), sdktypes.NewBigInt(7), nil); !errors.Is(err, want) {
+		t.Fatalf("SettleAuto error = %v, want wrapped %v", err, want)
+	}
+	if len(mb.sent) != 0 {
+		t.Fatalf("sent tx count = %d, want 0", len(mb.sent))
 	}
 }
 

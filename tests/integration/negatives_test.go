@@ -35,10 +35,6 @@ func TestIntegration_Negatives(t *testing.T) {
 	t.Run("NonceConflictRecovery", func(t *testing.T) {
 		testNonceConflictRecovery(ctx, t, client)
 	})
-
-	t.Run("ExpiredSessionKeyRejected", func(t *testing.T) {
-		t.Skip("placeholder: requires WarmStorage write path with expired session-key permit; tracked for follow-up")
-	})
 }
 
 // testInsufficientFundsDeposit attempts to deposit an amount far in excess

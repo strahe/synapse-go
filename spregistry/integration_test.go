@@ -14,9 +14,10 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-// TestIntegration_SPRegistry exercises every read-only method on
-// spregistry.Service against calibration. The six write methods require
-// SP-operator authority and are permanently skipped here.
+// TestIntegration_SPRegistry directly exercises every read-only method on
+// spregistry.Service against calibration. The six write methods are external-
+// condition coverage: they require a disposable provider-owner wallet, which
+// this shared-account suite intentionally does not accept.
 func TestIntegration_SPRegistry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -202,10 +203,9 @@ func TestIntegration_SPRegistry(t *testing.T) {
 		t.Fatal("IterateAllPDPProviders yielded zero providers")
 	}
 
-	// The six write methods are permanently skipped — they require
-	// SP-operator authority the SDK's test account does not hold. Each
-	// t.Run records the skip reason so the integration log makes the
-	// coverage declaration explicit.
+	// The six write methods require provider-owner authority and mutable
+	// provider/product fixtures. Each subtest records that external condition;
+	// their calldata, receipt and failure contracts are covered by unit tests.
 	writeMethods := []string{
 		"RegisterProvider", "UpdateProviderInfo", "RemoveProvider",
 		"AddPDPProduct", "UpdatePDPProduct", "RemoveProduct",

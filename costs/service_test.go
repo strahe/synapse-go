@@ -23,6 +23,7 @@ import (
 type mockWS struct {
 	price              *warmstorage.ServicePrice //nolint:staticcheck // Compatibility test fixture.
 	priceList          *warmstorage.PriceList
+	priceListErr       error
 	nilPriceListResult bool
 }
 
@@ -35,6 +36,9 @@ func (m *mockWS) GetServicePrice(_ context.Context) (*warmstorage.ServicePrice, 
 }
 
 func (m *mockWS) GetPriceList(_ context.Context) (*warmstorage.PriceList, error) {
+	if m.priceListErr != nil {
+		return nil, m.priceListErr
+	}
 	if m.nilPriceListResult {
 		return nil, nil
 	}
@@ -180,6 +184,48 @@ func TestGetServicePrice(t *testing.T) {
 	}
 	if price.EpochsPerMonth.Int64() != chain.EpochsPerMonth {
 		t.Errorf("EpochsPerMonth: got %d, want %d", price.EpochsPerMonth.Int64(), chain.EpochsPerMonth)
+	}
+}
+
+func TestGetPriceList(t *testing.T) {
+	want := defaultPriceList()
+	svc := buildSvc(t, &mockWS{priceList: want}, &mockPay{
+		account:  &payments.AccountState{},
+		approval: &payments.OperatorApproval{},
+	}, new(big.Int))
+
+	got, err := svc.GetPriceList(context.Background())
+	if err != nil {
+		t.Fatalf("GetPriceList: %v", err)
+	}
+	if got != want {
+		t.Fatalf("GetPriceList returned %p, want delegated value %p", got, want)
+	}
+}
+
+func TestGetPriceList_PropagatesReaderError(t *testing.T) {
+	wantErr := errors.New("price list unavailable")
+	svc := buildSvc(t, &mockWS{priceListErr: wantErr}, &mockPay{
+		account:  &payments.AccountState{},
+		approval: &payments.OperatorApproval{},
+	}, new(big.Int))
+	if _, err := svc.GetPriceList(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("GetPriceList error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestCDNFixedLockupValue_ReturnsIndependentValues(t *testing.T) {
+	first := CDNFixedLockupValue()
+	second := CDNFixedLockupValue()
+	if first.Cmp(big.NewInt(1_000_000_000_000_000_000)) != 0 {
+		t.Fatalf("CDNFixedLockupValue = %s, want 1 USDFC", first)
+	}
+	first.SetInt64(0)
+	if second.Cmp(big.NewInt(1_000_000_000_000_000_000)) != 0 {
+		t.Fatalf("mutating one result changed another: %s", second)
+	}
+	if got := CDNFixedLockupValue(); got.Cmp(second) != 0 {
+		t.Fatalf("mutating a result changed the package value: %s", got)
 	}
 }
 

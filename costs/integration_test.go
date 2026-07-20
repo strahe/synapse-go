@@ -12,10 +12,8 @@ import (
 	"github.com/strahe/synapse-go/internal/integrationtest"
 )
 
-// TestIntegration_Costs covers the parts of costs.Service not already
-// exercised by the main TestIntegration's Costs subtest: GetServicePrice
-// (delegating to warmstorage) and CalculateMultiContextCosts. GetUploadCosts
-// and GetAccountSummary are covered by tests/integration.
+// TestIntegration_Costs directly covers the read-only costs.Service surface.
+// Stateful upload-cost composition remains covered by tests/integration.
 func TestIntegration_Costs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -36,6 +34,35 @@ func TestIntegration_Costs(t *testing.T) {
 	if p1.PricePerTiBPerMonthNoCDN.Cmp(p2.PricePerTiBPerMonthNoCDN) != 0 {
 		t.Errorf("GetServicePrice divergence: costs=%v warmstorage=%v",
 			p1.PricePerTiBPerMonthNoCDN, p2.PricePerTiBPerMonthNoCDN)
+	}
+
+	priceList, err := c.GetPriceList(ctx)
+	if err != nil {
+		t.Fatalf("costs.GetPriceList: %v", err)
+	}
+	if priceList == nil {
+		t.Fatal("costs.GetPriceList returned nil")
+	}
+	warmStoragePriceList, err := client.WarmStorage().GetPriceList(ctx)
+	if err != nil {
+		t.Fatalf("warmstorage.GetPriceList: %v", err)
+	}
+	if warmStoragePriceList == nil {
+		t.Fatal("warmstorage.GetPriceList returned nil")
+	}
+	if priceList.Token != warmStoragePriceList.Token ||
+		priceList.Rates.StoragePerTiBPerMonth.Cmp(warmStoragePriceList.Rates.StoragePerTiBPerMonth) != 0 ||
+		priceList.Fees.CreateDataSetFee.Cmp(warmStoragePriceList.Fees.CreateDataSetFee) != 0 {
+		t.Fatalf("GetPriceList divergence: costs=%+v warmstorage=%+v", priceList, warmStoragePriceList)
+	}
+
+	summary, err := c.GetAccountSummary(ctx, client.Address())
+	if err != nil {
+		t.Fatalf("costs.GetAccountSummary: %v", err)
+	}
+	if summary == nil || summary.Funds == nil || summary.AvailableFunds == nil || summary.Debt == nil ||
+		summary.CurrentEpoch == nil || summary.CurrentEpoch.Sign() <= 0 {
+		t.Fatalf("GetAccountSummary returned incomplete values: %+v", summary)
 	}
 
 	// CalculateMultiContextCosts across two prospective contexts (one new,

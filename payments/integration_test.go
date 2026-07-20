@@ -15,16 +15,12 @@ import (
 	"github.com/strahe/synapse-go/payments"
 )
 
-// TestIntegration_Payments covers the parts of payments.Service not already
-// exercised by the main TestIntegration's Payments subtest. It exercises
-// the trivially-covered getters (Address / ChainID / Account), plus the
-// native-FIL paths (WalletBalance with the zero token) and the rails list
-// API. Fund / FundSync are exercised with a small amount when the account
-// has sufficient FIL; otherwise they Skip to stay idempotent across repeated
-// runs. RevokeService / DepositWithPermit* are covered by DestructiveSuite.
-// SettleTerminatedRail is permanently skipped (requires a terminated rail).
+// TestIntegration_Payments covers payment reads and account writes not already
+// exercised by the cross-package suite. FundSync is conditional on token
+// permit support. Withdraw uses one atto-USDFC and immediately deposits it
+// back; terminated-rail settlement is covered by the staged storage flow.
 func TestIntegration_Payments(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -71,25 +67,118 @@ func TestIntegration_Payments(t *testing.T) {
 	}
 	t.Logf("rails-as-payer: count=%d", len(page.Rails))
 
-	// FundSync — deposit a trivial amount (1 atto-USDFC) to assert the
-	// chain path works without materially changing balances. The async Fund /
-	// WithWait finalization path is covered by unit tests.
-	one := big.NewInt(1)
-	syncRes, err := p.FundSync(ctx, one)
+	fixed, err := p.TotalAccountFixedLockup(ctx, client.Address())
 	if err != nil {
-		if errors.Is(err, payments.ErrPermitUnsupported) {
-			t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
-		}
-		t.Fatalf("FundSync: %v", err)
+		t.Fatalf("TotalAccountFixedLockup: %v", err)
 	}
-	if syncRes.Receipt == nil {
-		t.Error("FundSync should return a non-nil receipt")
-	} else if syncRes.Receipt.Status != 1 {
-		t.Errorf("FundSync tx failed: status=%d", syncRes.Receipt.Status)
+	if fixed == nil || fixed.Sign() < 0 {
+		t.Fatalf("TotalAccountFixedLockup returned %v, want >= 0", fixed)
 	}
-	t.Logf("FundSync tx=%s", syncRes.Hash)
+	t.Logf("total account fixed lockup: %s", fixed)
 
-	t.Run("SettleTerminatedRail", func(t *testing.T) {
-		t.Skip("needs-terminated-rail")
+	t.Run("FundSync", func(t *testing.T) {
+		// Deposit a trivial amount to assert the permit-based chain path.
+		one := big.NewInt(1)
+		syncRes, err := p.FundSync(ctx, one)
+		if err != nil {
+			if errors.Is(err, payments.ErrPermitUnsupported) {
+				t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
+			}
+			t.Fatalf("FundSync: %v", err)
+		}
+		if syncRes == nil || syncRes.Receipt == nil {
+			t.Fatal("FundSync should return a non-nil receipt")
+		}
+		if syncRes.Receipt.Status != 1 {
+			t.Fatalf("FundSync tx failed: status=%d", syncRes.Receipt.Status)
+		}
+		t.Logf("FundSync tx=%s", syncRes.Hash)
+	})
+
+	t.Run("WithdrawAndRestore", func(t *testing.T) {
+		one := big.NewInt(1)
+		before, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
+		if err != nil {
+			t.Fatalf("AccountInfo(before): %v", err)
+		}
+		if before == nil {
+			t.Fatal("AccountInfo(before) returned nil")
+		}
+		if available := before.AvailableFunds(); available == nil || available.Cmp(one) < 0 {
+			t.Fatalf("available funds %v are insufficient for a one atto-USDFC withdrawal", available)
+		}
+		beforeWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
+		if err != nil {
+			t.Fatalf("WalletBalance(before): %v", err)
+		}
+		allowance, err := p.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
+		if err != nil {
+			t.Fatalf("Allowance(before withdrawal): %v", err)
+		}
+		if allowance == nil {
+			t.Fatal("Allowance(before withdrawal) returned nil")
+		}
+		if allowance.Cmp(one) < 0 {
+			approve, err := p.Approve(ctx, addrs.USDFC, addrs.Payments, one, payments.WithWait(90*time.Second))
+			if err != nil {
+				t.Fatalf("Approve(restore amount): %v", err)
+			}
+			if approve == nil || approve.Receipt == nil || approve.Receipt.Status != 1 {
+				t.Fatalf("Approve receipt = %+v", approve.Receipt)
+			}
+		}
+
+		withdrawn := false
+		restored := false
+		t.Cleanup(func() {
+			if !withdrawn || restored {
+				return
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cleanupCancel()
+			if _, err := p.Deposit(cleanupCtx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second)); err != nil {
+				t.Logf("cleanup Deposit(1 atto-USDFC): %v", err)
+			}
+		})
+
+		withdraw, err := p.Withdraw(ctx, addrs.USDFC, one, payments.WithWait(90*time.Second))
+		if err != nil {
+			t.Fatalf("Withdraw(1 atto-USDFC): %v", err)
+		}
+		if withdraw == nil || withdraw.Receipt == nil || withdraw.Receipt.Status != 1 {
+			t.Fatalf("Withdraw receipt = %+v", withdraw.Receipt)
+		}
+		withdrawn = true
+
+		deposit, err := p.Deposit(ctx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second))
+		if err != nil {
+			t.Fatalf("Deposit(restore 1 atto-USDFC): %v", err)
+		}
+		if deposit == nil || deposit.Receipt == nil || deposit.Receipt.Status != 1 {
+			t.Fatalf("Deposit receipt = %+v", deposit.Receipt)
+		}
+		restored = true
+
+		after, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
+		if err != nil {
+			t.Fatalf("AccountInfo(after): %v", err)
+		}
+		if after == nil {
+			t.Fatal("AccountInfo(after) returned nil")
+		}
+		afterWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
+		if err != nil {
+			t.Fatalf("WalletBalance(after): %v", err)
+		}
+		if after.Funds.Cmp(before.Funds) != 0 {
+			t.Fatalf("deposited funds after restore = %s, want %s", after.Funds, before.Funds)
+		}
+		t.Logf(
+			"Withdraw/Deposit restored principal: account funds delta=%s, available delta=%s, wallet delta=%s, lockup-current delta=%s",
+			new(big.Int).Sub(after.Funds, before.Funds),
+			new(big.Int).Sub(after.AvailableFunds(), before.AvailableFunds()),
+			new(big.Int).Sub(afterWallet, beforeWallet),
+			new(big.Int).Sub(after.LockupCurrent, before.LockupCurrent),
+		)
 	})
 }

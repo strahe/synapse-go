@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,6 +98,116 @@ func TestHTTPError_WithoutBody(t *testing.T) {
 	got := e.Error()
 	if !strings.Contains(got, "404") || strings.Contains(got, ":  ") {
 		t.Errorf("Error() = %q", got)
+	}
+}
+
+func TestHTTPError_RedactedURL(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://user:secret@example.com/piece?token=private&part=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	he := newHTTPError(req, &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header)}, nil)
+	if got := he.RedactedURL(); strings.Contains(got, "secret") || strings.Contains(got, "private") {
+		t.Fatalf("RedactedURL leaked credentials: %q", got)
+	}
+	if !strings.Contains(he.RedactedURL(), "part=1") {
+		t.Fatalf("RedactedURL removed non-sensitive query value: %q", he.RedactedURL())
+	}
+}
+
+func TestDataSetJSON_RoundTripsFullWidthIDs(t *testing.T) {
+	largeDataSet, err := types.BigIntFromBig(new(big.Int).Lsh(big.NewInt(1), 200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	largePiece, err := types.BigIntFromBig(new(big.Int).Add(largeDataSet.Big(), big.NewInt(123)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DataSet{
+		ID:                 largeDataSet,
+		NextChallengeEpoch: 456,
+		Pieces: []DataSetPiece{{
+			PieceCID:       "baga6ea4seaqtest",
+			PieceID:        largePiece,
+			SubPieceCID:    "baga6ea4seaqsubpiece",
+			SubPieceOffset: 123,
+		}},
+	}
+
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got DataSet
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !got.ID.Equal(want.ID) || got.NextChallengeEpoch != want.NextChallengeEpoch || len(got.Pieces) != 1 ||
+		got.Pieces[0].PieceCID != want.Pieces[0].PieceCID || !got.Pieces[0].PieceID.Equal(want.Pieces[0].PieceID) ||
+		got.Pieces[0].SubPieceCID != want.Pieces[0].SubPieceCID || got.Pieces[0].SubPieceOffset != want.Pieces[0].SubPieceOffset {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+	pieceEncoded, err := json.Marshal(want.Pieces[0])
+	if err != nil {
+		t.Fatalf("Marshal piece: %v", err)
+	}
+	var pieceGot DataSetPiece
+	if err := json.Unmarshal(pieceEncoded, &pieceGot); err != nil {
+		t.Fatalf("Unmarshal piece: %v", err)
+	}
+	if !pieceGot.PieceID.Equal(largePiece) || pieceGot.PieceCID != want.Pieces[0].PieceCID {
+		t.Fatalf("piece round trip = %+v, want %+v", pieceGot, want.Pieces[0])
+	}
+}
+
+func TestTerminateErrors_IncludeStableContext(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"already terminated", &ServiceAlreadyTerminatedError{ServiceTerminationEpoch: 42, Message: "done"}, "epoch 42: done"},
+		{"pending", &TerminateServicePendingError{Message: "queued"}, "pending: queued"},
+		{"unsupported", &TerminateServiceNotSupportedError{Body: "upgrade required"}, "upgrade required"},
+		{"not found", &WaitForTerminateServiceNotFoundError{}, "status not found"},
+		{"rejected", &WaitForTerminateServiceRejectedError{TxHash: txHash}, txHash.Hex()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); !strings.Contains(got, tt.want) {
+				t.Fatalf("Error() = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
+
+	withoutDetails := []error{
+		&ServiceAlreadyTerminatedError{ServiceTerminationEpoch: 7},
+		&TerminateServicePendingError{},
+		&TerminateServiceNotSupportedError{},
+	}
+	for _, err := range withoutDetails {
+		if got := err.Error(); got == "" {
+			t.Fatalf("%T returned an empty error", err)
+		}
+	}
+}
+
+func TestTerminateServiceStatusURL_ValidatesDataSetID(t *testing.T) {
+	client, err := New("https://provider.example/base/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.TerminateServiceStatusURL(types.NewBigInt(0)); err == nil {
+		t.Fatal("TerminateServiceStatusURL(0) returned nil error")
+	}
+	got, err := client.TerminateServiceStatusURL(types.NewBigInt(12))
+	if err != nil {
+		t.Fatalf("TerminateServiceStatusURL: %v", err)
+	}
+	if got != "https://provider.example/base/pdp/data-sets/12/terminate" {
+		t.Fatalf("TerminateServiceStatusURL = %q", got)
 	}
 }
 
