@@ -61,14 +61,15 @@
 // Downloads are validated as they stream so callers can keep io.Reader-style
 // boundaries without skipping PieceCID verification. Context.Download can use
 // a CDN-backed retriever first when the context has CDN enabled, then fall back
-// to provider PDP retrieval on ordinary CDN failures. By default the HTTP
-// download client refuses to dial local, private, multicast, unspecified, or
-// otherwise reserved address ranges to guard against SSRF, and it ignores
-// environment-variable
-// proxies for the same reason; set [Options.AllowPrivateNetworks] when
-// connecting to trusted private infrastructure, or provide [Options.HTTPClient]
-// if you need explicit proxy control. Bound the number of bytes accepted per
-// URL-based Service.Download call via [Options.DownloadMaxBytes];
+// to provider PDP retrieval on ordinary CDN failures. For URL-based
+// [Service.Download] calls, the default HTTP client refuses to dial local,
+// private, multicast, unspecified, or otherwise reserved address ranges to
+// guard against SSRF, and it ignores environment-variable proxies for the same
+// reason; set [Options.AllowPrivateNetworks] when connecting to trusted private
+// infrastructure, or provide [Options.HTTPClient] if you need explicit proxy
+// control. [Context.Download] uses the PDP/CDN clients attached to the context
+// and is not covered by this default SSRF guard. Bound the number of bytes
+// accepted per URL-based Service.Download call via [Options.DownloadMaxBytes];
 // Context.Download is not subject to this cap.
 //
 // [UploadOptions] exposes per-upload lifecycle hooks covering the full

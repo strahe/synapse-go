@@ -10,9 +10,9 @@ import (
 
 // CreateContextsOptions configures Service.CreateContexts.
 //
-// Copies controls how many provider copies to create. When zero, the
-// resolver uses its default (two copies when no explicit providers or
-// datasets are pinned; otherwise len(ProviderIDs) / len(DataSetIDs)).
+// Copies controls how many provider copies to create. When zero, the resolver
+// uses the number of unique DataSetIDs or ProviderIDs when either list is set;
+// otherwise it uses two copies.
 //
 // WithCDN is tri-state: nil means inherit the Client-level default
 // configured via [synapse.WithCDN]; non-nil explicitly overrides for this
