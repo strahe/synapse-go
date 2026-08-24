@@ -575,6 +575,88 @@ func TestServiceResolverResolveUploadContexts_HealthCheckCancelsSpeculativeProbe
 	}
 }
 
+func TestServiceResolverResolveUploadContexts_HealthCheckStopsAtSelectionFrontier(t *testing.T) {
+	const candidateCount = providerPingConcurrency + 1
+	approved := make([]types.BigInt, 0, candidateCount)
+	providers := make([]spregistry.PDPProvider, 0, candidateCount)
+	for i := 1; i <= candidateCount; i++ {
+		id := testID(uint64(i))
+		approved = append(approved, id)
+		providers = append(providers, testPDPProvider(id, fmt.Sprintf("https://sp-%d.example.com", i)))
+	}
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	speculativeCanceled := make(chan struct{})
+	beyondFrontierStarted := make(chan struct{})
+	var canceledOnce sync.Once
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: approved,
+		activeProviders:     providers,
+		providerPing: func(ctx context.Context, serviceURL string) error {
+			switch serviceURL {
+			case "https://sp-1.example.com":
+				close(firstStarted)
+				select {
+				case <-releaseFirst:
+					return errors.New("provider unavailable")
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			case "https://sp-2.example.com":
+				<-firstStarted
+				return nil
+			case fmt.Sprintf("https://sp-%d.example.com", candidateCount):
+				close(beyondFrontierStarted)
+				<-ctx.Done()
+				return ctx.Err()
+			default:
+				<-ctx.Done()
+				canceledOnce.Do(func() { close(speculativeCanceled) })
+				return ctx.Err()
+			}
+		},
+	})
+
+	type result struct {
+		contexts []UploadContext
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		resultCh <- result{contexts: contexts, err: err}
+	}()
+
+	beyondFrontier := false
+	select {
+	case <-speculativeCanceled:
+	case <-beyondFrontierStarted:
+		beyondFrontier = true
+	case <-time.After(time.Second):
+		t.Fatal("speculative probes were not canceled after the selection frontier was known")
+	}
+	close(releaseFirst)
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", result.err)
+		}
+		got := contextsToFake(t, result.contexts)
+		if len(got) != 1 || !got[0].ProviderID().Equal(testID(2)) {
+			t.Fatalf("providers=%v want [2]", providerIDs(got))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ResolveUploadContexts did not finish after the leading probe was released")
+	}
+	if beyondFrontier {
+		t.Fatalf("ProviderPing started candidate %d beyond the known selection frontier", candidateCount)
+	}
+}
+
 func TestServiceResolverResolveUploadContexts_HealthCheckHonorsParentCancellation(t *testing.T) {
 	started := make(chan struct{})
 	resolver := newTestServiceResolver(t, serviceResolverFixture{

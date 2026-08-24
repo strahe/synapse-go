@@ -101,9 +101,10 @@ type ServiceResolverOptions struct {
 	// ProviderPing checks one automatically selected provider endpoint. The
 	// resolver may call it concurrently for up to 16 candidates per selection;
 	// concurrent selections have independent limits. Each call receives a
-	// context with an eight-second deadline. Implementations must be safe for
-	// concurrent use and honor the context. nil uses [pdp.Client.Ping] with up
-	// to two retries for transient failures.
+	// context whose deadline is no later than eight seconds; a shorter parent
+	// deadline takes precedence. Implementations must be safe for concurrent use
+	// and honor the context. nil uses [pdp.Client.Ping] with up to two retries for
+	// transient failures.
 	ProviderPing func(context.Context, string) error
 	NewContext   ContextFactory // called per-provider to construct a managed Context
 }
@@ -506,22 +507,32 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 	defer cancelProbes()
 	states := make([]providerProbeState, len(candidates))
 	results := make(chan providerProbeResult, min(providerPingConcurrency, len(candidates)))
+	probeCancels := make([]context.CancelFunc, len(candidates))
 	nextIndex := 0
 	inFlight := 0
+	probeLimit := len(candidates)
 	stopping := false
 	selectionDetermined := false
 
 	startProbes := func() {
-		for !stopping && inFlight < providerPingConcurrency && nextIndex < len(candidates) {
+		for !stopping && inFlight < providerPingConcurrency && nextIndex < probeLimit {
 			index := nextIndex
 			nextIndex++
 			inFlight++
+			pingCtx, cancel := context.WithTimeout(probeCtx, providerPingTimeout)
+			probeCancels[index] = cancel
 			go func() {
-				pingCtx, cancel := context.WithTimeout(probeCtx, providerPingTimeout)
 				err := r.providerPing(pingCtx, candidates[index].provider.Offering.ServiceURL)
 				cancel()
 				results <- providerProbeResult{index: index, err: err}
 			}()
+		}
+	}
+	cancelProbesFrom := func(index int) {
+		for i := index; i < nextIndex; i++ {
+			if probeCancels[i] != nil {
+				probeCancels[i]()
+			}
 		}
 	}
 
@@ -529,17 +540,25 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 	for inFlight > 0 {
 		result := <-results
 		inFlight--
+		probeCancels[result.index] = nil
 		if !stopping {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				stopping = true
 				cancelProbes()
-			} else {
+			} else if result.index < probeLimit {
 				if result.err == nil {
 					states[result.index] = providerProbeHealthy
 				} else {
 					states[result.index] = providerProbeUnhealthy
 				}
-				if providerSelectionReady(states, count) {
+				frontier, ready := providerSelectionProgress(states, count)
+				if frontier >= 0 && frontier+1 < probeLimit {
+					// Later candidates cannot enter the stable ranking once this
+					// prefix already contains the requested healthy copies.
+					probeLimit = frontier + 1
+					cancelProbesFrom(probeLimit)
+				}
+				if ready {
 					selectionDetermined = true
 					stopping = true
 					cancelProbes()
@@ -585,20 +604,21 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 	return selected, nil
 }
 
-func providerSelectionReady(states []providerProbeState, count int) bool {
+func providerSelectionProgress(states []providerProbeState, count int) (frontier int, ready bool) {
 	healthy := 0
-	for _, state := range states {
+	pending := false
+	for i, state := range states {
 		if state == providerProbePending {
-			return false
+			pending = true
 		}
 		if state == providerProbeHealthy {
 			healthy++
 			if healthy == count {
-				return true
+				return i, !pending
 			}
 		}
 	}
-	return false
+	return -1, false
 }
 
 func formatProviderIDs(ids []types.BigInt) string {
