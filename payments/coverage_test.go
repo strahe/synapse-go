@@ -245,6 +245,29 @@ func TestGetSettlementAmounts_DecodesTuple(t *testing.T) {
 	}
 }
 
+func TestReadsDoNotUseSignerAddress(t *testing.T) {
+	s, mb := newTestService(t)
+	if s.Account() == (common.Address{}) {
+		t.Fatal("test service has no signer account")
+	}
+	mb.rejectNonZeroCallFrom = true
+	mb.setFilPayReply(t, filPayAddr, "accounts",
+		big.NewInt(1000), big.NewInt(200), big.NewInt(5), big.NewInt(42))
+	mb.setFilPayReply(t, filPayAddr, "getAccountInfoIfSettled",
+		big.NewInt(0), big.NewInt(1000), big.NewInt(123), big.NewInt(5))
+	mb.setFilPayReply(t, filPayAddr, "settleRail",
+		big.NewInt(100), big.NewInt(90), big.NewInt(5), big.NewInt(5),
+		big.NewInt(50), "ok",
+	)
+
+	if _, err := s.AccountInfo(context.Background(), tokenAddr, s.Account()); err != nil {
+		t.Fatalf("AccountInfo: %v", err)
+	}
+	if _, err := s.GetSettlementAmounts(context.Background(), sdktypes.NewBigInt(3), big.NewInt(50)); err != nil {
+		t.Fatalf("GetSettlementAmounts: %v", err)
+	}
+}
+
 func TestGetSettlementAmounts_InvalidRailID(t *testing.T) {
 	s, _ := newTestService(t)
 	if _, err := s.GetSettlementAmounts(context.Background(), sdktypes.NewBigInt(0), nil); !errors.Is(err, ErrInvalidArgument) {

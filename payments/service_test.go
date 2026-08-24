@@ -36,7 +36,8 @@ type mockBackend struct {
 	// errors keyed the same way
 	errs map[string]error
 	// callReplyFn, when set, can override a contract call reply.
-	callReplyFn func(contractHex, method string, data []byte) ([]byte, bool, error)
+	callReplyFn           func(contractHex, method string, data []byte) ([]byte, bool, error)
+	rejectNonZeroCallFrom bool
 
 	// per-account balances; nil -> 0
 	balances  map[common.Address]*big.Int
@@ -91,6 +92,9 @@ func (m *mockBackend) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([
 func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.rejectNonZeroCallFrom && call.From != (common.Address{}) {
+		return nil, errors.New("non-zero eth_call sender")
+	}
 	if len(call.Data) < 4 || call.To == nil {
 		return nil, errors.New("calldata too short")
 	}

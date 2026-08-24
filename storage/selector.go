@@ -27,7 +27,9 @@ const selectorListPageSize = 100
 
 const selectorRetryInitialDelay = 200 * time.Millisecond
 
-const providerPingTimeout = 2 * time.Second
+const providerPingTimeout = 8 * time.Second
+
+const providerPingConcurrency = 16
 
 const resolveConcurrency = 10
 
@@ -41,6 +43,19 @@ type autoSelectCandidate struct {
 	dataSetID       *types.BigInt
 	clientDataSetID *types.BigInt
 	metadata        map[string]string
+}
+
+type providerProbeState uint8
+
+const (
+	providerProbePending providerProbeState = iota
+	providerProbeHealthy
+	providerProbeUnhealthy
+)
+
+type providerProbeResult struct {
+	index int
+	err   error
 }
 
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
@@ -84,9 +99,11 @@ type ServiceResolverOptions struct {
 	DataSetValidator DataSetValidator
 	DataSetDetails   DataSetDetailsCatalog
 	// ProviderPing checks one automatically selected provider endpoint. The
-	// resolver passes a context with a two-second deadline; the implementation
-	// is responsible for honoring it. nil uses an unretried [pdp.Client.Ping]
-	// request.
+	// resolver may call it concurrently for up to 16 candidates per selection;
+	// concurrent selections have independent limits. Each call receives a
+	// context with an eight-second deadline. Implementations must be safe for
+	// concurrent use and honor the context. nil uses [pdp.Client.Ping] with up
+	// to two retries for transient failures.
 	ProviderPing func(context.Context, string) error
 	NewContext   ContextFactory // called per-provider to construct a managed Context
 }
@@ -122,8 +139,8 @@ var (
 // NewServiceResolver constructs a ServiceResolver. Payer, SPRegistry,
 // WarmStorage, and NewContext are required. DataSetValidator, DataSetDetails,
 // and active-piece reads are optional and auto-detected from WarmStorage when
-// available and configured. ProviderPing is optional and defaults to an
-// unretried PDP ping request.
+// available and configured. ProviderPing is optional and defaults to a PDP
+// ping with up to two retries for transient failures.
 func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	if opts.Payer == (common.Address{}) {
 		return nil, fmt.Errorf("storage.NewServiceResolver: %w: zero payer", ErrInvalidArgument)
@@ -169,7 +186,7 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 }
 
 func defaultProviderPing(ctx context.Context, serviceURL string) error {
-	client, err := pdp.New(serviceURL, pdp.WithMaxRetries(0))
+	client, err := pdp.New(serviceURL, pdp.WithMaxRetries(2))
 	if err != nil {
 		return err
 	}
@@ -441,29 +458,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		providersWithDetails = detailedCandidateProviders(detailedDataSets, selectableProviders)
 	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
-	selected := make([]ResolvedUploadContext, 0, min(count, len(providers)))
-	failedProviderIDs := make([]types.BigInt, 0, min(count, len(providers)))
-	probeCandidate := func(candidate autoSelectCandidate) (bool, error) {
-		pingCtx, cancel := context.WithTimeout(ctx, providerPingTimeout)
-		pingErr := r.providerPing(pingCtx, candidate.provider.Offering.ServiceURL)
-		cancel()
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check provider %s: %w", candidate.provider.Info.ID.String(), ctxErr)
-		}
-		if pingErr != nil {
-			failedProviderIDs = append(failedProviderIDs, candidate.provider.Info.ID)
-			return false, nil
-		}
-		selected = append(selected, buildResolvedUploadContext(
-			*candidate.provider,
-			candidate.dataSetID,
-			candidate.clientDataSetID,
-			candidate.metadata,
-		))
-		return len(selected) == count, nil
-	}
-
-	deferWithoutDataSet := len(providersWithDetails) > 0
+	withDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
 	withoutDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
 	seenProviderIDs := make(map[string]struct{}, min(count, len(providers)))
 	for i := range providers {
@@ -481,7 +476,6 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		var metadata map[string]string
 		if providerDataSets, ok := providersWithDetails[providerKey]; ok {
 			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata)
-			delete(providersWithDetails, providerKey)
 		}
 		candidate := autoSelectCandidate{
 			provider:        provider,
@@ -489,41 +483,92 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			clientDataSetID: clientDataSetID,
 			metadata:        metadata,
 		}
-		switch {
-		case dataSetID != nil:
-			done, err := probeCandidate(candidate)
-			if err != nil {
-				return nil, err
-			}
-			if done {
-				return selected, nil
-			}
-		case deferWithoutDataSet:
+		if dataSetID != nil {
+			withDataSet = append(withDataSet, candidate)
+		} else {
 			candidate.metadata = requestedMetadata
 			withoutDataSet = append(withoutDataSet, candidate)
-		default:
-			candidate.metadata = requestedMetadata
-			done, err := probeCandidate(candidate)
-			if err != nil {
-				return nil, err
-			}
-			if done {
-				return selected, nil
+		}
+	}
+	candidates := slices.Concat(withDataSet, withoutDataSet)
+	return r.selectHealthyCandidates(ctx, candidates, count)
+}
+
+func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidates []autoSelectCandidate, count int) ([]ResolvedUploadContext, error) {
+	if len(candidates) == 0 {
+		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check providers: %w", err)
+	}
+
+	probeCtx, cancelProbes := context.WithCancel(ctx)
+	defer cancelProbes()
+	states := make([]providerProbeState, len(candidates))
+	results := make(chan providerProbeResult, min(providerPingConcurrency, len(candidates)))
+	nextIndex := 0
+	inFlight := 0
+	stopping := false
+	selectionDetermined := false
+
+	startProbes := func() {
+		for !stopping && inFlight < providerPingConcurrency && nextIndex < len(candidates) {
+			index := nextIndex
+			nextIndex++
+			inFlight++
+			go func() {
+				pingCtx, cancel := context.WithTimeout(probeCtx, providerPingTimeout)
+				err := r.providerPing(pingCtx, candidates[index].provider.Offering.ServiceURL)
+				cancel()
+				results <- providerProbeResult{index: index, err: err}
+			}()
+		}
+	}
+
+	startProbes()
+	for inFlight > 0 {
+		result := <-results
+		inFlight--
+		if !stopping {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				stopping = true
+				cancelProbes()
+			} else {
+				if result.err == nil {
+					states[result.index] = providerProbeHealthy
+				} else {
+					states[result.index] = providerProbeUnhealthy
+				}
+				if providerSelectionReady(states, count) {
+					selectionDetermined = true
+					stopping = true
+					cancelProbes()
+				}
 			}
 		}
+		startProbes()
+	}
 
-		if deferWithoutDataSet && len(providersWithDetails) == 0 {
-			deferWithoutDataSet = false
-			for _, deferred := range withoutDataSet {
-				done, err := probeCandidate(deferred)
-				if err != nil {
-					return nil, err
-				}
-				if done {
-					return selected, nil
-				}
+	if err := ctx.Err(); err != nil && !selectionDetermined {
+		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check providers: %w", err)
+	}
+	selected := make([]ResolvedUploadContext, 0, min(count, len(candidates)))
+	failedProviderIDs := make([]types.BigInt, 0, min(count, len(candidates)))
+	for i, state := range states {
+		switch state {
+		case providerProbeHealthy:
+			candidate := candidates[i]
+			selected = append(selected, buildResolvedUploadContext(
+				*candidate.provider,
+				candidate.dataSetID,
+				candidate.clientDataSetID,
+				candidate.metadata,
+			))
+			if len(selected) == count {
+				return selected, nil
 			}
-			withoutDataSet = nil
+		case providerProbeUnhealthy:
+			failedProviderIDs = append(failedProviderIDs, candidates[i].provider.Info.ID)
 		}
 	}
 
@@ -538,6 +583,22 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		)
 	}
 	return selected, nil
+}
+
+func providerSelectionReady(states []providerProbeState, count int) bool {
+	healthy := 0
+	for _, state := range states {
+		if state == providerProbePending {
+			return false
+		}
+		if state == providerProbeHealthy {
+			healthy++
+			if healthy == count {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func formatProviderIDs(ids []types.BigInt) string {
