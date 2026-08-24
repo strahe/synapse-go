@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	ethereum "github.com/ethereum/go-ethereum"
@@ -614,13 +615,18 @@ func TestNew_WithHTTPClient(t *testing.T) {
 
 	key := testKey(t)
 	seenRequests := map[string]bool{}
+	var retryRequests atomic.Int32
 	hc := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		seenRequests[req.URL.Host+req.URL.Path] = true
+		status := http.StatusOK
 		var body io.ReadCloser = http.NoBody
 		if req.URL.Host == "calibration.stats.filbeam.com" {
 			body = io.NopCloser(strings.NewReader(`{"cdnEgressQuota":"1","cacheMissEgressQuota":"2"}`))
+		} else if req.URL.Host == "retry.provider.example" && retryRequests.Add(1) < 3 {
+			status = http.StatusServiceUnavailable
+			body = io.NopCloser(strings.NewReader("unavailable"))
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: req}, nil
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: body, Request: req}, nil
 	})}
 
 	client, err := New(context.Background(),
@@ -642,6 +648,15 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	}
 	if !seenRequests["provider.example/pdp/ping"] {
 		t.Fatalf("custom HTTP client did not see provider ping request: %v", seenRequests)
+	}
+	if err := client.pingProvider(context.Background(), "https://retry.provider.example"); err != nil {
+		t.Fatalf("pingProvider: %v", err)
+	}
+	if got := retryRequests.Load(); got != 3 {
+		t.Fatalf("retry provider requests=%d want 3", got)
+	}
+	if !seenRequests["retry.provider.example/pdp/ping"] {
+		t.Fatalf("custom HTTP client did not see retrying provider ping request: %v", seenRequests)
 	}
 
 	if _, err := client.FilBeam().GetDataSetStats(context.Background(), types.NewBigInt(123)); err != nil {

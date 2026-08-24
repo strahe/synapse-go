@@ -25,10 +25,11 @@ type mockCaller struct {
 	viewABI abi.ABI
 	pdpABI  abi.ABI
 	// method name → reply bytes or error
-	replies  map[string][]byte
-	errs     map[string]error
-	lastIn   map[string][]byte
-	handlers map[string]func([]byte) ([]byte, error)
+	replies               map[string][]byte
+	errs                  map[string]error
+	lastIn                map[string][]byte
+	handlers              map[string]func([]byte) ([]byte, error)
+	rejectNonZeroCallFrom bool
 }
 
 func newMockCaller(t *testing.T) *mockCaller {
@@ -61,6 +62,9 @@ func (m *mockCaller) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([]
 }
 
 func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+	if m.rejectNonZeroCallFrom && call.From != (common.Address{}) {
+		return nil, errors.New("non-zero eth_call sender")
+	}
 	data := call.Data
 	if len(data) < 4 {
 		return nil, errors.New("calldata too short")

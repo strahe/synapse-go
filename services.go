@@ -126,16 +126,10 @@ func (c *Client) initServices() error {
 	}
 
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
-		Payer:       c.evmSigner.EVMAddress(),
-		SPRegistry:  spReg,
-		WarmStorage: ws,
-		ProviderPing: func(ctx context.Context, serviceURL string) error {
-			pdpClient, err := c.newPDPClient(serviceURL, pdp.WithMaxRetries(0))
-			if err != nil {
-				return err
-			}
-			return pdpClient.Ping(ctx)
-		},
+		Payer:        c.evmSigner.EVMAddress(),
+		SPRegistry:   spReg,
+		WarmStorage:  ws,
+		ProviderPing: c.pingProvider,
 		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (*storage.Context, error) {
 			pdpClient, err := c.newPDPClient(sel.Provider.ServiceURL)
 			if err != nil {
@@ -222,6 +216,14 @@ func (c *Client) newPDPClient(serviceURL string, opts ...pdp.Option) (*pdp.Clien
 	}
 	pdpOpts = append(pdpOpts, opts...)
 	return pdp.New(serviceURL, pdpOpts...)
+}
+
+func (c *Client) pingProvider(ctx context.Context, serviceURL string) error {
+	pdpClient, err := c.newPDPClient(serviceURL, pdp.WithMaxRetries(2))
+	if err != nil {
+		return err
+	}
+	return pdpClient.Ping(ctx)
 }
 
 // WarmStorage returns the [warmstorage.Service].
