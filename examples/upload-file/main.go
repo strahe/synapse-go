@@ -108,17 +108,20 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 
 	withCDN := cfg.CDN
 	dataSetMetadata := cfg.DataSetMetadata.Map()
-	contexts, err := svc.CreateContexts(ctx, &storage.CreateContextsOptions{
+	selection, err := svc.SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{
 		Copies:          cfg.Copies,
 		DataSetMetadata: dataSetMetadata,
 		WithCDN:         &withCDN,
 	})
-	if err != nil {
-		return fmt.Errorf("create upload contexts: %w", err)
+	if err != nil && !errors.Is(err, storage.ErrInsufficientUploadContexts) {
+		return fmt.Errorf("select upload contexts: %w", err)
+	}
+	if selection == nil {
+		return errors.New("select upload contexts: no selection returned")
 	}
 	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(info.Size()),
-		Contexts: contexts,
+		Contexts: selection.Contexts,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)
@@ -137,11 +140,8 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 	}
 
 	var callbackErr error
-	result, err := svc.Upload(ctx, file, &storage.UploadOptions{
-		Copies:          cfg.Copies,
-		WithCDN:         &withCDN,
-		DataSetMetadata: dataSetMetadata,
-		PieceMetadata:   cfg.PieceMetadata.Map(),
+	result, err := svc.UploadToContexts(ctx, file, selection.Contexts, &storage.UploadOptions{
+		PieceMetadata: cfg.PieceMetadata.Map(),
 		OnProgress: func(uploaded int64) {
 			if uploaded == info.Size() && callbackErr == nil {
 				callbackErr = exampleutil.WriteKV(stdout, "uploadedBytes", uploaded)
@@ -163,25 +163,25 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 }
 
 type uploadStorage interface {
-	CreateContexts(context.Context, *storage.CreateContextsOptions) ([]storage.UploadContext, error)
+	SelectUploadContexts(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	Upload(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
+	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
 }
 
 type storageWorkflow struct {
 	svc *storage.Service
 }
 
-func (w storageWorkflow) CreateContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]storage.UploadContext, error) {
-	return w.svc.CreateContexts(ctx, opts)
+func (w storageWorkflow) SelectUploadContexts(ctx context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+	return w.svc.SelectUploadContexts(ctx, opts)
 }
 
 func (w storageWorkflow) Prepare(ctx context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
 	return w.svc.Prepare(ctx, opts)
 }
 
-func (w storageWorkflow) Upload(ctx context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
-	return w.svc.Upload(ctx, r, opts)
+func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+	return w.svc.UploadToContexts(ctx, r, contexts, opts)
 }
 
 func printUpload(stdout io.Writer, result *storage.UploadResult) error {

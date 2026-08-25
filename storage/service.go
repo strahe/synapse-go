@@ -29,9 +29,9 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// UploadContext abstracts one immutable provider or data-set target used by
-// upload and prepare operations. DataSetRef reports which kind was returned.
-type UploadContext interface {
+// StorageContext is an immutable provider or data-set upload target.
+type StorageContext interface {
+	ContextIdentity() ContextIdentity
 	ProviderID() types.BigInt
 	GetProviderInfo() Provider
 	DataSetRef() (DataSetRef, bool)
@@ -49,19 +49,25 @@ type UploadContext interface {
 // UploadResolver selects provider contexts for upload operations and provides
 // replacement candidates when a secondary provider fails.
 type UploadResolver interface {
-	ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
-	SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
+	ResolveUploadContexts(context.Context, *UploadOptions) ([]StorageContext, bool, error)
+	SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (StorageContext, error)
 }
 
-// ContextResolver creates managed storage contexts for Service.CreateContext,
-// Service.CreateContexts, and the auto-create branch of Service.Prepare.
+// ContextResolver opens explicitly identified provider and data-set targets.
 type ContextResolver interface {
-	ResolveContexts(context.Context, *UploadOptions) ([]UploadContext, error)
+	ResolveProviderContext(context.Context, types.BigInt, NewProviderContextOptions) (*ProviderContext, error)
+	ResolveDataSetContext(context.Context, types.BigInt, NewDataSetContextOptions) (*DataSetContext, error)
+}
+
+// ContextSelector chooses healthy targets for new uploads.
+type ContextSelector interface {
+	SelectProviderContext(context.Context, SelectProviderContextOptions) (*ProviderContext, error)
+	SelectUploadContexts(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error)
 }
 
 type writableUploadResolver interface {
-	resolveWritableUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
-	selectWritableReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
+	resolveWritableUploadContexts(context.Context, *UploadOptions) ([]StorageContext, bool, error)
+	selectWritableReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (StorageContext, error)
 }
 
 // Service orchestrates multi-copy uploads and downloads.
@@ -69,6 +75,7 @@ type writableUploadResolver interface {
 type Service struct {
 	resolver             UploadResolver
 	contextResolver      ContextResolver
+	contextSelector      ContextSelector
 	httpClient           *http.Client
 	source               string
 	defaultWithCDN       bool
@@ -109,10 +116,13 @@ type Options struct {
 	// calls; Upload then returns a clean validation error.
 	Resolver UploadResolver
 
-	// ContextResolver creates managed UploadContext values for CreateContext(s)
-	// and Prepare when PrepareOptions.Contexts is empty. When nil and
+	// ContextResolver opens explicitly identified storage targets. When nil and
 	// Resolver also implements ContextResolver, New reuses Resolver.
 	ContextResolver ContextResolver
+
+	// ContextSelector chooses healthy providers and upload targets. When nil and
+	// Resolver also implements ContextSelector, New reuses Resolver.
+	ContextSelector ContextSelector
 
 	// HTTPClient is used for URL-based downloads. nil installs a client with
 	// a 24-hour timeout — long enough for multi-GiB transfers over typical
@@ -131,9 +141,8 @@ type Options struct {
 	Source string
 
 	// DefaultWithCDN is the Client-level CDN default applied when an
-	// UploadOptions.WithCDN / CreateContextsOptions.WithCDN /
-	// CreateContextOptions.WithCDN field is nil. Ignored when the
-	// per-op field is non-nil.
+	// UploadOptions.WithCDN or context-selection WithCDN field is nil.
+	// Ignored when the per-operation field is non-nil.
 	DefaultWithCDN bool
 
 	// MaxSecondaryAttempts caps the number of provider candidates tried for
@@ -193,8 +202,8 @@ type Options struct {
 	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
 	DataSetSizeReader DataSetSizeReader
 
-	// FWSSDataSetReader is used by Service.CreateContext /
-	// Service.CreateContexts to auto-fetch the on-chain ClientDataSetID
+	// FWSSDataSetReader is used by explicit data-set resolution to read the
+	// on-chain ClientDataSetID
 	// and to equip returned contexts with upload-time ended-dataset
 	// checks. When nil, those safety nets are skipped.
 	FWSSDataSetReader FWSSDataSetReader
@@ -209,22 +218,21 @@ type Options struct {
 	EpochReader        EpochReader
 	PaymentToken       common.Address
 
-	// Signer, ChainID and RecordKeeper are required for manager-level
-	// provider-relayed termination. Existing context/direct paths can leave
-	// them unset.
+	// Signer is required for manager-level provider-relayed termination.
+	// ChainID and RecordKeeper also define the identity accepted by Prepare,
+	// Upload, UploadToContexts, and the explicit context APIs.
 	Signer       signer.EVMSigner
 	ChainID      types.ChainID
 	RecordKeeper common.Address
 
-	// SignerAddress is the default payer/client used by manager-level
-	// helpers (FindDataSets, GetStorageInfo, CreateContext{s}, Prepare)
-	// when the caller does not explicitly supply one.
+	// SignerAddress is the payer/client identity used by manager-level helpers
+	// and validated against every StorageContext. When Signer is set, a non-zero
+	// SignerAddress must match Signer.EVMAddress. When zero, New derives it from
+	// Signer.
 	SignerAddress common.Address
 }
 
 // New creates a Service from the given Options.
-// The returned error is always nil today; callers should still check it for
-// forward compatibility.
 func New(opts Options) (*Service, error) {
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = newSafeHTTPClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
@@ -239,14 +247,24 @@ func New(opts Options) (*Service, error) {
 		opts.DownloadMaxBytes = 0
 	}
 	signerAddr := opts.SignerAddress
-	if signerAddr == (common.Address{}) && opts.Signer != nil {
-		signerAddr = opts.Signer.EVMAddress()
+	if opts.Signer != nil {
+		signerAddress := opts.Signer.EVMAddress()
+		if signerAddr != (common.Address{}) && signerAddr != signerAddress {
+			return nil, fmt.Errorf("storage.New: %w: SignerAddress does not match Signer", ErrInvalidArgument)
+		}
+		signerAddr = signerAddress
 	}
 	resolver := normalizeOptional(opts.Resolver)
 	contextResolver := normalizeOptional(opts.ContextResolver)
 	if contextResolver == nil {
 		if inherited, ok := resolver.(ContextResolver); ok {
 			contextResolver = inherited
+		}
+	}
+	contextSelector := normalizeOptional(opts.ContextSelector)
+	if contextSelector == nil {
+		if inherited, ok := resolver.(ContextSelector); ok {
+			contextSelector = inherited
 		}
 	}
 	providers := normalizeOptional(opts.ProviderResolver)
@@ -258,6 +276,7 @@ func New(opts Options) (*Service, error) {
 	return &Service{
 		resolver:             resolver,
 		contextResolver:      contextResolver,
+		contextSelector:      contextSelector,
 		httpClient:           opts.HTTPClient,
 		source:               opts.Source,
 		defaultWithCDN:       opts.DefaultWithCDN,
@@ -284,8 +303,8 @@ func New(opts Options) (*Service, error) {
 	}, nil
 }
 
-// Upload runs the multi-copy upload pipeline streaming from r in a single
-// pass. opts may be nil (defaults apply). Returns UploadResult whose
+// Upload automatically selects targets and runs the multi-copy upload pipeline
+// streaming from r in a single pass. opts must be non-nil. Returns UploadResult whose
 // Complete field indicates whether all requested copies were committed
 // on-chain.
 //
@@ -299,47 +318,81 @@ func New(opts Options) (*Service, error) {
 // returned [UploadResult.Copies]), wrap ctx with [context.WithTimeout]; the
 // Service itself does not impose an internal wait deadline. The built-in
 // 24h HTTP timeout on Service only affects URL-based downloads; Upload,
-// Pull, and Commit use the UploadContext implementation's own HTTP client
+// Pull, and Commit use the StorageContext implementation's own HTTP client
 // configuration.
 func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+	const op = "storage.Service.Upload"
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	if r == nil {
-		return nil, fmt.Errorf("storage.Service.Upload: %w: nil reader", ErrInvalidArgument)
+	if opts == nil {
+		return nil, fmt.Errorf("%s: %w: options must not be nil", op, ErrInvalidArgument)
 	}
-	if opts != nil {
-		if err := validateProviderAndDataSetIDs(opts.ProviderIDs, opts.DataSetIDs); err != nil {
-			return nil, fmt.Errorf("storage.Service.Upload: %w", err)
-		}
+	if opts.Copies <= 0 {
+		return nil, fmt.Errorf("%s: %w: Copies must be greater than zero", op, ErrInvalidArgument)
+	}
+	if err := validateNonZeroIDs("ExcludeProviderID", opts.ExcludeProviderIDs...); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if s.resolver == nil {
-		return nil, errors.New("storage.Service.Upload: no upload resolver configured")
+		return nil, fmt.Errorf("%s: %w: upload resolver not configured", op, ErrUninitialized)
 	}
-
-	// Inject manager-level source into dataset metadata if set and not
-	// already overridden by the caller.
+	opts = cloneUploadOptions(opts)
 	if s.source != "" {
 		opts = s.withSourceMetadata(opts)
 	}
-	// Resolve WithCDN to a non-nil *bool using Client-level default.
 	opts = s.resolveWithCDN(opts)
-	opts = newUploadCallbackGuard(s.logger).wrapUploadOptions(opts)
-
-	// Capture the caller's intent before resolving (the resolver may return
-	// fewer contexts than requested; Complete must reflect the shortfall).
-	requestedCopies := requestedCopiesForUpload(opts)
-
 	contexts, explicitProviders, err := resolveUploadContextsForUpload(ctx, s.resolver, opts)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Service.Upload: resolve contexts: %w", err)
+		return nil, fmt.Errorf("%s: resolve contexts: %w", op, err)
 	}
-	if len(contexts) == 0 {
-		return nil, errors.New("storage.Service.Upload: no upload contexts available")
+	if explicitProviders {
+		return nil, fmt.Errorf("%s: %w: automatic resolver returned explicit targets", op, ErrInvalidArgument)
+	}
+	if err := s.validateStorageContexts(op, contexts); err != nil {
+		return nil, err
+	}
+	if len(contexts) > opts.Copies {
+		return nil, fmt.Errorf("%s: %w: resolver returned %d contexts for %d copies", op, ErrInvalidArgument, len(contexts), opts.Copies)
+	}
+	if err := validateExcludedStorageContexts(op, contexts, opts.ExcludeProviderIDs); err != nil {
+		return nil, err
 	}
 	if err := s.validateUploadContextsWritable(ctx, contexts); err != nil {
-		return nil, fmt.Errorf("storage.Service.Upload: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	if r == nil {
+		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
+	}
+	return s.uploadWithContexts(ctx, r, contexts, opts, opts.Copies, true)
+}
+
+// UploadToContexts uploads to the exact contexts supplied by the caller. The
+// first context is primary; later contexts receive provider-to-provider pulls.
+func (s *Service) UploadToContexts(ctx context.Context, r io.Reader, contexts []StorageContext, opts *UploadOptions) (*UploadResult, error) {
+	const op = "storage.Service.UploadToContexts"
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if err := validateExplicitUploadOptions(opts); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	contexts = append([]StorageContext(nil), contexts...)
+	if err := s.validateStorageContexts(op, contexts); err != nil {
+		return nil, err
+	}
+	if err := s.validateUploadContextsWritable(ctx, contexts); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if r == nil {
+		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
+	}
+	return s.uploadWithContexts(ctx, r, contexts, cloneUploadOptions(opts), len(contexts), false)
+}
+
+func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts []StorageContext, opts *UploadOptions, requestedCopies int, allowReplacement bool) (*UploadResult, error) {
+	opts = newUploadCallbackGuard(s.logger).wrapUploadOptions(opts)
+	explicitProviders := !allowReplacement
 
 	primary := contexts[0]
 	secondaries := contexts[1:]
@@ -374,7 +427,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 
 	type successfulSecondary struct {
-		ctx       UploadContext
+		ctx       StorageContext
 		extraData []byte
 	}
 
@@ -456,7 +509,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 				id := replacement.ProviderID()
 				usedProviders[idconv.Key(id)] = id
 				attemptsUsed++
-				if err := s.validateUploadContextsWritable(ctx, []UploadContext{replacement}); err != nil {
+				if err := s.validateUploadContextsWritable(ctx, []StorageContext{replacement}); err != nil {
 					failedAttempts = append(failedAttempts, FailedAttempt{
 						ProviderID: replacement.ProviderID(),
 						Role:       CopyRoleSecondary,
@@ -478,7 +531,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}
 
 	type commitTarget struct {
-		ctx       UploadContext
+		ctx       StorageContext
 		role      CopyRole
 		extraData []byte
 	}
@@ -622,21 +675,21 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	}, nil
 }
 
-func resolveUploadContextsForUpload(ctx context.Context, resolver UploadResolver, opts *UploadOptions) ([]UploadContext, bool, error) {
+func resolveUploadContextsForUpload(ctx context.Context, resolver UploadResolver, opts *UploadOptions) ([]StorageContext, bool, error) {
 	if writable, ok := resolver.(writableUploadResolver); ok {
 		return writable.resolveWritableUploadContexts(ctx, opts)
 	}
 	return resolver.ResolveUploadContexts(ctx, opts)
 }
 
-func selectReplacementForUpload(ctx context.Context, resolver UploadResolver, usedProviders map[string]types.BigInt, opts *UploadOptions) (UploadContext, error) {
+func selectReplacementForUpload(ctx context.Context, resolver UploadResolver, usedProviders map[string]types.BigInt, opts *UploadOptions) (StorageContext, error) {
 	if writable, ok := resolver.(writableUploadResolver); ok {
 		return writable.selectWritableReplacement(ctx, usedProviders, opts)
 	}
 	return resolver.SelectReplacement(ctx, usedProviders, opts)
 }
 
-func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts []UploadContext) error {
+func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts []StorageContext) error {
 	if s.dsReader == nil {
 		return nil
 	}
@@ -645,17 +698,18 @@ func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts [
 		if !ok {
 			continue
 		}
-		info, err := s.dsReader.GetDataSet(ctx, ref.DataSetID)
+		dataSetID := ref.DataSetID()
+		info, err := s.dsReader.GetDataSet(ctx, dataSetID)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return fmt.Errorf("validate data set %s: %w", ref.DataSetID.String(), ctxErr)
+				return fmt.Errorf("validate data set %s: %w", dataSetID.String(), ctxErr)
 			}
-			return fmt.Errorf("validate data set %s: %w", ref.DataSetID.String(), err)
+			return fmt.Errorf("validate data set %s: %w", dataSetID.String(), err)
 		}
 		if info == nil {
-			return fmt.Errorf("%w: FWSS returned no data set for dataSetID %s", ErrInvalidArgument, ref.DataSetID.String())
+			return fmt.Errorf("%w: FWSS returned no data set for dataSetID %s", ErrInvalidArgument, dataSetID.String())
 		}
-		if err := validateDataSetAcceptsUploads(ref.DataSetID, info.PDPEndEpoch); err != nil {
+		if err := validateDataSetAcceptsUploads(dataSetID, info.PDPEndEpoch); err != nil {
 			return err
 		}
 	}
@@ -669,22 +723,6 @@ func cloneMetadata(opts *UploadOptions) map[string]string {
 	out := make(map[string]string, len(opts.PieceMetadata))
 	maps.Copy(out, opts.PieceMetadata)
 	return out
-}
-
-func requestedCopiesForUpload(opts *UploadOptions) int {
-	if opts == nil {
-		return 2
-	}
-	if opts.Copies > 0 {
-		return opts.Copies
-	}
-	if len(opts.DataSetIDs) > 0 {
-		return len(dedupeIDs(opts.DataSetIDs))
-	}
-	if len(opts.ProviderIDs) > 0 {
-		return len(dedupeIDs(opts.ProviderIDs))
-	}
-	return 2
 }
 
 // withSourceMetadata returns a shallow clone of opts with the manager-level
@@ -722,6 +760,50 @@ func (s *Service) resolveWithCDN(opts *UploadOptions) *UploadOptions {
 	b := s.defaultWithCDN
 	cloned.WithCDN = &b
 	return &cloned
+}
+
+func validateExplicitUploadOptions(opts *UploadOptions) error {
+	if opts == nil {
+		return nil
+	}
+	if opts.Copies != 0 {
+		return fmt.Errorf("%w: Copies is not supported by UploadToContexts", ErrInvalidArgument)
+	}
+	if len(opts.ExcludeProviderIDs) != 0 {
+		return fmt.Errorf("%w: ExcludeProviderIDs is not supported by UploadToContexts", ErrInvalidArgument)
+	}
+	if len(opts.DataSetMetadata) != 0 {
+		return fmt.Errorf("%w: DataSetMetadata is not supported by UploadToContexts", ErrInvalidArgument)
+	}
+	if opts.WithCDN != nil {
+		return fmt.Errorf("%w: WithCDN is not supported by UploadToContexts", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validateContextUploadOptions(opts *UploadOptions) error {
+	if err := validateExplicitUploadOptions(opts); err != nil {
+		return err
+	}
+	if opts == nil {
+		return nil
+	}
+	if opts.OnCopyComplete != nil || opts.OnCopyFailed != nil || opts.OnPullProgress != nil {
+		return fmt.Errorf("%w: secondary-copy callbacks are not supported by context Upload", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func cloneUploadOptions(opts *UploadOptions) *UploadOptions {
+	if opts == nil {
+		return nil
+	}
+	out := *opts
+	out.PieceMetadata = cloneStringMap(opts.PieceMetadata)
+	out.DataSetMetadata = cloneStringMap(opts.DataSetMetadata)
+	out.ExcludeProviderIDs = cloneBigIntSlice(opts.ExcludeProviderIDs)
+	out.WithCDN = copyBoolPtr(opts.WithCDN)
+	return &out
 }
 
 func validateDataSetAcceptsUploads(dataSetID types.BigInt, pdpEndEpoch types.Epoch) error {

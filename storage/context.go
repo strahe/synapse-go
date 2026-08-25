@@ -183,19 +183,16 @@ func (c *ProviderContext) ForDataSet(ref DataSetRef) (*DataSetContext, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: nil context", ErrInvalidArgument)
 	}
-	if ref.ProviderID.IsZero() {
-		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: zero providerID", ErrInvalidArgument)
+	if !ref.valid() {
+		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: invalid data-set ref", ErrInvalidArgument)
 	}
-	if !ref.ProviderID.Equal(c.core.provider.ID) {
+	if !ref.providerID.Equal(c.core.provider.ID) {
 		return nil, fmt.Errorf(
 			"storage.ProviderContext.ForDataSet: %w: data set providerID %s does not match context providerID %s",
 			ErrInvalidArgument,
-			ref.ProviderID.String(),
+			ref.providerID.String(),
 			c.core.provider.ID.String(),
 		)
-	}
-	if ref.DataSetID.IsZero() {
-		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: zero dataSetID", ErrInvalidArgument)
 	}
 	return &DataSetContext{core: c.core, ref: copyDataSetRef(ref)}, nil
 }
@@ -423,7 +420,7 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", op, err)
 		}
-		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.ClientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
+		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			if errors.Is(err, signer.ErrUnsupportedSigner) {
 				return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
@@ -501,7 +498,7 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 		RecordKeeper: c.recordKeeper,
 	}
 	if ref != nil {
-		id := copyBigInt(ref.DataSetID)
+		id := copyBigInt(ref.dataSetID)
 		pdpReq.DataSetID = &id
 	}
 
@@ -587,7 +584,7 @@ func (c *contextCore) commit(ctx context.Context, op string, ref *DataSetRef, re
 	}
 
 	if ref != nil {
-		added, err := c.client.AddPieces(ctx, ref.DataSetID, pieces, extraData)
+		added, err := c.client.AddPieces(ctx, ref.dataSetID, pieces, extraData)
 		if err != nil {
 			return nil, fmt.Errorf("%s: add pieces: %w", op, err)
 		}
@@ -601,8 +598,8 @@ func (c *contextCore) commit(ctx context.Context, op string, ref *DataSetRef, re
 		if status.DataSetID.IsZero() {
 			return nil, errors.New(op + ": server returned zero dataSetID")
 		}
-		if !status.DataSetID.Equal(ref.DataSetID) {
-			return nil, fmt.Errorf("%s: server returned mismatched dataSetID: got %s want %s", op, status.DataSetID.String(), ref.DataSetID.String())
+		if !status.DataSetID.Equal(ref.dataSetID) {
+			return nil, fmt.Errorf("%s: server returned mismatched dataSetID: got %s want %s", op, status.DataSetID.String(), ref.dataSetID.String())
 		}
 		if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
 			return nil, fmt.Errorf("%s: %w", op, err)
@@ -645,20 +642,20 @@ func (c *contextCore) validateWritableDataSet(ctx context.Context, op string, re
 		return nil
 	}
 	if c.dataSetReader != nil {
-		info, err := c.dataSetReader.GetDataSet(ctx, ref.DataSetID)
+		info, err := c.dataSetReader.GetDataSet(ctx, ref.dataSetID)
 		if err != nil {
-			return fmt.Errorf("%s: validate data set %s: %w", op, ref.DataSetID.String(), err)
+			return fmt.Errorf("%s: validate data set %s: %w", op, ref.dataSetID.String(), err)
 		}
 		if info == nil {
-			return fmt.Errorf("%s: %w: FWSS returned no data set for dataSetID %s", op, ErrInvalidArgument, ref.DataSetID.String())
+			return fmt.Errorf("%s: %w: FWSS returned no data set for dataSetID %s", op, ErrInvalidArgument, ref.dataSetID.String())
 		}
-		if err := validateDataSetAcceptsUploads(ref.DataSetID, info.PDPEndEpoch); err != nil {
+		if err := validateDataSetAcceptsUploads(ref.dataSetID, info.PDPEndEpoch); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
 	}
 	if c.dataSetValidator != nil {
-		if err := c.dataSetValidator.ValidateDataSet(ctx, ref.DataSetID); err != nil {
-			return fmt.Errorf("%s: validate data set %s: %w", op, ref.DataSetID.String(), err)
+		if err := c.dataSetValidator.ValidateDataSet(ctx, ref.dataSetID); err != nil {
+			return fmt.Errorf("%s: validate data set %s: %w", op, ref.dataSetID.String(), err)
 		}
 	}
 	return nil
@@ -682,6 +679,26 @@ func (c *ProviderContext) ProviderID() types.BigInt {
 // ProviderID returns the provider's numeric ID.
 func (c *DataSetContext) ProviderID() types.BigInt {
 	return copyBigInt(c.core.provider.ID)
+}
+
+// ContextIdentity returns the immutable payer, chain, and record keeper.
+func (c *ProviderContext) ContextIdentity() ContextIdentity {
+	if c == nil || c.core == nil {
+		return ContextIdentity{}
+	}
+	return c.core.identity()
+}
+
+// ContextIdentity returns the immutable payer, chain, and record keeper.
+func (c *DataSetContext) ContextIdentity() ContextIdentity {
+	if c == nil || c.core == nil {
+		return ContextIdentity{}
+	}
+	return c.core.identity()
+}
+
+func (c *contextCore) identity() ContextIdentity {
+	return ContextIdentity{Payer: c.payer, ChainID: c.chainID, RecordKeeper: c.recordKeeper}
 }
 
 // GetProviderInfo returns a copy of the provider configuration.
@@ -725,12 +742,12 @@ func (c *DataSetContext) DataSetRef() (DataSetRef, bool) {
 
 // DataSetID returns the immutable on-chain data-set ID.
 func (c *DataSetContext) DataSetID() types.BigInt {
-	return copyBigInt(c.ref.DataSetID)
+	return c.ref.DataSetID()
 }
 
 // ClientDataSetID returns the immutable client-chosen data-set ID.
 func (c *DataSetContext) ClientDataSetID() types.BigInt {
-	return copyBigInt(c.ref.ClientDataSetID)
+	return c.ref.ClientDataSetID()
 }
 
 // CDNEnabled reports whether CDN services are enabled for this context.
@@ -902,8 +919,8 @@ func cloneStringMap(in map[string]string) map[string]string {
 
 func copyDataSetRef(ref DataSetRef) DataSetRef {
 	return DataSetRef{
-		ProviderID:      copyBigInt(ref.ProviderID),
-		DataSetID:       copyBigInt(ref.DataSetID),
-		ClientDataSetID: copyBigInt(ref.ClientDataSetID),
+		providerID:      copyBigInt(ref.providerID),
+		dataSetID:       copyBigInt(ref.dataSetID),
+		clientDataSetID: copyBigInt(ref.clientDataSetID),
 	}
 }

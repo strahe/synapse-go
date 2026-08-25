@@ -110,107 +110,6 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 	}
 }
 
-func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsDisableReplacement(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providerPing: func(context.Context, string) error {
-			t.Fatal("explicit provider selection called ProviderPing")
-			return nil
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
-			testIDKey(8): ptrPDPProvider(testPDPProvider(testID(8), "https://sp-8.example.com")),
-		},
-		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: testID(71), ProviderID: testID(7), PDPEndEpoch: 0},
-		},
-		dataSetMetadata: map[string]map[string]string{
-			testIDKey(71): {"source": "app"},
-		},
-	})
-
-	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		Copies:          2,
-		ProviderIDs:     []types.BigInt{testID(7), testID(7), testID(8)},
-		DataSetMetadata: map[string]string{"source": "app"},
-	})
-	if err != nil {
-		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if !explicit {
-		t.Fatal("explicit=false want true")
-	}
-	got := contextsToFake(t, contexts)
-	if len(got) != 2 {
-		t.Fatalf("contexts len=%d want 2", len(got))
-	}
-	if !got[0].ProviderID().Equal(testID(7)) || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(71)) {
-		t.Fatalf("first context=%+v", got[0])
-	}
-	if !got[1].ProviderID().Equal(testID(8)) || dataSetIDOf(got[1]) != nil {
-		t.Fatalf("second context=%+v", got[1])
-	}
-}
-
-func TestServiceResolverResolveWritableUploadContexts_ProviderIDsSkipFailedValidatorCandidate(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
-		},
-		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: testID(71), ProviderID: testID(7), PDPEndEpoch: 0},
-			{DataSetID: testID(72), ProviderID: testID(7), PDPEndEpoch: 0},
-		},
-		dataSetMetadata: map[string]map[string]string{
-			testIDKey(71): {"source": "app"},
-			testIDKey(72): {"source": "app"},
-		},
-		validatorEnabled: true,
-		validatorErrByID: map[string]error{
-			testIDKey(71): errors.New("not writable"),
-		},
-	})
-
-	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs:     []types.BigInt{testID(7)},
-		DataSetMetadata: map[string]string{"source": "app"},
-	})
-	if err != nil {
-		t.Fatalf("resolveWritableUploadContexts: %v", err)
-	}
-	got := contextsToFake(t, contexts)
-	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(72)) {
-		t.Fatalf("context=%+v want provider 7 dataSetID 72", got)
-	}
-}
-
-func TestServiceResolverResolveWritableUploadContexts_ProviderIDsCreateNewWhenValidatorFailsAll(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(7): ptrPDPProvider(testPDPProvider(testID(7), "https://sp-7.example.com")),
-		},
-		clientDataSets: []*warmstorage.DataSetInfo{
-			{DataSetID: testID(71), ProviderID: testID(7), PDPEndEpoch: 0},
-		},
-		dataSetMetadata: map[string]map[string]string{
-			testIDKey(71): {"source": "app"},
-		},
-		validatorEnabled: true,
-		validatorErr:     errors.New("not writable"),
-	})
-
-	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs:     []types.BigInt{testID(7)},
-		DataSetMetadata: map[string]string{"source": "app"},
-	})
-	if err != nil {
-		t.Fatalf("resolveWritableUploadContexts: %v", err)
-	}
-	got := contextsToFake(t, contexts)
-	if len(got) != 1 || dataSetIDOf(got[0]) != nil {
-		t.Fatalf("context=%+v want provider 7 with new data set", got)
-	}
-}
-
 func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3), testID(4)},
@@ -330,7 +229,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 		}
 	})
 
-	t.Run("non-positive copies use default", func(t *testing.T) {
+	t.Run("non-positive copies are rejected", func(t *testing.T) {
 		resolver := newTestServiceResolver(t, serviceResolverFixture{
 			approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
 			activeProviders: []spregistry.PDPProvider{
@@ -339,13 +238,9 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: -1})
-		if err != nil {
-			t.Fatalf("ResolveUploadContexts: %v", err)
-		}
-		got := contextsToFake(t, contexts)
-		if len(got) != 2 || !got[0].ProviderID().Equal(testID(1)) || !got[1].ProviderID().Equal(testID(2)) {
-			t.Fatalf("providers=%v want [1 2]", providerIDs(got))
+		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: -1})
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("ResolveUploadContexts error=%v want ErrInvalidArgument", err)
 		}
 	})
 
@@ -482,7 +377,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckConcurrencyIsBounded(t 
 	})
 
 	type result struct {
-		contexts []UploadContext
+		contexts []StorageContext
 		err      error
 	}
 	resultCh := make(chan result, 1)
@@ -619,7 +514,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckStopsAtSelectionFrontie
 	})
 
 	type result struct {
-		contexts []UploadContext
+		contexts []StorageContext
 		err      error
 	}
 	resultCh := make(chan result, 1)
@@ -738,9 +633,7 @@ func TestServiceResolverResolveUploadContexts_DefaultProviderPing(t *testing.T) 
 			Payer:       testPayer(),
 			SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 			WarmStorage: &fakeDataSetCatalog{fixture: fixture},
-			NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-				return newResolvedTestContext(selection)
-			},
+			NewContext:  newResolvedTestContext,
 		})
 		if err != nil {
 			t.Fatalf("NewServiceResolver: %v", err)
@@ -819,13 +712,11 @@ func TestServiceResolverResolveUploadContexts_RejectsNilContextFactoryResult(t *
 		},
 	})
 
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []types.BigInt{providerID},
-	})
+	_, err := resolver.ResolveProviderContext(context.Background(), providerID, NewProviderContextOptions{})
 	if err == nil {
-		t.Fatal("ResolveUploadContexts returned nil error; want nil context factory error")
+		t.Fatal("ResolveProviderContext returned nil error; want nil context factory error")
 	}
-	if !strings.Contains(err.Error(), "nil context") {
+	if !strings.Contains(err.Error(), "nil provider context") {
 		t.Fatalf("err=%v want nil context message", err)
 	}
 }
@@ -843,47 +734,25 @@ func TestServiceResolverSelectReplacement_RejectsNilContextFactoryResult(t *test
 	if err == nil {
 		t.Fatal("SelectReplacement returned nil error; want nil context factory error")
 	}
-	if !strings.Contains(err.Error(), "nil context") {
+	if !strings.Contains(err.Error(), "nil provider context") {
 		t.Fatalf("err=%v want nil context message", err)
 	}
 }
 
-func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsValidateOwnership(t *testing.T) {
+func TestServiceResolverResolveDataSetContextValidatesOwnership(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		dataSetsByID: map[string]*warmstorage.DataSetInfo{
 			testIDKey(33): {DataSetID: testID(33), ProviderID: testID(5), Payer: common.HexToAddress("0x00000000000000000000000000000000000000ff"), PDPEndEpoch: 0},
 		},
 	})
 
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(33)},
-	})
+	_, err := resolver.ResolveDataSetContext(context.Background(), testID(33), NewDataSetContextOptions{})
 	if err == nil || err.Error() == "" {
 		t.Fatal("expected ownership error")
 	}
 }
 
-func TestServiceResolverResolveUploadContexts_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(33): {DataSetID: testID(33), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
-		},
-		validatorEnabled: true,
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []types.BigInt{testID(5)},
-		DataSetIDs:  []types.BigInt{testID(33)},
-	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v want ErrInvalidArgument", err)
-	}
-}
-
-func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsAllowEndedRailWhenValidatorPasses(t *testing.T) {
+func TestServiceResolverResolveDataSetContextAllowsEndedRail(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		providerPing: func(context.Context, string) error {
 			t.Fatal("explicit data set selection called ProviderPing")
@@ -910,54 +779,12 @@ func TestServiceResolverResolveUploadContexts_ExplicitDataSetIDsAllowEndedRailWh
 		validatorEnabled: true,
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(55)},
-	})
+	dataSetCtx, err := resolver.ResolveDataSetContext(context.Background(), testID(55), NewDataSetContextOptions{})
 	if err != nil {
-		t.Fatalf("ResolveUploadContexts: %v", err)
+		t.Fatalf("ResolveDataSetContext: %v", err)
 	}
-	got := contextsToFake(t, contexts)
-	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(55)) {
-		t.Fatalf("contexts=%+v want dataSetID 55", got)
-	}
-}
-
-func TestServiceResolverResolveWritableUploadContexts_ExplicitDataSetIDsRequireValidator(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(55): {DataSetID: testID(55), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
-		},
-	})
-
-	_, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(55)},
-	})
-	if err == nil || !strings.Contains(err.Error(), "validator") {
-		t.Fatalf("err=%v want validator requirement", err)
-	}
-}
-
-func TestServiceResolverResolveWritableUploadContexts_ExplicitDataSetIDsSurfaceValidatorFailure(t *testing.T) {
-	want := errors.New("not live")
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(55): {DataSetID: testID(55), ProviderID: testID(5), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(5): ptrPDPProvider(testPDPProvider(testID(5), "https://sp-5.example.com")),
-		},
-		validatorEnabled: true,
-		validatorErr:     want,
-	})
-
-	_, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(55)},
-	})
-	if !errors.Is(err, want) {
-		t.Fatalf("err=%v want %v", err, want)
+	if got := dataSetCtx.DataSetID(); !got.Equal(testID(55)) {
+		t.Fatalf("DataSetID=%s want 55", got.String())
 	}
 }
 
@@ -1101,9 +928,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
 		WarmStorage:  catalog,
 		ProviderPing: healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		NewContext:   newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -1219,22 +1044,19 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRequestsOnlyManagedDetai
 	}
 }
 
-func TestServiceResolverResolveUploadContexts_AutoSelectTreatsDetailEnrichmentFailureAsNoDetails(t *testing.T) {
+func TestServiceResolverResolveUploadContexts_AutoSelectReturnsDetailEnrichmentFailure(t *testing.T) {
+	want := errors.New("dataSetLive failed")
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1)},
 		activeProviders: []spregistry.PDPProvider{
 			testPDPProvider(testID(1), "https://sp-1.example.com"),
 		},
-		dataSetDetailsErr: errors.New("dataSetLive failed"),
+		dataSetDetailsErr: want,
 	})
 
 	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
-	if err != nil {
-		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	got := contextsToFake(t, contexts)
-	if dataSetIDOf(got[0]) != nil {
-		t.Fatalf("auto-select reused dataSetID=%v want nil when details fail", dataSetIDOf(got[0]))
+	if contexts != nil || !errors.Is(err, want) {
+		t.Fatalf("ResolveUploadContexts=(%v, %v) want nil result wrapping detail error", contexts, err)
 	}
 }
 
@@ -1253,9 +1075,7 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
 		WarmStorage:  catalog,
 		ProviderPing: healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		NewContext:   newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -1308,9 +1128,7 @@ func newTestServiceResolver(t *testing.T, fixture serviceResolverFixture) *Servi
 		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
 		WarmStorage:  catalog,
 		ProviderPing: providerPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		NewContext:   newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -1329,7 +1147,7 @@ func newNilContextServiceResolver(t *testing.T, fixture serviceResolverFixture) 
 		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
 		WarmStorage:  &fakeDataSetCatalog{fixture: fixture},
 		ProviderPing: providerPing,
-		NewContext: func(ResolvedUploadContext, *UploadOptions) (UploadContext, error) {
+		NewContext: func(Provider, ContextFactoryOptions) (*ProviderContext, error) {
 			return nil, nil
 		},
 	})
@@ -1542,30 +1360,30 @@ func containsExcludedProvider(values []types.BigInt, target types.BigInt) bool {
 	return false
 }
 
-func contextsToFake(t *testing.T, contexts []UploadContext) []UploadContext {
+func contextsToFake(t *testing.T, contexts []StorageContext) []StorageContext {
 	t.Helper()
-	return append([]UploadContext(nil), contexts...)
+	return append([]StorageContext(nil), contexts...)
 }
 
-func dataSetIDOf(ctx UploadContext) *types.BigInt {
+func dataSetIDOf(ctx StorageContext) *types.BigInt {
 	ref, ok := ctx.DataSetRef()
 	if !ok {
 		return nil
 	}
-	id := copyBigInt(ref.DataSetID)
+	id := ref.DataSetID()
 	return &id
 }
 
-func clientDataSetIDOf(ctx UploadContext) *types.BigInt {
+func clientDataSetIDOf(ctx StorageContext) *types.BigInt {
 	ref, ok := ctx.DataSetRef()
 	if !ok {
 		return nil
 	}
-	id := copyBigInt(ref.ClientDataSetID)
+	id := ref.ClientDataSetID()
 	return &id
 }
 
-func dataSetMetadataOf(t *testing.T, ctx UploadContext) map[string]string {
+func dataSetMetadataOf(t *testing.T, ctx StorageContext) map[string]string {
 	t.Helper()
 	switch concrete := ctx.(type) {
 	case *ProviderContext:
@@ -1578,7 +1396,7 @@ func dataSetMetadataOf(t *testing.T, ctx UploadContext) map[string]string {
 	}
 }
 
-func providerIDs(contexts []UploadContext) []string {
+func providerIDs(contexts []StorageContext) []string {
 	ids := make([]string, len(contexts))
 	for i, ctx := range contexts {
 		ids[i] = ctx.ProviderID().String()
@@ -1586,17 +1404,18 @@ func providerIDs(contexts []UploadContext) []string {
 	return ids
 }
 
-func newResolvedTestContext(selection ResolvedUploadContext) (UploadContext, error) {
-	opts := []ContextOption{WithDataSetMetadata(selection.DataSetMetadata)}
-	providerCtx, err := NewProviderContext(selection.Provider, &fakePDPProviderClient{}, nil, opts...)
-	if err != nil || selection.DataSet == nil {
-		return providerCtx, err
-	}
-	return providerCtx.ForDataSet(*selection.DataSet)
+func newResolvedTestContext(provider Provider, opts ContextFactoryOptions) (*ProviderContext, error) {
+	return NewProviderContext(
+		provider,
+		&fakePDPProviderClient{},
+		nil,
+		WithDataSetMetadata(opts.DataSetMetadata),
+		WithCDN(opts.WithCDN),
+	)
 }
 
 // TestServiceResolverResolveUploadContexts_CarriesClientDataSetID proves that
-// an existing target is complete before the factory receives it.
+// an automatically reused target is complete before it is returned.
 func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.T) {
 	clientDataSetID := testID(0xABCD)
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
@@ -1699,8 +1518,6 @@ func TestWithCopies(t *testing.T) {
 		Copies:             1,
 		PieceMetadata:      map[string]string{"pk": "pv"},
 		DataSetMetadata:    map[string]string{"dk": "dv"},
-		ProviderIDs:        []types.BigInt{testID(1)},
-		DataSetIDs:         []types.BigInt{testID(2)},
 		ExcludeProviderIDs: []types.BigInt{testID(3)},
 	}
 	cloned := withCopies(orig, 5)
@@ -1717,96 +1534,9 @@ func TestWithCopies(t *testing.T) {
 		t.Fatal("PieceMetadata clone mutated original")
 	}
 	// Cloned slices must be independent
-	cloned.ProviderIDs[0] = testID(99)
-	if !orig.ProviderIDs[0].Equal(testID(1)) {
-		t.Fatal("ProviderIDs clone mutated original")
-	}
-	cloned.DataSetIDs[0] = testID(99)
-	if !orig.DataSetIDs[0].Equal(testID(2)) {
-		t.Fatal("DataSetIDs clone mutated original")
-	}
 	cloned.ExcludeProviderIDs[0] = testID(99)
 	if !orig.ExcludeProviderIDs[0].Equal(testID(3)) {
 		t.Fatal("ExcludeProviderIDs clone mutated original")
-	}
-}
-
-func TestResolveByDataSetIDs_SameProviderError(t *testing.T) {
-	// Two datasets resolving to the same provider — should yield an error
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(10): {DataSetID: testID(10), ProviderID: testID(1), Payer: testPayer(), PDPEndEpoch: 0},
-			testIDKey(20): {DataSetID: testID(20), ProviderID: testID(1), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
-		},
-		dataSetMetadata: map[string]map[string]string{
-			testIDKey(10): {},
-			testIDKey(20): {},
-		},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(10), testID(20)},
-	})
-	if err == nil {
-		t.Fatal("expected duplicate provider error")
-	}
-}
-
-func TestResolveByDataSetIDs_NilDataSetError(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(999)},
-	})
-	if err == nil {
-		t.Fatal("expected error for nonexistent dataset")
-	}
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("expected %q translation of warmstorage.ErrNotFound, got %v", "does not exist", err)
-	}
-}
-
-func TestResolveByDataSetIDs_NilProviderError(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(10): {DataSetID: testID(10), ProviderID: testID(99), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(10)},
-	})
-	if err == nil {
-		t.Fatal("expected error for missing provider")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected spregistry.ErrNotFound translation, got %v", err)
-	}
-}
-
-func TestResolveByDataSetIDs_CountMismatchError(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(10): {DataSetID: testID(10), ProviderID: testID(1), Payer: testPayer(), PDPEndEpoch: 0},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
-		},
-	})
-
-	// Copies=3 but only 1 dataset ID
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		DataSetIDs: []types.BigInt{testID(10)},
-		Copies:     3,
-	})
-	if err == nil {
-		t.Fatal("expected count mismatch error")
 	}
 }
 
@@ -1854,7 +1584,7 @@ func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *test
 		t.Fatalf("selectWritableReplacement: %v", err)
 	}
 	ref, ok := replacement.DataSetRef()
-	if !replacement.ProviderID().Equal(testID(2)) || !ok || !ref.DataSetID.Equal(testID(21)) {
+	if !replacement.ProviderID().Equal(testID(2)) || !ok || !ref.DataSetID().Equal(testID(21)) {
 		t.Fatalf("replacement=%+v want provider 2 dataSetID 21 from detailed snapshot", replacement)
 	}
 }
@@ -1909,67 +1639,27 @@ func TestNewServiceResolver_ValidationErrors(t *testing.T) {
 }
 
 func TestServiceResolverRejectsFactoryTargetMismatch(t *testing.T) {
-	t.Run("provider", func(t *testing.T) {
-		fixture := serviceResolverFixture{
-			providersByID: map[string]*spregistry.PDPProvider{
-				testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
-			},
-		}
-		resolver, err := NewServiceResolver(ServiceResolverOptions{
-			Payer:       testPayer(),
-			SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-			WarmStorage: &fakeDataSetCatalog{fixture: fixture},
-			NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-				selection.Provider.ID = testID(999)
-				return NewProviderContext(selection.Provider, &fakePDPProviderClient{}, nil)
-			},
-		})
-		if err != nil {
-			t.Fatalf("NewServiceResolver: %v", err)
-		}
-		_, err = resolver.ResolveContexts(context.Background(), &UploadOptions{ProviderIDs: []types.BigInt{testID(1)}})
-		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "factory returned providerID") {
-			t.Fatalf("ResolveContexts error=%v", err)
-		}
+	fixture := serviceResolverFixture{
+		providersByID: map[string]*spregistry.PDPProvider{
+			testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
+		},
+	}
+	resolver, err := NewServiceResolver(ServiceResolverOptions{
+		Payer:       testPayer(),
+		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
+		WarmStorage: &fakeDataSetCatalog{fixture: fixture},
+		NewContext: func(provider Provider, _ ContextFactoryOptions) (*ProviderContext, error) {
+			provider.ID = testID(999)
+			return NewProviderContext(provider, &fakePDPProviderClient{}, nil)
+		},
 	})
-
-	t.Run("data set", func(t *testing.T) {
-		fixture := serviceResolverFixture{
-			dataSetsByID: map[string]*warmstorage.DataSetInfo{
-				testIDKey(11): {
-					DataSetID:       testID(11),
-					ProviderID:      testID(1),
-					Payer:           testPayer(),
-					ClientDataSetID: testID(101),
-				},
-			},
-			providersByID: map[string]*spregistry.PDPProvider{
-				testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
-			},
-			dataSetMetadata: map[string]map[string]string{testIDKey(11): {}},
-		}
-		resolver, err := NewServiceResolver(ServiceResolverOptions{
-			Payer:       testPayer(),
-			SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-			WarmStorage: &fakeDataSetCatalog{fixture: fixture},
-			NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-				selection.DataSet.DataSetID = testID(12)
-				selection.DataSet.ClientDataSetID = testID(102)
-				return NewDataSetContext(selection.Provider, &fakePDPProviderClient{}, nil, DataSetRef{
-					ProviderID:      selection.Provider.ID,
-					DataSetID:       selection.DataSet.DataSetID,
-					ClientDataSetID: selection.DataSet.ClientDataSetID,
-				})
-			},
-		})
-		if err != nil {
-			t.Fatalf("NewServiceResolver: %v", err)
-		}
-		_, err = resolver.ResolveContexts(context.Background(), &UploadOptions{DataSetIDs: []types.BigInt{testID(11)}})
-		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "wrong data-set target") {
-			t.Fatalf("ResolveContexts error=%v", err)
-		}
-	})
+	if err != nil {
+		t.Fatalf("NewServiceResolver: %v", err)
+	}
+	_, err = resolver.ResolveProviderContext(context.Background(), testID(1), NewProviderContextOptions{})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "factory returned providerID") {
+		t.Fatalf("ResolveProviderContext error=%v", err)
+	}
 }
 
 func TestBuildResolvedUploadContextRequiresCompleteDataSetRef(t *testing.T) {
@@ -1983,13 +1673,13 @@ func TestBuildResolvedUploadContextRequiresCompleteDataSetRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildResolvedUploadContext: %v", err)
 	}
-	if selection.DataSet == nil || !selection.DataSet.ClientDataSetID.IsZero() {
+	if selection.DataSet == nil || !selection.DataSet.ClientDataSetID().IsZero() {
 		t.Fatalf("selection=%+v, want a complete ref with legal zero clientDataSetID", selection)
 	}
 }
 
 func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
-	assertKind := func(t *testing.T, got UploadContext, wantDataSet bool) {
+	assertKind := func(t *testing.T, got StorageContext, wantDataSet bool) {
 		t.Helper()
 		if wantDataSet {
 			if _, ok := got.(*DataSetContext); !ok {
@@ -2012,14 +1702,14 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 			},
 			dataSetMetadata: map[string]map[string]string{testIDKey(11): {}},
 		})
-		contexts, err := resolver.ResolveContexts(context.Background(), &UploadOptions{DataSetIDs: []types.BigInt{testID(11)}})
+		dataSetCtx, err := resolver.ResolveDataSetContext(context.Background(), testID(11), NewDataSetContextOptions{})
 		if err != nil {
-			t.Fatalf("ResolveContexts: %v", err)
+			t.Fatalf("ResolveDataSetContext: %v", err)
 		}
-		assertKind(t, contexts[0], true)
+		assertKind(t, dataSetCtx, true)
 	})
 
-	t.Run("provider reuse", func(t *testing.T) {
+	t.Run("explicit provider remains unbound", func(t *testing.T) {
 		resolver := newTestServiceResolver(t, serviceResolverFixture{
 			providersByID: map[string]*spregistry.PDPProvider{
 				testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
@@ -2027,11 +1717,11 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 			clientDataSets:  []*warmstorage.DataSetInfo{{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)}},
 			dataSetMetadata: map[string]map[string]string{testIDKey(11): {}},
 		})
-		contexts, err := resolver.ResolveContexts(context.Background(), &UploadOptions{ProviderIDs: []types.BigInt{testID(1)}})
+		providerCtx, err := resolver.ResolveProviderContext(context.Background(), testID(1), NewProviderContextOptions{})
 		if err != nil {
-			t.Fatalf("ResolveContexts: %v", err)
+			t.Fatalf("ResolveProviderContext: %v", err)
 		}
-		assertKind(t, contexts[0], true)
+		assertKind(t, providerCtx, false)
 	})
 
 	t.Run("automatic reuse", func(t *testing.T) {
@@ -2046,11 +1736,11 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 				Metadata:         map[string]string{},
 			}},
 		})
-		contexts, err := resolver.ResolveContexts(context.Background(), &UploadOptions{Copies: 1})
+		selection, err := resolver.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if err != nil {
-			t.Fatalf("ResolveContexts: %v", err)
+			t.Fatalf("SelectUploadContexts: %v", err)
 		}
-		assertKind(t, contexts[0], true)
+		assertKind(t, selection.Contexts[0], true)
 	})
 
 	t.Run("new provider target", func(t *testing.T) {
@@ -2059,41 +1749,12 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 				testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
 			},
 		})
-		contexts, err := resolver.ResolveContexts(context.Background(), &UploadOptions{ProviderIDs: []types.BigInt{testID(1)}})
+		providerCtx, err := resolver.ResolveProviderContext(context.Background(), testID(1), NewProviderContextOptions{})
 		if err != nil {
-			t.Fatalf("ResolveContexts: %v", err)
+			t.Fatalf("ResolveProviderContext: %v", err)
 		}
-		assertKind(t, contexts[0], false)
+		assertKind(t, providerCtx, false)
 	})
-}
-
-func TestResolveByProviderIDs_CountMismatchError(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(1): ptrPDPProvider(testPDPProvider(testID(1), "https://sp-1.example.com")),
-		},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []types.BigInt{testID(1)},
-		Copies:      3,
-	})
-	if err == nil {
-		t.Fatal("expected count mismatch error")
-	}
-}
-
-func TestResolveByProviderIDs_ProviderNotFound(t *testing.T) {
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		providersByID: map[string]*spregistry.PDPProvider{},
-	})
-
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs: []types.BigInt{testID(999)},
-	})
-	if err == nil {
-		t.Fatal("expected error for missing provider")
-	}
 }
 
 func TestDedupeIDs(t *testing.T) {
@@ -2113,53 +1774,6 @@ func TestDedupeIDs(t *testing.T) {
 				t.Fatalf("dedupeIDs len=%d want %d", len(got), tt.want)
 			}
 		})
-	}
-}
-
-func TestServiceResolverResolveUploadContexts_ExplicitProviderIDsTraversesPagedDataSets(t *testing.T) {
-	const pageBoundary = 100
-
-	clientDataSets := make([]*warmstorage.DataSetInfo, 0, pageBoundary+1)
-	for i := 1; i <= pageBoundary; i++ {
-		clientDataSets = append(clientDataSets, &warmstorage.DataSetInfo{
-			DataSetID:   types.NewBigInt(uint64(i)),
-			ProviderID:  types.NewBigInt(uint64(i)),
-			PDPEndEpoch: 0,
-		})
-	}
-	clientDataSets = append(clientDataSets, &warmstorage.DataSetInfo{
-		DataSetID:   testID(1001),
-		ProviderID:  testID(999),
-		PDPEndEpoch: 0,
-	})
-
-	resolver := newTestServiceResolver(t, serviceResolverFixture{
-		clientDataSets: clientDataSets,
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(999): ptrPDPProvider(testPDPProvider(testID(999), "https://sp-999.example.com")),
-		},
-		dataSetMetadata: map[string]map[string]string{
-			testIDKey(1001): {"source": "paged"},
-		},
-		requirePositiveListLimit: true,
-	})
-
-	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs:     []types.BigInt{testID(999)},
-		DataSetMetadata: map[string]string{"source": "paged"},
-	})
-	if err != nil {
-		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if !explicit {
-		t.Fatal("explicit=false want true")
-	}
-	got := contextsToFake(t, contexts)
-	if len(got) != 1 {
-		t.Fatalf("contexts len=%d want 1", len(got))
-	}
-	if dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(1001)) {
-		t.Fatalf("dataSetID=%v want 1001", dataSetIDOf(got[0]))
 	}
 }
 

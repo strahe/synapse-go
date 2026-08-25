@@ -87,13 +87,24 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 
 	var executedPrepare bool
 	var uploaded bool
+	selectedContexts := make([]storage.StorageContext, quickstartCopies)
 	fake := &fakeQuickstartStorage{
+		selectFn: func(_ context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+			if opts.Copies != quickstartCopies {
+				t.Fatalf("Copies=%d want %d", opts.Copies, quickstartCopies)
+			}
+			return &storage.UploadContextSelection{
+				Contexts:        selectedContexts,
+				RequestedCopies: quickstartCopies,
+				Complete:        true,
+			}, nil
+		},
 		prepareFn: func(_ context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
 			if opts.DataSize != uint64(len(payload)) {
 				t.Fatalf("DataSize=%d want %d", opts.DataSize, len(payload))
 			}
-			if len(opts.Contexts) != 0 {
-				t.Fatalf("Prepare Contexts=%d want default contexts", len(opts.Contexts))
+			if len(opts.Contexts) != quickstartCopies || &opts.Contexts[0] != &selectedContexts[0] {
+				t.Fatalf("Prepare Contexts=%d want selected contexts", len(opts.Contexts))
 			}
 			return &storage.PrepareResult{
 				Costs: &storage.MultiContextCosts{
@@ -111,7 +122,7 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				},
 			}, nil
 		},
-		uploadFn: func(_ context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
@@ -120,7 +131,10 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				t.Fatal("uploaded payload mismatch")
 			}
 			if opts != nil {
-				t.Fatalf("UploadOptions=%#v want nil defaults", opts)
+				t.Fatalf("UploadOptions=%#v want nil", opts)
+			}
+			if len(contexts) != len(selectedContexts) || &contexts[0] != &selectedContexts[0] {
+				t.Fatalf("contexts=%d want %d", len(contexts), len(selectedContexts))
 			}
 			uploaded = true
 			return &storage.UploadResult{
@@ -221,8 +235,9 @@ func TestDownloadAndVerifyRetriesTransientDownload(t *testing.T) {
 }
 
 type fakeQuickstartStorage struct {
+	selectFn   func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	prepareFn  func(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	uploadFn   func(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
+	uploadFn   func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
 	downloadFn func(context.Context, cid.Cid, *storage.DownloadOptions) (io.ReadCloser, error)
 }
 
@@ -233,11 +248,11 @@ func (f *fakeQuickstartStorage) Prepare(ctx context.Context, opts *storage.Prepa
 	return f.prepareFn(ctx, opts)
 }
 
-func (f *fakeQuickstartStorage) Upload(ctx context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+func (f *fakeQuickstartStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
 	if f.uploadFn == nil {
-		return nil, errors.New("unexpected Upload call")
+		return nil, errors.New("unexpected UploadToContexts call")
 	}
-	return f.uploadFn(ctx, r, opts)
+	return f.uploadFn(ctx, r, contexts, opts)
 }
 
 func (f *fakeQuickstartStorage) Download(ctx context.Context, pieceCID cid.Cid, opts *storage.DownloadOptions) (io.ReadCloser, error) {
@@ -245,4 +260,11 @@ func (f *fakeQuickstartStorage) Download(ctx context.Context, pieceCID cid.Cid, 
 		return nil, errors.New("unexpected Download call")
 	}
 	return f.downloadFn(ctx, pieceCID, opts)
+}
+
+func (f *fakeQuickstartStorage) SelectUploadContexts(ctx context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+	if f.selectFn == nil {
+		return nil, errors.New("unexpected SelectUploadContexts call")
+	}
+	return f.selectFn(ctx, opts)
 }

@@ -73,11 +73,8 @@ func testRecordKeeper() common.Address {
 }
 
 func testDataSetRef(dataSetID, clientDataSetID types.BigInt) DataSetRef {
-	return DataSetRef{
-		ProviderID:      testProvider().ID,
-		DataSetID:       dataSetID,
-		ClientDataSetID: clientDataSetID,
-	}
+	ref, _ := NewDataSetRef(testProvider().ID, dataSetID, clientDataSetID)
+	return ref
 }
 
 func mustProviderContext(t *testing.T, client PDPProviderClient, opts ...ContextOption) *ProviderContext {
@@ -118,13 +115,10 @@ func mustWritableDataSetContext(t *testing.T, client PDPProviderClient, ref Data
 	return mustDataSetContext(t, client, ref, append(base, opts...)...)
 }
 
-func newTestContextForSelection(t *testing.T, selection ResolvedUploadContext, client PDPProviderClient, opts ...ContextOption) (UploadContext, error) {
+func newTestContextForSelection(t *testing.T, provider Provider, factoryOpts ContextFactoryOptions, client PDPProviderClient, opts ...ContextOption) (*ProviderContext, error) {
 	t.Helper()
-	providerCtx, err := NewProviderContext(selection.Provider, client, mustTestSigner(t), opts...)
-	if err != nil || selection.DataSet == nil {
-		return providerCtx, err
-	}
-	return providerCtx.ForDataSet(*selection.DataSet)
+	opts = append(opts, WithDataSetMetadata(factoryOpts.DataSetMetadata), WithCDN(factoryOpts.WithCDN))
+	return NewProviderContext(provider, client, mustTestSigner(t), opts...)
 }
 
 type fakePDPProviderClient struct {
@@ -260,11 +254,11 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	}
 
 	t.Run("provider mismatch", func(t *testing.T) {
-		_, err := providerCtx.ForDataSet(DataSetRef{
-			ProviderID:      types.NewBigInt(2),
-			DataSetID:       types.NewBigInt(42),
-			ClientDataSetID: types.NewBigInt(7),
-		})
+		ref, err := NewDataSetRef(types.NewBigInt(2), types.NewBigInt(42), types.NewBigInt(7))
+		if err != nil {
+			t.Fatalf("NewDataSetRef: %v", err)
+		}
+		_, err = providerCtx.ForDataSet(ref)
 		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not match") {
 			t.Fatalf("ForDataSet error=%v", err)
 		}
@@ -282,18 +276,18 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForDataSet: %v", err)
 	}
-	input.ProviderID = types.NewBigInt(98)
-	input.DataSetID = types.NewBigInt(99)
-	input.ClientDataSetID = types.NewBigInt(97)
+	input.providerID = types.NewBigInt(98)
+	input.dataSetID = types.NewBigInt(99)
+	input.clientDataSetID = types.NewBigInt(97)
 	ref, ok := dataSetCtx.DataSetRef()
-	if !ok || !ref.ProviderID.Equal(testProvider().ID) || !ref.DataSetID.Equal(types.NewBigInt(42)) || !ref.ClientDataSetID.IsZero() {
+	if !ok || !ref.ProviderID().Equal(testProvider().ID) || !ref.DataSetID().Equal(types.NewBigInt(42)) || !ref.ClientDataSetID().IsZero() {
 		t.Fatalf("DataSetRef()=(%+v, %t), want dataSetID 42 and legal zero clientDataSetID", ref, ok)
 	}
-	ref.ProviderID = types.NewBigInt(101)
-	ref.DataSetID = types.NewBigInt(100)
-	ref.ClientDataSetID = types.NewBigInt(102)
+	ref.providerID = types.NewBigInt(101)
+	ref.dataSetID = types.NewBigInt(100)
+	ref.clientDataSetID = types.NewBigInt(102)
 	again, _ := dataSetCtx.DataSetRef()
-	if !again.ProviderID.Equal(testProvider().ID) || !again.DataSetID.Equal(types.NewBigInt(42)) || !again.ClientDataSetID.IsZero() {
+	if !again.ProviderID().Equal(testProvider().ID) || !again.DataSetID().Equal(types.NewBigInt(42)) || !again.ClientDataSetID().IsZero() {
 		t.Fatalf("DataSetRef mutated through returned copy: %+v", again)
 	}
 	if _, ok := providerCtx.DataSetRef(); ok {
@@ -524,9 +518,9 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 	if !submission.ProviderID.Equal(testProvider().ID) || submission.ClientDataSetID == nil {
 		t.Fatalf("submission=%+v", submission)
 	}
-	if !result.DataSet.ProviderID.Equal(testProvider().ID) ||
-		!result.DataSet.DataSetID.Equal(dataSetID) ||
-		!result.DataSet.ClientDataSetID.Equal(*submission.ClientDataSetID) {
+	if !result.DataSet.ProviderID().Equal(testProvider().ID) ||
+		!result.DataSet.DataSetID().Equal(dataSetID) ||
+		!result.DataSet.ClientDataSetID().Equal(*submission.ClientDataSetID) {
 		t.Fatalf("result=%+v submission=%+v", result, submission)
 	}
 	if _, ok := providerCtx.DataSetRef(); ok {
@@ -538,9 +532,9 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
-	if !recovered.DataSet.ProviderID.Equal(result.DataSet.ProviderID) ||
-		!recovered.DataSet.DataSetID.Equal(result.DataSet.DataSetID) ||
-		!recovered.DataSet.ClientDataSetID.Equal(result.DataSet.ClientDataSetID) {
+	if !recovered.DataSet.ProviderID().Equal(result.DataSet.ProviderID()) ||
+		!recovered.DataSet.DataSetID().Equal(result.DataSet.DataSetID()) ||
+		!recovered.DataSet.ClientDataSetID().Equal(result.DataSet.ClientDataSetID()) {
 		t.Fatalf("recovered ref=%+v want %+v", recovered.DataSet, result.DataSet)
 	}
 	if _, ok := fresh.DataSetRef(); ok {
@@ -551,9 +545,9 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 		t.Fatalf("ForDataSet: %v", err)
 	}
 	if ref, ok := bound.DataSetRef(); !ok ||
-		!ref.ProviderID.Equal(recovered.DataSet.ProviderID) ||
-		!ref.DataSetID.Equal(recovered.DataSet.DataSetID) ||
-		!ref.ClientDataSetID.Equal(recovered.DataSet.ClientDataSetID) {
+		!ref.ProviderID().Equal(recovered.DataSet.ProviderID()) ||
+		!ref.DataSetID().Equal(recovered.DataSet.DataSetID()) ||
+		!ref.ClientDataSetID().Equal(recovered.DataSet.ClientDataSetID()) {
 		t.Fatalf("bound ref=(%+v, %t) want %+v", ref, ok, recovered.DataSet)
 	}
 }

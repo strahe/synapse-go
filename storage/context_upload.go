@@ -21,9 +21,8 @@ func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *UploadOp
 // and returns the canonical UploadResult shape used elsewhere in the SDK.
 //
 // opts may be nil. PieceCID, OnProgress, PieceMetadata, OnStored,
-// OnPiecesAdded, and OnPiecesConfirmed are honoured when present; other
-// UploadOptions fields related to provider selection are ignored because this
-// path does not touch provider selection.
+// OnPiecesAdded, and OnPiecesConfirmed are honoured when present. Target
+// selection fields and secondary-copy callbacks are rejected.
 //
 // Lifecycle callbacks fired (when opts provides them):
 //   - OnProgress during the store upload stream
@@ -31,10 +30,13 @@ func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *UploadOp
 //   - OnPiecesAdded when the commit transaction is submitted
 //   - OnPiecesConfirmed after commit is confirmed
 func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+	if err := validateContextUploadOptions(opts); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
-	opts = newUploadCallbackGuard(c.logger).wrapUploadOptions(opts)
+	opts = newUploadCallbackGuard(c.logger).wrapUploadOptions(cloneUploadOptions(opts))
 
 	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
 		return nil, err

@@ -51,12 +51,12 @@ func (t *trackingDataSetCatalog) capturedMetadataContext() context.Context {
 func newTrackingMetadataResolver(t *testing.T, fixture serviceResolverFixture, catalog *trackingDataSetCatalog) *ServiceResolver {
 	t.Helper()
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		Payer:            testPayer(),
+		SPRegistry:       &fakePDPProviderSource{fixture: fixture},
+		WarmStorage:      catalog,
+		DataSetValidator: allowAllDataSetValidator{},
+		ProviderPing:     healthyProviderPing,
+		NewContext:       newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -64,7 +64,7 @@ func newTrackingMetadataResolver(t *testing.T, fixture serviceResolverFixture, c
 	return resolver
 }
 
-func TestServiceResolver_MetadataFetchStopsAtFirstMatch(t *testing.T) {
+func TestServiceResolver_MetadataFetchStopsAtFirstWritableMatch(t *testing.T) {
 	providerID := testID(1)
 	fixture := serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{providerID},
@@ -90,14 +90,14 @@ func TestServiceResolver_MetadataFetchStopsAtFirstMatch(t *testing.T) {
 	resolver := newTrackingMetadataResolver(t, fixture, catalog)
 
 	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs:     []types.BigInt{providerID},
+		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
-	if !explicit {
-		t.Fatal("explicit=false want true")
+	if explicit {
+		t.Fatal("explicit=true want false")
 	}
 	got := contextsToFake(t, contexts)
 	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(1)) {
@@ -133,7 +133,7 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{
-		ProviderIDs:     []types.BigInt{providerID},
+		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestServiceResolver_MetadataFetchErrorRejectsReuse(t *testing.T) {
 	resolver := newTrackingMetadataResolver(t, fixture, catalog)
 
 	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
-		ProviderIDs:     []types.BigInt{providerID},
+		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app", "env": "prod"},
 	})
 	if !errors.Is(err, want) {

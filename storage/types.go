@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/types"
@@ -76,9 +77,17 @@ type PieceInput struct {
 // ProviderID and DataSetID must be non-zero. ClientDataSetID is the
 // caller-chosen uint256 used by EIP-712 authorization and may be zero.
 type DataSetRef struct {
-	ProviderID      types.BigInt
-	DataSetID       types.BigInt
-	ClientDataSetID types.BigInt
+	providerID      types.BigInt
+	dataSetID       types.BigInt
+	clientDataSetID types.BigInt
+}
+
+// ContextIdentity identifies the account and chain configuration used by a
+// storage context for signing and on-chain operations.
+type ContextIdentity struct {
+	Payer        common.Address
+	ChainID      types.ChainID
+	RecordKeeper common.Address
 }
 
 // PullRequest asks a secondary provider to pull pieces from a primary.
@@ -239,7 +248,10 @@ func (r *UploadResult) PartialSuccess() bool {
 	return !r.Complete && len(r.Copies) > 0
 }
 
-// UploadOptions configures an Upload call.
+// UploadOptions configures upload operations. Service.Upload requires Copies
+// and accepts target-selection fields. Service.UploadToContexts rejects target
+// selection fields. ProviderContext.Upload and DataSetContext.Upload also
+// reject callbacks that only apply to secondary copies.
 //
 // Some lifecycle callbacks may be invoked from internal orchestration
 // goroutines. Callers that share mutable state across callbacks must keep their
@@ -249,20 +261,13 @@ func (r *UploadResult) PartialSuccess() bool {
 // This recovery does not apply to direct StoreOptions, PullRequest, or
 // CommitRequest hooks.
 type UploadOptions struct {
-	// Copies is the number of provider copies to store. Zero means the resolver
-	// default: the number of unique DataSetIDs or ProviderIDs when those are set,
-	// otherwise 2.
+	// Copies is the number of provider copies to store. Service.Upload requires
+	// a positive value. Explicit-context upload methods do not accept it.
 	Copies int
 	// PieceMetadata is stored with each piece on-chain.
 	PieceMetadata map[string]string
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
-	// ProviderIDs pins the upload to specific providers by ID. Mutually
-	// exclusive with DataSetIDs.
-	ProviderIDs []types.BigInt
-	// DataSetIDs pins the upload to specific existing data sets. Mutually
-	// exclusive with ProviderIDs.
-	DataSetIDs []types.BigInt
 	// ExcludeProviderIDs skips these providers only during auto-selection.
 	ExcludeProviderIDs []types.BigInt
 	// WithCDN is tri-state: nil inherits the Client-level default

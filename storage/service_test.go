@@ -26,6 +26,15 @@ import (
 
 func mustNewService(t *testing.T, opts Options) *Service {
 	t.Helper()
+	if opts.SignerAddress == (common.Address{}) && opts.Signer == nil {
+		opts.SignerAddress = testPayer()
+	}
+	if !opts.ChainID.IsValid() {
+		opts.ChainID = types.ChainID(314159)
+	}
+	if opts.RecordKeeper == (common.Address{}) {
+		opts.RecordKeeper = testRecordKeeper()
+	}
 	s, err := New(opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -33,63 +42,7 @@ func mustNewService(t *testing.T, opts Options) *Service {
 	return s
 }
 
-func TestManagerUpload_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{}})
-
-	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{
-		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
-		DataSetIDs:  []types.BigInt{types.NewBigInt(2)},
-	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Upload error=%v want ErrInvalidArgument", err)
-	}
-}
-
-func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
-	dataSetID := types.NewBigInt(13269)
-	providerID := types.NewBigInt(2)
-	fixture := serviceResolverFixture{
-		dataSetsByID: map[string]*warmstorage.DataSetInfo{
-			testIDKey(13269): {
-				DataSetID:       dataSetID,
-				ProviderID:      providerID,
-				Payer:           testPayer(),
-				PDPEndEpoch:     3778900,
-				ClientDataSetID: types.NewBigInt(99),
-			},
-		},
-		providersByID: map[string]*spregistry.PDPProvider{
-			testIDKey(2): ptrPDPProvider(testPDPProvider(providerID, "https://sp-2.example.com")),
-		},
-		validatorEnabled: true,
-		validatorErr:     &warmstorage.DataSetNotLiveError{DataSetID: dataSetID.Copy()},
-	}
-	catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
-	contextBuilt := false
-	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			contextBuilt = true
-			return NewProviderContext(selection.Provider, &fakePDPProviderClient{}, mustTestSigner(t))
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewServiceResolver: %v", err)
-	}
-	mgr := mustNewService(t, Options{Resolver: resolver})
-
-	_, err = mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{
-		DataSetIDs: []types.BigInt{dataSetID},
-	})
-	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
-	if contextBuilt {
-		t.Fatal("resolver built a Context for an ended upload data set")
-	}
-}
-
-func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) {
+func TestManagerNewDataSetContext_AllowsEndedDataSet(t *testing.T) {
 	dataSetID := types.NewBigInt(13269)
 	providerID := types.NewBigInt(2)
 	clientDataSetID := types.NewBigInt(99)
@@ -114,8 +67,12 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newTestContextForSelection(t, selection, &fakePDPProviderClient{})
+		NewContext: func(provider Provider, opts ContextFactoryOptions) (*ProviderContext, error) {
+			return newTestContextForSelection(t, provider, opts, &fakePDPProviderClient{},
+				WithPayer(testPayer()),
+				WithChainID(types.ChainID(314159)),
+				WithRecordKeeper(testRecordKeeper()),
+			)
 		},
 	})
 	if err != nil {
@@ -123,195 +80,13 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 	}
 	mgr := mustNewService(t, Options{Resolver: resolver})
 
-	got, err := mgr.CreateContext(context.Background(), &CreateContextOptions{
-		DataSetID: &dataSetID,
-	})
+	got, err := mgr.NewDataSetContext(context.Background(), dataSetID, NewDataSetContextOptions{})
 	if err != nil {
-		t.Fatalf("CreateContext: %v", err)
+		t.Fatalf("NewDataSetContext: %v", err)
 	}
 	ref, ok := got.DataSetRef()
-	if !ok || !ref.DataSetID.Equal(dataSetID) {
+	if !ok || !ref.DataSetID().Equal(dataSetID) {
 		t.Fatalf("DataSetRef()=(%+v, %t) want dataSetID %s", ref, ok, dataSetID.String())
-	}
-}
-
-func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		create func(*Service, context.Context) (UploadContext, error)
-	}{
-		{
-			name: "single",
-			create: func(s *Service, ctx context.Context) (UploadContext, error) {
-				return s.CreateContext(ctx, nil)
-			},
-		},
-		{
-			name: "multiple",
-			create: func(s *Service, ctx context.Context) (UploadContext, error) {
-				contexts, err := s.CreateContexts(ctx, nil)
-				if err != nil {
-					return nil, err
-				}
-				if len(contexts) == 0 {
-					return nil, errors.New("CreateContexts returned no contexts")
-				}
-				return contexts[0], nil
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			data := bytes.Repeat([]byte("up"), 128)
-			info, err := piece.CalculateFromBytes(data)
-			if err != nil {
-				t.Fatalf("CalculateFromBytes: %v", err)
-			}
-			dataSetID := types.NewBigInt(13269)
-			reader := &fakeFWSSDataSetReader{
-				info: &warmstorage.DataSetInfo{
-					DataSetID:   dataSetID,
-					PDPEndEpoch: 3778900,
-				},
-			}
-			storeCalled := false
-			fake := &fakePDPProviderClient{
-				uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
-					storeCalled = true
-					return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
-				},
-				waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error {
-					return nil
-				},
-				addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
-					return nil, errors.New("add pieces should not run")
-				},
-			}
-			rawContext, err := NewDataSetContext(testProvider(), fake, mustTestSigner(t), DataSetRef{
-				ProviderID:      testProvider().ID,
-				DataSetID:       dataSetID,
-				ClientDataSetID: types.NewBigInt(99),
-			},
-				WithPayer(testPayer()),
-				WithRecordKeeper(testRecordKeeper()),
-				WithChainID(types.ChainID(314159)),
-				WithFWSSDataSetReader(reader),
-			)
-			if err != nil {
-				t.Fatalf("NewContext: %v", err)
-			}
-			svc := newTestService()
-			svc.dsReader = reader
-			svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{rawContext}}
-
-			got, err := tt.create(svc, context.Background())
-			if err != nil {
-				t.Fatalf("CreateContext: %v", err)
-			}
-			_, err = got.Upload(context.Background(), bytes.NewReader(data), nil)
-			requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
-			if storeCalled {
-				t.Fatal("Store was called")
-			}
-		})
-	}
-}
-
-func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		create func(*Service, context.Context, types.BigInt) (UploadContext, error)
-	}{
-		{
-			name: "single",
-			create: func(s *Service, ctx context.Context, providerID types.BigInt) (UploadContext, error) {
-				return s.CreateContext(ctx, &CreateContextOptions{ProviderID: &providerID})
-			},
-		},
-		{
-			name: "multiple",
-			create: func(s *Service, ctx context.Context, providerID types.BigInt) (UploadContext, error) {
-				contexts, err := s.CreateContexts(ctx, &CreateContextsOptions{ProviderIDs: []types.BigInt{providerID}})
-				if err != nil {
-					return nil, err
-				}
-				if len(contexts) == 0 {
-					return nil, errors.New("CreateContexts returned no contexts")
-				}
-				return contexts[0], nil
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			data := bytes.Repeat([]byte("uv"), 128)
-			info, err := piece.CalculateFromBytes(data)
-			if err != nil {
-				t.Fatalf("CalculateFromBytes: %v", err)
-			}
-			dataSetID := types.NewBigInt(2468)
-			providerID := types.NewBigInt(9)
-			clientDataSetID := types.NewBigInt(99)
-			want := errors.New("not managed by listener")
-			storeCalled := false
-			fake := &fakePDPProviderClient{
-				uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
-					storeCalled = true
-					return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
-				},
-				waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error {
-					return nil
-				},
-				addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
-					return nil, errors.New("add pieces should not run")
-				},
-			}
-			fixture := serviceResolverFixture{
-				clientDataSets: []*warmstorage.DataSetInfo{
-					{DataSetID: dataSetID, ProviderID: providerID, PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
-				},
-				dataSetsByID: map[string]*warmstorage.DataSetInfo{
-					testIDKey(2468): {DataSetID: dataSetID, ProviderID: providerID, Payer: testPayer(), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
-				},
-				providersByID: map[string]*spregistry.PDPProvider{
-					testIDKey(9): ptrPDPProvider(testPDPProvider(providerID, "https://sp-9.example.com")),
-				},
-				validatorEnabled: true,
-				validatorErr:     want,
-			}
-			catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
-			resolver, err := NewServiceResolver(ServiceResolverOptions{
-				Payer:       testPayer(),
-				SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-				WarmStorage: catalog,
-				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-					return newTestContextForSelection(t, selection, fake,
-						WithPayer(testPayer()),
-						WithRecordKeeper(testRecordKeeper()),
-						WithChainID(types.ChainID(314159)),
-						WithDataSetValidator(catalog),
-						WithFWSSDataSetReader(catalog),
-					)
-				},
-			})
-			if err != nil {
-				t.Fatalf("NewServiceResolver: %v", err)
-			}
-			mgr := mustNewService(t, Options{
-				Resolver:          resolver,
-				FWSSDataSetReader: catalog,
-			})
-
-			got, err := tt.create(mgr, context.Background(), providerID)
-			if err != nil {
-				t.Fatalf("CreateContext: %v", err)
-			}
-			_, err = got.Upload(context.Background(), bytes.NewReader(data), nil)
-			if !errors.Is(err, want) {
-				t.Fatalf("Upload error=%v want wrap of %v", err, want)
-			}
-			if storeCalled {
-				t.Fatal("Store was called")
-			}
-		})
 	}
 }
 
@@ -335,11 +110,11 @@ func TestManagerUpload_SafetyNetRejectsEndedDataSetBeforeStore(t *testing.T) {
 		},
 	}
 	mgr := mustNewService(t, Options{
-		Resolver:          &fakeResolver{contexts: []UploadContext{ctxWithEndedDataSet}},
+		Resolver:          &fakeResolver{contexts: []StorageContext{ctxWithEndedDataSet}},
 		FWSSDataSetReader: reader,
 	})
 
-	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
+	_, err := mgr.Upload(context.Background(), bytes.NewReader([]byte("payload")), &UploadOptions{Copies: 1})
 	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 1234)
 	if storeCalled {
 		t.Fatal("Store was called")
@@ -369,11 +144,11 @@ func TestManagerUpload_SafetyNetReaderErrorFailsBeforeStore(t *testing.T) {
 	}
 	reader := &fakeFWSSDataSetReader{infoErr: boom}
 	mgr := mustNewService(t, Options{
-		Resolver:          &fakeResolver{contexts: []UploadContext{ctxWithDataSet}},
+		Resolver:          &fakeResolver{contexts: []StorageContext{ctxWithDataSet}},
 		FWSSDataSetReader: reader,
 	})
 
-	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Upload error=%v want wrap of %v", err, boom)
 	}
@@ -425,13 +200,13 @@ func TestManagerUpload_SafetyNetRejectsEndedReplacementBeforePull(t *testing.T) 
 	}
 	mgr := mustNewService(t, Options{
 		Resolver: &fakeResolver{
-			contexts:     []UploadContext{primary, failedSecondary},
-			replacements: []UploadContext{replacement},
+			contexts:     []StorageContext{primary, failedSecondary},
+			replacements: []StorageContext{replacement},
 		},
 		FWSSDataSetReader: reader,
 	})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -508,14 +283,14 @@ func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testi
 	reader := &fakeFWSSDataSetReader{infoErr: errors.New("fwss unavailable")}
 	mgr := mustNewService(t, Options{
 		Resolver: &fakeResolver{
-			contexts:     []UploadContext{primary, failedSecondary},
-			replacements: []UploadContext{badReplacement, goodReplacement},
+			contexts:     []StorageContext{primary, failedSecondary},
+			replacements: []StorageContext{badReplacement, goodReplacement},
 		},
 		MaxSecondaryAttempts: 2,
 		FWSSDataSetReader:    reader,
 	})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -533,7 +308,7 @@ func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testi
 	}
 }
 
-func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
+func TestManagerUpload_ExplicitCopiesAndPresignReuse(t *testing.T) {
 	data := bytes.Repeat([]byte("ab"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -615,9 +390,9 @@ func TestManagerUpload_DefaultCopiesAndPresignReuse(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary, secondary}}})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -651,12 +426,9 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 		},
 	}
 
-	mgr := &Service{
-		httpClient: &http.Client{},
-		resolver:   &fakeResolver{contexts: []UploadContext{primary}},
-	}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 
-	_, err := mgr.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), nil)
+	_, err := mgr.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected StoreError")
 	}
@@ -701,9 +473,9 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary, secondary}}})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -732,9 +504,9 @@ func TestNew_TypedNilResolverIsTreatedAsUnset(t *testing.T) {
 		}
 	}()
 
-	_, err := svc.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), nil)
-	if err == nil || !strings.Contains(err.Error(), "no upload resolver configured") {
-		t.Fatalf("err=%v want no upload resolver configured", err)
+	_, err := svc.Upload(context.Background(), bytes.NewReader(bytes.Repeat([]byte("ab"), 128)), &UploadOptions{Copies: 1})
+	if !errors.Is(err, ErrUninitialized) || !strings.Contains(err.Error(), "upload resolver not configured") {
+		t.Fatalf("err=%v want ErrUninitialized for missing upload resolver", err)
 	}
 }
 
@@ -773,9 +545,9 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}}})
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary, secondary}}})
 
-	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err == nil {
 		t.Fatal("expected CommitError")
 	}
@@ -834,12 +606,12 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 
 	resolver := &fakeResolver{
-		contexts:     []UploadContext{primary, failedSecondary},
-		replacements: []UploadContext{replacement},
+		contexts:     []StorageContext{primary, failedSecondary},
+		replacements: []StorageContext{replacement},
 	}
 	mgr := mustNewService(t, Options{Resolver: resolver})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -926,11 +698,7 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 		},
 	}
 	clientDataSetID := types.NewBigInt(0xFEED)
-	replacement, err := NewDataSetContext(testProvider(), replacementClient, mustTestSigner(t), DataSetRef{
-		ProviderID:      testProvider().ID,
-		DataSetID:       dsID,
-		ClientDataSetID: clientDataSetID,
-	},
+	replacement, err := NewDataSetContext(testProvider(), replacementClient, mustTestSigner(t), testDataSetRef(dsID, clientDataSetID),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -943,12 +711,12 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 		info: &warmstorage.DataSetInfo{ClientDataSetID: types.NewBigInt(0xFEED)},
 	}
 	resolver := &fakeResolver{
-		contexts:     []UploadContext{primary, failedSecondary},
-		replacements: []UploadContext{replacement},
+		contexts:     []StorageContext{primary, failedSecondary},
+		replacements: []StorageContext{replacement},
 	}
 	mgr := mustNewService(t, Options{Resolver: resolver, FWSSDataSetReader: reader})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -956,7 +724,7 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 		t.Fatalf("reader.calls=%d want 1 (replacement existing dataset should be validated once)", reader.calls)
 	}
 	ref, ok := replacement.DataSetRef()
-	if !ok || !ref.ClientDataSetID.Equal(clientDataSetID) {
+	if !ok || !ref.ClientDataSetID().Equal(clientDataSetID) {
 		t.Fatalf("replacement DataSetRef()=(%+v, %t)", ref, ok)
 	}
 	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement.ProviderID()) {
@@ -995,11 +763,11 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 
 	replacementProvider := testProvider()
 	replacementProvider.ID = types.NewBigInt(404)
-	replacementCtx, err := NewDataSetContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
-		ProviderID:      replacementProvider.ID,
-		DataSetID:       types.NewBigInt(404),
-		ClientDataSetID: types.NewBigInt(7),
-	},
+	replacementRef, err := NewDataSetRef(replacementProvider.ID, types.NewBigInt(404), types.NewBigInt(7))
+	if err != nil {
+		t.Fatalf("NewDataSetRef: %v", err)
+	}
+	replacementCtx, err := NewDataSetContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t), replacementRef,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -1027,8 +795,8 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 	readerErr := errors.New("fwss unavailable")
 	reader := &fakeFWSSDataSetReader{infoErr: readerErr}
 	resolver := &fakeResolver{
-		contexts:     []UploadContext{primary, failedSecondary},
-		replacements: []UploadContext{replacementCtx, replacement2},
+		contexts:     []StorageContext{primary, failedSecondary},
+		replacements: []StorageContext{replacementCtx, replacement2},
 	}
 	mgr := mustNewService(t, Options{
 		Resolver:             resolver,
@@ -1036,7 +804,7 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 		FWSSDataSetReader:    reader,
 	})
 
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -1056,23 +824,21 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 }
 
 type fakeResolver struct {
-	contexts         []UploadContext
-	contextContexts  []UploadContext
+	contexts         []StorageContext
 	explicit         bool
-	replacements     []UploadContext
+	replacements     []StorageContext
 	replacementCalls int
-	contextErr       error
 	captureFn        func(*UploadOptions)
 }
 
-func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOptions) ([]UploadContext, bool, error) {
+func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOptions) ([]StorageContext, bool, error) {
 	if r.captureFn != nil {
 		r.captureFn(opts)
 	}
 	return r.contexts, r.explicit, nil
 }
 
-func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.BigInt, _ *UploadOptions) (UploadContext, error) {
+func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.BigInt, _ *UploadOptions) (StorageContext, error) {
 	r.replacementCalls++
 	if len(r.replacements) == 0 {
 		return nil, errors.New("no replacement")
@@ -1080,29 +846,6 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.B
 	next := r.replacements[0]
 	r.replacements = r.replacements[1:]
 	return next, nil
-}
-
-func (r *fakeResolver) ResolveContexts(_ context.Context, opts *UploadOptions) ([]UploadContext, error) {
-	if r.captureFn != nil {
-		r.captureFn(opts)
-	}
-	if r.contextErr != nil {
-		return nil, r.contextErr
-	}
-	if r.contextContexts != nil {
-		return r.contextContexts, nil
-	}
-	return append([]UploadContext(nil), r.contexts...), nil
-}
-
-type uploadOnlyResolver struct{}
-
-func (uploadOnlyResolver) ResolveUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error) {
-	return nil, false, nil
-}
-
-func (uploadOnlyResolver) SelectReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error) {
-	return nil, errors.New("no replacement")
 }
 
 type fakeUploadContext struct {
@@ -1116,6 +859,7 @@ type fakeUploadContext struct {
 	presignFn       func(context.Context, []PieceInput) ([]byte, error)
 	pullFn          func(context.Context, PullRequest) (*PullResult, error)
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
+	identity        *ContextIdentity
 }
 
 func (c *fakeUploadContext) ProviderID() types.BigInt  { return c.id }
@@ -1126,11 +870,22 @@ func (c *fakeUploadContext) DataSetRef() (DataSetRef, bool) {
 	if c.dataSetID == nil {
 		return DataSetRef{}, false
 	}
-	ref := DataSetRef{ProviderID: copyBigInt(c.id), DataSetID: copyBigInt(*c.dataSetID)}
+	clientDataSetID := types.BigInt{}
 	if c.clientDataSetID != nil {
-		ref.ClientDataSetID = copyBigInt(*c.clientDataSetID)
+		clientDataSetID = *c.clientDataSetID
+	}
+	ref, err := NewDataSetRef(c.id, *c.dataSetID, clientDataSetID)
+	if err != nil {
+		return DataSetRef{}, false
 	}
 	return ref, true
+}
+
+func (c *fakeUploadContext) ContextIdentity() ContextIdentity {
+	if c.identity != nil {
+		return *c.identity
+	}
+	return ContextIdentity{Payer: testPayer(), ChainID: types.ChainID(314159), RecordKeeper: testRecordKeeper()}
 }
 
 func (c *fakeUploadContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
@@ -1169,13 +924,148 @@ func (c *fakeUploadContext) Download(context.Context, cid.Cid) (io.ReadCloser, e
 	return nil, errors.New("unexpected Download")
 }
 
+type readCountingReader struct {
+	reads int
+}
+
+func (r *readCountingReader) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
+}
+
+func TestServiceUploadToContextsValidatesBeforeReading(t *testing.T) {
+	valid := &fakeUploadContext{id: types.NewBigInt(1)}
+	wrongIdentity := serviceTestIdentity()
+	wrongIdentity.ChainID = types.ChainID(1)
+	wrong := &fakeUploadContext{id: types.NewBigInt(2), identity: &wrongIdentity}
+
+	tests := map[string][]StorageContext{
+		"empty":              nil,
+		"typed nil":          {(*fakeUploadContext)(nil)},
+		"duplicate provider": {valid, valid},
+		"identity mismatch":  {wrong},
+	}
+	for name, contexts := range tests {
+		t.Run(name, func(t *testing.T) {
+			reader := &readCountingReader{}
+			svc := mustNewService(t, Options{})
+			result, err := svc.UploadToContexts(context.Background(), reader, contexts, nil)
+			if result != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+			}
+			if reader.reads != 0 {
+				t.Fatalf("reader reads=%d want 0", reader.reads)
+			}
+		})
+	}
+}
+
+func TestServiceUploadToContextsRejectsSelectionOptionsBeforeReading(t *testing.T) {
+	withCDN := true
+	tests := map[string]*UploadOptions{
+		"Copies":             {Copies: 1},
+		"ExcludeProviderIDs": {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
+		"DataSetMetadata":    {DataSetMetadata: map[string]string{"source": "app"}},
+		"WithCDN":            {WithCDN: &withCDN},
+	}
+	for name, opts := range tests {
+		t.Run(name, func(t *testing.T) {
+			reader := &readCountingReader{}
+			svc := mustNewService(t, Options{})
+			result, err := svc.UploadToContexts(context.Background(), reader, []StorageContext{&fakeUploadContext{id: types.NewBigInt(1)}}, opts)
+			if result != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+			}
+			if reader.reads != 0 {
+				t.Fatalf("reader reads=%d want 0", reader.reads)
+			}
+		})
+	}
+}
+
+func TestServiceUploadValidatesContextIdentityBeforeReading(t *testing.T) {
+	identity := serviceTestIdentity()
+	identity.RecordKeeper = common.HexToAddress("0x9999")
+	storageCtx := &fakeUploadContext{id: types.NewBigInt(1), identity: &identity}
+	reader := &readCountingReader{}
+	svc := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{storageCtx}}})
+
+	result, err := svc.Upload(context.Background(), reader, &UploadOptions{Copies: 1})
+	if result != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+	}
+	if reader.reads != 0 {
+		t.Fatalf("reader reads=%d want 0", reader.reads)
+	}
+}
+
+func TestServiceUploadRejectsInvalidResolverTargetsBeforeReading(t *testing.T) {
+	provider1 := &fakeUploadContext{id: types.NewBigInt(1)}
+	provider2 := &fakeUploadContext{id: types.NewBigInt(2)}
+	tests := map[string]struct {
+		contexts []StorageContext
+		opts     *UploadOptions
+	}{
+		"too many contexts": {
+			contexts: []StorageContext{provider1, provider2},
+			opts:     &UploadOptions{Copies: 1},
+		},
+		"excluded provider": {
+			contexts: []StorageContext{provider1},
+			opts: &UploadOptions{
+				Copies:             1,
+				ExcludeProviderIDs: []types.BigInt{types.NewBigInt(1)},
+			},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			reader := &readCountingReader{}
+			svc := mustNewService(t, Options{Resolver: &fakeResolver{contexts: tt.contexts}})
+			result, err := svc.Upload(context.Background(), reader, tt.opts)
+			if result != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+			}
+			if reader.reads != 0 {
+				t.Fatalf("reader reads=%d want 0", reader.reads)
+			}
+		})
+	}
+}
+
+func TestContextUploadRejectsMultiTargetOptionsBeforeReading(t *testing.T) {
+	withCDN := true
+	tests := map[string]*UploadOptions{
+		"Copies":             {Copies: 1},
+		"ExcludeProviderIDs": {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
+		"DataSetMetadata":    {DataSetMetadata: map[string]string{"source": "app"}},
+		"WithCDN":            {WithCDN: &withCDN},
+		"OnCopyComplete":     {OnCopyComplete: func(types.BigInt, cid.Cid) {}},
+		"OnCopyFailed":       {OnCopyFailed: func(types.BigInt, cid.Cid, error) {}},
+		"OnPullProgress":     {OnPullProgress: func(types.BigInt, cid.Cid, PullStatus) {}},
+	}
+	storageCtx := mustProviderContext(t, &fakePDPProviderClient{})
+	for name, opts := range tests {
+		t.Run(name, func(t *testing.T) {
+			reader := &readCountingReader{}
+			result, err := storageCtx.Upload(context.Background(), reader, opts)
+			if result != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+			}
+			if reader.reads != 0 {
+				t.Fatalf("reader reads=%d want 0", reader.reads)
+			}
+		})
+	}
+}
+
 func containsCall(calls []string, want string) bool {
 	return slices.Contains(calls, want)
 }
 
 // TestManagerUpload_RequestedCopiesIsCallerRequested proves that
-// UploadResult.RequestedCopies reflects the caller's intent (opts.Copies,
-// default 2), not the number of contexts the resolver happened to return.
+// UploadResult.RequestedCopies reflects opts.Copies, not the number of
+// contexts the resolver happened to return.
 // When fewer contexts are available the result must have Complete=false.
 func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	data := bytes.Repeat([]byte("rc"), 128)
@@ -1196,10 +1086,7 @@ func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 	}
 
 	// Resolver returns only 1 context even though caller requests 3 copies.
-	mgr := &Service{
-		resolver:   &fakeResolver{contexts: []UploadContext{primary}},
-		httpClient: &http.Client{},
-	}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 3})
 	if err != nil {
@@ -1247,10 +1134,10 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
+	mgr := mustNewService(t, Options{})
 
 	// Should not panic; primary copy should still succeed.
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	got, err := mgr.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{primary, secondary}, nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -1290,10 +1177,10 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
+	mgr := mustNewService(t, Options{})
 
 	copyFailedCalled := false
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
+	got, err := mgr.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{primary, secondary}, &UploadOptions{
 		OnCopyFailed: func(types.BigInt, cid.Cid, error) {
 			copyFailedCalled = true
 		},
@@ -1314,7 +1201,7 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 
 func TestManagerUpload_NilReader(t *testing.T) {
 	mgr := mustNewService(t, Options{})
-	_, err := mgr.Upload(context.Background(), nil, nil)
+	_, err := mgr.Upload(context.Background(), nil, &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected error for nil reader")
 	}
@@ -1333,8 +1220,8 @@ func TestManagerUpload_ReadError(t *testing.T) {
 			return nil, errors.New("unexpected: reader should have errored")
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{ctx}}}
-	_, err := mgr.Upload(context.Background(), iotest.ErrReader(readErr), nil)
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{ctx}}})
+	_, err := mgr.Upload(context.Background(), iotest.ErrReader(readErr), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected error for failing reader")
 	}
@@ -1367,7 +1254,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
@@ -1407,7 +1294,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 
 	if _, err := mgr.Upload(context.Background(), src, &UploadOptions{Copies: 1}); err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -1440,7 +1327,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, PieceCID: info.CIDv2})
 	if err != nil {
@@ -1473,7 +1360,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data),
 		&UploadOptions{Copies: 1, OnProgress: func(int64) {}})
 	if err != nil {
@@ -1541,7 +1428,7 @@ func TestManagerUpload_CtxCancelSkipsQueuedCommits(t *testing.T) {
 	}
 
 	mgr := mustNewService(t, Options{
-		Resolver:          &fakeResolver{contexts: []UploadContext{primary, newSecondary(types.NewBigInt(2), "secondary-1"), newSecondary(types.NewBigInt(3), "secondary-2")}},
+		Resolver:          &fakeResolver{contexts: []StorageContext{primary, newSecondary(types.NewBigInt(2), "secondary-1"), newSecondary(types.NewBigInt(3), "secondary-2")}},
 		CommitConcurrency: 1,
 	})
 
@@ -1576,14 +1463,25 @@ func (zeroReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func TestNewSetsUploadResolverAndInheritsContextResolver(t *testing.T) {
+func TestNewSetsUploadResolverWithoutInventingContextCapabilities(t *testing.T) {
 	r := &fakeResolver{}
 	mgr := mustNewService(t, Options{Resolver: r})
 	if mgr.resolver != r {
 		t.Fatal("New did not set upload resolver")
 	}
-	if mgr.contextResolver != r {
-		t.Fatal("New did not inherit context resolver")
+	if mgr.contextResolver != nil || mgr.contextSelector != nil {
+		t.Fatal("New inherited context capabilities that the resolver does not implement")
+	}
+}
+
+func TestNewRejectsSignerAddressMismatch(t *testing.T) {
+	s := mustTestSigner(t)
+	_, err := New(Options{
+		Signer:        s,
+		SignerAddress: common.HexToAddress("0x9999"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("New error=%v want ErrInvalidArgument", err)
 	}
 }
 
@@ -1739,28 +1637,6 @@ func TestCloneMetadata(t *testing.T) {
 	}
 }
 
-func TestRequestedCopiesForUpload(t *testing.T) {
-	tests := []struct {
-		name string
-		opts *UploadOptions
-		want int
-	}{
-		{"nil opts defaults to 2", nil, 2},
-		{"explicit Copies", &UploadOptions{Copies: 5}, 5},
-		{"DataSetIDs count", &UploadOptions{DataSetIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(2)}}, 2},
-		{"ProviderIDs count", &UploadOptions{ProviderIDs: []types.BigInt{types.NewBigInt(10)}}, 1},
-		{"zero Copies, no IDs defaults to 2", &UploadOptions{}, 2},
-		{"DataSetIDs deduplicated to 1 copy", &UploadOptions{DataSetIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(1)}}, 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := requestedCopiesForUpload(tt.opts); got != tt.want {
-				t.Fatalf("requestedCopiesForUpload()=%d want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 	data := bytes.Repeat([]byte("src"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -1781,13 +1657,13 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 
 	var capturedOpts *UploadOptions
 	resolver := &fakeResolver{
-		contexts: []UploadContext{primary},
+		contexts: []StorageContext{primary},
 		captureFn: func(opts *UploadOptions) {
 			capturedOpts = opts
 		},
 	}
 
-	mgr := &Service{httpClient: &http.Client{}, resolver: resolver, source: "test-app"}
+	mgr := mustNewService(t, Options{Resolver: resolver, Source: "test-app"})
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -1820,7 +1696,7 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: nil}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when identifiers missing")
@@ -1849,7 +1725,7 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 	_, err = mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatal("expected CommitError when dataSetID is zero")
@@ -1878,7 +1754,7 @@ func TestManagerUpload_CommitResultAllowsZeroPieceID(t *testing.T) {
 			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(0)}}, nil
 		},
 	}
-	mgr := &Service{httpClient: &http.Client{}, resolver: &fakeResolver{contexts: []UploadContext{primary}}}
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -1921,8 +1797,8 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 		},
 	}
 
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary, secondary}, explicit: true}})
-	got, err := mgr.Upload(context.Background(), bytes.NewReader(data), nil)
+	mgr := mustNewService(t, Options{})
+	got, err := mgr.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{primary, secondary}, nil)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

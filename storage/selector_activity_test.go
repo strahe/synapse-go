@@ -34,6 +34,10 @@ type addressedActivityDataSetCatalog struct {
 	pdpVerifier common.Address
 }
 
+type allowAllDataSetValidator struct{}
+
+func (allowAllDataSetValidator) ValidateDataSet(context.Context, types.BigInt) error { return nil }
+
 func (c *addressedActivityDataSetCatalog) PDPVerifierAddress() common.Address {
 	return c.pdpVerifier
 }
@@ -84,15 +88,16 @@ func newActivityDataSetCatalog(fixture serviceResolverFixture) *activityDataSetC
 
 func newActivityServiceResolver(t *testing.T, catalog *activityDataSetCatalog, validator DataSetValidator) *ServiceResolver {
 	t.Helper()
+	if validator == nil {
+		validator = allowAllDataSetValidator{}
+	}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
 		Payer:            testPayer(),
 		SPRegistry:       &fakePDPProviderSource{fixture: catalog.fixture},
 		WarmStorage:      catalog,
 		DataSetValidator: validator,
 		ProviderPing:     healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		NewContext:       newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -105,6 +110,10 @@ func newActivityServiceResolver(t *testing.T, catalog *activityDataSetCatalog, v
 
 func activitySelectionFixture(providerID types.BigInt, dataSetIDs []types.BigInt) serviceResolverFixture {
 	fixture := serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{providerID},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(providerID, "https://sp.example.com"),
+		},
 		providersByID: map[string]*spregistry.PDPProvider{
 			idconv.Key(providerID): ptrPDPProvider(testPDPProvider(providerID, "https://sp.example.com")),
 		},
@@ -121,14 +130,14 @@ func activitySelectionFixture(providerID types.BigInt, dataSetIDs []types.BigInt
 	return fixture
 }
 
-func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt, requireWritable bool) ([]UploadContext, error) {
+func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt, requireWritable bool) ([]StorageContext, error) {
 	t.Helper()
 	opts := &UploadOptions{
-		ProviderIDs:     []types.BigInt{providerID},
+		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	}
 	var (
-		contexts []UploadContext
+		contexts []StorageContext
 		err      error
 	)
 	if requireWritable {
@@ -142,13 +151,13 @@ func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID
 	return contextsToFake(t, contexts), nil
 }
 
-func requireSelectedDataSet(t *testing.T, contexts []UploadContext, want types.BigInt) {
+func requireSelectedDataSet(t *testing.T, contexts []StorageContext, want types.BigInt) {
 	t.Helper()
 	if len(contexts) != 1 {
 		t.Fatalf("contexts=%+v, want one data-set context", contexts)
 	}
 	ref, ok := contexts[0].DataSetRef()
-	if !ok || !ref.DataSetID.Equal(want) {
+	if !ok || !ref.DataSetID().Equal(want) {
 		t.Fatalf("contexts=%+v, want dataSetID %s", contexts, want.String())
 	}
 }
@@ -207,13 +216,12 @@ func TestServiceResolverProviderIDActivitySelectionFallsBackWithoutPDPVerifier(t
 	catalog := &addressedActivityDataSetCatalog{activityDataSetCatalog: activityCatalog}
 
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:        testPayer(),
-		SPRegistry:   &fakePDPProviderSource{fixture: catalog.fixture},
-		WarmStorage:  catalog,
-		ProviderPing: healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
-			return newResolvedTestContext(selection)
-		},
+		Payer:            testPayer(),
+		SPRegistry:       &fakePDPProviderSource{fixture: catalog.fixture},
+		WarmStorage:      catalog,
+		DataSetValidator: allowAllDataSetValidator{},
+		ProviderPing:     healthyProviderPing,
+		NewContext:       newResolvedTestContext,
 	})
 	if err != nil {
 		t.Fatalf("NewServiceResolver: %v", err)
@@ -381,7 +389,7 @@ func TestServiceResolverProviderIDActivitySelectionSkipsNonWritableCandidates(t 
 }
 
 type activityResolveOutcome struct {
-	contexts []UploadContext
+	contexts []StorageContext
 	err      error
 }
 
@@ -389,7 +397,7 @@ func resolveActivityProviderAsync(ctx context.Context, resolver *ServiceResolver
 	done := make(chan activityResolveOutcome, 1)
 	go func() {
 		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{
-			ProviderIDs:     []types.BigInt{providerID},
+			Copies:          1,
 			DataSetMetadata: map[string]string{"source": "app"},
 		})
 		done <- activityResolveOutcome{contexts: contexts, err: err}

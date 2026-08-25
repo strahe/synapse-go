@@ -28,6 +28,7 @@ import (
 )
 
 const (
+	quickstartCopies             = 2
 	quickstartSource             = "synapse-go-quickstart"
 	quickstartDownloadAttempts   = 5
 	quickstartDownloadRetryDelay = 30 * time.Second
@@ -117,7 +118,18 @@ func runQuickstart(ctx context.Context, cfg quickstartConfig, svc quickstartStor
 		return err
 	}
 
-	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{DataSize: uint64(len(cfg.Payload))})
+	selection, err := svc.SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{Copies: quickstartCopies})
+	if err != nil && !errors.Is(err, storage.ErrInsufficientUploadContexts) {
+		return fmt.Errorf("select upload contexts: %w", err)
+	}
+	if selection == nil {
+		return errors.New("select upload contexts: no selection returned")
+	}
+
+	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
+		DataSize: uint64(len(cfg.Payload)),
+		Contexts: selection.Contexts,
+	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)
 	}
@@ -134,7 +146,7 @@ func runQuickstart(ctx context.Context, cfg quickstartConfig, svc quickstartStor
 		}
 	}
 
-	upload, err := svc.Upload(ctx, bytes.NewReader(cfg.Payload), nil)
+	upload, err := svc.UploadToContexts(ctx, bytes.NewReader(cfg.Payload), selection.Contexts, nil)
 	if err != nil {
 		return fmt.Errorf("upload: %w", err)
 	}
@@ -156,8 +168,9 @@ func runQuickstart(ctx context.Context, cfg quickstartConfig, svc quickstartStor
 }
 
 type quickstartStorage interface {
+	SelectUploadContexts(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	Upload(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
+	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
 	Download(context.Context, cid.Cid, *storage.DownloadOptions) (io.ReadCloser, error)
 }
 
@@ -169,8 +182,12 @@ func (w storageWorkflow) Prepare(ctx context.Context, opts *storage.PrepareOptio
 	return w.svc.Prepare(ctx, opts)
 }
 
-func (w storageWorkflow) Upload(ctx context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
-	return w.svc.Upload(ctx, r, opts)
+func (w storageWorkflow) SelectUploadContexts(ctx context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+	return w.svc.SelectUploadContexts(ctx, opts)
+}
+
+func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+	return w.svc.UploadToContexts(ctx, r, contexts, opts)
 }
 
 func (w storageWorkflow) Download(ctx context.Context, pieceCID cid.Cid, opts *storage.DownloadOptions) (io.ReadCloser, error) {

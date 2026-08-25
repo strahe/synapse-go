@@ -51,16 +51,20 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		"staged": strconv.FormatInt(time.Now().UnixNano(), 10),
 	}
 	start := time.Now()
-	t.Log("start storage staged CreateContexts")
-	contexts, err := sm.CreateContexts(ctx, &storage.CreateContextsOptions{
+	t.Log("start storage staged SelectUploadContexts")
+	selection, err := sm.SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{
 		Copies:          2,
 		DataSetMetadata: metadata,
 		WithCDN:         &withCDN,
 	})
-	t.Logf("done storage staged CreateContexts elapsed=%s", time.Since(start).Round(time.Second))
-	if err != nil {
-		t.Fatalf("CreateContexts: %v", err)
+	t.Logf("done storage staged SelectUploadContexts elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil && !errors.Is(err, storage.ErrInsufficientUploadContexts) {
+		t.Fatalf("SelectUploadContexts: %v", err)
 	}
+	if selection == nil {
+		t.Fatal("SelectUploadContexts returned nil selection")
+	}
+	contexts := selection.Contexts
 	if len(contexts) < 2 {
 		t.Skipf("need at least two storage contexts, got %d", len(contexts))
 	}
@@ -121,7 +125,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	t.Log("start storage staged Prepare")
 	prepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(len(data)),
-		Contexts: []storage.UploadContext{
+		Contexts: []storage.StorageContext{
 			primary,
 			secondary,
 		},
@@ -207,29 +211,29 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
-	if created.DataSet.DataSetID.IsZero() {
+	if created.DataSet.DataSetID().IsZero() {
 		t.Fatal("WaitForDataSetCreated returned zero DataSetID")
 	}
-	if !created.DataSet.ClientDataSetID.Equal(*submission.ClientDataSetID) {
-		t.Fatalf("ClientDataSetID mismatch: got %v want %v", created.DataSet.ClientDataSetID, submission.ClientDataSetID)
+	if !created.DataSet.ClientDataSetID().Equal(*submission.ClientDataSetID) {
+		t.Fatalf("ClientDataSetID mismatch: got %v want %v", created.DataSet.ClientDataSetID(), submission.ClientDataSetID)
 	}
 	recovered, err := secondary.ForDataSet(created.DataSet)
 	if err != nil {
 		t.Fatalf("ForDataSet(recovery): %v", err)
 	}
-	if got := recovered.DataSetID(); !got.Equal(created.DataSet.DataSetID) {
-		t.Fatalf("recovered DataSetID = %v, want %s", got, created.DataSet.DataSetID)
+	if got := recovered.DataSetID(); !got.Equal(created.DataSet.DataSetID()) {
+		t.Fatalf("recovered DataSetID = %v, want %s", got, created.DataSet.DataSetID())
 	}
-	cleanupIDs = append(cleanupIDs, created.DataSet.DataSetID)
+	cleanupIDs = append(cleanupIDs, created.DataSet.DataSetID())
 
-	beforeCount, err := client.WarmStorage().GetActivePieceCount(ctx, created.DataSet.DataSetID)
+	beforeCount, err := client.WarmStorage().GetActivePieceCount(ctx, created.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("GetActivePieceCount(before): %v", err)
 	}
 	if beforeCount == nil || beforeCount.Sign() != 0 {
 		t.Fatalf("active piece count before commit = %v, want 0", beforeCount)
 	}
-	beforeActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSet.DataSetID)
+	beforeActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("HasActivePieces(before): %v", err)
 	}
@@ -266,7 +270,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	t.Log("start storage staged Prepare(commit)")
 	commitPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(len(data)),
-		Contexts: []storage.UploadContext{
+		Contexts: []storage.StorageContext{
 			recovered,
 		},
 	})
@@ -286,8 +290,8 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if !commit.DataSetID.Equal(created.DataSet.DataSetID) {
-		t.Fatalf("Commit DataSetID = %s, want %s", commit.DataSetID, created.DataSet.DataSetID)
+	if !commit.DataSetID.Equal(created.DataSet.DataSetID()) {
+		t.Fatalf("Commit DataSetID = %s, want %s", commit.DataSetID, created.DataSet.DataSetID())
 	}
 	if commit.IsNewDataSet {
 		t.Fatal("Commit unexpectedly used create-and-add path")
@@ -296,7 +300,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("Commit PieceIDs = %d, want 1", len(commit.PieceIDs))
 	}
 
-	afterCount, err := client.WarmStorage().GetActivePieceCount(ctx, created.DataSet.DataSetID)
+	afterCount, err := client.WarmStorage().GetActivePieceCount(ctx, created.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("GetActivePieceCount(after): %v", err)
 	}
@@ -304,7 +308,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if afterCount == nil || afterCount.Cmp(wantAfter) != 0 {
 		t.Fatalf("active piece count after commit = %v, want %v", afterCount, wantAfter)
 	}
-	afterActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSet.DataSetID)
+	afterActive, err := client.WarmStorage().HasActivePieces(ctx, created.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("HasActivePieces(after): %v", err)
 	}
@@ -351,20 +355,16 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDataSet(primary before terminate): %v", err)
 	}
-	secondaryInfo, err := ws.GetDataSet(ctx, created.DataSet.DataSetID)
+	secondaryInfo, err := ws.GetDataSet(ctx, created.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("GetDataSet(secondary before terminate): %v", err)
 	}
 	if primaryInfo.PDPRailID.IsZero() || secondaryInfo.PDPRailID.IsZero() {
 		t.Fatalf("termination rails must be non-zero: primary=%s secondary=%s", primaryInfo.PDPRailID, secondaryInfo.PDPRailID)
 	}
-	primaryTarget, err := sm.CreateContext(ctx, &storage.CreateContextOptions{DataSetID: &primaryCommit.DataSetID})
+	primaryDataSet, err := sm.NewDataSetContext(ctx, primaryCommit.DataSetID, storage.NewDataSetContextOptions{})
 	if err != nil {
-		t.Fatalf("CreateContext(primary data set): %v", err)
-	}
-	primaryDataSet, ok := primaryTarget.(*storage.DataSetContext)
-	if !ok {
-		t.Fatalf("primary data-set context type = %T, want *storage.DataSetContext", primaryTarget)
+		t.Fatalf("NewDataSetContext(primary data set): %v", err)
 	}
 
 	start = time.Now()
@@ -399,33 +399,27 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if providerTermination == nil || providerTermination.TxHash == nil || providerTermination.DataSetID.IsZero() || providerTermination.EndEpoch == 0 {
 		t.Fatalf("secondary DataSetContext.TerminateService result = %+v", providerTermination)
 	}
-	if !providerTermination.DataSetID.Equal(created.DataSet.DataSetID) {
-		t.Fatalf("secondary termination DataSetID = %s, want %s", providerTermination.DataSetID, created.DataSet.DataSetID)
+	if !providerTermination.DataSetID.Equal(created.DataSet.DataSetID()) {
+		t.Fatalf("secondary termination DataSetID = %s, want %s", providerTermination.DataSetID, created.DataSet.DataSetID())
 	}
-	terminatedIDs[created.DataSet.DataSetID.String()] = struct{}{}
+	terminatedIDs[created.DataSet.DataSetID().String()] = struct{}{}
 
 	settlementProviderID := secondary.ProviderID()
-	settlementTarget, err := sm.CreateContext(ctx, &storage.CreateContextOptions{
-		ProviderID:      &settlementProviderID,
+	settlementProvider, err := sm.NewProviderContext(ctx, settlementProviderID, storage.NewProviderContextOptions{
 		DataSetMetadata: map[string]string{"staged-settlement": metadata["staged"]},
 		WithCDN:         &withCDN,
 	})
 	if err != nil {
-		t.Fatalf("CreateContext(settlement fixture): %v", err)
+		t.Fatalf("NewProviderContext(settlement fixture): %v", err)
 	}
 	settlementPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: 1,
-		Contexts: []storage.UploadContext{settlementTarget},
+		Contexts: []storage.StorageContext{settlementProvider},
 	})
 	if err != nil {
 		t.Fatalf("Prepare(settlement fixture): %v", err)
 	}
 	executePrepare("Prepare(settlement fixture).Execute", settlementPrepare)
-	settlementProvider, ok := settlementTarget.(*storage.ProviderContext)
-	if !ok {
-		t.Fatalf("settlement context type = %T, want *storage.ProviderContext", settlementTarget)
-	}
-
 	start = time.Now()
 	t.Log("start storage staged settlement fixture CreateDataSet")
 	settlementCreated, err := settlementProvider.CreateDataSet(ctx, nil)
@@ -433,16 +427,16 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settlement fixture CreateDataSet: %v", err)
 	}
-	if settlementCreated == nil || settlementCreated.DataSet.DataSetID.IsZero() {
+	if settlementCreated == nil || settlementCreated.DataSet.DataSetID().IsZero() {
 		t.Fatalf("settlement fixture CreateDataSet result = %+v", settlementCreated)
 	}
-	cleanupIDs = append(cleanupIDs, settlementCreated.DataSet.DataSetID)
+	cleanupIDs = append(cleanupIDs, settlementCreated.DataSet.DataSetID())
 	settlementDataSet, err := settlementProvider.ForDataSet(settlementCreated.DataSet)
 	if err != nil {
 		t.Fatalf("ForDataSet(settlement fixture): %v", err)
 	}
 
-	settlementInfo, err := ws.GetDataSet(ctx, settlementCreated.DataSet.DataSetID)
+	settlementInfo, err := ws.GetDataSet(ctx, settlementCreated.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("GetDataSet(settlement fixture): %v", err)
 	}
@@ -461,10 +455,10 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("settlement fixture DataSetContext.TerminateService: %v", err)
 	}
 	if settlementTermination == nil || settlementTermination.TxHash == nil || settlementTermination.EndEpoch == 0 ||
-		!settlementTermination.DataSetID.Equal(settlementCreated.DataSet.DataSetID) {
+		!settlementTermination.DataSetID.Equal(settlementCreated.DataSet.DataSetID()) {
 		t.Fatalf("settlement fixture termination result = %+v", settlementTermination)
 	}
-	terminatedIDs[settlementCreated.DataSet.DataSetID.String()] = struct{}{}
+	terminatedIDs[settlementCreated.DataSet.DataSetID().String()] = struct{}{}
 
 	directRail, err := client.Payments().GetRail(ctx, primaryInfo.PDPRailID)
 	if err != nil {

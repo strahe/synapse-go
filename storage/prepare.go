@@ -12,28 +12,21 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-// PrepareOptions configures Service.Prepare. Costs, explicit Contexts,
-// and auto-created estimate contexts are mutually exclusive modes.
+// PrepareOptions configures Service.Prepare. Costs and context-based cost
+// calculation are mutually exclusive modes.
 type PrepareOptions struct {
 	// DataSize is required when Costs is nil, and must be zero when Costs
 	// is set. It is the payload size in bytes used for cost calculation.
 	DataSize uint64
-	// Contexts restricts cost calculation to an explicit set of upload
-	// contexts. It is valid only when Costs is nil. When set, EnableCDN
-	// must be nil because each context already carries its own CDN state.
-	Contexts []UploadContext
+	// Contexts is the exact set of upload targets used for cost calculation.
+	// It is required when Costs is nil.
+	Contexts []StorageContext
 	// PieceCount is the number of pieces added to each context. Nil or
 	// non-positive values default to one.
 	PieceCount *big.Int
 	// Costs short-circuits cost calculation. When set, no other
 	// PrepareOptions fields are accepted.
 	Costs *MultiContextCosts
-	// EnableCDN is tri-state:
-	//   nil         → inherit the Client-level default (synapse.WithCDN)
-	//   &true/&false → explicit per-Prepare override
-	// It is valid only on the auto-create-context branch, when Costs is
-	// nil and Contexts is empty.
-	EnableCDN *bool
 	// ExtraRunwayEpochs is additional runway (epochs) above the
 	// minimum lockup period passed through to the cost calculator. It is
 	// valid only when Costs is nil and must be non-negative.
@@ -70,19 +63,21 @@ type PrepareResult struct {
 }
 
 // Prepare returns the funding transaction needed, if any, to cover one
-// upload of DataSize bytes across the given or auto-selected contexts.
-// When Contexts is empty, Prepare creates contexts only for this estimate;
-// it does not cache, reserve, or bind them to a later Upload call.
+// upload of DataSize bytes across the supplied contexts.
 func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
+	opts = clonePrepareOptions(opts)
 	if err := validatePrepareOptions(opts); err != nil {
 		return nil, fmt.Errorf("storage.Service.Prepare: %w", err)
 	}
 
 	costs := opts.Costs
 	if costs == nil {
+		if err := s.validateStorageContexts("storage.Service.Prepare", opts.Contexts); err != nil {
+			return nil, err
+		}
 		refs, err := s.prepareRefs(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -146,6 +141,18 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 	}, nil
 }
 
+func clonePrepareOptions(opts *PrepareOptions) *PrepareOptions {
+	if opts == nil {
+		return nil
+	}
+	out := *opts
+	out.Contexts = append([]StorageContext(nil), opts.Contexts...)
+	if opts.PieceCount != nil {
+		out.PieceCount = new(big.Int).Set(opts.PieceCount)
+	}
+	return &out
+}
+
 func validatePrepareOptions(opts *PrepareOptions) error {
 	if opts == nil {
 		return fmt.Errorf("%w: options must not be nil", ErrInvalidArgument)
@@ -166,9 +173,6 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 		if opts.PieceCount != nil {
 			return fmt.Errorf("%w: PieceCount cannot be set when Costs is set", ErrInvalidArgument)
 		}
-		if opts.EnableCDN != nil {
-			return fmt.Errorf("%w: EnableCDN cannot be set when Costs is set", ErrInvalidArgument)
-		}
 		if opts.ExtraRunwayEpochs != 0 {
 			return fmt.Errorf("%w: ExtraRunwayEpochs cannot be set when Costs is set", ErrInvalidArgument)
 		}
@@ -180,8 +184,8 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 	if opts.DataSize == 0 {
 		return fmt.Errorf("%w: DataSize must be greater than zero when Costs is nil", ErrInvalidArgument)
 	}
-	if len(opts.Contexts) != 0 && opts.EnableCDN != nil {
-		return fmt.Errorf("%w: EnableCDN cannot be set when Contexts are supplied", ErrInvalidArgument)
+	if len(opts.Contexts) == 0 {
+		return fmt.Errorf("%w: Contexts must not be empty when Costs is nil", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -200,22 +204,12 @@ func validatePrepareCosts(costs *MultiContextCosts) error {
 }
 
 // prepareRefs builds the []ContextCostRef the cost calculator expects
-// from the user-supplied Contexts (or by calling CreateContexts). For
+// from the user-supplied Contexts. For
 // existing-dataset contexts, the current on-chain size is fetched in
 // parallel via [DataSetSizeReader] so the cost calculator can price
 // lockup against real storage usage rather than the floor rate.
 func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]ContextCostRef, error) {
 	contexts := opts.Contexts
-
-	if len(contexts) == 0 {
-		// Forward EnableCDN unchanged: nil lets resolveWithCDN inherit the
-		// Client-level DefaultWithCDN.
-		created, err := s.CreateContexts(ctx, &CreateContextsOptions{WithCDN: opts.EnableCDN})
-		if err != nil {
-			return nil, fmt.Errorf("storage.Service.Prepare: CreateContexts: %w", err)
-		}
-		contexts = created
-	}
 
 	refs := make([]ContextCostRef, len(contexts))
 	type sizeJob struct {
@@ -229,7 +223,7 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 			WithCDN:  uploadCtx.CDNEnabled(),
 		}
 		if dataSet, ok := uploadCtx.DataSetRef(); ok {
-			id := copyBigInt(dataSet.DataSetID)
+			id := dataSet.DataSetID()
 			refs[i].DataSetID = &id
 			if s.sizeReader != nil {
 				jobs = append(jobs, sizeJob{idx: i, id: id})

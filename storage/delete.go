@@ -94,8 +94,8 @@ func (c *DataSetContext) snapshotDeletePieceTarget(op string) (deletePieceTarget
 		return deletePieceTarget{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	return deletePieceTarget{
-		dataSetID:       copyBigInt(c.ref.DataSetID),
-		clientDataSetID: c.ref.ClientDataSetID.Big(),
+		dataSetID:       c.ref.DataSetID(),
+		clientDataSetID: c.ref.ClientDataSetID().Big(),
 		chainID:         c.core.chainID,
 		recordKeeper:    c.core.recordKeeper,
 	}, nil

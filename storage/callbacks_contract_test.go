@@ -297,8 +297,8 @@ func TestManagerUpload_CallbackPanicsAreRecoveredAndWarnOnce(t *testing.T) {
 	handler := &recordingSlogHandler{}
 	mgr := mustNewService(t, Options{
 		Resolver: &fakeResolver{
-			contexts:     []UploadContext{primary, failedSecondary},
-			replacements: []UploadContext{replacement},
+			contexts:     []StorageContext{primary, failedSecondary},
+			replacements: []StorageContext{replacement},
 		},
 		Logger: slog.New(handler),
 	})
@@ -690,8 +690,8 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	}
 
 	resolver := &fakeResolver{
-		contexts:     []UploadContext{primary, failedSecondary},
-		replacements: []UploadContext{replacement},
+		contexts:     []StorageContext{primary, failedSecondary},
+		replacements: []StorageContext{replacement},
 	}
 	mgr := mustNewService(t, Options{Resolver: resolver})
 
@@ -706,6 +706,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 	)
 
 	opts := &UploadOptions{
+		Copies: 2,
 		OnStored: func(providerID types.BigInt, pieceCID cid.Cid) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -843,7 +844,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 			}, nil
 		},
 	}
-	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []UploadContext{primary}}})
+	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
 
 	var confirmed []confirmedEvent
 	opts := &UploadOptions{

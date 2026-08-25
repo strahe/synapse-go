@@ -130,21 +130,17 @@ func (c *Client) initServices() error {
 		SPRegistry:   spReg,
 		WarmStorage:  ws,
 		ProviderPing: c.pingProvider,
-		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (storage.UploadContext, error) {
-			pdpClient, err := c.newPDPClient(sel.Provider.ServiceURL)
+		NewContext: func(provider storage.Provider, opts storage.ContextFactoryOptions) (*storage.ProviderContext, error) {
+			pdpClient, err := c.newPDPClient(provider.ServiceURL)
 			if err != nil {
-				return nil, fmt.Errorf("create PDP client for %s: %w", sel.Provider.ServiceURL, err)
-			}
-			effectiveCDN := c.withCDN
-			if opts != nil && opts.WithCDN != nil {
-				effectiveCDN = *opts.WithCDN
+				return nil, fmt.Errorf("create PDP client for %s: %w", provider.ServiceURL, err)
 			}
 			ctxOpts := []storage.ContextOption{
 				storage.WithPayer(c.evmSigner.EVMAddress()),
 				storage.WithChainID(types.ChainID(c.selectedChain.ChainID())),
 				storage.WithRecordKeeper(c.addresses.FWSS),
-				storage.WithDataSetMetadata(sel.DataSetMetadata),
-				storage.WithCDN(effectiveCDN),
+				storage.WithDataSetMetadata(opts.DataSetMetadata),
+				storage.WithCDN(opts.WithCDN),
 				storage.WithCDNRetriever(fbRetriever),
 				storage.WithLogger(c.logger),
 				storage.WithPDPVerifierReader(c.pdpReader),
@@ -154,19 +150,12 @@ func (c *Client) initServices() error {
 				storage.WithDataSetValidator(ws),
 				storage.WithPaymentStateReader(pay, c.ethClient, c.addresses.USDFC),
 			}
-			providerCtx, err := storage.NewProviderContext(
-				sel.Provider,
+			return storage.NewProviderContext(
+				provider,
 				pdpClient,
 				c.evmSigner,
 				ctxOpts...,
 			)
-			if err != nil {
-				return nil, err
-			}
-			if sel.DataSet == nil {
-				return providerCtx, nil
-			}
-			return providerCtx.ForDataSet(*sel.DataSet)
 		},
 	})
 	if err != nil {

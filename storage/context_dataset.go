@@ -132,13 +132,13 @@ func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, 
 		)
 	}
 
+	ref, err := NewDataSetRef(c.core.provider.ID, *status.DataSetID, *submission.ClientDataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
 	return &CreateDataSetResult{
 		TransactionID: submission.TransactionID,
-		DataSet: DataSetRef{
-			ProviderID:      copyBigInt(c.core.provider.ID),
-			DataSetID:       copyBigInt(*status.DataSetID),
-			ClientDataSetID: copyClientDataSetIDFromPtr(submission.ClientDataSetID),
-		},
+		DataSet:       ref,
 	}, nil
 }
 

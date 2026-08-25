@@ -35,11 +35,7 @@ func TestValidateUploadContextsWritable_DoesNotMutateImmutableTarget(t *testing.
 		testProvider(),
 		&fakePDPProviderClient{},
 		mustTestSigner(t),
-		DataSetRef{
-			ProviderID:      testProvider().ID,
-			DataSetID:       dataSetID,
-			ClientDataSetID: clientDataSetID,
-		},
+		testDataSetRef(dataSetID, clientDataSetID),
 	)
 	if err != nil {
 		t.Fatalf("NewDataSetContext: %v", err)
@@ -47,14 +43,14 @@ func TestValidateUploadContextsWritable_DoesNotMutateImmutableTarget(t *testing.
 
 	svc := newTestService()
 	svc.dsReader = reader
-	if err := svc.validateUploadContextsWritable(context.Background(), []UploadContext{dataSetCtx}); err != nil {
+	if err := svc.validateUploadContextsWritable(context.Background(), []StorageContext{dataSetCtx}); err != nil {
 		t.Fatalf("validateUploadContextsWritable: %v", err)
 	}
 	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
 		t.Fatalf("reader calls=%d dataSetID=%s", reader.calls, reader.gotID.String())
 	}
 	ref, ok := dataSetCtx.DataSetRef()
-	if !ok || !ref.ClientDataSetID.Equal(clientDataSetID) {
+	if !ok || !ref.ClientDataSetID().Equal(clientDataSetID) {
 		t.Fatalf("DataSetRef()=(%+v, %t), want immutable clientDataSetID %s", ref, ok, clientDataSetID.String())
 	}
 }

@@ -58,7 +58,7 @@ func (c *DataSetContext) Terminate(ctx context.Context, opts ...warmstorage.Writ
 	if c.core.fwssTerminator == nil {
 		return nil, errors.New("storage.DataSetContext.Terminate: FWSS terminator not configured")
 	}
-	return c.core.fwssTerminator.TerminateDataSet(ctx, c.ref.DataSetID, opts...)
+	return c.core.fwssTerminator.TerminateDataSet(ctx, c.ref.DataSetID(), opts...)
 }
 
 // TerminateService terminates this context's data set. By default it asks the
@@ -67,7 +67,7 @@ func (c *DataSetContext) Terminate(ctx context.Context, opts ...warmstorage.Writ
 func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
 	const op = "storage.DataSetContext.TerminateService"
 	if opts != nil && opts.SkipProvider {
-		return terminateServiceDirect(ctx, op, c.core.fwssTerminator, copyBigInt(c.ref.DataSetID), opts)
+		return terminateServiceDirect(ctx, op, c.core.fwssTerminator, c.ref.DataSetID(), opts)
 	}
 	target, err := c.snapshotProviderTerminateTarget(op)
 	if err != nil {
@@ -228,7 +228,7 @@ func (c *DataSetContext) snapshotProviderTerminateTarget(op string) (providerTer
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	return providerTerminateTarget{
-		dataSetID:     copyBigInt(c.ref.DataSetID),
+		dataSetID:     c.ref.DataSetID(),
 		client:        client,
 		signHash:      c.core.signHashFunc(),
 		chainID:       c.core.chainID,

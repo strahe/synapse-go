@@ -151,10 +151,9 @@ func WithSource(s string) ClientOption {
 // WithCDN sets the Client-wide default for CDN-first context downloads
 // and the withCDN dataset-metadata flag used during provider selection.
 //
-// This is a default only: each [storage.UploadOptions] and
-// [storage.CreateContextsOptions] carries its own *bool WithCDN that
-// overrides the Client default when non-nil. Leaving the per-op field
-// nil inherits this Client default.
+// This is a default only: [storage.UploadOptions] and the context-construction
+// and selection option types carry their own *bool WithCDN override. Leaving
+// the per-operation value nil inherits this Client default.
 //
 // Example — override per upload:
 //

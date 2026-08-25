@@ -110,11 +110,9 @@ exceeding it returns `storage.ErrMaxBytesExceeded`.
 
 ## Upload Controls
 
-Use `storage.UploadOptions` when the default upload is not enough:
+`Service.Upload` performs automatic target selection. Its options include:
 
-- `Copies`: requested provider copies. Zero means the selection default.
-- `ProviderIDs`: pin copies to specific providers.
-- `DataSetIDs`: write to specific existing datasets.
+- `Copies`: required number of provider copies. It must be greater than zero.
 - `ExcludeProviderIDs`: skip providers only during automatic selection.
 - `DataSetMetadata`: metadata used when creating or reusing datasets.
 - `PieceMetadata`: metadata stored with the committed piece.
@@ -133,20 +131,40 @@ to know whether every requested copy succeeded.
 Dataset metadata must match exactly for automatic dataset reuse. Use stable
 metadata values when you want uploads to share payment rails.
 
+Use `NewProviderContext` or `NewDataSetContext` for a known target. Use
+`UploadToContexts` when the caller, rather than the SDK, must determine the
+exact providers and their primary-to-secondary order.
+
 ## Funding Preflight
 
 `Prepare` is optional. Use it before a first upload, before a large batch, or
 when your UI needs to show whether the account has enough USDFC deposit and
-FWSS approval. If `Transaction` is nil, the account is already ready for the
-requested size and contexts. Match options that affect context selection, such
-as CDN.
+FWSS approval. Select the upload targets first, then pass the same contexts to
+`Prepare` and `UploadToContexts`. This ensures the estimate and upload use the
+same providers, datasets, payer, chain, and record keeper.
 
 ```go
 withCDN := true
 
+selection, selectErr := client.Storage().SelectUploadContexts(ctx,
+    storage.SelectUploadContextsOptions{
+        Copies:  2,
+        WithCDN: &withCDN,
+        DataSetMetadata: map[string]string{
+            "project": "photos",
+        },
+    },
+)
+if selectErr != nil && !errors.Is(selectErr, storage.ErrInsufficientUploadContexts) {
+    return selectErr
+}
+if selection == nil {
+    return errors.New("no upload contexts available")
+}
+
 prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
-    DataSize:  uint64(payloadSize),
-    EnableCDN: &withCDN,
+    DataSize: uint64(payloadSize),
+    Contexts: selection.Contexts,
 })
 if err != nil {
     return err
@@ -159,56 +177,91 @@ if prep.Transaction != nil {
     }
     fmt.Println("prepare tx:", tx.Hash)
 }
+
+result, err := client.Storage().UploadToContexts(
+    ctx,
+    file,
+    selection.Contexts,
+    &storage.UploadOptions{
+        PieceMetadata: map[string]string{"name": "payload.bin"},
+    },
+)
+if err != nil {
+    return err
+}
 ```
 
-If you already selected contexts, pass them through `PrepareOptions.Contexts`
-so the estimate matches the exact providers and datasets. `CreateContexts`
-already returns `[]storage.UploadContext`.
+When selection finds at least one but fewer than the requested targets, it
+returns both a usable `UploadContextSelection` and an
+`InsufficientUploadContextsError`. The application can continue with the
+available contexts or stop before funding. With `UploadToContexts`, the
+selection length becomes `UploadResult.RequestedCopies` and no replacement
+provider is selected automatically.
 
 For read-only cost and account state, use `GetStorageInfo` or
 `CalculateMultiContextCosts`.
 
 ## Contexts And Datasets
 
-Use contexts when you need provider or dataset control before uploading.
+There are two immutable context types:
+
+- `ProviderContext` identifies one provider and no dataset. `Commit` and
+  `Pull` create a new dataset.
+- `DataSetContext` identifies one provider and one existing dataset. `Commit`
+  and `Pull` always target that dataset.
+
+Provider-scoped methods such as `Store` and `Download` are shared. For example,
+both `ProviderContext.Download` and `DataSetContext.Download` retrieve a piece
+from the same configured provider or CDN; the dataset binding does not change
+piece retrieval. Dataset inspection, deletion, and termination methods exist
+only on `DataSetContext`.
+
+Select one approved, active, healthy provider without looking up datasets:
 
 ```go
-contexts, err := client.Storage().CreateContexts(ctx, &storage.CreateContextsOptions{
-    Copies: 2,
-    DataSetMetadata: map[string]string{
-        "project": "photos",
+providerCtx, err := client.Storage().SelectProviderContext(ctx,
+    storage.SelectProviderContextOptions{
+        DataSetMetadata: map[string]string{
+            "project": "photos",
+        },
     },
-})
+)
 if err != nil {
     return err
 }
-
-fmt.Println("contexts:", len(contexts))
 ```
 
-```go
-prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
-    DataSize: uint64(payloadSize),
-    Contexts: contexts,
-})
-if err != nil {
-    return err
-}
-fmt.Println("ready:", prep.Costs.Ready)
-```
-
-For one provider or one dataset:
+Open a registered provider by ID without checking approval, activity, endpoint
+health, or existing datasets:
 
 ```go
 providerID := types.NewBigInt(123)
-ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
-    ProviderID: &providerID,
-})
+providerCtx, err := client.Storage().NewProviderContext(ctx, providerID,
+    storage.NewProviderContextOptions{
+        DataSetMetadata: map[string]string{"project": "photos"},
+    },
+)
+if err != nil {
+    return err
+}
+```
+
+Open an existing dataset owned by the current payer. The optional provider ID
+is an ownership assertion. Opening a terminated or currently unwritable
+dataset is allowed for inspection and cleanup; a later `Commit` or `Upload`
+still checks writability.
+
+```go
+providerID := types.NewBigInt(123)
+dataSetID := types.NewBigInt(456)
+dataSetCtx, err := client.Storage().NewDataSetContext(ctx, dataSetID,
+    storage.NewDataSetContextOptions{ProviderID: &providerID},
+)
 if err != nil {
     return err
 }
 
-result, err := ctx1.Upload(ctx, file, &storage.UploadOptions{
+result, err := dataSetCtx.Upload(ctx, file, &storage.UploadOptions{
     PieceMetadata: map[string]string{"name": "payload.bin"},
 })
 if err != nil {
@@ -217,48 +270,22 @@ if err != nil {
 fmt.Println(result.PieceCID)
 ```
 
-When resuming a known dataset, pass `DataSetID`. If you also pass
-`ProviderID`, the SDK checks that the dataset belongs to that provider. The
-returned value has concrete type `*storage.DataSetContext`.
+`DataSetRef` is the persistent reference for a complete provider and dataset
+target. Its zero value is invalid; construct it explicitly and use accessors to
+read IDs.
 
 ```go
-dataSetID := types.NewBigInt(456)
-providerID := types.NewBigInt(123)
-ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
-    DataSetID:  &dataSetID,
-    ProviderID: &providerID,
-})
+ref, err := storage.NewDataSetRef(providerID, dataSetID, clientDataSetID)
 if err != nil {
     return err
 }
-
-dataSetCtx, ok := ctx1.(*storage.DataSetContext)
-if !ok {
-    return fmt.Errorf("expected a data-set context")
-}
-ref, _ := dataSetCtx.DataSetRef()
-fmt.Println("dataset:", ref.DataSetID)
+fmt.Println("dataset:", ref.DataSetID())
 ```
 
-To create an empty dataset first, persist the submission if your process may
-restart before confirmation. Creation is available only on a
-`*storage.ProviderContext`; use metadata that does not match an existing data
-set when you need the resolver to return an unbound provider target.
+To create an empty dataset first, persist the submission if the process may
+restart before confirmation. Creation is available only on `ProviderContext`.
 
 ```go
-uniqueJobID := fmt.Sprintf("create-empty-%d", time.Now().UnixNano())
-uploadCtx, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
-    ProviderID:      &providerID,
-    DataSetMetadata: map[string]string{"job": uniqueJobID},
-})
-if err != nil {
-    return err
-}
-providerCtx, ok := uploadCtx.(*storage.ProviderContext)
-if !ok {
-    return fmt.Errorf("resolver reused an existing data set")
-}
-
 var submitted storage.CreateDataSetSubmission
 
 created, err := providerCtx.CreateDataSet(ctx, &storage.CreateDataSetOptions{
@@ -269,7 +296,7 @@ created, err := providerCtx.CreateDataSet(ctx, &storage.CreateDataSetOptions{
 if err != nil {
     return err
 }
-fmt.Println("dataset:", created.DataSet.DataSetID)
+fmt.Println("dataset:", created.DataSet.DataSetID())
 ```
 
 Resume a submitted create transaction with any fresh `ProviderContext` for the
@@ -288,17 +315,21 @@ if err != nil {
 fmt.Println("dataset:", dataSetCtx.DataSetID())
 ```
 
-`ProviderContext` and `DataSetContext` are immutable. This is an intentional Go
-API difference from the mutable `_dataSetId` model in the TypeScript baseline
-fixed at commit `a1d44296ad27b4a2631cb744de95a6a94c8097a7`: create and
-create-and-add results never retarget the
-receiver. Concurrent operations therefore have explicit semantics: provider
-creates are independent, while adds on one data-set context can proceed in
-parallel.
-
-Use `GetDefaultContext` when the context resolver defaults are enough.
-Advanced callers can split a context upload into `Store`, `Pull`,
+The receiver never binds or changes target after creation. Concurrent creates
+on one `ProviderContext` are independent; adds on one `DataSetContext` may run
+in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
 `PresignForCommit`, and `Commit`.
+
+### Migrating From The Previous Context API
+
+| Previous call | Replacement |
+|---------------|-------------|
+| `CreateContext(nil)` / `GetDefaultContext()` | `SelectProviderContext(...)` |
+| `CreateContext` with `ProviderID` | `NewProviderContext(...)` |
+| `CreateContext` with `DataSetID` | `NewDataSetContext(...)` |
+| `CreateContexts` for a new upload | `SelectUploadContexts(...)` |
+| `Upload` with provider or dataset IDs | construct/select contexts, then call `UploadToContexts(...)` |
+| `Prepare` without contexts | select contexts first and pass the same slice to `Prepare` |
 
 ## Discovery And Lifecycle
 

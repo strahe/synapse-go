@@ -63,7 +63,7 @@ func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigI
 	if c.core.pdpCaller == nil {
 		return nil, errors.New("storage.DataSetContext.GetScheduledRemovals: PDPVerifier reader not configured")
 	}
-	ids, err := c.core.pdpCaller.GetScheduledRemovals(ctx, c.ref.DataSetID)
+	ids, err := c.core.pdpCaller.GetScheduledRemovals(ctx, c.ref.DataSetID())
 	if err != nil {
 		return nil, fmt.Errorf("storage.DataSetContext.GetScheduledRemovals: %w", err)
 	}
@@ -96,7 +96,7 @@ func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*Pi
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		ids, err := c.core.pdpCaller.FindPieceIdsByCid(gctx, c.ref.DataSetID, pieceCID, 0, 1)
+		ids, err := c.core.pdpCaller.FindPieceIdsByCid(gctx, c.ref.DataSetID(), pieceCID, 0, 1)
 		if err != nil {
 			return fmt.Errorf("findPieceIdsByCid: %w", err)
 		}
@@ -104,7 +104,7 @@ func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*Pi
 		return nil
 	})
 	g.Go(func() error {
-		n, err := c.core.pdpCaller.GetNextChallengeEpoch(gctx, c.ref.DataSetID)
+		n, err := c.core.pdpCaller.GetNextChallengeEpoch(gctx, c.ref.DataSetID())
 		if err != nil {
 			return fmt.Errorf("getNextChallengeEpoch: %w", err)
 		}
