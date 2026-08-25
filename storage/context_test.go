@@ -21,6 +21,7 @@ import (
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func mustPieceInfo(t *testing.T) piece.PieceInfo {
@@ -573,6 +574,148 @@ func TestProviderContextWaitForDataSetCreatedRejectsWrongProvider(t *testing.T) 
 	}
 	if waitCalls != 0 {
 		t.Fatalf("waitCalls=%d want 0", waitCalls)
+	}
+}
+
+func TestProviderContextWaitForDataSetCreatedAcceptsZeroProviderID(t *testing.T) {
+	txHash := common.HexToHash("0x1234")
+	dataSetID := types.NewBigInt(77)
+	clientID := types.NewBigInt(7)
+	waitCalls := 0
+	client := &fakePDPProviderClient{
+		waitForCreatedFn: func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
+			waitCalls++
+			id := copyBigInt(dataSetID)
+			return &pdp.CreateDataSetStatus{CreateMessageHash: txHash, DataSetID: &id}, nil
+		},
+	}
+	c := mustWritableProviderContext(t, client)
+	result, err := c.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
+		TransactionID:   txHash.Hex(),
+		StatusURL:       "https://sp.example.com/status",
+		ClientDataSetID: &clientID,
+	})
+	if err != nil {
+		t.Fatalf("WaitForDataSetCreated: %v", err)
+	}
+	if waitCalls != 1 {
+		t.Fatalf("waitCalls=%d want 1", waitCalls)
+	}
+	if !result.DataSet.ProviderID().Equal(testProvider().ID) ||
+		!result.DataSet.DataSetID().Equal(dataSetID) ||
+		!result.DataSet.ClientDataSetID().Equal(clientID) {
+		t.Fatalf("result=%+v", result.DataSet)
+	}
+}
+
+func TestProviderContextWaitForDataSetCreatedRejectsInvalidSubmission(t *testing.T) {
+	clientID := types.NewBigInt(7)
+	valid := CreateDataSetSubmission{
+		TransactionID:   common.HexToHash("0x1234").Hex(),
+		StatusURL:       "https://sp.example.com/status",
+		ClientDataSetID: &clientID,
+	}
+	tests := map[string]CreateDataSetSubmission{
+		"empty transaction": {TransactionID: "", StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
+		"short transaction": {TransactionID: "0xbeef", StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
+		"zero transaction":  {TransactionID: common.Hash{}.Hex(), StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
+		"empty status URL":  {TransactionID: valid.TransactionID, StatusURL: "", ClientDataSetID: valid.ClientDataSetID},
+		"missing client ID": {TransactionID: valid.TransactionID, StatusURL: valid.StatusURL},
+	}
+	for name, submission := range tests {
+		t.Run(name, func(t *testing.T) {
+			waitCalls := 0
+			client := &fakePDPProviderClient{
+				waitForCreatedFn: func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
+					waitCalls++
+					return nil, errors.New("wait should not be called")
+				},
+			}
+			c := mustWritableProviderContext(t, client)
+			_, err := c.WaitForDataSetCreated(context.Background(), submission)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
+			}
+			if waitCalls != 0 {
+				t.Fatalf("waitCalls=%d want 0", waitCalls)
+			}
+		})
+	}
+}
+
+func TestDataSetContextCommitRejectsEndedAndValidatorFailuresBeforeAddPieces(t *testing.T) {
+	info := mustPieceInfo(t)
+	dataSetID := types.NewBigInt(42)
+	want := errors.New("not live")
+
+	t.Run("ended rail", func(t *testing.T) {
+		addCalls := 0
+		reader := &fakeFWSSDataSetReader{
+			info: &warmstorage.DataSetInfo{DataSetID: dataSetID, PDPEndEpoch: 3778900},
+		}
+		client := &fakePDPProviderClient{
+			addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+				addCalls++
+				t.Fatal("AddPieces must not run for an ended data set")
+				return nil, nil
+			},
+		}
+		c := mustWritableDataSetContext(t, client, testDataSetRef(dataSetID, types.NewBigInt(7)), WithFWSSDataSetReader(reader))
+		_, err := c.Commit(context.Background(), CommitRequest{Pieces: []PieceInput{{PieceCID: info.CIDv2}}})
+		requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
+		if addCalls != 0 {
+			t.Fatalf("addCalls=%d want 0", addCalls)
+		}
+		if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+			t.Fatalf("reader calls=%d gotID=%s", reader.calls, reader.gotID.String())
+		}
+	})
+
+	t.Run("validator failure", func(t *testing.T) {
+		addCalls := 0
+		validator := &fakeDataSetValidator{err: want}
+		client := &fakePDPProviderClient{
+			addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+				addCalls++
+				t.Fatal("AddPieces must not run after validator failure")
+				return nil, nil
+			},
+		}
+		c := mustWritableDataSetContext(t, client, testDataSetRef(dataSetID, types.NewBigInt(7)), WithDataSetValidator(validator))
+		_, err := c.Commit(context.Background(), CommitRequest{Pieces: []PieceInput{{PieceCID: info.CIDv2}}})
+		if !errors.Is(err, want) {
+			t.Fatalf("Commit error=%v want %v", err, want)
+		}
+		if addCalls != 0 {
+			t.Fatalf("addCalls=%d want 0", addCalls)
+		}
+		if len(validator.calls) != 1 || !validator.calls[0].Equal(dataSetID) {
+			t.Fatalf("validator calls=%v", validator.calls)
+		}
+	})
+}
+
+func TestDataSetContextUploadRejectsEndedExistingDataSetBeforeStore(t *testing.T) {
+	dataSetID := types.NewBigInt(13269)
+	storeCalled := false
+	reader := &fakeFWSSDataSetReader{
+		info: &warmstorage.DataSetInfo{DataSetID: dataSetID, PDPEndEpoch: 3778900},
+	}
+	client := &fakePDPProviderClient{
+		uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			storeCalled = true
+			t.Fatal("Store must not run when the existing data set cannot accept uploads")
+			return nil, nil
+		},
+	}
+	c := mustWritableDataSetContext(t, client, testDataSetRef(dataSetID, types.NewBigInt(99)), WithFWSSDataSetReader(reader))
+	_, err := c.Upload(context.Background(), bytes.NewReader([]byte("payload")), nil)
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 3778900)
+	if storeCalled {
+		t.Fatal("Store was called")
+	}
+	if reader.calls != 1 || !reader.gotID.Equal(dataSetID) {
+		t.Fatalf("reader calls=%d gotID=%s", reader.calls, reader.gotID.String())
 	}
 }
 

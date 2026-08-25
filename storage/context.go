@@ -673,11 +673,17 @@ func (c *DataSetContext) PieceURL(pieceCID cid.Cid) string {
 
 // ProviderID returns the provider's numeric ID.
 func (c *ProviderContext) ProviderID() types.BigInt {
+	if c == nil || c.core == nil {
+		return types.BigInt{}
+	}
 	return copyBigInt(c.core.provider.ID)
 }
 
 // ProviderID returns the provider's numeric ID.
 func (c *DataSetContext) ProviderID() types.BigInt {
+	if c == nil || c.core == nil {
+		return types.BigInt{}
+	}
 	return copyBigInt(c.core.provider.ID)
 }
 

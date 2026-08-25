@@ -139,6 +139,7 @@ type CreateDataSetOptions struct {
 
 // CreateDataSetSubmission identifies a submitted create-dataset transaction.
 // Persist and restore all fields together; incomplete submissions are rejected.
+// A zero ProviderID is filled from the ProviderContext used to wait.
 type CreateDataSetSubmission struct {
 	ProviderID    types.BigInt
 	TransactionID string

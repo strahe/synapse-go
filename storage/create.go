@@ -275,10 +275,11 @@ func (s *Service) validateContextIdentity(op string, storageCtx StorageContext) 
 	if isNilStorageContext(storageCtx) {
 		return fmt.Errorf("%s: %w: nil storage context", op, ErrInvalidArgument)
 	}
+	if s.signerAddr == (common.Address{}) || !s.chainID.IsValid() || s.recordKeeper == (common.Address{}) {
+		return fmt.Errorf("%s: %w: service identity is incomplete (payer, chain, and record keeper)", op, ErrInvalidArgument)
+	}
 	identity := storageCtx.ContextIdentity()
-	if identity.Payer == s.signerAddr && identity.Payer != (common.Address{}) &&
-		identity.ChainID == s.chainID && identity.ChainID.IsValid() &&
-		identity.RecordKeeper == s.recordKeeper && identity.RecordKeeper != (common.Address{}) {
+	if identity.Payer == s.signerAddr && identity.ChainID == s.chainID && identity.RecordKeeper == s.recordKeeper {
 		return nil
 	}
 	return fmt.Errorf("%s: %w: context identity does not match service payer, chain, and record keeper", op, ErrInvalidArgument)
@@ -342,6 +343,12 @@ func isNilStorageContext(storageCtx StorageContext) bool {
 	if storageCtx == nil {
 		return true
 	}
+	switch c := storageCtx.(type) {
+	case *ProviderContext:
+		return c == nil || c.core == nil
+	case *DataSetContext:
+		return c == nil || c.core == nil
+	}
 	value := reflect.ValueOf(storageCtx)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
@@ -352,7 +359,7 @@ func isNilStorageContext(storageCtx StorageContext) bool {
 }
 
 func storageCtxID(storageCtx *ProviderContext) types.BigInt {
-	if storageCtx == nil {
+	if storageCtx == nil || storageCtx.core == nil {
 		return types.BigInt{}
 	}
 	return storageCtx.ProviderID()

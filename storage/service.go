@@ -767,16 +767,16 @@ func validateExplicitUploadOptions(opts *UploadOptions) error {
 		return nil
 	}
 	if opts.Copies != 0 {
-		return fmt.Errorf("%w: Copies is not supported by UploadToContexts", ErrInvalidArgument)
+		return fmt.Errorf("%w: Copies is not supported for explicit-context uploads", ErrInvalidArgument)
 	}
 	if len(opts.ExcludeProviderIDs) != 0 {
-		return fmt.Errorf("%w: ExcludeProviderIDs is not supported by UploadToContexts", ErrInvalidArgument)
+		return fmt.Errorf("%w: ExcludeProviderIDs is not supported for explicit-context uploads; pass it to SelectUploadContexts instead", ErrInvalidArgument)
 	}
 	if len(opts.DataSetMetadata) != 0 {
-		return fmt.Errorf("%w: DataSetMetadata is not supported by UploadToContexts", ErrInvalidArgument)
+		return fmt.Errorf("%w: DataSetMetadata is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}
 	if opts.WithCDN != nil {
-		return fmt.Errorf("%w: WithCDN is not supported by UploadToContexts", ErrInvalidArgument)
+		return fmt.Errorf("%w: WithCDN is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}
 	return nil
 }

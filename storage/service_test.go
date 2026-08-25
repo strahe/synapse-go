@@ -942,6 +942,8 @@ func TestServiceUploadToContextsValidatesBeforeReading(t *testing.T) {
 	tests := map[string][]StorageContext{
 		"empty":              nil,
 		"typed nil":          {(*fakeUploadContext)(nil)},
+		"nil-core provider":  {&ProviderContext{}},
+		"nil-core data set":  {&DataSetContext{}},
 		"duplicate provider": {valid, valid},
 		"identity mismatch":  {wrong},
 	}
@@ -975,6 +977,9 @@ func TestServiceUploadToContextsRejectsSelectionOptionsBeforeReading(t *testing.
 			result, err := svc.UploadToContexts(context.Background(), reader, []StorageContext{&fakeUploadContext{id: types.NewBigInt(1)}}, opts)
 			if result != nil || !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+			}
+			if !strings.Contains(err.Error(), "explicit-context uploads") {
+				t.Fatalf("error=%q want explicit-context uploads", err)
 			}
 			if reader.reads != 0 {
 				t.Fatalf("reader reads=%d want 0", reader.reads)

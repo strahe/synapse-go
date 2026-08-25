@@ -275,7 +275,7 @@ target. Its zero value is invalid; construct it explicitly and use accessors to
 read IDs.
 
 ```go
-ref, err := storage.NewDataSetRef(providerID, dataSetID, clientDataSetID)
+ref, err := storage.NewDataSetRef(providerID, dataSetID, dataSetCtx.ClientDataSetID())
 if err != nil {
     return err
 }

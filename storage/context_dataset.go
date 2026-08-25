@@ -145,6 +145,9 @@ func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, 
 func validateCreateDataSetSubmission(op string, providerID types.BigInt, submission CreateDataSetSubmission) (CreateDataSetSubmission, error) {
 	submission = copyCreateDataSetSubmission(submission)
 	if submission.ProviderID.IsZero() {
+		submission.ProviderID = copyBigInt(providerID)
+	}
+	if submission.ProviderID.IsZero() {
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: zero providerID", op, ErrInvalidArgument)
 	}
 	if !submission.ProviderID.Equal(providerID) {

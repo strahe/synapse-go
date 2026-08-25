@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -231,12 +232,39 @@ func TestServiceSelectUploadContextsDiscardsHardErrorResult(t *testing.T) {
 	}
 }
 
+func TestServiceSelectProviderContextRejectsNilCore(t *testing.T) {
+	svc := newTestService()
+	svc.contextSelector = &fakeContextSelector{providerFn: func(context.Context, SelectProviderContextOptions) (*ProviderContext, error) {
+		return &ProviderContext{}, nil
+	}}
+	result, err := svc.SelectProviderContext(context.Background(), SelectProviderContextOptions{})
+	if result != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+	}
+}
+
+func TestServiceUploadToContextsIncompleteServiceIdentity(t *testing.T) {
+	svc, err := New(Options{SignerAddress: testPayer()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	reader := &readCountingReader{}
+	result, err := svc.UploadToContexts(context.Background(), reader, []StorageContext{&fakeUploadContext{id: types.NewBigInt(1)}}, nil)
+	if result != nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "service identity") || strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument service identity", result, err)
+	}
+	if reader.reads != 0 {
+		t.Fatalf("reader reads=%d want 0", reader.reads)
+	}
+}
+
 func TestServiceSelectUploadContextsRejectsTypedNilAndIdentityMismatch(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		ctx  StorageContext
 	}{
 		{name: "typed nil", ctx: (*ProviderContext)(nil)},
+		{name: "nil core", ctx: &ProviderContext{}},
 		{name: "wrong payer", ctx: testProviderContextWithID(t, types.NewBigInt(1), ContextIdentity{
 			Payer: common.HexToAddress("0x9999"), ChainID: types.ChainID(314159), RecordKeeper: testRecordKeeper(),
 		})},
