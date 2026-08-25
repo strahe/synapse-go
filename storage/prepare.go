@@ -199,17 +199,6 @@ func validatePrepareCosts(costs *MultiContextCosts) error {
 	return nil
 }
 
-// prepareContext is the narrow subset of *Context that prepareRefs
-// consumes. Exported as a private interface so unit tests and alternate
-// UploadContext implementations can participate without a hard type
-// assertion to *Context. All public SDK context producers return values
-// that satisfy this interface.
-type prepareContext interface {
-	DataSetID() *types.BigInt
-	GetProviderInfo() Provider
-	WithCDN() bool
-}
-
 // prepareRefs builds the []ContextCostRef the cost calculator expects
 // from the user-supplied Contexts (or by calling CreateContexts). For
 // existing-dataset contexts, the current on-chain size is fetched in
@@ -225,10 +214,7 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 		if err != nil {
 			return nil, fmt.Errorf("storage.Service.Prepare: CreateContexts: %w", err)
 		}
-		contexts = make([]UploadContext, len(created))
-		for i, ctx := range created {
-			contexts[i] = ctx
-		}
+		contexts = created
 	}
 
 	refs := make([]ContextCostRef, len(contexts))
@@ -237,18 +223,17 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 		id  types.BigInt
 	}
 	var jobs []sizeJob
-	for i, uc := range contexts {
-		cc, ok := uc.(prepareContext)
-		if !ok {
-			return nil, fmt.Errorf("storage.Service.Prepare: %w: context must expose DataSetID/GetProviderInfo/WithCDN", ErrInvalidArgument)
-		}
+	for i, uploadCtx := range contexts {
 		refs[i] = ContextCostRef{
-			DataSetID: cc.DataSetID(),
-			Provider:  cc.GetProviderInfo(),
-			WithCDN:   cc.WithCDN(),
+			Provider: uploadCtx.GetProviderInfo(),
+			WithCDN:  uploadCtx.CDNEnabled(),
 		}
-		if id := cc.DataSetID(); id != nil && s.sizeReader != nil {
-			jobs = append(jobs, sizeJob{idx: i, id: *id})
+		if dataSet, ok := uploadCtx.DataSetRef(); ok {
+			id := copyBigInt(dataSet.DataSetID)
+			refs[i].DataSetID = &id
+			if s.sizeReader != nil {
+				jobs = append(jobs, sizeJob{idx: i, id: id})
+			}
 		}
 	}
 

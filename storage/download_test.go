@@ -32,7 +32,7 @@ func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
 			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 			return io.NopCloser(bytes.NewReader(bad)), int64(len(bad)), nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestContextDownload_WithCDNUsesRetrieverFirst(t *testing.T) {
 			return nil, 0, nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithCDN(true),
 		WithCDNRetriever(cdn),
 	)
@@ -166,7 +166,7 @@ func TestContextDownload_WithCDNFallbacksToPDPOnRetrieverError(t *testing.T) {
 			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithCDN(true),
 		WithCDNRetriever(cdn),
 	)
@@ -208,7 +208,7 @@ func TestContextDownload_WithCDNContextCancellationDoesNotFallback(t *testing.T)
 			return nil, 0, nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithCDN(true),
 		WithCDNRetriever(cdn),
 	)
@@ -243,7 +243,7 @@ func TestContextDownload_WithCDNFalseSkipsRetriever(t *testing.T) {
 			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithCDN(false),
 		WithCDNRetriever(cdn),
 	)
@@ -402,7 +402,7 @@ func TestContextDownload_RejectsPieceCIDv1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
 	}
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestContextDownload_RejectsNonPieceCID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cid.Parse: %v", err)
 	}
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}

@@ -54,7 +54,7 @@ func newTrackingMetadataResolver(t *testing.T, fixture serviceResolverFixture, c
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
 			return newResolvedTestContext(selection)
 		},
 	})
@@ -100,7 +100,7 @@ func TestServiceResolver_MetadataFetchStopsAtFirstMatch(t *testing.T) {
 		t.Fatal("explicit=false want true")
 	}
 	got := contextsToFake(t, contexts)
-	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(1)) {
+	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(1)) {
 		t.Fatalf("context=%+v want dataSetID 1", got)
 	}
 	calls := catalog.metadataCalls()
@@ -140,7 +140,7 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
 	got := contextsToFake(t, contexts)
-	if len(got) != 1 || got[0].dataSetID == nil || !got[0].dataSetID.Equal(testID(1)) {
+	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(1)) {
 		t.Fatalf("context=%+v want dataSetID 1", got)
 	}
 	metadataCtx := catalog.capturedMetadataContext()

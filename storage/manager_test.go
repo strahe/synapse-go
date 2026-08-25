@@ -183,12 +183,12 @@ func TestServiceManagerFacades_ValidateArguments(t *testing.T) {
 }
 
 func TestGetDefaultContext_UsesSingleContextDefaults(t *testing.T) {
-	managed, err := NewContext(testProvider(), &fakePDPProviderClient{}, nil)
+	managed, err := NewProviderContext(testProvider(), &fakePDPProviderClient{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolver := &fakeResolver{
-		contextContexts: []*Context{managed},
+		contextContexts: []UploadContext{managed},
 		captureFn: func(opts *UploadOptions) {
 			if opts == nil || opts.Copies != 1 {
 				t.Fatalf("GetDefaultContext options = %+v, want Copies=1", opts)

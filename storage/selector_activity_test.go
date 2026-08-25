@@ -90,7 +90,7 @@ func newActivityServiceResolver(t *testing.T, catalog *activityDataSetCatalog, v
 		WarmStorage:      catalog,
 		DataSetValidator: validator,
 		ProviderPing:     healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
 			return newResolvedTestContext(selection)
 		},
 	})
@@ -121,7 +121,7 @@ func activitySelectionFixture(providerID types.BigInt, dataSetIDs []types.BigInt
 	return fixture
 }
 
-func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt, requireWritable bool) ([]*Context, error) {
+func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt, requireWritable bool) ([]UploadContext, error) {
 	t.Helper()
 	opts := &UploadOptions{
 		ProviderIDs:     []types.BigInt{providerID},
@@ -142,9 +142,13 @@ func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID
 	return contextsToFake(t, contexts), nil
 }
 
-func requireSelectedDataSet(t *testing.T, contexts []*Context, want types.BigInt) {
+func requireSelectedDataSet(t *testing.T, contexts []UploadContext, want types.BigInt) {
 	t.Helper()
-	if len(contexts) != 1 || contexts[0].dataSetID == nil || !contexts[0].dataSetID.Equal(want) {
+	if len(contexts) != 1 {
+		t.Fatalf("contexts=%+v, want one data-set context", contexts)
+	}
+	ref, ok := contexts[0].DataSetRef()
+	if !ok || !ref.DataSetID.Equal(want) {
 		t.Fatalf("contexts=%+v, want dataSetID %s", contexts, want.String())
 	}
 }
@@ -207,7 +211,7 @@ func TestServiceResolverProviderIDActivitySelectionFallsBackWithoutPDPVerifier(t
 		SPRegistry:   &fakePDPProviderSource{fixture: catalog.fixture},
 		WarmStorage:  catalog,
 		ProviderPing: healthyProviderPing,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
 			return newResolvedTestContext(selection)
 		},
 	})
@@ -282,10 +286,10 @@ func TestServiceResolverProviderIDActivitySelectionCreatesNewWhenMetadataDoesNot
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
-	if len(contexts) != 1 || contexts[0].dataSetID != nil {
+	if len(contexts) != 1 || dataSetIDOf(contexts[0]) != nil {
 		t.Fatalf("contexts=%+v, want a new data set", contexts)
 	}
-	if got := contexts[0].dataSetMetadata; len(got) != 1 || got["source"] != "app" {
+	if got := dataSetMetadataOf(t, contexts[0]); len(got) != 1 || got["source"] != "app" {
 		t.Fatalf("new data set metadata=%v, want source=app", got)
 	}
 	if calls := catalog.activityCallIDs(); len(calls) != 0 {

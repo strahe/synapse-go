@@ -52,14 +52,16 @@ func (f *fakePDPConfigReader) GetPDPConfig(_ context.Context) (*warmstorage.PDPC
 	return f.cfg, f.err
 }
 
-func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfigReader) *Context {
+func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfigReader) *DataSetContext {
 	t.Helper()
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
+		ProviderID:      testProvider().ID,
+		DataSetID:       types.NewBigInt(42),
+		ClientDataSetID: types.NewBigInt(7),
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(42)),
-		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)
@@ -81,35 +83,15 @@ func TestContext_GetScheduledRemovals(t *testing.T) {
 	}
 }
 
-func TestContext_GetScheduledRemovals_WithoutDataSetReturnsEmpty(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(types.NewBigInt(7)),
-		WithPDPVerifierReader(&fakePDPReader{scheduled: []types.BigInt{types.NewBigInt(1), types.NewBigInt(2), types.NewBigInt(3)}}),
-		WithPDPConfigReader(&fakePDPConfigReader{}),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	got, err := c.GetScheduledRemovals(context.Background())
-	if err != nil {
-		t.Fatalf("GetScheduledRemovals: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("scheduled removals=%v want empty", got)
-	}
-}
-
 func TestContext_GetScheduledRemovals_NotConfigured(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
+		ProviderID:      testProvider().ID,
+		DataSetID:       types.NewBigInt(42),
+		ClientDataSetID: types.NewBigInt(7),
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(42)),
-		WithClientDataSetID(types.NewBigInt(7)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -198,12 +180,14 @@ func TestContext_PieceStatus_MainnetPopulatesProofTimes(t *testing.T) {
 		blockNumber:   110,
 	}
 	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 20, ChallengeWindowSize: big.NewInt(60)}}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
+		ProviderID:      testProvider().ID,
+		DataSetID:       types.NewBigInt(42),
+		ClientDataSetID: types.NewBigInt(7),
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314)),
-		WithDataSetID(types.NewBigInt(42)),
-		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)
@@ -243,12 +227,14 @@ func TestContext_PieceStatus_TypedNilPDPConfigReaderTreatedAsUnset(t *testing.T)
 	}
 	var cfg *fakePDPConfigReader
 
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
+		ProviderID:      testProvider().ID,
+		DataSetID:       types.NewBigInt(42),
+		ClientDataSetID: types.NewBigInt(7),
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(42)),
-		WithClientDataSetID(types.NewBigInt(7)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
 	)

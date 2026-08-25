@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -69,9 +70,9 @@ func TestManagerUpload_RejectsEndedExplicitDataSetBeforeStore(t *testing.T) {
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
 			contextBuilt = true
-			return NewContext(selection.Provider, &fakePDPProviderClient{}, mustTestSigner(t))
+			return NewProviderContext(selection.Provider, &fakePDPProviderClient{}, mustTestSigner(t))
 		},
 	})
 	if err != nil {
@@ -113,14 +114,8 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 		Payer:       testPayer(),
 		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 		WarmStorage: catalog,
-		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
-			return NewContext(
-				selection.Provider,
-				&fakePDPProviderClient{},
-				mustTestSigner(t),
-				WithDataSetID(*selection.DataSetID),
-				WithClientDataSetID(*selection.ClientDataSetID),
-			)
+		NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+			return newTestContextForSelection(t, selection, &fakePDPProviderClient{})
 		},
 	})
 	if err != nil {
@@ -134,25 +129,26 @@ func TestManagerCreateContext_AllowsEndedExplicitDataSetForDelete(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateContext: %v", err)
 	}
-	if got.DataSetID() == nil || !got.DataSetID().Equal(dataSetID) {
-		t.Fatalf("DataSetID=%v want %s", got.DataSetID(), dataSetID.String())
+	ref, ok := got.DataSetRef()
+	if !ok || !ref.DataSetID.Equal(dataSetID) {
+		t.Fatalf("DataSetRef()=(%+v, %t) want dataSetID %s", ref, ok, dataSetID.String())
 	}
 }
 
 func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
-		create func(*Service, context.Context) (*Context, error)
+		create func(*Service, context.Context) (UploadContext, error)
 	}{
 		{
 			name: "single",
-			create: func(s *Service, ctx context.Context) (*Context, error) {
+			create: func(s *Service, ctx context.Context) (UploadContext, error) {
 				return s.CreateContext(ctx, nil)
 			},
 		},
 		{
 			name: "multiple",
-			create: func(s *Service, ctx context.Context) (*Context, error) {
+			create: func(s *Service, ctx context.Context) (UploadContext, error) {
 				contexts, err := s.CreateContexts(ctx, nil)
 				if err != nil {
 					return nil, err
@@ -171,6 +167,12 @@ func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *
 				t.Fatalf("CalculateFromBytes: %v", err)
 			}
 			dataSetID := types.NewBigInt(13269)
+			reader := &fakeFWSSDataSetReader{
+				info: &warmstorage.DataSetInfo{
+					DataSetID:   dataSetID,
+					PDPEndEpoch: 3778900,
+				},
+			}
 			storeCalled := false
 			fake := &fakePDPProviderClient{
 				uploadStreamingFn: func(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
@@ -184,25 +186,22 @@ func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *
 					return nil, errors.New("add pieces should not run")
 				},
 			}
-			rawContext, err := NewContext(testProvider(), fake, mustTestSigner(t),
+			rawContext, err := NewDataSetContext(testProvider(), fake, mustTestSigner(t), DataSetRef{
+				ProviderID:      testProvider().ID,
+				DataSetID:       dataSetID,
+				ClientDataSetID: types.NewBigInt(99),
+			},
 				WithPayer(testPayer()),
 				WithRecordKeeper(testRecordKeeper()),
 				WithChainID(types.ChainID(314159)),
-				WithDataSetID(dataSetID),
-				WithClientDataSetID(types.NewBigInt(99)),
+				WithFWSSDataSetReader(reader),
 			)
 			if err != nil {
 				t.Fatalf("NewContext: %v", err)
 			}
-			reader := &fakeFWSSDataSetReader{
-				info: &warmstorage.DataSetInfo{
-					DataSetID:   dataSetID,
-					PDPEndEpoch: 3778900,
-				},
-			}
 			svc := newTestService()
 			svc.dsReader = reader
-			svc.contextResolver = &fakeResolver{contextContexts: []*Context{rawContext}}
+			svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{rawContext}}
 
 			got, err := tt.create(svc, context.Background())
 			if err != nil {
@@ -220,17 +219,17 @@ func TestManagerCreateContext_ReturnedContextRejectsEndedDataSetBeforeUpload(t *
 func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
-		create func(*Service, context.Context, types.BigInt) (*Context, error)
+		create func(*Service, context.Context, types.BigInt) (UploadContext, error)
 	}{
 		{
 			name: "single",
-			create: func(s *Service, ctx context.Context, providerID types.BigInt) (*Context, error) {
+			create: func(s *Service, ctx context.Context, providerID types.BigInt) (UploadContext, error) {
 				return s.CreateContext(ctx, &CreateContextOptions{ProviderID: &providerID})
 			},
 		},
 		{
 			name: "multiple",
-			create: func(s *Service, ctx context.Context, providerID types.BigInt) (*Context, error) {
+			create: func(s *Service, ctx context.Context, providerID types.BigInt) (UploadContext, error) {
 				contexts, err := s.CreateContexts(ctx, &CreateContextsOptions{ProviderIDs: []types.BigInt{providerID}})
 				if err != nil {
 					return nil, err
@@ -283,16 +282,13 @@ func TestManagerCreateContext_ReturnedContextRejectsValidatorFailureBeforeUpload
 				Payer:       testPayer(),
 				SPRegistry:  &fakePDPProviderSource{fixture: fixture},
 				WarmStorage: catalog,
-				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (*Context, error) {
-					return NewContext(
-						selection.Provider,
-						fake,
-						mustTestSigner(t),
+				NewContext: func(selection ResolvedUploadContext, _ *UploadOptions) (UploadContext, error) {
+					return newTestContextForSelection(t, selection, fake,
 						WithPayer(testPayer()),
 						WithRecordKeeper(testRecordKeeper()),
 						WithChainID(types.ChainID(314159)),
-						WithDataSetID(*selection.DataSetID),
-						WithClientDataSetID(*selection.ClientDataSetID),
+						WithDataSetValidator(catalog),
+						WithFWSSDataSetReader(catalog),
 					)
 				},
 			})
@@ -861,7 +857,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 }
 
-func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
+func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 	data := bytes.Repeat([]byte("ij"), 128)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
@@ -929,11 +925,15 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 			}, nil
 		},
 	}
-	replacement, err := NewContext(testProvider(), replacementClient, mustTestSigner(t),
+	clientDataSetID := types.NewBigInt(0xFEED)
+	replacement, err := NewDataSetContext(testProvider(), replacementClient, mustTestSigner(t), DataSetRef{
+		ProviderID:      testProvider().ID,
+		DataSetID:       dsID,
+		ClientDataSetID: clientDataSetID,
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(dsID),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -953,10 +953,11 @@ func TestManagerUpload_ReplacementAutoFetchesClientDataSetID(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 	if reader.calls != 1 {
-		t.Fatalf("reader.calls=%d want 1 (replacement existing dataset should auto-fetch once)", reader.calls)
+		t.Fatalf("reader.calls=%d want 1 (replacement existing dataset should be validated once)", reader.calls)
 	}
-	if replacement.clientDataSetID == nil {
-		t.Fatal("replacement clientDataSetID should be backfilled")
+	ref, ok := replacement.DataSetRef()
+	if !ok || !ref.ClientDataSetID.Equal(clientDataSetID) {
+		t.Fatalf("replacement DataSetRef()=(%+v, %t)", ref, ok)
 	}
 	if len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement.ProviderID()) {
 		t.Fatalf("copies=%+v want replacement provider %s in second slot", got.Copies, replacement.ProviderID())
@@ -994,11 +995,14 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 
 	replacementProvider := testProvider()
 	replacementProvider.ID = types.NewBigInt(404)
-	replacementCtx, err := NewContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t),
+	replacementCtx, err := NewDataSetContext(replacementProvider, &fakePDPProviderClient{}, mustTestSigner(t), DataSetRef{
+		ProviderID:      replacementProvider.ID,
+		DataSetID:       types.NewBigInt(404),
+		ClientDataSetID: types.NewBigInt(7),
+	},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(404)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -1053,7 +1057,7 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 
 type fakeResolver struct {
 	contexts         []UploadContext
-	contextContexts  []*Context
+	contextContexts  []UploadContext
 	explicit         bool
 	replacements     []UploadContext
 	replacementCalls int
@@ -1078,7 +1082,7 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.B
 	return next, nil
 }
 
-func (r *fakeResolver) ResolveContexts(_ context.Context, opts *UploadOptions) ([]*Context, error) {
+func (r *fakeResolver) ResolveContexts(_ context.Context, opts *UploadOptions) ([]UploadContext, error) {
 	if r.captureFn != nil {
 		r.captureFn(opts)
 	}
@@ -1088,15 +1092,7 @@ func (r *fakeResolver) ResolveContexts(_ context.Context, opts *UploadOptions) (
 	if r.contextContexts != nil {
 		return r.contextContexts, nil
 	}
-	out := make([]*Context, 0, len(r.contexts))
-	for _, ctx := range r.contexts {
-		concrete, ok := ctx.(*Context)
-		if !ok {
-			return nil, fmt.Errorf("fakeResolver.ResolveContexts: unexpected context type %T", ctx)
-		}
-		out = append(out, concrete)
-	}
-	return out, nil
+	return append([]UploadContext(nil), r.contexts...), nil
 }
 
 type uploadOnlyResolver struct{}
@@ -1126,6 +1122,17 @@ func (c *fakeUploadContext) ProviderID() types.BigInt  { return c.id }
 func (c *fakeUploadContext) ServiceURL() string        { return c.endpoint }
 func (c *fakeUploadContext) PieceURL(_ cid.Cid) string { return c.pieceURL }
 
+func (c *fakeUploadContext) DataSetRef() (DataSetRef, bool) {
+	if c.dataSetID == nil {
+		return DataSetRef{}, false
+	}
+	ref := DataSetRef{ProviderID: copyBigInt(c.id), DataSetID: copyBigInt(*c.dataSetID)}
+	if c.clientDataSetID != nil {
+		ref.ClientDataSetID = copyBigInt(*c.clientDataSetID)
+	}
+	return ref, true
+}
+
 func (c *fakeUploadContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if c.storeFn == nil {
 		return nil, fmt.Errorf("unexpected store")
@@ -1154,13 +1161,16 @@ func (c *fakeUploadContext) Commit(ctx context.Context, req CommitRequest) (*Com
 	return c.commitFn(ctx, req)
 }
 
+func (c *fakeUploadContext) Upload(context.Context, io.Reader, *UploadOptions) (*UploadResult, error) {
+	return nil, errors.New("unexpected Upload")
+}
+
+func (c *fakeUploadContext) Download(context.Context, cid.Cid) (io.ReadCloser, error) {
+	return nil, errors.New("unexpected Download")
+}
+
 func containsCall(calls []string, want string) bool {
-	for _, call := range calls {
-		if call == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(calls, want)
 }
 
 // TestManagerUpload_RequestedCopiesIsCallerRequested proves that

@@ -34,7 +34,7 @@ func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]type
 	return nil, ctx.Err()
 }
 
-func (ctxAwareResolver) ResolveContexts(ctx context.Context, _ *UploadOptions) ([]*Context, error) {
+func (ctxAwareResolver) ResolveContexts(ctx context.Context, _ *UploadOptions) ([]UploadContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -112,8 +112,8 @@ func (ctxAwarePDPConfigReader) GetPDPConfig(ctx context.Context) (*warmstorage.P
 func TestContextPieceStatus_Cancellation(t *testing.T) {
 	c := mustPieceStatusContext(t, nil, nil)
 	// Replace pdp readers with ctx-aware blockers.
-	c.pdpCaller = ctxAwarePDPReader{}
-	c.pdpConfig = ctxAwarePDPConfigReader{}
+	c.core.pdpCaller = ctxAwarePDPReader{}
+	c.core.pdpConfig = ctxAwarePDPConfigReader{}
 
 	pi, err := piecePCIDForTest()
 	if err != nil {

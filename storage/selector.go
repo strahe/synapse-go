@@ -83,13 +83,12 @@ type pdpVerifierAddressReader interface {
 // ResolvedUploadContext is the pre-selection result for one provider copy.
 type ResolvedUploadContext struct {
 	Provider        Provider
-	DataSetID       *types.BigInt     // nil when a new data set will be created
-	ClientDataSetID *types.BigInt     // stable caller-chosen ID reused across commits; nil for new datasets
+	DataSet         *DataSetRef       // nil when a new data set will be created
 	DataSetMetadata map[string]string // metadata carried into the new data set if created
 }
 
-// ContextFactory builds a managed Context from a resolved provider selection.
-type ContextFactory func(ResolvedUploadContext, *UploadOptions) (*Context, error)
+// ContextFactory builds an immutable upload context from a resolved target.
+type ContextFactory func(ResolvedUploadContext, *UploadOptions) (UploadContext, error)
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
@@ -106,7 +105,7 @@ type ServiceResolverOptions struct {
 	// and honor the context. nil uses [pdp.Client.Ping] with up to two retries for
 	// transient failures.
 	ProviderPing func(context.Context, string) error
-	NewContext   ContextFactory // called per-provider to construct a managed Context
+	NewContext   ContextFactory // called per-provider to construct an upload context
 }
 
 // ServiceResolver selects providers and data sets for each upload. Auto-select
@@ -194,8 +193,8 @@ func defaultProviderPing(ctx context.Context, serviceURL string) error {
 	return client.Ping(ctx)
 }
 
-// ResolveContexts returns up to one managed Context per requested copy.
-func (r *ServiceResolver) ResolveContexts(ctx context.Context, opts *UploadOptions) ([]*Context, error) {
+// ResolveContexts returns up to one immutable upload context per requested copy.
+func (r *ServiceResolver) ResolveContexts(ctx context.Context, opts *UploadOptions) ([]UploadContext, error) {
 	contexts, _, err := r.resolveContexts(ctx, opts, false, "storage.ServiceResolver.ResolveContexts")
 	return contexts, err
 }
@@ -231,31 +230,26 @@ func (r *ServiceResolver) resolveWritableUploadContexts(ctx context.Context, opt
 }
 
 func (r *ServiceResolver) resolveUploadContexts(ctx context.Context, opts *UploadOptions, requireWritable bool) ([]UploadContext, bool, error) {
-	contexts, explicit, err := r.resolveContexts(ctx, opts, requireWritable, "storage.ServiceResolver.ResolveUploadContexts")
-	if err != nil {
-		return nil, false, err
-	}
-	out := make([]UploadContext, len(contexts))
-	for i, ctx := range contexts {
-		out[i] = ctx
-	}
-	return out, explicit, nil
+	return r.resolveContexts(ctx, opts, requireWritable, "storage.ServiceResolver.ResolveUploadContexts")
 }
 
-func (r *ServiceResolver) resolveContexts(ctx context.Context, opts *UploadOptions, requireWritable bool, method string) ([]*Context, bool, error) {
+func (r *ServiceResolver) resolveContexts(ctx context.Context, opts *UploadOptions, requireWritable bool, method string) ([]UploadContext, bool, error) {
 	resolved, err := r.resolveSelectionsWithRetry(ctx, opts, nil, requireWritable)
 	if err != nil {
 		return nil, false, err
 	}
 	selections := resolved.selections
-	contexts := make([]*Context, 0, len(selections))
+	contexts := make([]UploadContext, 0, len(selections))
 	for _, selection := range selections {
-		uploadCtx, err := r.newContext(selection, opts)
+		uploadCtx, err := r.newContext(copyResolvedUploadContext(selection), opts)
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: build context for provider %s: %w", method, selection.Provider.ID.String(), err)
 		}
 		if uploadCtx == nil {
 			return nil, false, fmt.Errorf("%s: build context for provider %s: nil context", method, selection.Provider.ID.String())
+		}
+		if err := validateFactoryContext(selection, uploadCtx); err != nil {
+			return nil, false, fmt.Errorf("%s: build context for provider %s: %w", method, selection.Provider.ID.String(), err)
 		}
 		contexts = append(contexts, uploadCtx)
 	}
@@ -280,12 +274,15 @@ func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders m
 	if len(selections) == 0 {
 		return nil, errors.New("storage.ServiceResolver.SelectReplacement: no remaining providers")
 	}
-	uploadCtx, err := r.newContext(selections[0], opts)
+	uploadCtx, err := r.newContext(copyResolvedUploadContext(selections[0]), opts)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %s: %w", selections[0].Provider.ID.String(), err)
 	}
 	if uploadCtx == nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %s: nil context", selections[0].Provider.ID.String())
+	}
+	if err := validateFactoryContext(selections[0], uploadCtx); err != nil {
+		return nil, fmt.Errorf("storage.ServiceResolver.SelectReplacement: build context for provider %s: %w", selections[0].Provider.ID.String(), err)
 	}
 	return uploadCtx, nil
 }
@@ -370,7 +367,11 @@ func (r *ServiceResolver) resolveByDataSetIDs(ctx context.Context, opts *UploadO
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get data set metadata %s: %w", dataSetID.String(), err)
 		}
 		dsID := dataSetID
-		out = append(out, buildResolvedUploadContext(*provider, &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), metadata))
+		selection, err := buildResolvedUploadContext(*provider, &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), metadata)
+		if err != nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: data set %s: %w", dataSetID.String(), err)
+		}
+		out = append(out, selection)
 	}
 	if requireWritable {
 		if r.dataSetValidator == nil {
@@ -413,7 +414,11 @@ func (r *ServiceResolver) resolveByProviderIDs(ctx context.Context, opts *Upload
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, buildResolvedUploadContext(*provider, dataSetID, clientDataSetID, metadata))
+		selection, err := buildResolvedUploadContext(*provider, dataSetID, clientDataSetID, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s: %w", providerID.String(), err)
+		}
+		out = append(out, selection)
 	}
 	return out, nil
 }
@@ -577,12 +582,16 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 		switch state {
 		case providerProbeHealthy:
 			candidate := candidates[i]
-			selected = append(selected, buildResolvedUploadContext(
+			selection, err := buildResolvedUploadContext(
 				*candidate.provider,
 				candidate.dataSetID,
 				candidate.clientDataSetID,
 				candidate.metadata,
-			))
+			)
+			if err != nil {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: provider %s: %w", candidate.provider.Info.ID.String(), err)
+			}
+			selected = append(selected, selection)
 			if len(selected) == count {
 				return selected, nil
 			}
@@ -957,18 +966,75 @@ func resolvedDetailedDataSet(dataSet *warmstorage.EnhancedDataSetInfo) (*types.B
 	return &dsID, copyClientDataSetIDPtr(dataSet.ClientDataSetID), dataSet.Metadata
 }
 
-func buildResolvedUploadContext(provider spregistry.PDPProvider, dataSetID, clientDataSetID *types.BigInt, metadata map[string]string) ResolvedUploadContext {
-	return ResolvedUploadContext{
+func buildResolvedUploadContext(provider spregistry.PDPProvider, dataSetID, clientDataSetID *types.BigInt, metadata map[string]string) (ResolvedUploadContext, error) {
+	selection := ResolvedUploadContext{
 		Provider:        buildProvider(provider),
-		DataSetID:       copyIDPtr(dataSetID),
-		ClientDataSetID: copyBigIntPtr(clientDataSetID),
 		DataSetMetadata: cloneStringMap(metadata),
 	}
+	if dataSetID == nil {
+		if clientDataSetID != nil {
+			return ResolvedUploadContext{}, fmt.Errorf("%w: clientDataSetID without dataSetID", ErrInvalidArgument)
+		}
+		return selection, nil
+	}
+	if clientDataSetID == nil {
+		return ResolvedUploadContext{}, fmt.Errorf("%w: missing clientDataSetID for dataSetID %s", ErrInvalidArgument, dataSetID.String())
+	}
+	selection.DataSet = &DataSetRef{
+		ProviderID:      copyBigInt(provider.Info.ID),
+		DataSetID:       copyBigInt(*dataSetID),
+		ClientDataSetID: copyBigInt(*clientDataSetID),
+	}
+	return selection, nil
+}
+
+func copyResolvedUploadContext(selection ResolvedUploadContext) ResolvedUploadContext {
+	out := ResolvedUploadContext{
+		Provider: Provider{
+			ID:              copyBigInt(selection.Provider.ID),
+			ServiceURL:      selection.Provider.ServiceURL,
+			ServiceProvider: selection.Provider.ServiceProvider,
+			Payee:           selection.Provider.Payee,
+		},
+		DataSetMetadata: cloneStringMap(selection.DataSetMetadata),
+	}
+	if selection.DataSet != nil {
+		ref := copyDataSetRef(*selection.DataSet)
+		out.DataSet = &ref
+	}
+	return out
+}
+
+func validateFactoryContext(selection ResolvedUploadContext, uploadCtx UploadContext) error {
+	if !uploadCtx.ProviderID().Equal(selection.Provider.ID) {
+		return fmt.Errorf(
+			"%w: factory returned providerID %s, want %s",
+			ErrInvalidArgument,
+			uploadCtx.ProviderID().String(),
+			selection.Provider.ID.String(),
+		)
+	}
+	actual, bound := uploadCtx.DataSetRef()
+	if selection.DataSet == nil {
+		if bound {
+			return fmt.Errorf("%w: factory returned an unexpected data-set context", ErrInvalidArgument)
+		}
+		return nil
+	}
+	if !bound {
+		return fmt.Errorf("%w: factory returned a provider context for data set %s", ErrInvalidArgument, selection.DataSet.DataSetID.String())
+	}
+	if !actual.ProviderID.Equal(selection.DataSet.ProviderID) ||
+		!actual.DataSetID.Equal(selection.DataSet.DataSetID) ||
+		!actual.ClientDataSetID.Equal(selection.DataSet.ClientDataSetID) {
+		return fmt.Errorf("%w: factory returned the wrong data-set target", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func buildProvider(provider spregistry.PDPProvider) Provider {
 	return Provider{
-		ID:              provider.Info.ID,
+		ID:              copyBigInt(provider.Info.ID),
 		ServiceURL:      provider.Offering.ServiceURL,
 		ServiceProvider: provider.Info.ServiceProvider,
 		Payee:           provider.Info.Payee,
@@ -1053,14 +1119,6 @@ func dedupeIDs(values []types.BigInt) []types.BigInt {
 		out = append(out, value)
 	}
 	return out
-}
-
-func copyIDPtr(v *types.BigInt) *types.BigInt {
-	if v == nil {
-		return nil
-	}
-	cp := copyBigInt(*v)
-	return &cp
 }
 
 func copyBigInt(v types.BigInt) types.BigInt {

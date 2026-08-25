@@ -340,7 +340,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateContext: %v", err)
 	}
-	if !uctx.WithCDN() {
+	if !uctx.CDNEnabled() {
 		t.Fatal("created context has WithCDN=false")
 	}
 
@@ -358,18 +358,18 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 		recorder.Reset()
 		start = time.Now()
-		t.Logf("start CDNContextDownload Context.Download attempt %d", attempt)
+		t.Logf("start CDNContextDownload UploadContext.Download attempt %d", attempt)
 		rc, err := uctx.Download(cctx, result.PieceCID)
 		if err != nil {
 			lastErr = err
-			t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v err=%v",
+			t.Logf("done CDNContextDownload UploadContext.Download attempt %d elapsed=%s requests=%+v err=%v",
 				attempt, time.Since(start).Round(time.Second), recorder.Snapshot(), err)
 			continue
 		}
 		got, readErr := io.ReadAll(rc)
 		_ = rc.Close()
 		requests := recorder.Snapshot()
-		t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v",
+		t.Logf("done CDNContextDownload UploadContext.Download attempt %d elapsed=%s requests=%+v",
 			attempt, time.Since(start).Round(time.Second), requests)
 		if readErr != nil {
 			lastErr = readErr
@@ -1054,7 +1054,7 @@ func TestIntegration(t *testing.T) {
 		t.Run("CreateContexts", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			ctxs, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.Context, error) {
+			ctxs, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]storage.UploadContext, error) {
 				return sm.CreateContexts(ctx, &storage.CreateContextsOptions{Copies: 1})
 			})
 			checkRead(t, "CreateContexts", err)
@@ -1066,7 +1066,7 @@ func TestIntegration(t *testing.T) {
 		t.Run("CreateContext", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			single, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.Context, error) {
+			single, err := retryIntegrationRead(cctx, func(ctx context.Context) (storage.UploadContext, error) {
 				return sm.CreateContext(ctx, nil)
 			})
 			checkRead(t, "CreateContext(nil)", err)
@@ -1076,7 +1076,7 @@ func TestIntegration(t *testing.T) {
 		})
 	})
 
-	// --- ContextInspection: read methods on the Context produced by Upload. ---
+	// --- ContextInspection: read methods on the DataSetContext produced for the upload. ---
 	t.Run("ContextInspection", func(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("Upload subtest did not produce dataset/cid; skipping ContextInspection")
@@ -1090,6 +1090,10 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
 		}
+		dataSetCtx, ok := uctx.(*storage.DataSetContext)
+		if !ok {
+			t.Fatalf("context type = %T, want *storage.DataSetContext", uctx)
+		}
 
 		if uctx.ProviderID().IsZero() {
 			t.Errorf("ProviderID == 0")
@@ -1097,10 +1101,10 @@ func TestIntegration(t *testing.T) {
 		if uctx.ServiceURL() == "" {
 			t.Errorf("ServiceURL empty")
 		}
-		if got := uctx.DataSetID(); got == nil || !got.Equal(uploadedDataSetID) {
+		if got := dataSetCtx.DataSetID(); !got.Equal(uploadedDataSetID) {
 			t.Errorf("DataSetID = %v, want %s", got, uploadedDataSetID)
 		}
-		_ = uctx.WithCDN()
+		_ = uctx.CDNEnabled()
 		prov := uctx.GetProviderInfo()
 		if prov.ID.IsZero() {
 			t.Errorf("Provider.ID == 0")
@@ -1109,7 +1113,7 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("PieceURL empty")
 		}
 
-		ps, err := uctx.PieceStatus(cctx, uploadedCID)
+		ps, err := dataSetCtx.PieceStatus(cctx, uploadedCID)
 		if err != nil {
 			t.Fatalf("PieceStatus: %v", err)
 		}
@@ -1117,19 +1121,19 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("PieceStatus returned nil")
 		}
 
-		removals, err := uctx.GetScheduledRemovals(cctx)
+		removals, err := dataSetCtx.GetScheduledRemovals(cctx)
 		if err != nil {
 			t.Fatalf("GetScheduledRemovals: %v", err)
 		}
 		t.Logf("scheduled removals: %d", len(removals))
 
-		// Context-level Download.
+		// DataSetContext-level Download.
 		start := time.Now()
 		t.Log("start ContextInspection Download")
 		rc, err := uctx.Download(cctx, uploadedCID)
 		if err != nil {
 			t.Logf("done ContextInspection Download elapsed=%s", time.Since(start).Round(time.Second))
-			t.Fatalf("Context.Download: %v", err)
+			t.Fatalf("DataSetContext.Download: %v", err)
 		}
 		defer func() { _ = rc.Close() }()
 		got, err := io.ReadAll(rc)
@@ -1294,31 +1298,31 @@ func TestIntegration(t *testing.T) {
 		}
 
 		start := time.Now()
-		t.Log("start ExistingDataSet Context.Upload")
+		t.Log("start ExistingDataSet DataSetContext.Upload")
 		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedUploadOptions(t, "ExistingDataSet", nil))
-		t.Logf("done ExistingDataSet Context.Upload elapsed=%s", time.Since(start).Round(time.Second))
+		t.Logf("done ExistingDataSet DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
-			t.Fatalf("Context.Upload(existing dataset): %v", err)
+			t.Fatalf("DataSetContext.Upload(existing dataset): %v", err)
 		}
 		if !result.PieceCID.Defined() {
-			t.Fatal("Context.Upload(existing dataset) returned undefined PieceCID")
+			t.Fatal("DataSetContext.Upload(existing dataset) returned undefined PieceCID")
 		}
 		info, err := piece.ParseV2(result.PieceCID)
 		if err != nil {
-			t.Fatalf("Context.Upload(existing dataset) PieceCID must be v2: %v", err)
+			t.Fatalf("DataSetContext.Upload(existing dataset) PieceCID must be v2: %v", err)
 		}
 		if info.RawSize != uint64(len(extraData)) {
-			t.Fatalf("Context.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
+			t.Fatalf("DataSetContext.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
 		}
 		if len(result.Copies) != 1 {
-			t.Fatalf("Context.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
+			t.Fatalf("DataSetContext.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
 		}
 		copy0 := result.Copies[0]
 		if !copy0.DataSetID.Equal(uploadedDataSetID) {
-			t.Fatalf("Context.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
+			t.Fatalf("DataSetContext.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
 		}
 		if copy0.IsNewDataSet {
-			t.Fatal("Context.Upload(existing dataset) unexpectedly created a new dataset")
+			t.Fatal("DataSetContext.Upload(existing dataset) unexpectedly created a new dataset")
 		}
 
 		if err := ws.ValidateDataSet(cctx, uploadedDataSetID); err != nil {
@@ -1501,9 +1505,13 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateContext: %v", err)
 		}
+		dataSetCtx, ok := uctx.(*storage.DataSetContext)
+		if !ok {
+			t.Fatalf("context type = %T, want *storage.DataSetContext", uctx)
+		}
 
 		t.Log("start StorageLifecycle DeletePiece")
-		delRes, err := uctx.DeletePiece(cctx, uploadedCID)
+		delRes, err := dataSetCtx.DeletePiece(cctx, uploadedCID)
 		if err != nil {
 			t.Fatalf("DeletePiece: %v", err)
 		}

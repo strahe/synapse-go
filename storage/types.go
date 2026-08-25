@@ -37,7 +37,7 @@ const (
 	PullStatusFailed     PullStatus = "failed"
 )
 
-// StoreOptions configures a single Context.Store call.
+// StoreOptions configures a single provider or data-set context Store call.
 type StoreOptions struct {
 	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
 	// When set, the client skips inline commP calculation; the server still
@@ -70,6 +70,15 @@ type ConfirmedPiece struct {
 type PieceInput struct {
 	PieceCID      cid.Cid
 	PieceMetadata map[string]string // optional key-value metadata stored with the piece
+}
+
+// DataSetRef identifies one data set and the provider that owns it.
+// ProviderID and DataSetID must be non-zero. ClientDataSetID is the
+// caller-chosen uint256 used by EIP-712 authorization and may be zero.
+type DataSetRef struct {
+	ProviderID      types.BigInt
+	DataSetID       types.BigInt
+	ClientDataSetID types.BigInt
 }
 
 // PullRequest asks a secondary provider to pull pieces from a primary.
@@ -112,7 +121,7 @@ type CommitResult struct {
 	IsNewDataSet  bool // true when a new data set was created by this commit
 }
 
-// CreateDataSetOptions configures [Context.CreateDataSet].
+// CreateDataSetOptions configures [ProviderContext.CreateDataSet].
 type CreateDataSetOptions struct {
 	// OnSubmitted is invoked after the create transaction is submitted and
 	// before waiting for confirmation. It may be nil.
@@ -122,6 +131,7 @@ type CreateDataSetOptions struct {
 // CreateDataSetSubmission identifies a submitted create-dataset transaction.
 // Persist and restore all fields together; incomplete submissions are rejected.
 type CreateDataSetSubmission struct {
+	ProviderID    types.BigInt
 	TransactionID string
 	StatusURL     string
 	// ClientDataSetID must be non-nil when resuming a submitted create.
@@ -130,9 +140,8 @@ type CreateDataSetSubmission struct {
 
 // CreateDataSetResult is returned after standalone dataset creation confirms.
 type CreateDataSetResult struct {
-	TransactionID   string
-	DataSetID       types.BigInt
-	ClientDataSetID types.BigInt
+	TransactionID string
+	DataSet       DataSetRef
 }
 
 // CopyResult describes one successfully committed copy.
@@ -234,10 +243,11 @@ func (r *UploadResult) PartialSuccess() bool {
 //
 // Some lifecycle callbacks may be invoked from internal orchestration
 // goroutines. Callers that share mutable state across callbacks must keep their
-// handlers concurrency-safe. Service.Upload and Context.Upload recover and
-// ignore callback panics; when a logger is configured, the first panic per
-// callback name in an upload logs a warning. This recovery does not apply to
-// direct StoreOptions, PullRequest, or CommitRequest hooks.
+// handlers concurrency-safe. Service.Upload, ProviderContext.Upload, and
+// DataSetContext.Upload recover and ignore callback panics; when a logger is
+// configured, the first panic per callback name in an upload logs a warning.
+// This recovery does not apply to direct StoreOptions, PullRequest, or
+// CommitRequest hooks.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. Zero means the resolver
 	// default: the number of unique DataSetIDs or ProviderIDs when those are set,

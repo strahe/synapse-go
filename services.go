@@ -130,7 +130,7 @@ func (c *Client) initServices() error {
 		SPRegistry:   spReg,
 		WarmStorage:  ws,
 		ProviderPing: c.pingProvider,
-		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (*storage.Context, error) {
+		NewContext: func(sel storage.ResolvedUploadContext, opts *storage.UploadOptions) (storage.UploadContext, error) {
 			pdpClient, err := c.newPDPClient(sel.Provider.ServiceURL)
 			if err != nil {
 				return nil, fmt.Errorf("create PDP client for %s: %w", sel.Provider.ServiceURL, err)
@@ -154,18 +154,19 @@ func (c *Client) initServices() error {
 				storage.WithDataSetValidator(ws),
 				storage.WithPaymentStateReader(pay, c.ethClient, c.addresses.USDFC),
 			}
-			if sel.DataSetID != nil {
-				ctxOpts = append(ctxOpts, storage.WithDataSetID(*sel.DataSetID))
-			}
-			if sel.ClientDataSetID != nil {
-				ctxOpts = append(ctxOpts, storage.WithClientDataSetID(*sel.ClientDataSetID))
-			}
-			return storage.NewContext(
+			providerCtx, err := storage.NewProviderContext(
 				sel.Provider,
 				pdpClient,
 				c.evmSigner,
 				ctxOpts...,
 			)
+			if err != nil {
+				return nil, err
+			}
+			if sel.DataSet == nil {
+				return providerCtx, nil
+			}
+			return providerCtx.ForDataSet(*sel.DataSet)
 		},
 	})
 	if err != nil {
@@ -260,7 +261,7 @@ func (c *Client) FilBeam() *filbeam.Service {
 //
 // The service is wired with a [storage.ServiceResolver] that uses
 // [Client.WarmStorage] and [Client.SPRegistry]. A per-provider PDP client is
-// created inside the [storage.ContextFactory] closure whenever a managed
+// created inside the [storage.ContextFactory] closure whenever an immutable
 // storage context is resolved.
 func (c *Client) Storage() *storage.Service {
 	return c.storage

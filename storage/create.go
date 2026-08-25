@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -88,7 +87,7 @@ func (o *CreateContextOptions) toUploadOptions() *UploadOptions {
 // uploading. It picks providers, reuses or creates data sets according to
 // opts, and returns the resulting contexts. When opts is nil or opts.Copies
 // is zero the context resolver default (two copies in auto-select) applies.
-func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOptions) ([]*Context, error) {
+func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOptions) ([]UploadContext, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -110,15 +109,11 @@ func (s *Service) CreateContexts(ctx context.Context, opts *CreateContextsOption
 	if err := validateResolvedContexts(contexts); err != nil {
 		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
 	}
-	s.injectContextUploadGuards(contexts)
-	if err := s.populateClientDataSetIDs(ctx, contexts); err != nil {
-		return nil, fmt.Errorf("storage.Service.CreateContexts: %w", err)
-	}
 	return contexts, nil
 }
 
 // CreateContext is the single-copy convenience wrapper around CreateContexts.
-func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions) (*Context, error) {
+func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions) (UploadContext, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -155,10 +150,6 @@ func (s *Service) CreateContext(ctx context.Context, opts *CreateContextOptions)
 				opts.ProviderID.String(),
 			)
 		}
-	}
-	s.injectContextUploadGuards([]*Context{concrete})
-	if err := s.populateClientDataSetIDs(ctx, []*Context{concrete}); err != nil {
-		return nil, fmt.Errorf("storage.Service.CreateContext: %w", err)
 	}
 	return concrete, nil
 }
@@ -202,7 +193,7 @@ func validateCreateContextOptions(opts *CreateContextOptions) error {
 	return nil
 }
 
-func validateResolvedContexts(contexts []*Context) error {
+func validateResolvedContexts(contexts []UploadContext) error {
 	for i, ctx := range contexts {
 		if ctx == nil {
 			return fmt.Errorf("resolver returned nil context at index %d", i)
@@ -231,99 +222,8 @@ func cloneBigIntSlice(ids []types.BigInt) []types.BigInt {
 	return out
 }
 
-func (s *Service) injectContextUploadGuards(contexts []*Context) {
-	reader := s.dsReader
-	var validator DataSetValidator
-	if resolver, ok := s.contextResolver.(*ServiceResolver); ok {
-		if reader == nil {
-			reader = resolver.warmStorage
-		}
-		validator = resolver.dataSetValidator
-	} else if resolver, ok := s.resolver.(*ServiceResolver); ok {
-		if reader == nil {
-			reader = resolver.warmStorage
-		}
-		validator = resolver.dataSetValidator
-	}
-	if reader == nil && validator == nil {
-		return
-	}
-	for _, c := range contexts {
-		if c == nil {
-			continue
-		}
-		c.mu.Lock()
-		if reader != nil && c.dataSetReader == nil {
-			c.dataSetReader = reader
-		}
-		if validator != nil && c.dataSetValidator == nil {
-			c.dataSetValidator = validator
-		}
-		c.mu.Unlock()
-	}
-}
-
-// populateClientDataSetIDs is the F-48b safety net: for each resolved
-// Context bound to an existing on-chain dataSetID but missing
-// clientDataSetID (the resolver path normally populates it from the
-// FWSS dataset record, but a nil result on certain code paths is
-// possible), fetch the canonical value via FWSSDataSetReader and
-// inject it. Skipped silently when no FWSSDataSetReader is configured.
-//
-// Errors are surfaced unwrapped so callers can route transient
-// failures (context.Canceled, RPC timeouts, contract reverts) without
-// misclassifying them as ErrInvalidArgument. Only the genuinely-empty
-// FWSS result (info == nil) is wrapped as ErrInvalidArgument because
-// that indicates the dataSetID does not resolve to a valid record.
-func (s *Service) populateClientDataSetIDs(ctx context.Context, contexts []*Context) error {
-	if s.dsReader == nil {
-		return nil
-	}
-	cache := make(map[string]types.BigInt)
-	for _, c := range contexts {
-		if c == nil {
-			continue
-		}
-		c.mu.Lock()
-		needsFetch := c.dataSetID != nil && c.clientDataSetID == nil
-		var dsID types.BigInt
-		if needsFetch {
-			dsID = *c.dataSetID
-		}
-		c.mu.Unlock()
-		if !needsFetch {
-			continue
-		}
-		key := idconv.Key(dsID)
-		if cachedID, ok := cache[key]; ok {
-			c.mu.Lock()
-			if c.clientDataSetID == nil {
-				c.clientDataSetID = copyClientDataSetIDPtr(cachedID)
-			}
-			c.mu.Unlock()
-			continue
-		}
-		info, err := s.dsReader.GetDataSet(ctx, dsID)
-		if err != nil {
-			return fmt.Errorf("fetch ClientDataSetID for dataSetID %s: %w", dsID.String(), err)
-		}
-		if info == nil {
-			return fmt.Errorf("%w: FWSS returned no ClientDataSetID for dataSetID %s", ErrInvalidArgument, dsID.String())
-		}
-		cache[key] = copyClientDataSetID(info.ClientDataSetID)
-		c.mu.Lock()
-		// Re-check under lock in case a concurrent setter populated it
-		// between the unlocked read above and this point.
-		if c.clientDataSetID == nil {
-			c.clientDataSetID = copyClientDataSetIDPtr(cache[key])
-		}
-		c.mu.Unlock()
-	}
-	return nil
-}
-
 // GetDefaultContext returns a single auto-selected context using resolver
 // defaults.
-func (s *Service) GetDefaultContext(ctx context.Context) (*Context, error) {
+func (s *Service) GetDefaultContext(ctx context.Context) (UploadContext, error) {
 	return s.CreateContext(ctx, nil)
 }

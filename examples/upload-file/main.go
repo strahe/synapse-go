@@ -116,13 +116,9 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 	if err != nil {
 		return fmt.Errorf("create upload contexts: %w", err)
 	}
-	prepareContexts := make([]storage.UploadContext, len(contexts))
-	for i, c := range contexts {
-		prepareContexts[i] = c
-	}
 	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
 		DataSize: uint64(info.Size()),
-		Contexts: prepareContexts,
+		Contexts: contexts,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)
@@ -167,7 +163,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 }
 
 type uploadStorage interface {
-	CreateContexts(context.Context, *storage.CreateContextsOptions) ([]*storage.Context, error)
+	CreateContexts(context.Context, *storage.CreateContextsOptions) ([]storage.UploadContext, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
 	Upload(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
 }
@@ -176,7 +172,7 @@ type storageWorkflow struct {
 	svc *storage.Service
 }
 
-func (w storageWorkflow) CreateContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]*storage.Context, error) {
+func (w storageWorkflow) CreateContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]storage.UploadContext, error) {
 	return w.svc.CreateContexts(ctx, opts)
 }
 

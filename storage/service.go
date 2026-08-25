@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -28,17 +29,21 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// UploadContext abstracts one provider context used by upload and prepare
-// operations. Upload resolvers may return custom implementations; Service
-// methods that create managed contexts return [*Context] instead.
+// UploadContext abstracts one immutable provider or data-set target used by
+// upload and prepare operations. DataSetRef reports which kind was returned.
 type UploadContext interface {
 	ProviderID() types.BigInt
+	GetProviderInfo() Provider
+	DataSetRef() (DataSetRef, bool)
 	ServiceURL() string
+	CDNEnabled() bool
 	PieceURL(cid.Cid) string
 	Store(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
+	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 	PresignForCommit(context.Context, []PieceInput) ([]byte, error)
 	Pull(context.Context, PullRequest) (*PullResult, error)
 	Commit(context.Context, CommitRequest) (*CommitResult, error)
+	Upload(context.Context, io.Reader, *UploadOptions) (*UploadResult, error)
 }
 
 // UploadResolver selects provider contexts for upload operations and provides
@@ -51,20 +56,12 @@ type UploadResolver interface {
 // ContextResolver creates managed storage contexts for Service.CreateContext,
 // Service.CreateContexts, and the auto-create branch of Service.Prepare.
 type ContextResolver interface {
-	ResolveContexts(context.Context, *UploadOptions) ([]*Context, error)
+	ResolveContexts(context.Context, *UploadOptions) ([]UploadContext, error)
 }
 
 type writableUploadResolver interface {
 	resolveWritableUploadContexts(context.Context, *UploadOptions) ([]UploadContext, bool, error)
 	selectWritableReplacement(context.Context, map[string]types.BigInt, *UploadOptions) (UploadContext, error)
-}
-
-type dataSetIDContext interface {
-	DataSetID() *types.BigInt
-}
-
-type clientDataSetIDSetter interface {
-	setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.BigInt)
 }
 
 // Service orchestrates multi-copy uploads and downloads.
@@ -112,7 +109,7 @@ type Options struct {
 	// calls; Upload then returns a clean validation error.
 	Resolver UploadResolver
 
-	// ContextResolver creates managed *Context values for CreateContext(s)
+	// ContextResolver creates managed UploadContext values for CreateContext(s)
 	// and Prepare when PrepareOptions.Contexts is empty. When nil and
 	// Resolver also implements ContextResolver, New reuses Resolver.
 	ContextResolver ContextResolver
@@ -644,29 +641,22 @@ func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts [
 		return nil
 	}
 	for _, uploadCtx := range contexts {
-		dsCtx, ok := uploadCtx.(dataSetIDContext)
+		ref, ok := uploadCtx.DataSetRef()
 		if !ok {
 			continue
 		}
-		dataSetID := dsCtx.DataSetID()
-		if dataSetID == nil {
-			continue
-		}
-		info, err := s.dsReader.GetDataSet(ctx, *dataSetID)
+		info, err := s.dsReader.GetDataSet(ctx, ref.DataSetID)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return fmt.Errorf("validate data set %s: %w", dataSetID.String(), ctxErr)
+				return fmt.Errorf("validate data set %s: %w", ref.DataSetID.String(), ctxErr)
 			}
-			return fmt.Errorf("validate data set %s: %w", dataSetID.String(), err)
+			return fmt.Errorf("validate data set %s: %w", ref.DataSetID.String(), err)
 		}
 		if info == nil {
-			return fmt.Errorf("%w: FWSS returned no data set for dataSetID %s", ErrInvalidArgument, dataSetID.String())
+			return fmt.Errorf("%w: FWSS returned no data set for dataSetID %s", ErrInvalidArgument, ref.DataSetID.String())
 		}
-		if err := validateDataSetAcceptsUploads(*dataSetID, info.PDPEndEpoch); err != nil {
+		if err := validateDataSetAcceptsUploads(ref.DataSetID, info.PDPEndEpoch); err != nil {
 			return err
-		}
-		if setter, ok := uploadCtx.(clientDataSetIDSetter); ok {
-			setter.setClientDataSetIDIfMissing(*dataSetID, info.ClientDataSetID)
 		}
 	}
 	return nil
@@ -677,9 +667,7 @@ func cloneMetadata(opts *UploadOptions) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(opts.PieceMetadata))
-	for k, v := range opts.PieceMetadata {
-		out[k] = v
-	}
+	maps.Copy(out, opts.PieceMetadata)
 	return out
 }
 
@@ -712,9 +700,7 @@ func (s *Service) withSourceMetadata(opts *UploadOptions) *UploadOptions {
 	}
 	cloned := *opts
 	cloned.DataSetMetadata = make(map[string]string, len(opts.DataSetMetadata)+1)
-	for k, v := range opts.DataSetMetadata {
-		cloned.DataSetMetadata[k] = v
-	}
+	maps.Copy(cloned.DataSetMetadata, opts.DataSetMetadata)
 	cloned.DataSetMetadata["source"] = s.source
 	return &cloned
 }

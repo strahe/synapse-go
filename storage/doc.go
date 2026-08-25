@@ -1,11 +1,12 @@
 // Package storage provides the multi-copy upload orchestration service.
 //
 // The central types are [*Service] (high-level upload/download operations),
-// [*Context] (per-provider store/pull/commit/download operations), and
-// [*ServiceResolver] (selection + dataset-reuse wiring against warmstorage and
-// spregistry services). [UploadResolver] is the upload-facing selection
-// contract; [ContextResolver] is the managed-context creation contract used by
-// CreateContext(s) and Prepare's auto-create path.
+// [*ProviderContext] (an immutable provider target), [*DataSetContext] (an
+// immutable provider + data-set target), and [*ServiceResolver] (selection +
+// data-set-reuse wiring against warmstorage and spregistry services).
+// [UploadResolver] is the upload-facing selection contract; [ContextResolver]
+// is the context-creation contract used by CreateContext(s) and Prepare's
+// auto-create path.
 //
 // # Manager-level operations
 //
@@ -27,12 +28,15 @@
 // Prepare's auto-created contexts are estimate-only; they are not cached,
 // reserved, or bound to a later [Service.Upload] call.
 //
-// Per-context manager operations live on [*Context]: [Context.Upload]
-// (single-copy), [Context.DeletePieceByID], [Context.DeletePiece],
-// [Context.PieceStatus], [Context.GetScheduledRemovals] and
-// [Context.Terminate] and [Context.TerminateService]. TerminateService asks
-// the provider to relay by default; pass SkipProvider for the direct FWSS
-// transaction path while still receiving EndEpoch from the receipt.
+// Both concrete context types support single-copy Upload, Store, Pull, Commit,
+// PresignForCommit, and Download. Data-set lifecycle operations live only on
+// [*DataSetContext]: [DataSetContext.DeletePieceByID],
+// [DataSetContext.DeletePiece], [DataSetContext.PieceStatus],
+// [DataSetContext.GetScheduledRemovals], [DataSetContext.Terminate], and
+// [DataSetContext.TerminateService]. Standalone creation and recovery live only
+// on [*ProviderContext]. TerminateService asks the provider to relay by default;
+// pass SkipProvider for the direct FWSS transaction path while still receiving
+// EndEpoch from the receipt.
 //
 // # Upload Flow
 //
@@ -59,18 +63,19 @@
 // PDPEndEpoch.
 //
 // Downloads are validated as they stream so callers can keep io.Reader-style
-// boundaries without skipping PieceCID verification. Context.Download can use
-// a CDN-backed retriever first when the context has CDN enabled, then fall back
-// to provider PDP retrieval on ordinary CDN failures. For URL-based
+// boundaries without skipping PieceCID verification. A context Download can
+// use a CDN-backed retriever first when CDN is enabled, then fall back to
+// provider PDP retrieval on ordinary CDN failures. For URL-based
 // [Service.Download] calls, the default HTTP client refuses to dial local,
 // private, multicast, unspecified, or otherwise reserved address ranges to
 // guard against SSRF, and it ignores environment-variable proxies for the same
 // reason; set [Options.AllowPrivateNetworks] when connecting to trusted private
 // infrastructure, or provide [Options.HTTPClient] if you need explicit proxy
-// control. [Context.Download] uses the PDP/CDN clients attached to the context
-// and is not covered by this default SSRF guard. Bound the number of bytes
+// control. [ProviderContext.Download] and [DataSetContext.Download] use the
+// PDP/CDN clients attached to the context and are not covered by this default
+// SSRF guard. Bound the number of bytes
 // accepted per URL-based Service.Download call via [Options.DownloadMaxBytes];
-// Context.Download is not subject to this cap.
+// context Download calls are not subject to this cap.
 //
 // [UploadOptions] exposes per-upload lifecycle hooks covering the full
 // store → pull → commit pipeline:
@@ -86,21 +91,28 @@
 //     (presign failures remain FailedAttempts-only).
 //   - [UploadOptions.OnPullProgress] — per-piece status update during a secondary pull.
 //
-// [Service.Upload] and [Context.Upload] recover and ignore [UploadOptions]
-// callback panics. If a logger is configured, the first panic per callback name
-// in an upload is logged as a warning. Direct staged hooks on [StoreOptions],
-// [PullRequest], and [CommitRequest] are invoked as-is and are not covered by
-// this recovery guarantee.
+// [Service.Upload], [ProviderContext.Upload], and [DataSetContext.Upload]
+// recover and ignore [UploadOptions] callback panics. If a logger is configured,
+// the first panic per callback name in an upload is logged as a warning. Direct
+// staged hooks on [StoreOptions], [PullRequest], and [CommitRequest] are invoked
+// as-is and are not covered by this recovery guarantee.
 //
-// [Context.Pull] checks that each requested piece resolves to a non-empty
-// source URL. The PDP provider performs stricter source-URL validation before executing
-// the provider-to-provider pull.
+// ProviderContext and DataSetContext Pull operations check that each requested
+// piece resolves to a non-empty source URL. The PDP provider performs stricter
+// source-URL validation before executing the provider-to-provider pull.
 //
 // Callers that need restartable staged uploads can split secondary creation
-// from piece registration: build a context with [Service.CreateContext], call
-// [Context.CreateDataSet], persist the [CreateDataSetSubmission] from
-// [CreateDataSetOptions.OnSubmitted], resume with [Context.WaitForDataSetCreated]
-// if needed, then run [Context.Pull] and [Context.Commit].
+// from piece registration: obtain a [*ProviderContext], call
+// [ProviderContext.CreateDataSet], persist the [CreateDataSetSubmission] from
+// [CreateDataSetOptions.OnSubmitted], and resume with
+// [ProviderContext.WaitForDataSetCreated] if needed. Pass the resulting
+// [DataSetRef] to [ProviderContext.ForDataSet], then run Pull and Commit on the
+// returned [*DataSetContext]. ProviderContext never binds itself after create.
+//
+// Go contexts intentionally differ from the mutable data-set-ID model in the
+// TypeScript baseline: a context's target never changes after construction.
+// Concurrent ProviderContext creates are independent, while commits to one
+// DataSetContext may enter the provider API concurrently.
 //
 // # Stability
 //

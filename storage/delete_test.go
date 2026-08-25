@@ -9,33 +9,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
-// TestContext_DeletePiece_ExistingDataSetRequiresClientDataSetID locks
-// the guard that rejects existing-dataset contexts without a supplied
-// ClientDataSetID.
-func TestContext_DeletePiece_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
-	info := mustPieceInfo(t)
-	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42)}}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithPDPVerifierReader(pdp),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	_, err = c.DeletePiece(context.Background(), info.CIDv2)
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v want ErrInvalidArgument", err)
-	}
-	if !strings.Contains(err.Error(), "clientDataSetID is required") {
-		t.Fatalf("error must mention clientDataSetID requirement; got: %v", err)
-	}
+func mustDeleteContext(t *testing.T, client PDPProviderClient, opts ...ContextOption) *DataSetContext {
+	t.Helper()
+	return mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(77), types.NewBigInt(3)), opts...)
 }
 
 func TestContext_DeletePiece_DeletesFirstCIDMatch(t *testing.T) {
@@ -51,17 +30,12 @@ func TestContext_DeletePiece_DeletesFirstCIDMatch(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 	res, err := c.DeletePiece(context.Background(), info.CIDv2)
 	if err != nil {
 		t.Fatalf("DeletePiece: %v", err)
@@ -89,19 +63,12 @@ func TestContext_DeletePiece_UsesSnapshotDataSetID(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	pdp.mutate = func() { setContextDataSetID(c, types.NewBigInt(88)) }
-
 	if _, err := c.DeletePiece(context.Background(), info.CIDv2); err != nil {
 		t.Fatalf("DeletePiece: %v", err)
 	}
@@ -124,16 +91,11 @@ func TestContext_DeletePieceByID_Success(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 
 	res, err := c.DeletePieceByID(context.Background(), types.NewBigInt(42))
 	if err != nil {
@@ -158,19 +120,11 @@ func TestContext_DeletePieceByID_UsesSnapshotDataSetID(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	mutatingSigner := &dataSetMutatingSigner{EVMSigner: mustTestSigner(t)}
-	c, err := NewContext(testProvider(), fake, mutatingSigner,
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	mutatingSigner.mutate = func() { setContextDataSetID(c, types.NewBigInt(88)) }
-
 	if _, err := c.DeletePieceByID(context.Background(), types.NewBigInt(42)); err != nil {
 		t.Fatalf("DeletePieceByID: %v", err)
 	}
@@ -187,16 +141,11 @@ func TestContext_DeletePieceByID_AllowsZeroPieceID(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 
 	if _, err := c.DeletePieceByID(context.Background(), types.NewBigInt(0)); err != nil {
 		t.Fatalf("DeletePieceByID: %v", err)
@@ -216,17 +165,12 @@ func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithDataSetValidator(validator),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 
 	if _, err := c.DeletePieceByID(context.Background(), types.NewBigInt(42)); err != nil {
 		t.Fatalf("DeletePieceByID: %v", err)
@@ -239,39 +183,15 @@ func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
 	}
 }
 
-func TestContext_DeletePieceByID_ExistingDataSetRequiresClientDataSetID(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	_, err = c.DeletePieceByID(context.Background(), types.NewBigInt(42))
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v want ErrInvalidArgument", err)
-	}
-	if !strings.Contains(err.Error(), "clientDataSetID is required") {
-		t.Fatalf("error must mention clientDataSetID requirement; got: %v", err)
-	}
-}
-
 func TestContext_DeletePiece_PieceNotFound(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findIDs: nil}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 	if _, err := c.DeletePiece(context.Background(), info.CIDv2); err == nil {
 		t.Fatal("expected error when piece not found")
 	}
@@ -280,17 +200,12 @@ func TestContext_DeletePiece_PieceNotFound(t *testing.T) {
 func TestContext_DeletePiece_FindError(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findErr: errors.New("rpc boom")}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 	if _, err := c.DeletePiece(context.Background(), info.CIDv2); err == nil {
 		t.Fatal("expected error")
 	}
@@ -298,17 +213,12 @@ func TestContext_DeletePiece_FindError(t *testing.T) {
 
 func TestContext_DeletePiece_InvalidCID(t *testing.T) {
 	pdp := &fakePDPReader{}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 	if _, err := c.DeletePiece(context.Background(), cid.Undef); err == nil {
 		t.Fatal("expected error for undefined CID")
 	}
@@ -323,17 +233,12 @@ func TestContext_DeletePiece_RejectsZeroRecordKeeper(t *testing.T) {
 			return common.Hash{}, nil
 		},
 	}
-	c, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	c := mustDeleteContext(t, fake,
 		WithPayer(testPayer()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	_, err = c.DeletePiece(context.Background(), info.CIDv2)
+	_, err := c.DeletePiece(context.Background(), info.CIDv2)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("err=%v want ErrInvalidArgument", err)
 	}
@@ -346,17 +251,12 @@ func TestContext_DeletePiece_TypedNilPDPReaderTreatedAsUnset(t *testing.T) {
 	info := mustPieceInfo(t)
 	var pdp *fakePDPReader
 
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(77)),
-		WithClientDataSetID(types.NewBigInt(3)),
 		WithPDPVerifierReader(pdp),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -364,7 +264,7 @@ func TestContext_DeletePiece_TypedNilPDPReaderTreatedAsUnset(t *testing.T) {
 		}
 	}()
 
-	_, err = c.DeletePiece(context.Background(), info.CIDv2)
+	_, err := c.DeletePiece(context.Background(), info.CIDv2)
 	if err == nil || !strings.Contains(err.Error(), "PDPVerifier reader not configured") {
 		t.Fatalf("err=%v want PDPVerifier reader not configured", err)
 	}
@@ -382,23 +282,4 @@ func (r *dataSetMutatingPDPReader) FindPieceIdsByCid(_ context.Context, dataSetI
 		r.mutate()
 	}
 	return r.findIDs, r.findErr
-}
-
-type dataSetMutatingSigner struct {
-	signer.EVMSigner
-	mutate func()
-}
-
-func (s *dataSetMutatingSigner) SignHash(_ []byte) ([]byte, error) {
-	if s.mutate != nil {
-		s.mutate()
-	}
-	return make([]byte, 65), nil
-}
-
-func setContextDataSetID(c *Context, id types.BigInt) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	v := id
-	c.dataSetID = &v
 }

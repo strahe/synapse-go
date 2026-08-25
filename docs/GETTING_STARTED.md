@@ -163,8 +163,7 @@ if prep.Transaction != nil {
 
 If you already selected contexts, pass them through `PrepareOptions.Contexts`
 so the estimate matches the exact providers and datasets. `CreateContexts`
-returns managed `*storage.Context` values; convert the slice element-by-element
-when filling the `[]storage.UploadContext` field.
+already returns `[]storage.UploadContext`.
 
 For read-only cost and account state, use `GetStorageInfo` or
 `CalculateMultiContextCosts`.
@@ -188,14 +187,9 @@ fmt.Println("contexts:", len(contexts))
 ```
 
 ```go
-prepareContexts := make([]storage.UploadContext, len(contexts))
-for i, c := range contexts {
-    prepareContexts[i] = c
-}
-
 prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
     DataSize: uint64(payloadSize),
-    Contexts: prepareContexts,
+    Contexts: contexts,
 })
 if err != nil {
     return err
@@ -224,7 +218,8 @@ fmt.Println(result.PieceCID)
 ```
 
 When resuming a known dataset, pass `DataSetID`. If you also pass
-`ProviderID`, the SDK checks that the dataset belongs to that provider.
+`ProviderID`, the SDK checks that the dataset belongs to that provider. The
+returned value has concrete type `*storage.DataSetContext`.
 
 ```go
 dataSetID := types.NewBigInt(456)
@@ -236,15 +231,37 @@ ctx1, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
 if err != nil {
     return err
 }
+
+dataSetCtx, ok := ctx1.(*storage.DataSetContext)
+if !ok {
+    return fmt.Errorf("expected a data-set context")
+}
+ref, _ := dataSetCtx.DataSetRef()
+fmt.Println("dataset:", ref.DataSetID)
 ```
 
 To create an empty dataset first, persist the submission if your process may
-restart before confirmation:
+restart before confirmation. Creation is available only on a
+`*storage.ProviderContext`; use metadata that does not match an existing data
+set when you need the resolver to return an unbound provider target.
 
 ```go
+uniqueJobID := fmt.Sprintf("create-empty-%d", time.Now().UnixNano())
+uploadCtx, err := client.Storage().CreateContext(ctx, &storage.CreateContextOptions{
+    ProviderID:      &providerID,
+    DataSetMetadata: map[string]string{"job": uniqueJobID},
+})
+if err != nil {
+    return err
+}
+providerCtx, ok := uploadCtx.(*storage.ProviderContext)
+if !ok {
+    return fmt.Errorf("resolver reused an existing data set")
+}
+
 var submitted storage.CreateDataSetSubmission
 
-created, err := ctx1.CreateDataSet(ctx, &storage.CreateDataSetOptions{
+created, err := providerCtx.CreateDataSet(ctx, &storage.CreateDataSetOptions{
     OnSubmitted: func(s storage.CreateDataSetSubmission) {
         submitted = s
     },
@@ -252,18 +269,32 @@ created, err := ctx1.CreateDataSet(ctx, &storage.CreateDataSetOptions{
 if err != nil {
     return err
 }
-fmt.Println("dataset:", created.DataSetID)
+fmt.Println("dataset:", created.DataSet.DataSetID)
 ```
 
-Resume a submitted create transaction:
+Resume a submitted create transaction with any fresh `ProviderContext` for the
+same provider, then convert the returned reference without mutating that
+context:
 
 ```go
-created, err := ctx1.WaitForDataSetCreated(ctx, submitted)
+created, err := providerCtx.WaitForDataSetCreated(ctx, submitted)
 if err != nil {
     return err
 }
-fmt.Println("dataset:", created.DataSetID)
+dataSetCtx, err := providerCtx.ForDataSet(created.DataSet)
+if err != nil {
+    return err
+}
+fmt.Println("dataset:", dataSetCtx.DataSetID())
 ```
+
+`ProviderContext` and `DataSetContext` are immutable. This is an intentional Go
+API difference from the mutable `_dataSetId` model in the TypeScript baseline
+fixed at commit `a1d44296ad27b4a2631cb744de95a6a94c8097a7`: create and
+create-and-add results never retarget the
+receiver. Concurrent operations therefore have explicit semantics: provider
+creates are independent, while adds on one data-set context can proceed in
+parallel.
 
 Use `GetDefaultContext` when the context resolver defaults are enough.
 Advanced callers can split a context upload into `Store`, `Pull`,
@@ -275,13 +306,13 @@ Common management calls:
 
 - `FindDataSets`: list datasets owned by the signer or another payer.
 - `GetStorageInfo`: inspect providers, pricing, limits, and allowances.
-- `Context.Download`: download from a known provider and dataset context.
-- `Context.DeletePieceByID`: schedule exact removal by on-chain piece ID.
-- `Context.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
+- `ProviderContext.Download` / `DataSetContext.Download`: download from a known provider.
+- `DataSetContext.DeletePieceByID`: schedule exact removal by on-chain piece ID.
+- `DataSetContext.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
   `DeletePieceByID` when available, because repeated uploads can share a CID.
-- `Context.TerminateService` / `Service.TerminateService`: terminate service
+- `DataSetContext.TerminateService` / `Service.TerminateService`: terminate service
   through the provider by default; use `SkipProvider` for direct FWSS fallback.
-- `Context.Terminate` / `Service.TerminateDataSet`: legacy direct FWSS
+- `DataSetContext.Terminate` / `Service.TerminateDataSet`: legacy direct FWSS
   termination write.
 
 Termination and removal are storage lifecycle actions. Treat them as

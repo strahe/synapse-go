@@ -34,11 +34,10 @@ func (f *fakeFWSSTerminator) TerminateDataSet(_ context.Context, id types.BigInt
 }
 
 func TestContext_Terminate_NotConfigured(t *testing.T) {
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(1)),
 	)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
@@ -50,11 +49,10 @@ func TestContext_Terminate_NotConfigured(t *testing.T) {
 
 func TestContext_Terminate_Passthrough(t *testing.T) {
 	term := &fakeFWSSTerminator{res: &types.WriteResult{Hash: common.HexToHash("0xdead")}}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(123), types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(123)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -74,11 +72,10 @@ func TestContext_Terminate_Passthrough(t *testing.T) {
 
 func TestContext_Terminate_PropagatesError(t *testing.T) {
 	term := &fakeFWSSTerminator{err: errors.New("terminate failed")}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(1)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -126,11 +123,10 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 			}, nil
 		},
 	}
-	c, err := NewContext(testProvider(), client, s,
+	c, err := NewDataSetContext(testProvider(), client, s, testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(payer),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(dataSetID),
 		WithPaymentStateReader(pay, fakeTerminationEpochReader{block: 10}, common.HexToAddress("0x9999")),
 	)
 	if err != nil {
@@ -170,11 +166,10 @@ func TestContext_TerminateService_ProviderWaitTimeout(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	c, err := NewContext(testProvider(), client, s,
+	c, err := NewDataSetContext(testProvider(), client, s, testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(s.EVMAddress()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(dataSetID),
 		WithPaymentStateReader(&fakeTerminationPaymentReader{account: &payments.AccountState{}}, fakeTerminationEpochReader{block: 10}, common.HexToAddress("0x9999")),
 	)
 	if err != nil {
@@ -192,16 +187,15 @@ func TestContext_TerminateService_ProviderWaitTimeout(t *testing.T) {
 func TestContext_TerminateService_DebtPrecheckSkipsProvider(t *testing.T) {
 	s := mustTestSigner(t)
 	calledProvider := false
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{
 		terminateServiceFn: func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error) {
 			calledProvider = true
 			return nil, nil
 		},
-	}, s,
+	}, s, testDataSetRef(types.NewBigInt(7), types.BigInt{}),
 		WithPayer(s.EVMAddress()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(7)),
 		WithPaymentStateReader(&fakeTerminationPaymentReader{
 			account: &payments.AccountState{
 				Funds:         new(big.Int),
@@ -215,8 +209,7 @@ func TestContext_TerminateService_DebtPrecheckSkipsProvider(t *testing.T) {
 	}
 
 	_, err = c.TerminateService(context.Background(), nil)
-	var debtErr *TerminateServiceDebtError
-	if !errors.As(err, &debtErr) {
+	if _, ok := errors.AsType[*TerminateServiceDebtError](err); !ok {
 		t.Fatalf("err=%T %v want TerminateServiceDebtError", err, err)
 	}
 	if calledProvider {
@@ -235,11 +228,10 @@ func TestContext_TerminateService_ResumesPendingRequest(t *testing.T) {
 			return &pdp.TerminateServiceStatus{FWSSTerminated: true, ServiceTerminationEpoch: 99}, nil
 		},
 	}
-	c, err := NewContext(testProvider(), client, s,
+	c, err := NewDataSetContext(testProvider(), client, s, testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(s.EVMAddress()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(dataSetID),
 		WithPaymentStateReader(&fakeTerminationPaymentReader{account: &payments.AccountState{}}, fakeTerminationEpochReader{block: 10}, common.HexToAddress("0x9999")),
 	)
 	if err != nil {
@@ -262,11 +254,10 @@ func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
 		Hash:    txHash,
 		Receipt: terminateReceipt(t, dataSetID, 456, 99),
 	}}
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(dataSetID),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -421,11 +412,10 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 func TestContext_Terminate_TypedNilTerminatorTreatedAsUnset(t *testing.T) {
 	var term *fakeFWSSTerminator
 
-	c, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithDataSetID(types.NewBigInt(1)),
 		WithFWSSTerminator(term),
 	)
 	if err != nil {
@@ -502,61 +492,4 @@ func terminateReceipt(t *testing.T, dataSetID types.BigInt, endEpoch uint64, pdp
 		Data: data,
 	}
 	return &coretypes.Receipt{Logs: []*coretypes.Log{log}}
-}
-
-func TestContext_Terminate_CanRunWhileDataSetCreationCompletes(t *testing.T) {
-	dataSetID := types.NewBigInt(123)
-	clientDataSetID := types.NewBigInt(456)
-	txHash := common.HexToHash("0x1234")
-	submission := CreateDataSetSubmission{
-		TransactionID:   txHash.Hex(),
-		StatusURL:       "https://sp.example.com/status",
-		ClientDataSetID: &clientDataSetID,
-	}
-	client := &fakePDPProviderClient{
-		waitForCreatedFn: func(_ context.Context, gotStatusURL string, _ time.Duration) (*pdp.CreateDataSetStatus, error) {
-			if gotStatusURL != submission.StatusURL {
-				return nil, errors.New("unexpected status URL")
-			}
-			id := dataSetID
-			return &pdp.CreateDataSetStatus{
-				CreateMessageHash: txHash,
-				DataSetID:         &id,
-			}, nil
-		},
-	}
-	term := &fakeFWSSTerminator{res: &types.WriteResult{Hash: common.HexToHash("0xdead")}}
-	c, err := NewContext(testProvider(), client, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithFWSSTerminator(term),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	waitErr := make(chan error, 1)
-	go func() {
-		for i := 0; i < 2000; i++ {
-			if _, err := c.WaitForDataSetCreated(context.Background(), submission); err != nil {
-				waitErr <- err
-				return
-			}
-		}
-		waitErr <- nil
-	}()
-
-	for i := 0; i < 2000; i++ {
-		_, err := c.Terminate(context.Background())
-		if err != nil && !strings.Contains(err.Error(), "dataSetID not set") {
-			t.Fatalf("Terminate: %v", err)
-		}
-	}
-	if err := <-waitErr; err != nil {
-		t.Fatalf("WaitForDataSetCreated: %v", err)
-	}
-	if _, err := c.Terminate(context.Background()); err != nil {
-		t.Fatalf("Terminate after WaitForDataSetCreated: %v", err)
-	}
 }

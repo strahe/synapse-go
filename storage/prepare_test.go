@@ -56,8 +56,6 @@ func assertInvalidArgument(t *testing.T, err error) {
 	}
 }
 
-func (c *fakeUploadContext) DataSetID() *sdktypes.BigInt { return c.dataSetID }
-
 func (c *fakeUploadContext) GetProviderInfo() Provider {
 	p := testProvider()
 	if !c.id.IsZero() {
@@ -66,7 +64,7 @@ func (c *fakeUploadContext) GetProviderInfo() Provider {
 	return p
 }
 
-func (c *fakeUploadContext) WithCDN() bool {
+func (c *fakeUploadContext) CDNEnabled() bool {
 	if c.dataSetMetadata == nil {
 		return false
 	}
@@ -323,14 +321,14 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 
 func TestPrepare_AutoCreatesContextsWithContextResolver(t *testing.T) {
 	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
 	svc := newTestService()
 	svc.costCalc = costCalc
 	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{ctx}}
 
 	_, err = svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
 	if err != nil {

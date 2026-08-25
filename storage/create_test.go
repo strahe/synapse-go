@@ -12,14 +12,11 @@ import (
 func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
 	svc := newTestService()
 	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+	ctx := mustProviderContext(t, &fakePDPProviderClient{})
 
 	var captured *UploadOptions
 	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{ctx},
+		contextContexts: []UploadContext{ctx},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -49,14 +46,11 @@ func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
 func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
 	svc := newTestService()
 	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+	ctx := mustProviderContext(t, &fakePDPProviderClient{})
 
 	var captured *UploadOptions
 	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{ctx},
+		contextContexts: []UploadContext{ctx},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -79,24 +73,17 @@ func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
 
 func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
 	svc := newTestService()
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
+	want := mustProviderContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(types.NewBigInt(7)),
 	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{want}}
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{want}}
 
 	got, err := svc.CreateContext(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("CreateContext: %v", err)
 	}
-	_ = got.DeletePiece
-	_ = got.DeletePieceByID
-
 	if got != want {
 		t.Fatalf("CreateContext returned %p want %p", got, want)
 	}
@@ -119,7 +106,7 @@ func TestCreateContext_RequiresContextResolver(t *testing.T) {
 
 func TestCreateContext_RejectsNilResolvedContext(t *testing.T) {
 	svc := newTestService()
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{nil}}
 
 	_, err := svc.CreateContext(context.Background(), nil)
 	if err == nil {
@@ -134,16 +121,11 @@ func TestCreateContext_AcceptsProviderAssertionForDataSetID(t *testing.T) {
 	svc := newTestService()
 	dataSetID := types.NewBigInt(10)
 	providerID := types.NewBigInt(1)
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithDataSetID(dataSetID),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+	want := mustDataSetContext(t, &fakePDPProviderClient{}, testDataSetRef(dataSetID, types.NewBigInt(7)))
 
 	var captured *UploadOptions
 	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{want},
+		contextContexts: []UploadContext{want},
 		captureFn: func(opts *UploadOptions) {
 			captured = opts
 		},
@@ -177,15 +159,10 @@ func TestCreateContext_RejectsMismatchedProviderAssertionForDataSetID(t *testing
 	svc := newTestService()
 	dataSetID := types.NewBigInt(10)
 	providerID := types.NewBigInt(2)
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithDataSetID(dataSetID),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
+	ctx := mustDataSetContext(t, &fakePDPProviderClient{}, testDataSetRef(dataSetID, types.NewBigInt(7)))
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{ctx}}
 
-	_, err = svc.CreateContext(context.Background(), &CreateContextOptions{
+	_, err := svc.CreateContext(context.Background(), &CreateContextOptions{
 		DataSetID:  &dataSetID,
 		ProviderID: &providerID,
 	})
@@ -276,15 +253,9 @@ func TestCreateContextOptionsToUploadOptionsClonesCallerFields(t *testing.T) {
 
 func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	svc := newTestService()
-	ctx1, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext #1: %v", err)
-	}
-	ctx2, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext #2: %v", err)
-	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx1, ctx2}}
+	ctx1 := mustProviderContext(t, &fakePDPProviderClient{})
+	ctx2 := mustProviderContext(t, &fakePDPProviderClient{})
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{ctx1, ctx2}}
 
 	got, err := svc.CreateContexts(context.Background(), nil)
 	if err != nil {
@@ -293,7 +264,6 @@ func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(got)=%d want 2", len(got))
 	}
-	_ = got[0].Terminate
 	if got[0] != ctx1 || got[1] != ctx2 {
 		t.Fatalf("CreateContexts returned unexpected contexts")
 	}
@@ -301,7 +271,7 @@ func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
 
 func TestCreateContexts_RejectsNilResolvedContext(t *testing.T) {
 	svc := newTestService()
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
+	svc.contextResolver = &fakeResolver{contextContexts: []UploadContext{nil}}
 
 	_, err := svc.CreateContexts(context.Background(), nil)
 	if err == nil {
@@ -313,13 +283,10 @@ func TestCreateContexts_RejectsNilResolvedContext(t *testing.T) {
 }
 
 func TestCreateContexts_UsesExplicitContextResolver(t *testing.T) {
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+	want := mustProviderContext(t, &fakePDPProviderClient{})
 	svc := mustNewService(t, Options{
 		Resolver:        uploadOnlyResolver{},
-		ContextResolver: &fakeResolver{contextContexts: []*Context{want}},
+		ContextResolver: &fakeResolver{contextContexts: []UploadContext{want}},
 	})
 
 	got, err := svc.CreateContexts(context.Background(), nil)

@@ -384,7 +384,7 @@ func TestContextUpload_CallbackPanicsAreRecoveredWithNilLogger(t *testing.T) {
 			}, nil
 		},
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -434,7 +434,7 @@ func TestContextStore_LowLevelProgressPanicPropagates(t *testing.T) {
 		},
 		waitForPieceFn: func(_ context.Context, _ cid.Cid, _ time.Duration) error { return nil },
 	}
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t))
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	}
 
 	provider := testProvider()
-	ctx, err := NewContext(provider, fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(provider, fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -591,7 +591,7 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		},
 	}
 
-	ctx, err := NewContext(testProvider(), fake, mustTestSigner(t),
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
