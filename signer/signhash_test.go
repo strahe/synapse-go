@@ -63,6 +63,7 @@ type wrappedEVMSigner struct {
 func (w *wrappedEVMSigner) FilecoinAddress() address.Address           { return w.inner.FilecoinAddress() }
 func (w *wrappedEVMSigner) Sign(msg []byte) (*crypto.Signature, error) { return w.inner.Sign(msg) }
 func (w *wrappedEVMSigner) EVMAddress() common.Address                 { return w.inner.EVMAddress() }
+
 func (w *wrappedEVMSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
 	return w.inner.Transactor(chainID)
 }
