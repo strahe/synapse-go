@@ -425,6 +425,10 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		id := c.ProviderID()
 		usedProviders[idconv.Key(id)] = id
 	}
+	var excluded []types.BigInt
+	if opts != nil {
+		excluded = opts.ExcludeProviderIDs
+	}
 
 	type successfulSecondary struct {
 		ctx       StorageContext
@@ -505,6 +509,21 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 				replacement, replErr := selectReplacementForUpload(ctx, s.resolver, usedProviders, opts)
 				if replErr != nil {
 					break
+				}
+				if err := s.validateUploadReplacement("storage.Service.Upload", replacement, usedProviders, excluded); err != nil {
+					var providerID types.BigInt
+					if !isNilStorageContext(replacement) {
+						providerID = replacement.ProviderID()
+					}
+					failedAttempts = append(failedAttempts, FailedAttempt{
+						ProviderID: providerID,
+						Role:       CopyRoleSecondary,
+						Stage:      CopyStagePresign,
+						Err:        err,
+						Explicit:   explicitProviders,
+					})
+					attemptsUsed++
+					continue
 				}
 				id := replacement.ProviderID()
 				usedProviders[idconv.Key(id)] = id

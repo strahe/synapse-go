@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -293,6 +294,28 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	}
 	if _, ok := providerCtx.DataSetRef(); ok {
 		t.Fatal("ForDataSet mutated its ProviderContext receiver")
+	}
+
+	logged := mustProviderContext(t, &fakePDPProviderClient{}, WithLogger(slog.New(slog.DiscardHandler)), WithCDN(true))
+	dataSetLogged, err := logged.ForDataSet(testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)))
+	if err != nil {
+		t.Fatalf("ForDataSet: %v", err)
+	}
+	if logged.ServiceURL() != testProvider().ServiceURL || dataSetLogged.ServiceURL() != testProvider().ServiceURL {
+		t.Fatalf("ServiceURL provider=%q data-set=%q", logged.ServiceURL(), dataSetLogged.ServiceURL())
+	}
+	if !logged.CDNEnabled() || !dataSetLogged.CDNEnabled() || !logged.WithCDN() || !dataSetLogged.WithCDN() {
+		t.Fatal("CDNEnabled/WithCDN mismatch")
+	}
+	if dataSetLogged.GetProviderInfo().ServiceURL != testProvider().ServiceURL {
+		t.Fatalf("GetProviderInfo=%+v", dataSetLogged.GetProviderInfo())
+	}
+	if !dataSetLogged.ClientDataSetID().Equal(types.NewBigInt(7)) || !dataSetLogged.DataSetID().Equal(types.NewBigInt(42)) {
+		t.Fatalf("DataSetContext IDs dataSet=%s client=%s", dataSetLogged.DataSetID(), dataSetLogged.ClientDataSetID())
+	}
+	pieceCID := mustPieceInfo(t).CIDv2
+	if logged.PieceURL(pieceCID) == "" || dataSetLogged.PieceURL(pieceCID) == "" {
+		t.Fatal("PieceURL empty")
 	}
 }
 
@@ -881,13 +904,25 @@ func TestContextStoreUploadsAndWaits(t *testing.T) {
 			return nil
 		},
 	}
-	c := mustProviderContext(t, client)
-	result, err := c.Store(context.Background(), bytes.NewReader(data), nil)
-	if err != nil {
-		t.Fatalf("Store: %v", err)
-	}
-	if result.PieceCID != info.CIDv2 || result.Size != int64(len(data)) {
-		t.Fatalf("Store result=%+v", result)
+	for _, name := range []string{"provider", "data-set"} {
+		t.Run(name, func(t *testing.T) {
+			var (
+				result *StoreResult
+				err    error
+			)
+			switch name {
+			case "provider":
+				result, err = mustProviderContext(t, client).Store(context.Background(), bytes.NewReader(data), nil)
+			default:
+				result, err = mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7))).Store(context.Background(), bytes.NewReader(data), nil)
+			}
+			if err != nil {
+				t.Fatalf("Store: %v", err)
+			}
+			if result.PieceCID != info.CIDv2 || result.Size != int64(len(data)) {
+				t.Fatalf("Store result=%+v", result)
+			}
+		})
 	}
 }
 
@@ -912,6 +947,47 @@ func TestContextValidationErrors(t *testing.T) {
 	_, err = c.Store(context.Background(), nil, nil)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("nil store error=%v", err)
+	}
+}
+
+func TestContextPresignAndPullRejectInvalidInputs(t *testing.T) {
+	info := mustPieceInfo(t)
+	c := mustWritableProviderContext(t, &fakePDPProviderClient{})
+
+	tooMany := make([]PieceInput, pdp.MaxAddPiecesBatchSize+1)
+	for i := range tooMany {
+		tooMany[i] = PieceInput{PieceCID: info.CIDv2}
+	}
+	_, err := c.PresignForCommit(context.Background(), tooMany)
+	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrTooManyPieces) {
+		t.Fatalf("too many pieces error=%v", err)
+	}
+
+	_, err = c.PresignForCommit(context.Background(), []PieceInput{{
+		PieceCID:      info.CIDv2,
+		PieceMetadata: map[string]string{strings.Repeat("k", maxMetadataKeyLength+1): "v"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "exceeds max length") {
+		t.Fatalf("long metadata key error=%v", err)
+	}
+
+	_, err = c.PresignForCommit(context.Background(), []PieceInput{{}})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("undefined pieceCID error=%v", err)
+	}
+
+	unsigned := mustProviderContext(t, &fakePDPProviderClient{})
+	_, err = unsigned.PresignForCommit(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("missing payer/chain/recordKeeper error=%v", err)
+	}
+
+	_, err = c.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{info.CIDv2},
+		From:   func(cid.Cid) string { return "" },
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty source URL error=%v", err)
 	}
 }
 

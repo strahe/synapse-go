@@ -15,6 +15,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
 
 func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
@@ -32,23 +33,31 @@ func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
 			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 		},
 	}
-	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
+	providerCtx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
 	if err != nil {
-		t.Fatalf("NewContext: %v", err)
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+	dataSetCtx, err := NewDataSetContext(testProvider(), fake, mustTestSigner(t), testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)))
+	if err != nil {
+		t.Fatalf("NewDataSetContext: %v", err)
 	}
 
-	reader, err := ctx.Download(context.Background(), info.CIDv2)
-	if err != nil {
-		t.Fatalf("Download: %v", err)
-	}
-	defer func() { _ = reader.Close() }()
-
-	got, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatal("downloaded bytes mismatch")
+	for _, storageCtx := range []StorageContext{providerCtx, dataSetCtx} {
+		reader, err := storageCtx.Download(context.Background(), info.CIDv2)
+		if err != nil {
+			t.Fatalf("%T.Download: %v", storageCtx, err)
+		}
+		got, err := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("%T downloaded bytes mismatch", storageCtx)
+		}
 	}
 }
 

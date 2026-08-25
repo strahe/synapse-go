@@ -629,6 +629,110 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 }
 
+func TestServiceUploadReplacementRejectsInvalidTargets(t *testing.T) {
+	data := bytes.Repeat([]byte("rq"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	newPrimary := func() *fakeUploadContext {
+		return &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://primary.example.com",
+			pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+			storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+				return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			},
+			commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+				return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}, IsNewDataSet: true}, nil
+			},
+		}
+	}
+	newFailedSecondary := func() *fakeUploadContext {
+		return &fakeUploadContext{
+			id:       types.NewBigInt(202),
+			endpoint: "https://secondary.example.com",
+			presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+				return []byte{0x01}, nil
+			},
+			pullFn: func(_ context.Context, _ PullRequest) (*PullResult, error) {
+				return nil, errors.New("pull failed")
+			},
+		}
+	}
+
+	wrongIdentity := serviceTestIdentity()
+	wrongIdentity.Payer = common.HexToAddress("0x9999")
+	tests := map[string]struct {
+		replacement StorageContext
+		exclude     []types.BigInt
+	}{
+		"nil-core":  {replacement: &ProviderContext{}},
+		"typed nil": {replacement: (*ProviderContext)(nil)},
+		"identity mismatch": {replacement: &fakeUploadContext{
+			id:       types.NewBigInt(303),
+			endpoint: "https://replacement.example.com",
+			identity: &wrongIdentity,
+			presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+				t.Fatal("PresignForCommit must not run for an identity-mismatched replacement")
+				return nil, nil
+			},
+		}},
+		"excluded": {
+			replacement: &fakeUploadContext{
+				id:       types.NewBigInt(303),
+				endpoint: "https://replacement.example.com",
+				presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+					t.Fatal("PresignForCommit must not run for an excluded replacement")
+					return nil, nil
+				},
+			},
+			exclude: []types.BigInt{types.NewBigInt(303)},
+		},
+		"duplicate primary": {replacement: &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://replacement.example.com",
+			presignFn: func(_ context.Context, _ []PieceInput) ([]byte, error) {
+				t.Fatal("PresignForCommit must not run for a duplicate replacement")
+				return nil, nil
+			},
+		}},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("Upload panicked: %v", recovered)
+				}
+			}()
+			svc := mustNewService(t, Options{
+				Resolver: &fakeResolver{
+					contexts:     []StorageContext{newPrimary(), newFailedSecondary()},
+					replacements: []StorageContext{tt.replacement},
+				},
+			})
+			got, err := svc.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
+				Copies:             2,
+				ExcludeProviderIDs: tt.exclude,
+			})
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+			if got.Complete || got.SuccessCount() != 1 {
+				t.Fatalf("complete=%v success=%d want partial primary", got.Complete, got.SuccessCount())
+			}
+			if len(got.FailedAttempts) < 2 {
+				t.Fatalf("failedAttempts=%+v want secondary failure and rejected replacement", got.FailedAttempts)
+			}
+			if !errors.Is(got.FailedAttempts[len(got.FailedAttempts)-1].Err, ErrInvalidArgument) {
+				t.Fatalf("replacement error=%v want ErrInvalidArgument", got.FailedAttempts[len(got.FailedAttempts)-1].Err)
+			}
+		})
+	}
+}
+
 func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 	data := bytes.Repeat([]byte("ij"), 128)
 	info, err := piece.CalculateFromBytes(data)

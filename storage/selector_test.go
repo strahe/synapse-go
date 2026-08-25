@@ -110,6 +110,39 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 	}
 }
 
+func TestServiceResolverSelectProviderContext_ReturnsUnboundHealthyProvider(t *testing.T) {
+	resolver := newTestServiceResolver(t, serviceResolverFixture{
+		approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
+		activeProviders: []spregistry.PDPProvider{
+			testPDPProvider(testID(1), "https://sp-1.example.com"),
+			testPDPProvider(testID(2), "https://sp-2.example.com"),
+		},
+		clientDataSets: []*warmstorage.DataSetInfo{
+			{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)},
+		},
+		providerPing: func(_ context.Context, serviceURL string) error {
+			if serviceURL == "https://sp-1.example.com" {
+				return errors.New("provider unavailable")
+			}
+			return nil
+		},
+	})
+
+	got, err := resolver.SelectProviderContext(context.Background(), SelectProviderContextOptions{
+		ExcludeProviderIDs: []types.BigInt{testID(1)},
+		DataSetMetadata:    map[string]string{"app": "photos"},
+	})
+	if err != nil {
+		t.Fatalf("SelectProviderContext: %v", err)
+	}
+	if got == nil || !got.ProviderID().Equal(testID(2)) {
+		t.Fatalf("provider=%v want 2", got)
+	}
+	if _, bound := got.DataSetRef(); bound {
+		t.Fatal("SelectProviderContext returned a bound context")
+	}
+}
+
 func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3), testID(4)},

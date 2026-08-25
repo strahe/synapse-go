@@ -400,3 +400,17 @@ func validateExcludedStorageContexts(op string, contexts []StorageContext, exclu
 	}
 	return nil
 }
+
+func (s *Service) validateUploadReplacement(op string, replacement StorageContext, usedProviders map[string]types.BigInt, excluded []types.BigInt) error {
+	if err := s.validateStorageContexts(op, []StorageContext{replacement}); err != nil {
+		return err
+	}
+	if err := validateExcludedStorageContexts(op, []StorageContext{replacement}, excluded); err != nil {
+		return err
+	}
+	id := replacement.ProviderID()
+	if _, exists := usedProviders[idconv.Key(id)]; exists {
+		return fmt.Errorf("%s: %w: duplicate providerID %s", op, ErrInvalidArgument, id.String())
+	}
+	return nil
+}
