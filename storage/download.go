@@ -20,7 +20,7 @@ type DownloadContext interface {
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
-// CDNRetriever provides optional CDN-backed piece retrieval for Context.
+// CDNRetriever provides optional CDN-backed piece retrieval for storage contexts.
 type CDNRetriever interface {
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, error)
 }
@@ -89,6 +89,18 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 }
 
 // Download retrieves a piece from CDN when enabled and available, otherwise
+// from the storage provider.
+func (c *ProviderContext) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+	return c.core.download(ctx, "storage.ProviderContext.Download", pieceCID)
+}
+
+// Download retrieves a piece from CDN when enabled and available, otherwise
+// from the storage provider.
+func (c *DataSetContext) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+	return c.core.download(ctx, "storage.DataSetContext.Download", pieceCID)
+}
+
+// download retrieves a piece from CDN when enabled and available, otherwise
 // from the storage provider. Validation is streaming: the integrity check runs
 // at EOF, so callers must inspect the terminal error returned by the last Read
 // (or io.ReadAll).
@@ -96,9 +108,9 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 // pieceCID must be a PieceCIDv2.  PieceCIDv1 is not accepted on this path
 // because PDP provider only accepts v2 and the raw size needed to normalise v1→v2 is
 // not available here.  Use Service.Download with a URL if you only have v1.
-func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
+func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid) (io.ReadCloser, error) {
 	if _, err := piece.ParseV2(pieceCID); err != nil {
-		return nil, fmt.Errorf("storage.Context.Download: PieceCIDv2 required: %w", err)
+		return nil, fmt.Errorf("%s: PieceCIDv2 required: %w", op, err)
 	}
 	if c.withCDN && c.cdnRetriever != nil {
 		body, err := c.cdnRetriever.DownloadPiece(ctx, pieceCID)
@@ -109,12 +121,12 @@ func (c *Context) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser
 			err = errors.New("CDN retriever returned nil body")
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("storage.Context.Download: CDN: %w", err)
+			return nil, fmt.Errorf("%s: CDN: %w", op, err)
 		}
 	}
 	body, _, err := c.client.DownloadPiece(ctx, pieceCID)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Download: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return newValidatingReadCloser(body, pieceCID, 0), nil
 }

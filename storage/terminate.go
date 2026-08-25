@@ -22,7 +22,7 @@ const defaultTerminateWait = 5 * time.Minute
 type TerminateServiceOptions struct {
 	// SkipProvider uses the direct FWSS transaction path. The new
 	// TerminateService helper still waits for the receipt so it can return
-	// EndEpoch. Use Context.Terminate or Service.TerminateDataSet for the
+	// EndEpoch. Use DataSetContext.Terminate or Service.TerminateDataSet for the
 	// legacy hash-only direct write surface.
 	SkipProvider bool
 	// WriteOptions are used only when SkipProvider is true.
@@ -54,31 +54,20 @@ type TerminateServiceResult struct {
 //
 // opts are forwarded to warmstorage.Service.TerminateDataSet (wait /
 // confirmations / etc.).
-func (c *Context) Terminate(ctx context.Context, opts ...warmstorage.WriteOption) (*types.WriteResult, error) {
-	if c.fwssTerminator == nil {
-		return nil, errors.New("storage.Context.Terminate: FWSS terminator not configured")
+func (c *DataSetContext) Terminate(ctx context.Context, opts ...warmstorage.WriteOption) (*types.WriteResult, error) {
+	if c.core.fwssTerminator == nil {
+		return nil, errors.New("storage.DataSetContext.Terminate: FWSS terminator not configured")
 	}
-	c.mu.RLock()
-	if c.dataSetID == nil {
-		c.mu.RUnlock()
-		return nil, fmt.Errorf("storage.Context.Terminate: %w: dataSetID not set", ErrInvalidArgument)
-	}
-	dataSetID := copyBigInt(*c.dataSetID)
-	c.mu.RUnlock()
-	return c.fwssTerminator.TerminateDataSet(ctx, dataSetID, opts...)
+	return c.core.fwssTerminator.TerminateDataSet(ctx, c.ref.DataSetID(), opts...)
 }
 
 // TerminateService terminates this context's data set. By default it asks the
 // provider to relay the termination; pass SkipProvider to use the direct FWSS
 // path.
-func (c *Context) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
-	const op = "storage.Context.TerminateService"
+func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
+	const op = "storage.DataSetContext.TerminateService"
 	if opts != nil && opts.SkipProvider {
-		dataSetID, err := c.snapshotTerminateDataSetID(op)
-		if err != nil {
-			return nil, err
-		}
-		return terminateServiceDirect(ctx, op, c.fwssTerminator, dataSetID, opts)
+		return terminateServiceDirect(ctx, op, c.core.fwssTerminator, c.ref.DataSetID(), opts)
 	}
 	target, err := c.snapshotProviderTerminateTarget(op)
 	if err != nil {
@@ -224,44 +213,30 @@ type providerTerminateTarget struct {
 	paymentToken  common.Address
 }
 
-func (c *Context) snapshotTerminateDataSetID(op string) (types.BigInt, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.dataSetID == nil {
-		return types.BigInt{}, fmt.Errorf("%s: %w: dataSetID not set", op, ErrInvalidArgument)
-	}
-	return copyBigInt(*c.dataSetID), nil
-}
-
-func (c *Context) snapshotProviderTerminateTarget(op string) (providerTerminateTarget, error) {
-	if c.signer == nil {
+func (c *DataSetContext) snapshotProviderTerminateTarget(op string) (providerTerminateTarget, error) {
+	if c.core.signer == nil {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
-	client, ok := c.client.(providerTerminateClient)
+	client, ok := c.core.client.(providerTerminateClient)
 	if !ok {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: PDP client does not support termination", op, ErrUninitialized)
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.dataSetID == nil {
-		return providerTerminateTarget{}, fmt.Errorf("%s: %w: dataSetID not set", op, ErrInvalidArgument)
-	}
-	if !c.chainID.IsValid() {
+	if !c.core.chainID.IsValid() {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
-	if c.recordKeeper == (common.Address{}) {
+	if c.core.recordKeeper == (common.Address{}) {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	return providerTerminateTarget{
-		dataSetID:     copyBigInt(*c.dataSetID),
+		dataSetID:     c.ref.DataSetID(),
 		client:        client,
-		signHash:      c.signHashFunc(),
-		chainID:       c.chainID,
-		recordKeeper:  c.recordKeeper,
-		payer:         c.payer,
-		paymentReader: c.paymentReader,
-		epochReader:   c.epochReader,
-		paymentToken:  c.paymentToken,
+		signHash:      c.core.signHashFunc(),
+		chainID:       c.core.chainID,
+		recordKeeper:  c.core.recordKeeper,
+		payer:         c.core.payer,
+		paymentReader: c.core.paymentReader,
+		epochReader:   c.core.epochReader,
+		paymentToken:  c.core.paymentToken,
 	}, nil
 }
 

@@ -7,8 +7,7 @@
 [![License](https://img.shields.io/github/license/strahe/synapse-go)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.26.3%2B-00ADD8)](go.mod)
 
-Go SDK for Filecoin Onchain Cloud (FOC), ported from the
-[@filoz/synapse-sdk](https://github.com/FilOzone/synapse-sdk).
+Go SDK for Filecoin Onchain Cloud (FOC).
 
 > **Status:** Beta - API may change.
 

@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"math/big"
 	"net/url"
@@ -16,7 +16,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -58,7 +57,7 @@ const (
 	maxPieceMetadataKeys   = 3
 )
 
-// PDPProviderClient is the provider HTTP API surface required by Context.
+// PDPProviderClient is the provider HTTP API surface required by storage contexts.
 // It is injectable for tests and alternate provider clients.
 type PDPProviderClient interface {
 	UploadPieceStreaming(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
@@ -82,19 +81,26 @@ type Provider struct {
 	Payee           common.Address // address that receives payments
 }
 
-// ContextOption configures a Context.
-type ContextOption func(*Context)
+// ContextOption configures provider and data-set contexts during construction.
+type ContextOption func(*contextCore)
 
-// Context represents a specific provider + data-set pair and handles
-// storage operations (store, pull, and/or commit) for one upload copy.
-// It is safe for concurrent use.
-type Context struct {
-	// commitMu serialises Commit calls so the create-vs-add path decision
-	// made in PresignForCommit and the subsequent PDP API call are
-	// always consistent under concurrent use.
-	commitMu sync.Mutex
-	mu       sync.RWMutex
+// ProviderContext represents one provider without a bound data set. Commit and
+// Pull operations on a ProviderContext create a new data set. It is safe for
+// concurrent use; concurrent create operations are independent.
+type ProviderContext struct {
+	core *contextCore
+}
 
+// DataSetContext represents one immutable provider + data-set target. Commit
+// and Pull operations always target Ref. It is safe for concurrent use.
+type DataSetContext struct {
+	core *contextCore
+	ref  DataSetRef
+}
+
+// contextCore contains the immutable configuration shared by provider and
+// data-set contexts. Mutable inputs are copied before a core is published.
+type contextCore struct {
 	provider     Provider
 	client       PDPProviderClient
 	signer       signer.EVMSigner
@@ -105,13 +111,7 @@ type Context struct {
 	cdnRetriever CDNRetriever
 	logger       *slog.Logger
 
-	dataSetID           *types.BigInt
-	clientDataSetID     *types.BigInt
-	dataSetMetadata     map[string]string
-	createInFlight      bool
-	pendingCreate       *CreateDataSetSubmission
-	clientIDFromPending bool
-	presignedKinds      map[[32]byte]commitExtraDataKind
+	dataSetMetadata map[string]string
 
 	// Optional read/write collaborators used by lifecycle methods that read
 	// PDP/FWSS state (GetScheduledRemovals, PieceStatus, DeletePiece by CID,
@@ -129,32 +129,25 @@ type Context struct {
 	paymentToken     common.Address
 }
 
-type commitExtraDataKind uint8
-
-const (
-	commitExtraDataUnknown commitExtraDataKind = iota
-	commitExtraDataAddOnly
-	commitExtraDataCreateAndAdd
-)
-
-// NewContext creates a Context for the given provider and PDP client.
+// NewProviderContext creates an immutable context for the given provider and
+// PDP client. Commit and Pull create a new data set.
 // provider.ID, provider.ServiceURL, and client are validated here. Signing
 // prerequisites (such as a non-nil signer plus chain/payer/record-keeper
 // options) are validated by the write paths that need them, e.g.
 // PresignForCommit.
-func NewContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*Context, error) {
+func NewProviderContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*ProviderContext, error) {
 	if provider.ID.IsZero() {
-		return nil, fmt.Errorf("storage.NewContext: %w: zero provider ID", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.NewProviderContext: %w: zero provider ID", ErrInvalidArgument)
 	}
 	if provider.ServiceURL == "" {
-		return nil, fmt.Errorf("storage.NewContext: %w: empty provider service URL", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.NewProviderContext: %w: empty provider service URL", ErrInvalidArgument)
 	}
 	if client == nil {
-		return nil, fmt.Errorf("storage.NewContext: %w: nil PDP client", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.NewProviderContext: %w: nil PDP client", ErrInvalidArgument)
 	}
-	c := &Context{
+	core := &contextCore{
 		provider: Provider{
-			ID:              provider.ID,
+			ID:              copyBigInt(provider.ID),
 			ServiceURL:      provider.ServiceURL,
 			ServiceProvider: provider.ServiceProvider,
 			Payee:           provider.Payee,
@@ -164,53 +157,65 @@ func NewContext(provider Provider, client PDPProviderClient, evmSigner signer.EV
 	}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(c)
+			opt(core)
 		}
 	}
-	if c.dataSetID != nil && c.dataSetID.IsZero() {
-		return nil, fmt.Errorf("storage.NewContext: %w: zero dataSetID", ErrInvalidArgument)
+	core.dataSetMetadata = cloneStringMap(core.dataSetMetadata)
+	return &ProviderContext{core: core}, nil
+}
+
+// NewDataSetContext creates an immutable context bound to ref.
+func NewDataSetContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, ref DataSetRef, opts ...ContextOption) (*DataSetContext, error) {
+	providerCtx, err := NewProviderContext(provider, client, evmSigner, opts...)
+	if err != nil {
+		return nil, err
 	}
-	return c, nil
+	dataSetCtx, err := providerCtx.ForDataSet(ref)
+	if err != nil {
+		return nil, fmt.Errorf("storage.NewDataSetContext: %w", err)
+	}
+	return dataSetCtx, nil
+}
+
+// ForDataSet returns a new immutable context bound to ref. The receiver is not
+// modified and may continue to create independent data sets.
+func (c *ProviderContext) ForDataSet(ref DataSetRef) (*DataSetContext, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: nil context", ErrInvalidArgument)
+	}
+	if !ref.valid() {
+		return nil, fmt.Errorf("storage.ProviderContext.ForDataSet: %w: invalid data-set ref", ErrInvalidArgument)
+	}
+	if !ref.providerID.Equal(c.core.provider.ID) {
+		return nil, fmt.Errorf(
+			"storage.ProviderContext.ForDataSet: %w: data set providerID %s does not match context providerID %s",
+			ErrInvalidArgument,
+			ref.providerID.String(),
+			c.core.provider.ID.String(),
+		)
+	}
+	return &DataSetContext{core: c.core, ref: copyDataSetRef(ref)}, nil
 }
 
 // WithPayer sets the EVM address that pays for storage.
 func WithPayer(payer common.Address) ContextOption {
-	return func(c *Context) { c.payer = payer }
+	return func(c *contextCore) { c.payer = payer }
 }
 
 // WithChainID sets the EIP-155 chain ID used for EIP-712 domain separation.
 func WithChainID(chainID types.ChainID) ContextOption {
-	return func(c *Context) { c.chainID = chainID }
+	return func(c *contextCore) { c.chainID = chainID }
 }
 
 // WithRecordKeeper sets the FWSS contract address (record-keeper) used for
 // EIP-712 signing and passed to the PDP provider for Pull and dataset creation.
 func WithRecordKeeper(addr common.Address) ContextOption {
-	return func(c *Context) { c.recordKeeper = addr }
-}
-
-// WithDataSetID pins the context to an existing on-chain data set.
-// When set, Commit issues an AddPieces call instead of CreateDataSet+AddPieces.
-func WithDataSetID(id types.BigInt) ContextOption {
-	return func(c *Context) {
-		v := copyBigInt(id)
-		c.dataSetID = &v
-	}
-}
-
-// WithClientDataSetID sets a caller-chosen data-set identifier included in
-// EIP-712 messages. If not provided, a random value is generated on the
-// first PresignForCommit call and reused for the lifetime of this Context.
-func WithClientDataSetID(id types.BigInt) ContextOption {
-	return func(c *Context) {
-		v := copyBigInt(id)
-		c.clientDataSetID = &v
-	}
+	return func(c *contextCore) { c.recordKeeper = addr }
 }
 
 // WithDataSetMetadata sets the key-value metadata stored with the data set on creation.
 func WithDataSetMetadata(metadata map[string]string) ContextOption {
-	return func(c *Context) { c.dataSetMetadata = cloneStringMap(metadata) }
+	return func(c *contextCore) { c.dataSetMetadata = cloneStringMap(metadata) }
 }
 
 // WithCDN enables CDN services for the data set and CDN-first downloads when
@@ -218,54 +223,53 @@ func WithDataSetMetadata(metadata map[string]string) ContextOption {
 // to the EIP-712 dataset-creation message; the contract activates CDN and
 // applies its configured lockup upon seeing it.
 func WithCDN(enabled bool) ContextOption {
-	return func(c *Context) { c.withCDN = enabled }
+	return func(c *contextCore) { c.withCDN = enabled }
 }
 
-// WithCDNRetriever injects the optional CDN retriever used by Context.Download.
+// WithCDNRetriever injects the optional CDN retriever used by context downloads.
 func WithCDNRetriever(r CDNRetriever) ContextOption {
-	return func(c *Context) { c.cdnRetriever = normalizeOptional(r) }
+	return func(c *contextCore) { c.cdnRetriever = normalizeOptional(r) }
 }
 
 // WithLogger sets the logger used for internal warnings.
 func WithLogger(logger *slog.Logger) ContextOption {
-	return func(c *Context) { c.logger = logger }
+	return func(c *contextCore) { c.logger = logger }
 }
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.
-// Required by [Context.GetScheduledRemovals], [Context.PieceStatus] and
-// [Context.DeletePiece]; callers that only Store/Pull/Commit/DeletePieceByID
-// may leave it nil.
+// Required by [DataSetContext.GetScheduledRemovals],
+// [DataSetContext.PieceStatus], and [DataSetContext.DeletePiece].
 func WithPDPVerifierReader(r PDPVerifierReader) ContextOption {
-	return func(c *Context) { c.pdpCaller = normalizeOptional(r) }
+	return func(c *contextCore) { c.pdpCaller = normalizeOptional(r) }
 }
 
 // WithPDPConfigReader injects a reader for FWSSView PDPConfig. Required by
-// [Context.PieceStatus] for challenge-window math.
+// [DataSetContext.PieceStatus] for challenge-window math.
 func WithPDPConfigReader(r PDPConfigReader) ContextOption {
-	return func(c *Context) { c.pdpConfig = normalizeOptional(r) }
+	return func(c *contextCore) { c.pdpConfig = normalizeOptional(r) }
 }
 
-// WithFWSSTerminator injects the terminator used by [Context.Terminate].
+// WithFWSSTerminator injects the terminator used by [DataSetContext.Terminate].
 func WithFWSSTerminator(t FWSSTerminator) ContextOption {
-	return func(c *Context) { c.fwssTerminator = normalizeOptional(t) }
+	return func(c *contextCore) { c.fwssTerminator = normalizeOptional(t) }
 }
 
 // WithFWSSDataSetReader injects the reader used before uploads to reject
 // existing data sets whose PDP payment rail has ended.
 func WithFWSSDataSetReader(r FWSSDataSetReader) ContextOption {
-	return func(c *Context) { c.dataSetReader = normalizeOptional(r) }
+	return func(c *contextCore) { c.dataSetReader = normalizeOptional(r) }
 }
 
 // WithDataSetValidator injects the validator used before uploading or
 // committing pieces to an existing data set.
 func WithDataSetValidator(v DataSetValidator) ContextOption {
-	return func(c *Context) { c.dataSetValidator = normalizeOptional(v) }
+	return func(c *contextCore) { c.dataSetValidator = normalizeOptional(v) }
 }
 
 // WithPaymentStateReader injects payment readers for provider-relayed
 // termination debt pre-checks.
 func WithPaymentStateReader(pay PaymentStateReader, epochs EpochReader, token common.Address) ContextOption {
-	return func(c *Context) {
+	return func(c *contextCore) {
 		c.paymentReader = normalizeOptional(pay)
 		c.epochReader = normalizeOptional(epochs)
 		c.paymentToken = token
@@ -273,19 +277,29 @@ func WithPaymentStateReader(pay PaymentStateReader, epochs EpochReader, token co
 }
 
 // Store streams data to the provider and waits for it to be parked.
+func (c *ProviderContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+	return c.core.store(ctx, "storage.ProviderContext.Store", r, opts)
+}
+
+// Store streams data to the provider and waits for it to be parked.
+func (c *DataSetContext) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+	return c.core.store(ctx, "storage.DataSetContext.Store", r, opts)
+}
+
+// store streams data to the provider and waits for it to be parked.
 // The reader is consumed in a single pass. If opts.PieceCID is defined,
 // the client skips inline commP calculation; otherwise commP is computed
 // during the upload via TeeReader. opts may be nil.
-func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
+func (c *contextCore) store(ctx context.Context, op string, r io.Reader, opts *StoreOptions) (*StoreResult, error) {
 	if r == nil {
-		return nil, fmt.Errorf("storage.Context.Store: %w: nil reader", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
 	if opts == nil {
 		opts = &StoreOptions{}
 	}
 	if opts.PieceCID.Defined() {
 		if _, err := piece.ParseV2(opts.PieceCID); err != nil {
-			return nil, fmt.Errorf("storage.Context.Store: invalid PieceCID: %w", err)
+			return nil, fmt.Errorf("%s: invalid PieceCID: %w", op, err)
 		}
 	}
 	size := detectSize(r, opts.PieceCID)
@@ -295,16 +309,16 @@ func (c *Context) Store(ctx context.Context, r io.Reader, opts *StoreOptions) (*
 		OnProgress: opts.OnProgress,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Store: upload: %w", err)
+		return nil, fmt.Errorf("%s: upload: %w", op, err)
 	}
 	if !res.PieceCID.Defined() {
-		return nil, errors.New("storage.Context.Store: upload returned undefined PieceCIDv2")
+		return nil, errors.New(op + ": upload returned undefined PieceCIDv2")
 	}
 	if _, err := piece.ParseV2(res.PieceCID); err != nil {
-		return nil, fmt.Errorf("storage.Context.Store: upload returned invalid PieceCIDv2: %w", err)
+		return nil, fmt.Errorf("%s: upload returned invalid PieceCIDv2: %w", op, err)
 	}
 	if err := c.client.WaitForPieceParked(ctx, res.PieceCID, 0); err != nil {
-		return nil, fmt.Errorf("storage.Context.Store: wait for parked: %w", err)
+		return nil, fmt.Errorf("%s: wait for parked: %w", op, err)
 	}
 	return &StoreResult{PieceCID: res.PieceCID, Size: res.Size}, nil
 }
@@ -349,140 +363,106 @@ func detectSize(r io.Reader, pc cid.Cid) int64 {
 	return 0
 }
 
-// PresignForCommit produces the EIP-712–signed extraData payload for Commit.
-// For a new data set it signs both CreateDataSet and AddPieces; for an existing
-// data set it signs only AddPieces. The returned bytes are opaque to callers.
-//
-// The operation is CPU/crypto-bound and performs no I/O, but ctx is honoured
-// before each signing step so callers can cancel long batches.
-func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+// PresignForCommit signs a create-and-add payload for a new data set.
+func (c *ProviderContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+	return c.core.presignForCommit(ctx, "storage.ProviderContext.PresignForCommit", nil, pieces)
+}
+
+// PresignForCommit signs an add-pieces payload for the bound data set.
+func (c *DataSetContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+	return c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces)
+}
+
+func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *DataSetRef, pieces []PieceInput) ([]byte, error) {
 	if len(pieces) == 0 {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: no pieces provided", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
 	}
-	if err := validateAddPiecesBatch("storage.Context.PresignForCommit", len(pieces)); err != nil {
+	if err := validateAddPiecesBatch(op, len(pieces)); err != nil {
 		return nil, err
 	}
 	if c.signer == nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: nil signer", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
 	if !c.chainID.IsValid() {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: invalid chainID", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
 	if c.recordKeeper == (common.Address{}) {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: zero recordKeeper", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	if c.payer == (common.Address{}) {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: zero payer", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
 	}
 
 	pieceCIDs := make([]cid.Cid, 0, len(pieces))
 	pieceMetadata := make([][]ityped.MetadataEntry, 0, len(pieces))
 	for _, p := range pieces {
 		if !p.PieceCID.Defined() {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: undefined pieceCID", ErrInvalidArgument)
+			return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
 		}
 		pieceCIDs = append(pieceCIDs, p.PieceCID)
 		meta, err := pieceMetadataEntries(p.PieceMetadata)
 		if err != nil {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		pieceMetadata = append(pieceMetadata, meta)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	domain := ityped.NewDomain(c.chainID.BigInt(), c.recordKeeper)
 
-	// Snapshot all mutable fields under the lock, initialize clientDataSetID
-	// on first use, then release the lock before any CPU/crypto work. This
-	// prevents PresignForCommit from blocking concurrent read accessors
-	// (DataSetID, ProviderID, ...) while signing hundreds of pieces.
-	c.mu.Lock()
-	if c.createInFlight || c.pendingCreate != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
-	}
-	if c.clientDataSetID == nil {
-		if c.dataSetID != nil {
-			c.mu.Unlock()
-			return nil, fmt.Errorf(
-				"storage.Context.PresignForCommit: %w: clientDataSetID is required when the context targets an existing data set; "+
-					"supply it with WithClientDataSetID or construct the context via Service.CreateContext",
-				ErrInvalidArgument,
-			)
-		}
-		v, err := randomClientDataSetID()
-		if err != nil {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
-		}
-		c.clientDataSetID = &v
-	}
-	clientDataSetID := c.clientDataSetID.Big()
-	var dataSetIDSnap *types.BigInt
-	if c.dataSetID != nil {
-		id := *c.dataSetID
-		dataSetIDSnap = &id
-	}
-	dataSetMetadataSnap := cloneStringMap(c.dataSetMetadata)
-	payerSnap := c.payer
-	payeeSnap := c.provider.Payee
-	withCDNSnap := c.withCDN
-	c.mu.Unlock()
-
-	if dataSetIDSnap != nil {
+	if ref != nil {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		nonce, err := randomUint256()
 		if err != nil {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
-		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
+		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			if errors.Is(err, signer.ErrUnsupportedSigner) {
-				return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+				return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 			}
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
+			return nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 		}
-		payload, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
-		if err != nil {
-			return nil, err
-		}
-		c.rememberPresignedExtraData(payload, commitExtraDataAddOnly)
-		return payload, nil
+		return encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
 	}
 
-	dataSetMetadata, err := dataSetMetadataEntries(dataSetMetadataSnap, withCDNSnap)
+	clientDataSetID, err := randomClientDataSetID()
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	dataSetMetadata, err := dataSetMetadataEntries(c.dataSetMetadata, c.withCDN)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID, payeeSnap, dataSetMetadata)
+	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), c.provider.Payee, dataSetMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+			return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 		}
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign create dataset: %w", err)
+		return nil, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
 	nonce, err := randomUint256()
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID, nonce, pieceCIDs, pieceMetadata)
+	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("storage.Context.PresignForCommit: wrapped/decorated EVMSigner values are unsupported: %w", err)
+			return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 		}
-		return nil, fmt.Errorf("storage.Context.PresignForCommit: sign add pieces: %w", err)
+		return nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 	}
-	createPayload, err := encodeCreateDataSetExtraData(payerSnap, clientDataSetID, dataSetMetadata, signatureBytes(createSig))
+	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
 	if err != nil {
 		return nil, err
 	}
@@ -490,54 +470,46 @@ func (c *Context) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]
 	if err != nil {
 		return nil, err
 	}
-	payload, err := encodeCreateAndAddExtraData(createPayload, addPayload)
-	if err != nil {
-		return nil, err
-	}
-	c.rememberPresignedExtraData(payload, commitExtraDataCreateAndAdd)
-	return payload, nil
+	return encodeCreateAndAddExtraData(createPayload, addPayload)
 }
 
-// Pull asks this provider to fetch pieces from another provider (SP-to-SP transfer).
-// req.ExtraData must be the payload returned by PresignForCommit on this context.
-func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+// Pull asks this provider to fetch pieces for a new data set.
+func (c *ProviderContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req)
+}
+
+// Pull asks this provider to fetch pieces for the bound data set.
+func (c *DataSetContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req)
+}
+
+func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req PullRequest) (*PullResult, error) {
 	if len(req.Pieces) == 0 {
-		return nil, fmt.Errorf("storage.Context.Pull: %w: no pieces provided", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
 	}
-	if err := validateAddPiecesBatch("storage.Context.Pull", len(req.Pieces)); err != nil {
+	if err := validateAddPiecesBatch(op, len(req.Pieces)); err != nil {
 		return nil, err
 	}
 	if req.From == nil {
-		return nil, fmt.Errorf("storage.Context.Pull: %w: nil source resolver", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: nil source resolver", op, ErrInvalidArgument)
 	}
 	pdpReq := pdp.PullRequest{
-		ExtraData: append([]byte(nil), req.ExtraData...),
+		ExtraData:    append([]byte(nil), req.ExtraData...),
+		RecordKeeper: c.recordKeeper,
 	}
-
-	c.mu.RLock()
-	dataSetID := c.dataSetID
-	recordKeeper := c.recordKeeper
-	pendingCreate := c.createInFlight || c.pendingCreate != nil
-	c.mu.RUnlock()
-	if pendingCreate {
-		return nil, fmt.Errorf("storage.Context.Pull: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
-	}
-
-	// RecordKeeper is required by the provider for both new and existing datasets.
-	pdpReq.RecordKeeper = recordKeeper
-	if dataSetID != nil {
-		id := copyBigInt(*dataSetID)
+	if ref != nil {
+		id := copyBigInt(ref.dataSetID)
 		pdpReq.DataSetID = &id
 	}
 
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
 	for _, pieceCID := range req.Pieces {
 		if !pieceCID.Defined() {
-			return nil, fmt.Errorf("storage.Context.Pull: %w: undefined pieceCID", ErrInvalidArgument)
+			return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
 		}
 		sourceURL := req.From(pieceCID)
 		if sourceURL == "" {
-			return nil, fmt.Errorf("storage.Context.Pull: %w: empty source URL", ErrInvalidArgument)
+			return nil, fmt.Errorf("%s: %w: empty source URL", op, ErrInvalidArgument)
 		}
 		pdpReq.Pieces = append(pdpReq.Pieces, pdp.PullPieceInput{
 			PieceCID:  pieceCID,
@@ -559,7 +531,7 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 		}
 	})
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Pull: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	out := &PullResult{Status: PullStatus(res.Status)}
@@ -576,84 +548,61 @@ func (c *Context) Pull(ctx context.Context, req PullRequest) (*PullResult, error
 	return out, nil
 }
 
-// Commit calls the provider's AddPieces or CreateDataSet+AddPieces API and
-// waits for on-chain confirmation. When req.ExtraData is empty, PresignForCommit
-// is called internally to produce the signed payload.
-func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
+// Commit creates a data set, adds pieces, and waits for confirmation.
+func (c *ProviderContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
+	return c.core.commit(ctx, "storage.ProviderContext.Commit", nil, req)
+}
+
+// Commit adds pieces to the bound data set and waits for confirmation.
+func (c *DataSetContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
+	return c.core.commit(ctx, "storage.DataSetContext.Commit", &c.ref, req)
+}
+
+func (c *contextCore) commit(ctx context.Context, op string, ref *DataSetRef, req CommitRequest) (*CommitResult, error) {
 	if len(req.Pieces) == 0 {
-		return nil, fmt.Errorf("storage.Context.Commit: %w: no pieces provided", ErrInvalidArgument)
+		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
 	}
-	if err := validateAddPiecesBatch("storage.Context.Commit", len(req.Pieces)); err != nil {
+	if err := validateAddPiecesBatch(op, len(req.Pieces)); err != nil {
 		return nil, err
 	}
-	c.mu.RLock()
-	pendingCreate := c.createInFlight || c.pendingCreate != nil
-	c.mu.RUnlock()
-	if pendingCreate {
-		return nil, fmt.Errorf("storage.Context.Commit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
-	}
-
-	// Serialise all Commit calls to prevent a TOCTOU race: the create-vs-add
-	// decision is captured from c.dataSetID and then reused below. Without
-	// serialisation, two concurrent Commits can both see dataSetID==nil and
-	// both create a new dataset, corrupting the on-chain state.
-	c.commitMu.Lock()
-	defer c.commitMu.Unlock()
-
-	c.mu.RLock()
-	pendingCreate = c.createInFlight || c.pendingCreate != nil
-	c.mu.RUnlock()
-	if pendingCreate {
-		return nil, fmt.Errorf("storage.Context.Commit: %w: dataset creation is pending; complete CreateDataSet or WaitForDataSetCreated first", ErrInvalidArgument)
-	}
-
-	c.mu.RLock()
-	dataSetID := copyIDPtr(c.dataSetID)
-	recordKeeper := c.recordKeeper
-	c.mu.RUnlock()
-	if err := c.validateWritableDataSet(ctx, "storage.Context.Commit"); err != nil {
+	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
 		return nil, err
 	}
 
 	extraData := append([]byte(nil), req.ExtraData...)
 	var err error
-	if c.presignedExtraDataIsStale(extraData) {
-		c.forgetPresignedExtraData(extraData)
-		extraData = nil
-	}
 	if len(extraData) == 0 {
-		extraData, err = c.PresignForCommit(ctx, req.Pieces)
+		extraData, err = c.presignForCommit(ctx, op, ref, req.Pieces)
 		if err != nil {
 			return nil, err
 		}
 	}
-	defer c.forgetPresignedExtraData(extraData)
 
 	pieces := make([]pdp.AddPieceInput, 0, len(req.Pieces))
 	for _, p := range req.Pieces {
 		pieces = append(pieces, pdp.AddPieceInput{PieceCID: p.PieceCID})
 	}
 
-	if dataSetID != nil {
-		added, err := c.client.AddPieces(ctx, *dataSetID, pieces, extraData)
+	if ref != nil {
+		added, err := c.client.AddPieces(ctx, ref.dataSetID, pieces, extraData)
 		if err != nil {
-			return nil, fmt.Errorf("storage.Context.Commit: add pieces: %w", err)
+			return nil, fmt.Errorf("%s: add pieces: %w", op, err)
 		}
 		if req.OnSubmitted != nil {
 			req.OnSubmitted(added.TxHash.Hex())
 		}
 		status, err := c.client.WaitForPiecesAdded(ctx, added.StatusURL, 0)
 		if err != nil {
-			return nil, fmt.Errorf("storage.Context.Commit: wait add pieces: %w", err)
+			return nil, fmt.Errorf("%s: wait add pieces: %w", op, err)
 		}
 		if status.DataSetID.IsZero() {
-			return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
+			return nil, errors.New(op + ": server returned zero dataSetID")
 		}
-		if !status.DataSetID.Equal(*dataSetID) {
-			return nil, fmt.Errorf("storage.Context.Commit: server returned mismatched dataSetID: got %s want %s", status.DataSetID.String(), dataSetID.String())
+		if !status.DataSetID.Equal(ref.dataSetID) {
+			return nil, fmt.Errorf("%s: server returned mismatched dataSetID: got %s want %s", op, status.DataSetID.String(), ref.dataSetID.String())
 		}
 		if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
-			return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		return &CommitResult{
 			TransactionID: status.TxHash.Hex(),
@@ -663,86 +612,114 @@ func (c *Context) Commit(ctx context.Context, req CommitRequest) (*CommitResult,
 		}, nil
 	}
 
-	created, err := c.client.CreateDataSetAndAddPieces(ctx, recordKeeper, pieces, extraData)
+	created, err := c.client.CreateDataSetAndAddPieces(ctx, c.recordKeeper, pieces, extraData)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Commit: create and add pieces: %w", err)
+		return nil, fmt.Errorf("%s: create and add pieces: %w", op, err)
 	}
 	if req.OnSubmitted != nil {
 		req.OnSubmitted(created.TxHash.Hex())
 	}
-	// Note: if WaitForCreateDataSetAndAddPieces fails here (e.g. timeout) after
-	// the transaction was already submitted on-chain, c.dataSetID will not be
-	// set. A subsequent retry will call CreateDataSetAndAddPieces again with
-	// the same clientDataSetID; idempotency depends on the contract rejecting
-	// duplicate clientDataSetIDs.
 	status, err := c.client.WaitForCreateDataSetAndAddPieces(ctx, created.StatusURL, 0)
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.Commit: wait create and add pieces: %w", err)
+		return nil, fmt.Errorf("%s: wait create and add pieces: %w", op, err)
 	}
 	if status.DataSetID.IsZero() {
-		return nil, errors.New("storage.Context.Commit: server returned zero dataSetID")
+		return nil, errors.New(op + ": server returned zero dataSetID")
 	}
 	if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
-		return nil, fmt.Errorf("storage.Context.Commit: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	result := &CommitResult{
+	return &CommitResult{
 		TransactionID: status.TxHash.Hex(),
 		DataSetID:     status.DataSetID,
 		PieceIDs:      append([]types.BigInt(nil), status.ConfirmedPieceIDs...),
 		IsNewDataSet:  true,
-	}
-	newID := result.DataSetID
-	c.mu.Lock()
-	c.dataSetID = &newID
-	c.mu.Unlock()
-	return result, nil
+	}, nil
 }
 
-func (c *Context) validateWritableDataSet(ctx context.Context, op string) error {
-	c.mu.RLock()
-	dataSetID := copyIDPtr(c.dataSetID)
-	reader := c.dataSetReader
-	validator := c.dataSetValidator
-	c.mu.RUnlock()
-	if dataSetID == nil {
+func (c *contextCore) validateWritableDataSet(ctx context.Context, op string, ref *DataSetRef) error {
+	if ref == nil {
 		return nil
 	}
-	if reader != nil {
-		info, err := reader.GetDataSet(ctx, *dataSetID)
+	if c.dataSetReader != nil {
+		info, err := c.dataSetReader.GetDataSet(ctx, ref.dataSetID)
 		if err != nil {
-			return fmt.Errorf("%s: validate data set %s: %w", op, dataSetID.String(), err)
+			return fmt.Errorf("%s: validate data set %s: %w", op, ref.dataSetID.String(), err)
 		}
 		if info == nil {
-			return fmt.Errorf("%s: %w: FWSS returned no data set for dataSetID %s", op, ErrInvalidArgument, dataSetID.String())
+			return fmt.Errorf("%s: %w: FWSS returned no data set for dataSetID %s", op, ErrInvalidArgument, ref.dataSetID.String())
 		}
-		if err := validateDataSetAcceptsUploads(*dataSetID, info.PDPEndEpoch); err != nil {
+		if err := validateDataSetAcceptsUploads(ref.dataSetID, info.PDPEndEpoch); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
 	}
-	if validator != nil {
-		if err := validator.ValidateDataSet(ctx, *dataSetID); err != nil {
-			return fmt.Errorf("%s: validate data set %s: %w", op, dataSetID.String(), err)
+	if c.dataSetValidator != nil {
+		if err := c.dataSetValidator.ValidateDataSet(ctx, ref.dataSetID); err != nil {
+			return fmt.Errorf("%s: validate data set %s: %w", op, ref.dataSetID.String(), err)
 		}
 	}
 	return nil
 }
 
 // PieceURL returns the HTTPS retrieval URL for the given piece CID on this provider.
-func (c *Context) PieceURL(pieceCID cid.Cid) string {
-	return c.pieceURLFor(pieceCID)
+func (c *ProviderContext) PieceURL(pieceCID cid.Cid) string {
+	return c.core.pieceURLFor(pieceCID)
+}
+
+// PieceURL returns the HTTPS retrieval URL for the given piece CID on this provider.
+func (c *DataSetContext) PieceURL(pieceCID cid.Cid) string {
+	return c.core.pieceURLFor(pieceCID)
 }
 
 // ProviderID returns the provider's numeric ID.
-func (c *Context) ProviderID() types.BigInt {
-	return c.provider.ID
+func (c *ProviderContext) ProviderID() types.BigInt {
+	if c == nil || c.core == nil {
+		return types.BigInt{}
+	}
+	return copyBigInt(c.core.provider.ID)
 }
 
-// GetProviderInfo returns a copy of the Provider that this Context was
-// constructed with. Safe for concurrent use; the returned struct is a
-// deep copy for all non-address fields.
-func (c *Context) GetProviderInfo() Provider {
+// ProviderID returns the provider's numeric ID.
+func (c *DataSetContext) ProviderID() types.BigInt {
+	if c == nil || c.core == nil {
+		return types.BigInt{}
+	}
+	return copyBigInt(c.core.provider.ID)
+}
+
+// ContextIdentity returns the immutable payer, chain, and record keeper.
+func (c *ProviderContext) ContextIdentity() ContextIdentity {
+	if c == nil || c.core == nil {
+		return ContextIdentity{}
+	}
+	return c.core.identity()
+}
+
+// ContextIdentity returns the immutable payer, chain, and record keeper.
+func (c *DataSetContext) ContextIdentity() ContextIdentity {
+	if c == nil || c.core == nil {
+		return ContextIdentity{}
+	}
+	return c.core.identity()
+}
+
+func (c *contextCore) identity() ContextIdentity {
+	return ContextIdentity{Payer: c.payer, ChainID: c.chainID, RecordKeeper: c.recordKeeper}
+}
+
+// GetProviderInfo returns a copy of the provider configuration.
+func (c *ProviderContext) GetProviderInfo() Provider {
+	return c.core.providerInfo()
+}
+
+// GetProviderInfo returns a copy of the provider configuration.
+func (c *DataSetContext) GetProviderInfo() Provider {
+	return c.core.providerInfo()
+}
+
+func (c *contextCore) providerInfo() Provider {
 	return Provider{
-		ID:              c.provider.ID,
+		ID:              copyBigInt(c.provider.ID),
 		ServiceURL:      c.provider.ServiceURL,
 		ServiceProvider: c.provider.ServiceProvider,
 		Payee:           c.provider.Payee,
@@ -750,56 +727,60 @@ func (c *Context) GetProviderInfo() Provider {
 }
 
 // ServiceURL returns the base URL of the provider's PDP HTTP API.
-func (c *Context) ServiceURL() string {
-	return c.provider.ServiceURL
+func (c *ProviderContext) ServiceURL() string {
+	return c.core.provider.ServiceURL
 }
 
-// DataSetID returns the Context's bound data set ID, or nil if the
-// Context targets a data set that does not yet exist (will be created
-// on first upload).
-func (c *Context) DataSetID() *types.BigInt {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.dataSetID == nil {
-		return nil
-	}
-	id := copyBigInt(*c.dataSetID)
-	return &id
+// ServiceURL returns the base URL of the provider's PDP HTTP API.
+func (c *DataSetContext) ServiceURL() string {
+	return c.core.provider.ServiceURL
 }
 
-// BoundDataSetID returns the Context's bound data set ID and whether it is
-// set. ok is false when the Context will create a data set on first upload.
-func (c *Context) BoundDataSetID() (id types.BigInt, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.dataSetID == nil {
-		return types.BigInt{}, false
-	}
-	return copyBigInt(*c.dataSetID), true
+// DataSetRef reports that a ProviderContext is not bound to a data set.
+func (c *ProviderContext) DataSetRef() (DataSetRef, bool) {
+	return DataSetRef{}, false
 }
 
-func (c *Context) setClientDataSetIDIfMissing(dataSetID, clientDataSetID types.BigInt) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.dataSetID == nil || !c.dataSetID.Equal(dataSetID) || c.clientDataSetID != nil {
-		return
-	}
-	c.clientDataSetID = copyClientDataSetIDPtr(clientDataSetID)
+// DataSetRef returns the immutable target of this context.
+func (c *DataSetContext) DataSetRef() (DataSetRef, bool) {
+	return copyDataSetRef(c.ref), true
 }
 
-// CDNEnabled reports whether CDN services are enabled for this Context.
-func (c *Context) CDNEnabled() bool {
-	return c.withCDN
+// DataSetID returns the immutable on-chain data-set ID.
+func (c *DataSetContext) DataSetID() types.BigInt {
+	return c.ref.DataSetID()
 }
 
-// WithCDN reports whether CDN services are enabled for this Context.
+// ClientDataSetID returns the immutable client-chosen data-set ID.
+func (c *DataSetContext) ClientDataSetID() types.BigInt {
+	return c.ref.ClientDataSetID()
+}
+
+// CDNEnabled reports whether CDN services are enabled for this context.
+func (c *ProviderContext) CDNEnabled() bool {
+	return c.core.withCDN
+}
+
+// CDNEnabled reports whether CDN services are enabled for this context.
+func (c *DataSetContext) CDNEnabled() bool {
+	return c.core.withCDN
+}
+
+// WithCDN reports whether CDN services are enabled for this context.
 //
 // Deprecated: use CDNEnabled.
-func (c *Context) WithCDN() bool {
+func (c *ProviderContext) WithCDN() bool {
 	return c.CDNEnabled()
 }
 
-func (c *Context) pieceURLFor(pieceCID cid.Cid) string {
+// WithCDN reports whether CDN services are enabled for this context.
+//
+// Deprecated: use CDNEnabled.
+func (c *DataSetContext) WithCDN() bool {
+	return c.CDNEnabled()
+}
+
+func (c *contextCore) pieceURLFor(pieceCID cid.Cid) string {
 	base, err := url.Parse(c.provider.ServiceURL)
 	if err != nil {
 		return c.provider.ServiceURL
@@ -812,7 +793,7 @@ func (c *Context) pieceURLFor(pieceCID cid.Cid) string {
 // The closure indirects through [signer.SignHash] so the EVMSigner contract
 // remains free of the dangerous SignHash method while internal SDK code can
 // still produce EIP-712 signatures.
-func (c *Context) signHashFunc() func([]byte) ([]byte, error) {
+func (c *contextCore) signHashFunc() func([]byte) ([]byte, error) {
 	return func(hash []byte) ([]byte, error) {
 		return signer.SignHash(c.signer, hash)
 	}
@@ -938,60 +919,14 @@ func cloneStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
-func (c *Context) rememberPresignedExtraData(extraData []byte, kind commitExtraDataKind) {
-	if len(extraData) == 0 || kind == commitExtraDataUnknown {
-		return
+func copyDataSetRef(ref DataSetRef) DataSetRef {
+	return DataSetRef{
+		providerID:      copyBigInt(ref.providerID),
+		dataSetID:       copyBigInt(ref.dataSetID),
+		clientDataSetID: copyBigInt(ref.clientDataSetID),
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.rememberPresignedExtraDataLocked(extraData, kind)
-}
-
-func (c *Context) rememberPresignedExtraDataLocked(extraData []byte, kind commitExtraDataKind) {
-	if len(extraData) == 0 || kind == commitExtraDataUnknown {
-		return
-	}
-	if c.presignedKinds == nil {
-		c.presignedKinds = make(map[[32]byte]commitExtraDataKind)
-	}
-	c.presignedKinds[presignedExtraDataKey(extraData)] = kind
-}
-
-func (c *Context) presignedExtraDataIsStale(extraData []byte) bool {
-	if len(extraData) == 0 {
-		return false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	kind, ok := c.presignedKinds[presignedExtraDataKey(extraData)]
-	if !ok {
-		return false
-	}
-	if c.dataSetID == nil {
-		return kind != commitExtraDataCreateAndAdd
-	}
-	return kind != commitExtraDataAddOnly
-}
-
-func (c *Context) forgetPresignedExtraData(extraData []byte) {
-	if len(extraData) == 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.presignedKinds, presignedExtraDataKey(extraData))
-	if len(c.presignedKinds) == 0 {
-		c.presignedKinds = nil
-	}
-}
-
-func presignedExtraDataKey(extraData []byte) [32]byte {
-	return sha256.Sum256(extraData)
 }

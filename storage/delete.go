@@ -20,7 +20,7 @@ import (
 //
 // A data set can contain multiple piece IDs with the same piece CID. This
 // method resolves pieceCID with PDPVerifier.findPieceIdsByCid using limit=1
-// and deletes the first returned piece ID. Prefer [Context.DeletePieceByID]
+// and deletes the first returned piece ID. Prefer [DataSetContext.DeletePieceByID]
 // when the on-chain piece ID is available.
 //
 // The implementation:
@@ -32,10 +32,10 @@ import (
 //
 // The returned WriteResult carries only the transaction hash; there is no
 // on-chain wait.
-func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
-	const op = "storage.Context.DeletePiece"
+func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
+	const op = "storage.DataSetContext.DeletePiece"
 
-	if c.pdpCaller == nil {
+	if c.core.pdpCaller == nil {
 		return nil, errors.New(op + ": PDPVerifier reader not configured")
 	}
 	if !pieceCID.Defined() {
@@ -46,7 +46,7 @@ func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.
 		return nil, err
 	}
 
-	pieceIDs, err := c.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, pieceCID, 0, 1)
+	pieceIDs, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, pieceCID, 0, 1)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
@@ -62,8 +62,8 @@ func (c *Context) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.
 //
 // Prefer this method when the piece ID is available, because piece CID is not
 // guaranteed to be unique within a data set.
-func (c *Context) DeletePieceByID(ctx context.Context, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
-	const op = "storage.Context.DeletePieceByID"
+func (c *DataSetContext) DeletePieceByID(ctx context.Context, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
+	const op = "storage.DataSetContext.DeletePieceByID"
 
 	target, err := c.snapshotDeletePieceTarget(op)
 	if err != nil {
@@ -80,50 +80,31 @@ type deletePieceTarget struct {
 	recordKeeper    common.Address
 }
 
-func (c *Context) snapshotDeletePieceTarget(op string) (deletePieceTarget, error) {
-	if c.client == nil {
+func (c *DataSetContext) snapshotDeletePieceTarget(op string) (deletePieceTarget, error) {
+	if c.core.client == nil {
 		return deletePieceTarget{}, errors.New(op + ": PDP client not configured")
 	}
-	if c.signer == nil {
+	if c.core.signer == nil {
 		return deletePieceTarget{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.dataSetID == nil {
-		return deletePieceTarget{}, fmt.Errorf("%s: %w: dataSetID not set", op, ErrInvalidArgument)
-	}
-	if !c.chainID.IsValid() {
+	if !c.core.chainID.IsValid() {
 		return deletePieceTarget{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
-	if c.recordKeeper == (common.Address{}) {
+	if c.core.recordKeeper == (common.Address{}) {
 		return deletePieceTarget{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
-	var clientDataSetID *big.Int
-	if c.clientDataSetID != nil {
-		clientDataSetID = c.clientDataSetID.Big()
-	}
-
 	return deletePieceTarget{
-		dataSetID:       copyBigInt(*c.dataSetID),
-		clientDataSetID: clientDataSetID,
-		chainID:         c.chainID,
-		recordKeeper:    c.recordKeeper,
+		dataSetID:       c.ref.DataSetID(),
+		clientDataSetID: c.ref.ClientDataSetID().Big(),
+		chainID:         c.core.chainID,
+		recordKeeper:    c.core.recordKeeper,
 	}, nil
 }
 
-func (c *Context) schedulePieceDeletionByID(ctx context.Context, op string, target deletePieceTarget, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
-	if target.clientDataSetID == nil {
-		return nil, fmt.Errorf(
-			"%s: %w: clientDataSetID is required when the context targets an existing data set; "+
-				"supply it with WithClientDataSetID or construct the context via Service.CreateContext",
-			op,
-			ErrInvalidArgument,
-		)
-	}
-
+func (c *DataSetContext) schedulePieceDeletionByID(ctx context.Context, op string, target deletePieceTarget, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
 	domain := ityped.NewDomain(target.chainID.BigInt(), target.recordKeeper)
 	sig, err := ityped.SignSchedulePieceRemovals(
-		c.signHashFunc(),
+		c.core.signHashFunc(),
 		domain,
 		target.clientDataSetID,
 		[]*big.Int{pieceID.Big()},
@@ -140,7 +121,7 @@ func (c *Context) schedulePieceDeletionByID(ctx context.Context, op string, targ
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	txHash, err := c.client.SchedulePieceDeletion(ctx, target.dataSetID, pieceID, extraData)
+	txHash, err := c.core.client.SchedulePieceDeletion(ctx, target.dataSetID, pieceID, extraData)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}

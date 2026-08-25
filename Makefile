@@ -16,9 +16,10 @@ build:
 test:
 	go test ./...
 
-# Run benchmarks — auto-discovers packages containing *_bench_test.go files
+# Run benchmarks — auto-discovers packages containing *_bench_test.go files.
+# Skip hidden dirs (worktrees, .git) and local reference checkouts.
 bench:
-	go test -bench=. -benchmem $(shell find . -name '*_bench_test.go' | sed 's|/[^/]*$$||' | sort -u)
+	go test -bench=. -benchmem $(shell find . \( -path '*/.*' -o -path './lotus' -o -path './curio' -o -path './synapse-sdk' -o -path './go-synapse' \) -prune -o -name '*_bench_test.go' -print | sed 's|/[^/]*$$||' | sort -u)
 
 # Run tests with race detector
 test-race:

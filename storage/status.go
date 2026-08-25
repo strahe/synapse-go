@@ -59,16 +59,13 @@ type PieceStatus struct {
 
 // GetScheduledRemovals returns the list of piece ids that have been
 // scheduled for removal from this data set but have not yet been processed.
-func (c *Context) GetScheduledRemovals(ctx context.Context) ([]types.BigInt, error) {
-	if c.pdpCaller == nil {
-		return nil, errors.New("storage.Context.GetScheduledRemovals: PDPVerifier reader not configured")
+func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigInt, error) {
+	if c.core.pdpCaller == nil {
+		return nil, errors.New("storage.DataSetContext.GetScheduledRemovals: PDPVerifier reader not configured")
 	}
-	if c.dataSetID == nil {
-		return []types.BigInt{}, nil
-	}
-	ids, err := c.pdpCaller.GetScheduledRemovals(ctx, *c.dataSetID)
+	ids, err := c.core.pdpCaller.GetScheduledRemovals(ctx, c.ref.DataSetID())
 	if err != nil {
-		return nil, fmt.Errorf("storage.Context.GetScheduledRemovals: %w", err)
+		return nil, fmt.Errorf("storage.DataSetContext.GetScheduledRemovals: %w", err)
 	}
 	return ids, nil
 }
@@ -81,15 +78,12 @@ func (c *Context) GetScheduledRemovals(ctx context.Context) ([]types.BigInt, err
 // getNextChallengeEpoch, BlockNumber, getPDPConfig, and provider info.
 // Any individual failure surfaces as a wrapped error; a nil pdpConfig is
 // tolerated (proof-timing fields remain zero).
-func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStatus, error) {
-	if c.pdpCaller == nil {
-		return nil, errors.New("storage.Context.PieceStatus: PDPVerifier reader not configured")
-	}
-	if c.dataSetID == nil {
-		return nil, fmt.Errorf("storage.Context.PieceStatus: %w: dataSetID not set", ErrInvalidArgument)
+func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStatus, error) {
+	if c.core.pdpCaller == nil {
+		return nil, errors.New("storage.DataSetContext.PieceStatus: PDPVerifier reader not configured")
 	}
 	if !pieceCID.Defined() {
-		return nil, fmt.Errorf("storage.Context.PieceStatus: %w: undefined pieceCID", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w: undefined pieceCID", ErrInvalidArgument)
 	}
 
 	var (
@@ -102,7 +96,7 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		ids, err := c.pdpCaller.FindPieceIdsByCid(gctx, *c.dataSetID, pieceCID, 0, 1)
+		ids, err := c.core.pdpCaller.FindPieceIdsByCid(gctx, c.ref.DataSetID(), pieceCID, 0, 1)
 		if err != nil {
 			return fmt.Errorf("findPieceIdsByCid: %w", err)
 		}
@@ -110,7 +104,7 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 		return nil
 	})
 	g.Go(func() error {
-		n, err := c.pdpCaller.GetNextChallengeEpoch(gctx, *c.dataSetID)
+		n, err := c.core.pdpCaller.GetNextChallengeEpoch(gctx, c.ref.DataSetID())
 		if err != nil {
 			return fmt.Errorf("getNextChallengeEpoch: %w", err)
 		}
@@ -118,7 +112,7 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 		return nil
 	})
 	g.Go(func() error {
-		n, err := c.pdpCaller.BlockNumber(gctx)
+		n, err := c.core.pdpCaller.BlockNumber(gctx)
 		if err != nil {
 			return fmt.Errorf("blockNumber: %w", err)
 		}
@@ -126,23 +120,23 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 		return nil
 	})
 	g.Go(func() error {
-		if c.pdpConfig == nil {
+		if c.core.pdpConfig == nil {
 			return nil
 		}
-		cfg, err := c.pdpConfig.GetPDPConfig(gctx)
+		cfg, err := c.core.pdpConfig.GetPDPConfig(gctx)
 		if err != nil {
-			// TS tolerates this failure; we do the same.
+			// Proof-timing fields remain zero when the optional config read fails.
 			return nil //nolint:nilerr
 		}
 		pdpConfig = cfg
 		return nil
 	})
 	g.Go(func() error {
-		providerInfo = c.GetProviderInfo()
+		providerInfo = c.core.providerInfo()
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("storage.Context.PieceStatus: %w", err)
+		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w", err)
 	}
 
 	out := &PieceStatus{}
@@ -167,7 +161,7 @@ func (c *Context) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStat
 	challengeStart := new(big.Int).Set(nextChallengeEpoch)
 	provingDeadline := new(big.Int).Add(challengeStart, window)
 
-	chainResolved, err := chain.FromID(c.chainID.Int64())
+	chainResolved, err := chain.FromID(c.core.chainID.Int64())
 	if err == nil {
 		out.DataSetNextProofDue = chain.EpochToTime(chainResolved, provingDeadline)
 		if pdpConfig.MaxProvingPeriod > 0 {

@@ -34,6 +34,29 @@ var ErrInvalidArgument = errors.New("storage: invalid argument")
 // provider fails its PDP health check.
 var ErrNoHealthyProviders = errors.New("storage: no healthy providers")
 
+// ErrInsufficientUploadContexts is matched by
+// [InsufficientUploadContextsError] when selection found at least one, but
+// fewer than the requested number of upload targets.
+var ErrInsufficientUploadContexts = errors.New("storage: insufficient upload contexts")
+
+// InsufficientUploadContextsError reports a usable partial selection.
+type InsufficientUploadContextsError struct {
+	Requested int
+	Available int
+}
+
+func (e *InsufficientUploadContextsError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%s: requested %d, available %d", ErrInsufficientUploadContexts, e.Requested, e.Available)
+}
+
+// Is makes InsufficientUploadContextsError match ErrInsufficientUploadContexts.
+func (e *InsufficientUploadContextsError) Is(target error) bool {
+	return target == ErrInsufficientUploadContexts
+}
+
 // ErrPrivateNetwork is returned by Service.Download when the target URL
 // resolves to a loopback / link-local / RFC1918 / ULA / multicast /
 // unspecified address and the Service was constructed without

@@ -44,8 +44,11 @@ func (s *stubFunder) FundSync(_ context.Context, amount *big.Int, opts ...paymen
 
 func newTestService() *Service {
 	return &Service{
-		httpClient: &http.Client{},
-		lifecycle:  lifecycle.New(),
+		httpClient:   &http.Client{},
+		lifecycle:    lifecycle.New(),
+		signerAddr:   testPayer(),
+		chainID:      sdktypes.ChainID(314159),
+		recordKeeper: testRecordKeeper(),
 	}
 }
 
@@ -56,8 +59,6 @@ func assertInvalidArgument(t *testing.T, err error) {
 	}
 }
 
-func (c *fakeUploadContext) DataSetID() *sdktypes.BigInt { return c.dataSetID }
-
 func (c *fakeUploadContext) GetProviderInfo() Provider {
 	p := testProvider()
 	if !c.id.IsZero() {
@@ -66,7 +67,7 @@ func (c *fakeUploadContext) GetProviderInfo() Provider {
 	return p
 }
 
-func (c *fakeUploadContext) WithCDN() bool {
+func (c *fakeUploadContext) CDNEnabled() bool {
 	if c.dataSetMetadata == nil {
 		return false
 	}
@@ -77,7 +78,7 @@ func (c *fakeUploadContext) WithCDN() bool {
 func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.signerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &MultiContextCosts{Ready: true}})
 	if err != nil {
@@ -88,8 +89,27 @@ func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
+	calc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	svc := newTestService()
+	svc.costCalc = calc
+	identity := serviceTestIdentity()
+	identity.Payer = common.HexToAddress("0x9999")
+	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), identity: &identity}
+
+	result, err := svc.Prepare(context.Background(), &PrepareOptions{
+		DataSize: 1,
+		Contexts: []StorageContext{uploadCtx},
+	})
+	if result != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+	}
+	if calc.gotRefs != nil {
+		t.Fatalf("cost calculator called with refs=%+v", calc.gotRefs)
+	}
+}
+
 func TestPrepare_RejectsInvalidOptions(t *testing.T) {
-	cdn := true
 	readyCosts := &MultiContextCosts{Ready: true}
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1)}
 
@@ -109,7 +129,7 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			name: "costs with contexts",
 			opts: &PrepareOptions{
 				Costs:    readyCosts,
-				Contexts: []UploadContext{uploadCtx},
+				Contexts: []StorageContext{uploadCtx},
 			},
 		},
 		{
@@ -124,13 +144,6 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			opts: &PrepareOptions{
 				Costs:      readyCosts,
 				PieceCount: big.NewInt(2),
-			},
-		},
-		{
-			name: "costs with enable cdn",
-			opts: &PrepareOptions{
-				Costs:     readyCosts,
-				EnableCDN: &cdn,
 			},
 		},
 		{
@@ -177,7 +190,7 @@ func TestPrepare_BuildsExecuteWhenNotReady(t *testing.T) {
 	funder := &stubFunder{}
 	svc := newTestService()
 	svc.funder = funder
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.signerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
 		Costs: &MultiContextCosts{
@@ -216,7 +229,7 @@ func TestPrepareExecute_UsesComputedApprovalOptionsWithCallerWriteOptions(t *tes
 	funder := &stubFunder{}
 	svc := newTestService()
 	svc.funder = funder
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.signerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
 		Costs: &MultiContextCosts{
@@ -268,20 +281,20 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 			name: "calculated nil deposit",
 			opts: &PrepareOptions{
 				DataSize: 128,
-				Contexts: []UploadContext{
+				Contexts: []StorageContext{
 					uploadCtx,
 				},
 			},
 			setup: func(svc *Service) {
 				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: false}}
-				svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+				svc.signerAddr = testPayer()
 			},
 		},
 		{
 			name: "calculated negative deposit",
 			opts: &PrepareOptions{
 				DataSize: 128,
-				Contexts: []UploadContext{
+				Contexts: []StorageContext{
 					uploadCtx,
 				},
 			},
@@ -290,7 +303,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 					Ready:         false,
 					DepositNeeded: big.NewInt(-1),
 				}}
-				svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+				svc.signerAddr = testPayer()
 			},
 		},
 	}
@@ -310,53 +323,22 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 
 func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	svc := newTestService()
+	svc.signerAddr = common.Address{}
 	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize: 128,
-		Contexts: []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+		Contexts: []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Prepare error = %v, want ErrInvalidArgument", err)
 	}
 }
 
-func TestPrepare_AutoCreatesContextsWithContextResolver(t *testing.T) {
-	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+func TestPrepare_RequiresExplicitContexts(t *testing.T) {
 	svc := newTestService()
-	svc.costCalc = costCalc
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
-
-	_, err = svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	if len(costCalc.gotRefs) != 1 {
-		t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
-	}
-	if !costCalc.gotRefs[0].Provider.ID.Equal(testProvider().ID) {
-		t.Fatalf("ProviderID=%s want %s", costCalc.gotRefs[0].Provider.ID, testProvider().ID)
-	}
-}
-
-func TestPrepare_RejectsEnableCDNWhenContextsSupplied(t *testing.T) {
-	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	svc := newTestService()
-	svc.costCalc = costCalc
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	cdn := true
-	_, err := svc.Prepare(context.Background(), &PrepareOptions{
-		DataSize:     128,
-		EnableCDN:    &cdn,
-		Contexts:     []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
-		BufferEpochs: 9,
-	})
+	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	_, err := svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
 	assertInvalidArgument(t, err)
 }
 
@@ -364,11 +346,11 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 	svc := newTestService()
 	svc.costCalc = costCalc
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.signerAddr = testPayer()
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize:          128,
-		Contexts:          []UploadContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+		Contexts:          []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 		PieceCount:        big.NewInt(41),
 		ExtraRunwayEpochs: 7,
 		BufferEpochs:      9,
@@ -393,7 +375,7 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 func TestPrepare_ReturnsErrorWhenCostCalculatorReturnsNil(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{}
-	svc.signerAddr = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	svc.signerAddr = testPayer()
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -403,7 +385,7 @@ func TestPrepare_ReturnsErrorWhenCostCalculatorReturnsNil(t *testing.T) {
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize: 128,
-		Contexts: []UploadContext{
+		Contexts: []StorageContext{
 			&fakeUploadContext{id: sdktypes.NewBigInt(1)},
 		},
 	})

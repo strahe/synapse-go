@@ -17,7 +17,7 @@
 //
 //	// data must contain uploadable content; PieceCIDv2 requires at least
 //	// 127 raw bytes.
-//	result, err := client.Storage().Upload(ctx, data, nil)
+//	result, err := client.Storage().Upload(ctx, data, &storage.UploadOptions{Copies: 2})
 //
 // Sub-services are accessed via getters: [Client.Storage], [Client.Payments],
 // [Client.WarmStorage], [Client.SPRegistry], [Client.Costs], [Client.FilBeam],
@@ -34,7 +34,7 @@
 // This SDK is in its 0.x phase. Public APIs may change between minor
 // releases; breaking changes are called out in release notes. Pin to a
 // specific minor version in production. The implementation tracks the
-// Filecoin Onchain Cloud protocol and the upstream TypeScript SDK.
+// Filecoin Onchain Cloud protocol.
 //
 // [piece]: https://pkg.go.dev/github.com/strahe/synapse-go/piece
 package synapse

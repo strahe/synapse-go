@@ -63,14 +63,18 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 	}
 
 	fake := &fakeUploadStorage{
-		createFn: func(_ context.Context, opts *storage.CreateContextsOptions) ([]*storage.Context, error) {
+		selectFn: func(_ context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
 			if opts.Copies != 2 {
-				t.Fatalf("CreateContexts Copies=%d want 2", opts.Copies)
+				t.Fatalf("SelectUploadContexts Copies=%d want 2", opts.Copies)
 			}
 			if opts.DataSetMetadata["app"] != "docs" {
 				t.Fatalf("DataSetMetadata=%v", opts.DataSetMetadata)
 			}
-			return make([]*storage.Context, opts.Copies), nil
+			return &storage.UploadContextSelection{
+				Contexts:        make([]storage.StorageContext, opts.Copies),
+				RequestedCopies: opts.Copies,
+				Complete:        true,
+			}, nil
 		},
 		prepareFn: func(_ context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
 			if opts.DataSize != uint64(len(data)) {
@@ -86,7 +90,7 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 				},
 			}, nil
 		},
-		uploadFn: func(_ context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
@@ -94,8 +98,8 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 			if !bytes.Equal(got, data) {
 				t.Fatal("uploaded data mismatch")
 			}
-			if opts.Copies != 2 {
-				t.Fatalf("Copies=%d want 2", opts.Copies)
+			if len(contexts) != 2 {
+				t.Fatalf("contexts=%d want 2", len(contexts))
 			}
 			if opts.OnProgress != nil {
 				opts.OnProgress(int64(len(data)))
@@ -157,8 +161,8 @@ func TestRunUploadRejectsSmallFileBeforePreparing(t *testing.T) {
 	}
 
 	fake := &fakeUploadStorage{
-		createFn: func(context.Context, *storage.CreateContextsOptions) ([]*storage.Context, error) {
-			t.Fatal("CreateContexts should not be called")
+		selectFn: func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+			t.Fatal("SelectUploadContexts should not be called")
 			return nil, nil
 		},
 	}
@@ -173,8 +177,8 @@ func TestRunUploadRejectsSmallFileBeforePreparing(t *testing.T) {
 
 func TestRunUploadRejectsDirectoryBeforePreparing(t *testing.T) {
 	fake := &fakeUploadStorage{
-		createFn: func(context.Context, *storage.CreateContextsOptions) ([]*storage.Context, error) {
-			t.Fatal("CreateContexts should not be called")
+		selectFn: func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+			t.Fatal("SelectUploadContexts should not be called")
 			return nil, nil
 		},
 	}
@@ -188,19 +192,19 @@ func TestRunUploadRejectsDirectoryBeforePreparing(t *testing.T) {
 }
 
 type fakeUploadStorage struct {
-	createFn  func(context.Context, *storage.CreateContextsOptions) ([]*storage.Context, error)
+	selectFn  func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	prepareFn func(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	uploadFn  func(context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error)
+	uploadFn  func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
 }
 
-func (f *fakeUploadStorage) CreateContexts(ctx context.Context, opts *storage.CreateContextsOptions) ([]*storage.Context, error) {
-	return f.createFn(ctx, opts)
+func (f *fakeUploadStorage) SelectUploadContexts(ctx context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+	return f.selectFn(ctx, opts)
 }
 
 func (f *fakeUploadStorage) Prepare(ctx context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
 	return f.prepareFn(ctx, opts)
 }
 
-func (f *fakeUploadStorage) Upload(ctx context.Context, r io.Reader, opts *storage.UploadOptions) (*storage.UploadResult, error) {
-	return f.uploadFn(ctx, r, opts)
+func (f *fakeUploadStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+	return f.uploadFn(ctx, r, contexts, opts)
 }

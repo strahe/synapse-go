@@ -13,11 +13,10 @@ import (
 )
 
 // PDPVerifierReader is the read-only PDPVerifier surface required by
-// [Context] for piece lifecycle queries (scheduled removals, id lookup,
-// next challenge epoch) and by [PieceStatus] for proving-window
-// calculations. Implementations convert between [sdktypes.BigInt]
-// / [cid.Cid] and the abigen-native types (`*big.Int`,
-// `pdpverifier.CidsCid`).
+// [DataSetContext] for piece lifecycle queries (scheduled removals, id lookup,
+// next challenge epoch) and proving-window calculations. Implementations
+// convert between [sdktypes.BigInt] / [cid.Cid] and the abigen-native types
+// (`*big.Int`, `pdpverifier.CidsCid`).
 type PDPVerifierReader interface {
 	FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error)
 	GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.BigInt) ([]sdktypes.BigInt, error)
@@ -50,11 +49,10 @@ type DataSetDetailsCatalog interface {
 }
 
 // FWSSDataSetReader reads an existing data set's on-chain record from the
-// FWSSView contract. Used by Service.CreateContext / Service.CreateContexts
-// to auto-fetch the on-chain ClientDataSetID when the resolver path did not
-// already supply one, and by upload paths to reject ended existing data sets
-// before sending bytes to a provider. Satisfied by *warmstorage.Service
-// (see GetDataSet).
+// FWSSView contract. Resolvers use it before construction to obtain complete
+// immutable targets; upload paths use it to reject ended existing data sets
+// before sending bytes to a provider. Satisfied by *warmstorage.Service (see
+// GetDataSet).
 type FWSSDataSetReader interface {
 	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }

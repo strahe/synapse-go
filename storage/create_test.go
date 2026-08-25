@@ -6,417 +6,357 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/strahe/synapse-go/types"
 )
 
-func TestCreateContexts_InjectsSourceMetadata(t *testing.T) {
-	svc := newTestService()
-	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	var captured *UploadOptions
-	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{ctx},
-		captureFn: func(opts *UploadOptions) {
-			captured = opts
-		},
-	}
-
-	opts := &CreateContextsOptions{
-		DataSetMetadata: map[string]string{"env": "prod"},
-	}
-	if _, err := svc.CreateContexts(context.Background(), opts); err != nil {
-		t.Fatalf("CreateContexts: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("resolver did not receive options")
-	}
-	if got := captured.DataSetMetadata["source"]; got != "app" {
-		t.Fatalf("captured source=%q want app", got)
-	}
-	if got := captured.DataSetMetadata["env"]; got != "prod" {
-		t.Fatalf("captured env=%q want prod", got)
-	}
-	if _, ok := opts.DataSetMetadata["source"]; ok {
-		t.Fatal("CreateContexts mutated caller metadata")
-	}
+type fakeContextResolver struct {
+	providerFn func(context.Context, types.BigInt, NewProviderContextOptions) (*ProviderContext, error)
+	dataSetFn  func(context.Context, types.BigInt, NewDataSetContextOptions) (*DataSetContext, error)
 }
 
-func TestCreateContext_InjectsSourceMetadataWhenNilOptions(t *testing.T) {
-	svc := newTestService()
-	svc.source = "app"
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
+func (r *fakeContextResolver) ResolveProviderContext(ctx context.Context, id types.BigInt, opts NewProviderContextOptions) (*ProviderContext, error) {
+	if r.providerFn == nil {
+		return nil, errors.New("unexpected ResolveProviderContext")
 	}
-
-	var captured *UploadOptions
-	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{ctx},
-		captureFn: func(opts *UploadOptions) {
-			captured = opts
-		},
-	}
-
-	if _, err := svc.CreateContext(context.Background(), nil); err != nil {
-		t.Fatalf("CreateContext: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("resolver did not receive options")
-	}
-	if got := captured.DataSetMetadata["source"]; got != "app" {
-		t.Fatalf("captured source=%q want app", got)
-	}
-	if captured.Copies != 1 {
-		t.Fatalf("captured copies=%d want 1", captured.Copies)
-	}
+	return r.providerFn(ctx, id, opts)
 }
 
-func TestCreateContext_ReturnsConcreteContext(t *testing.T) {
-	svc := newTestService()
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithClientDataSetID(types.NewBigInt(7)),
+func (r *fakeContextResolver) ResolveDataSetContext(ctx context.Context, id types.BigInt, opts NewDataSetContextOptions) (*DataSetContext, error) {
+	if r.dataSetFn == nil {
+		return nil, errors.New("unexpected ResolveDataSetContext")
+	}
+	return r.dataSetFn(ctx, id, opts)
+}
+
+type fakeContextSelector struct {
+	providerFn func(context.Context, SelectProviderContextOptions) (*ProviderContext, error)
+	uploadFn   func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error)
+}
+
+func (s *fakeContextSelector) SelectProviderContext(ctx context.Context, opts SelectProviderContextOptions) (*ProviderContext, error) {
+	if s.providerFn == nil {
+		return nil, errors.New("unexpected SelectProviderContext")
+	}
+	return s.providerFn(ctx, opts)
+}
+
+func (s *fakeContextSelector) SelectUploadContexts(ctx context.Context, opts SelectUploadContextsOptions) (*UploadContextSelection, error) {
+	if s.uploadFn == nil {
+		return nil, errors.New("unexpected SelectUploadContexts")
+	}
+	return s.uploadFn(ctx, opts)
+}
+
+func testProviderContextWithID(t *testing.T, id types.BigInt, identity ContextIdentity) *ProviderContext {
+	t.Helper()
+	provider := testProvider()
+	provider.ID = id
+	ctx, err := NewProviderContext(
+		provider,
+		&fakePDPProviderClient{},
+		mustTestSigner(t),
+		WithPayer(identity.Payer),
+		WithChainID(identity.ChainID),
+		WithRecordKeeper(identity.RecordKeeper),
 	)
 	if err != nil {
-		t.Fatalf("NewContext: %v", err)
+		t.Fatalf("NewProviderContext: %v", err)
 	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{want}}
+	return ctx
+}
 
-	got, err := svc.CreateContext(context.Background(), nil)
+func serviceTestIdentity() ContextIdentity {
+	return ContextIdentity{Payer: testPayer(), ChainID: types.ChainID(314159), RecordKeeper: testRecordKeeper()}
+}
+
+func TestServiceNewProviderContextResolvesDefaultsAndCopiesInputs(t *testing.T) {
+	svc := newTestService()
+	svc.source = "app"
+	svc.defaultWithCDN = true
+	want := testProviderContextWithID(t, types.NewBigInt(9), serviceTestIdentity())
+	metadata := map[string]string{"env": "prod"}
+	withCDN := false
+
+	svc.contextResolver = &fakeContextResolver{providerFn: func(_ context.Context, id types.BigInt, opts NewProviderContextOptions) (*ProviderContext, error) {
+		if !id.Equal(types.NewBigInt(9)) {
+			t.Fatalf("providerID=%s want 9", id.String())
+		}
+		if opts.DataSetMetadata["source"] != "app" || opts.DataSetMetadata["env"] != "prod" {
+			t.Fatalf("metadata=%v", opts.DataSetMetadata)
+		}
+		if opts.WithCDN == nil || *opts.WithCDN {
+			t.Fatalf("WithCDN=%v want false", opts.WithCDN)
+		}
+		metadata["env"] = "mutated"
+		withCDN = true
+		if opts.DataSetMetadata["env"] != "prod" || *opts.WithCDN {
+			t.Fatal("resolver options alias caller-owned values")
+		}
+		return want, nil
+	}}
+
+	got, err := svc.NewProviderContext(context.Background(), types.NewBigInt(9), NewProviderContextOptions{
+		DataSetMetadata: metadata,
+		WithCDN:         &withCDN,
+	})
 	if err != nil {
-		t.Fatalf("CreateContext: %v", err)
+		t.Fatalf("NewProviderContext: %v", err)
 	}
-	_ = got.DeletePiece
-	_ = got.DeletePieceByID
-
 	if got != want {
-		t.Fatalf("CreateContext returned %p want %p", got, want)
+		t.Fatalf("got=%p want=%p", got, want)
 	}
 }
 
-func TestCreateContext_RequiresContextResolver(t *testing.T) {
-	svc := mustNewService(t, Options{Resolver: uploadOnlyResolver{}})
-
-	_, err := svc.CreateContext(context.Background(), nil)
-	if err == nil {
-		t.Fatal("CreateContext returned nil error; want uninitialized context resolver error")
-	}
-	if !errors.Is(err, ErrUninitialized) {
-		t.Fatalf("err=%v want ErrUninitialized", err)
-	}
-	if !strings.Contains(err.Error(), "context resolver not configured") {
-		t.Fatalf("err=%v want context resolver message", err)
-	}
-}
-
-func TestCreateContext_RejectsNilResolvedContext(t *testing.T) {
+func TestServiceNewDataSetContextValidatesReturnedTarget(t *testing.T) {
 	svc := newTestService()
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
+	providerID := testProvider().ID
+	dataSetID := types.NewBigInt(42)
+	want := mustWritableDataSetContext(t, &fakePDPProviderClient{}, testDataSetRef(dataSetID, types.BigInt{}))
+	svc.contextResolver = &fakeContextResolver{dataSetFn: func(_ context.Context, id types.BigInt, opts NewDataSetContextOptions) (*DataSetContext, error) {
+		if !id.Equal(dataSetID) || opts.ProviderID == nil || !opts.ProviderID.Equal(providerID) {
+			t.Fatalf("id/options mismatch: %s %+v", id.String(), opts)
+		}
+		return want, nil
+	}}
 
-	_, err := svc.CreateContext(context.Background(), nil)
-	if err == nil {
-		t.Fatal("CreateContext returned nil error; want nil context error")
+	got, err := svc.NewDataSetContext(context.Background(), dataSetID, NewDataSetContextOptions{ProviderID: &providerID})
+	if err != nil {
+		t.Fatalf("NewDataSetContext: %v", err)
 	}
-	if !strings.Contains(err.Error(), "resolver returned nil context") {
-		t.Fatalf("err=%v want nil context message", err)
+	if got != want {
+		t.Fatalf("got=%p want=%p", got, want)
 	}
 }
 
-func TestCreateContext_AcceptsProviderAssertionForDataSetID(t *testing.T) {
+func TestServiceContextConstructorsRejectWrongResolverTargets(t *testing.T) {
+	identity := serviceTestIdentity()
+	requestedProviderID := types.NewBigInt(9)
+
+	t.Run("provider mismatch", func(t *testing.T) {
+		svc := newTestService()
+		svc.contextResolver = &fakeContextResolver{providerFn: func(context.Context, types.BigInt, NewProviderContextOptions) (*ProviderContext, error) {
+			return testProviderContextWithID(t, types.NewBigInt(8), identity), nil
+		}}
+		result, err := svc.NewProviderContext(context.Background(), requestedProviderID, NewProviderContextOptions{})
+		if result != nil || !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+		}
+	})
+
+	t.Run("data-set mismatch", func(t *testing.T) {
+		svc := newTestService()
+		wrong := mustWritableDataSetContext(t, &fakePDPProviderClient{}, testDataSetRef(types.NewBigInt(43), types.NewBigInt(1)))
+		svc.contextResolver = &fakeContextResolver{dataSetFn: func(context.Context, types.BigInt, NewDataSetContextOptions) (*DataSetContext, error) {
+			return wrong, nil
+		}}
+		result, err := svc.NewDataSetContext(context.Background(), types.NewBigInt(42), NewDataSetContextOptions{})
+		if result != nil || !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+		}
+	})
+
+	t.Run("typed nil data set", func(t *testing.T) {
+		svc := newTestService()
+		svc.contextResolver = &fakeContextResolver{dataSetFn: func(context.Context, types.BigInt, NewDataSetContextOptions) (*DataSetContext, error) {
+			return nil, nil
+		}}
+		result, err := svc.NewDataSetContext(context.Background(), types.NewBigInt(42), NewDataSetContextOptions{})
+		if result != nil || !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+		}
+	})
+}
+
+func TestServiceContextConstructorsRequireExplicitNonZeroIDs(t *testing.T) {
 	svc := newTestService()
-	dataSetID := types.NewBigInt(10)
+	for name, call := range map[string]func() error{
+		"provider": func() error {
+			_, err := svc.NewProviderContext(context.Background(), types.BigInt{}, NewProviderContextOptions{})
+			return err
+		},
+		"data set": func() error {
+			_, err := svc.NewDataSetContext(context.Background(), types.BigInt{}, NewDataSetContextOptions{})
+			return err
+		},
+		"data-set provider assertion": func() error {
+			zero := types.BigInt{}
+			_, err := svc.NewDataSetContext(context.Background(), types.NewBigInt(1), NewDataSetContextOptions{ProviderID: &zero})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error=%v want ErrInvalidArgument", err)
+			}
+		})
+	}
+}
+
+func TestServiceSelectUploadContextsPreservesUsablePartialSelection(t *testing.T) {
+	svc := newTestService()
+	ctx1 := testProviderContextWithID(t, types.NewBigInt(1), serviceTestIdentity())
+	svc.contextSelector = &fakeContextSelector{uploadFn: func(_ context.Context, opts SelectUploadContextsOptions) (*UploadContextSelection, error) {
+		return &UploadContextSelection{
+			Contexts:        []StorageContext{ctx1},
+			RequestedCopies: opts.Copies,
+			Complete:        false,
+		}, &InsufficientUploadContextsError{Requested: opts.Copies, Available: 1}
+	}}
+
+	selection, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 2})
+	if !errors.Is(err, ErrInsufficientUploadContexts) {
+		t.Fatalf("error=%v want ErrInsufficientUploadContexts", err)
+	}
+	var insufficient *InsufficientUploadContextsError
+	if !errors.As(err, &insufficient) || insufficient.Requested != 2 || insufficient.Available != 1 {
+		t.Fatalf("error=%#v", err)
+	}
+	if selection == nil || len(selection.Contexts) != 1 || selection.Contexts[0] != ctx1 || selection.Complete {
+		t.Fatalf("selection=%+v", selection)
+	}
+}
+
+func TestServiceSelectUploadContextsDiscardsHardErrorResult(t *testing.T) {
+	svc := newTestService()
+	wantErr := errors.New("rpc failed")
+	ctx1 := testProviderContextWithID(t, types.NewBigInt(1), serviceTestIdentity())
+	svc.contextSelector = &fakeContextSelector{uploadFn: func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+		return &UploadContextSelection{Contexts: []StorageContext{ctx1}, RequestedCopies: 1, Complete: true}, wantErr
+	}}
+
+	selection, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
+	if selection != nil || !errors.Is(err, wantErr) {
+		t.Fatalf("selection=%v error=%v", selection, err)
+	}
+}
+
+func TestServiceSelectProviderContextRejectsNilCore(t *testing.T) {
+	svc := newTestService()
+	svc.contextSelector = &fakeContextSelector{providerFn: func(context.Context, SelectProviderContextOptions) (*ProviderContext, error) {
+		return &ProviderContext{}, nil
+	}}
+	result, err := svc.SelectProviderContext(context.Background(), SelectProviderContextOptions{})
+	if result != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+	}
+}
+
+func TestServiceUploadToContextsIncompleteServiceIdentity(t *testing.T) {
+	svc, err := New(Options{SignerAddress: testPayer()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	reader := &readCountingReader{}
+	result, err := svc.UploadToContexts(context.Background(), reader, []StorageContext{&fakeUploadContext{id: types.NewBigInt(1)}}, nil)
+	if result != nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "service identity") || strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("result=%v error=%v want ErrInvalidArgument service identity", result, err)
+	}
+	if reader.reads != 0 {
+		t.Fatalf("reader reads=%d want 0", reader.reads)
+	}
+}
+
+func TestServiceSelectUploadContextsRejectsTypedNilAndIdentityMismatch(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ctx  StorageContext
+	}{
+		{name: "typed nil", ctx: (*ProviderContext)(nil)},
+		{name: "nil core", ctx: &ProviderContext{}},
+		{name: "wrong payer", ctx: testProviderContextWithID(t, types.NewBigInt(1), ContextIdentity{
+			Payer: common.HexToAddress("0x9999"), ChainID: types.ChainID(314159), RecordKeeper: testRecordKeeper(),
+		})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService()
+			svc.contextSelector = &fakeContextSelector{uploadFn: func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+				return &UploadContextSelection{Contexts: []StorageContext{tt.ctx}, RequestedCopies: 1, Complete: true}, nil
+			}}
+			selection, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
+			if selection != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("selection=%v error=%v", selection, err)
+			}
+		})
+	}
+}
+
+func TestServiceSelectUploadContextsRejectsEveryIdentityMismatch(t *testing.T) {
+	valid := serviceTestIdentity()
+	tests := map[string]ContextIdentity{
+		"zero payer":         {ChainID: valid.ChainID, RecordKeeper: valid.RecordKeeper},
+		"wrong payer":        {Payer: common.HexToAddress("0x9999"), ChainID: valid.ChainID, RecordKeeper: valid.RecordKeeper},
+		"zero chain":         {Payer: valid.Payer, RecordKeeper: valid.RecordKeeper},
+		"wrong chain":        {Payer: valid.Payer, ChainID: types.ChainID(1), RecordKeeper: valid.RecordKeeper},
+		"zero recordKeeper":  {Payer: valid.Payer, ChainID: valid.ChainID},
+		"wrong recordKeeper": {Payer: valid.Payer, ChainID: valid.ChainID, RecordKeeper: common.HexToAddress("0x8888")},
+	}
+	for name, identity := range tests {
+		t.Run(name, func(t *testing.T) {
+			svc := newTestService()
+			storageCtx := testProviderContextWithID(t, types.NewBigInt(1), identity)
+			svc.contextSelector = &fakeContextSelector{uploadFn: func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+				return &UploadContextSelection{Contexts: []StorageContext{storageCtx}, RequestedCopies: 1, Complete: true}, nil
+			}}
+			selection, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
+			if selection != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("selection=%v error=%v", selection, err)
+			}
+		})
+	}
+}
+
+func TestServiceSelectUploadContextsRejectsDuplicateProviderAndInconsistentResult(t *testing.T) {
+	ctx1 := testProviderContextWithID(t, types.NewBigInt(1), serviceTestIdentity())
+	for name, selectFn := range map[string]func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error){
+		"duplicate provider": func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+			return &UploadContextSelection{Contexts: []StorageContext{ctx1, ctx1}, RequestedCopies: 2, Complete: true}, nil
+		},
+		"wrong requested copies": func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+			return &UploadContextSelection{Contexts: []StorageContext{ctx1}, RequestedCopies: 2, Complete: true}, nil
+		},
+		"partial without typed error": func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+			return &UploadContextSelection{Contexts: []StorageContext{ctx1}, RequestedCopies: 2, Complete: false}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newTestService()
+			svc.contextSelector = &fakeContextSelector{uploadFn: selectFn}
+			selection, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 2})
+			if selection != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("selection=%v error=%v", selection, err)
+			}
+		})
+	}
+}
+
+func TestServiceSelectorsRejectExcludedProviderResults(t *testing.T) {
 	providerID := types.NewBigInt(1)
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithDataSetID(dataSetID),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+	storageCtx := testProviderContextWithID(t, providerID, serviceTestIdentity())
 
-	var captured *UploadOptions
-	svc.contextResolver = &fakeResolver{
-		contextContexts: []*Context{want},
-		captureFn: func(opts *UploadOptions) {
-			captured = opts
-		},
-	}
-
-	got, err := svc.CreateContext(context.Background(), &CreateContextOptions{
-		DataSetID:  &dataSetID,
-		ProviderID: &providerID,
+	t.Run("provider", func(t *testing.T) {
+		svc := newTestService()
+		svc.contextSelector = &fakeContextSelector{providerFn: func(context.Context, SelectProviderContextOptions) (*ProviderContext, error) {
+			return storageCtx, nil
+		}}
+		result, err := svc.SelectProviderContext(context.Background(), SelectProviderContextOptions{ExcludeProviderIDs: []types.BigInt{providerID}})
+		if result != nil || !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("CreateContext: %v", err)
-	}
-	if got != want {
-		t.Fatalf("CreateContext returned %p want %p", got, want)
-	}
-	if captured == nil {
-		t.Fatal("resolver did not receive options")
-	}
-	if len(captured.DataSetIDs) != 1 || !captured.DataSetIDs[0].Equal(dataSetID) {
-		t.Fatalf("resolver DataSetIDs=%v want [%s]", captured.DataSetIDs, dataSetID.String())
-	}
-	if len(captured.ProviderIDs) != 0 {
-		t.Fatalf("resolver ProviderIDs=%v want none for provider assertion", captured.ProviderIDs)
-	}
-	if captured.Copies != 1 {
-		t.Fatalf("resolver Copies=%d want 1", captured.Copies)
-	}
-}
 
-func TestCreateContext_RejectsMismatchedProviderAssertionForDataSetID(t *testing.T) {
-	svc := newTestService()
-	dataSetID := types.NewBigInt(10)
-	providerID := types.NewBigInt(2)
-	ctx, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t),
-		WithDataSetID(dataSetID),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx}}
-
-	_, err = svc.CreateContext(context.Background(), &CreateContextOptions{
-		DataSetID:  &dataSetID,
-		ProviderID: &providerID,
-	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v want ErrInvalidArgument", err)
-	}
-	if !strings.Contains(err.Error(), "DataSetID") || !strings.Contains(err.Error(), "ProviderID") {
-		t.Fatalf("err=%v want DataSetID and ProviderID mismatch message", err)
-	}
-}
-
-func TestCreateContext_RejectsZeroOptionIDs(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		opts     *CreateContextOptions
-		wantText string
-	}{
-		{
-			name: "zero ProviderID",
-			opts: func() *CreateContextOptions {
-				id := types.NewBigInt(0)
-				return &CreateContextOptions{ProviderID: &id}
-			}(),
-			wantText: "zero ProviderID",
-		},
-		{
-			name: "zero DataSetID",
-			opts: func() *CreateContextOptions {
-				id := types.NewBigInt(0)
-				return &CreateContextOptions{DataSetID: &id}
-			}(),
-			wantText: "zero DataSetID",
-		},
-		{
-			name:     "zero ExcludeProviderID",
-			opts:     &CreateContextOptions{ExcludeProviderIDs: []types.BigInt{types.NewBigInt(0)}},
-			wantText: "zero ExcludeProviderID",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService()
-			resolverCalled := false
-			svc.contextResolver = &fakeResolver{
-				captureFn: func(*UploadOptions) {
-					resolverCalled = true
-				},
-			}
-
-			_, err := svc.CreateContext(context.Background(), tt.opts)
-			if !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("err=%v want ErrInvalidArgument", err)
-			}
-			if !strings.Contains(err.Error(), tt.wantText) {
-				t.Fatalf("err=%v want %q", err, tt.wantText)
-			}
-			if resolverCalled {
-				t.Fatal("resolver should not be called for zero ID")
-			}
+	t.Run("upload", func(t *testing.T) {
+		svc := newTestService()
+		svc.contextSelector = &fakeContextSelector{uploadFn: func(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error) {
+			return &UploadContextSelection{Contexts: []StorageContext{storageCtx}, RequestedCopies: 1, Complete: true}, nil
+		}}
+		result, err := svc.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{
+			Copies:             1,
+			ExcludeProviderIDs: []types.BigInt{providerID},
 		})
-	}
-}
-
-func TestCreateContextOptionsToUploadOptionsClonesCallerFields(t *testing.T) {
-	dataSetMetadata := map[string]string{"env": "prod"}
-	excludeProviderIDs := []types.BigInt{types.NewBigInt(2)}
-	dataSetID := types.NewBigInt(10)
-	opts := &CreateContextOptions{
-		DataSetID:          &dataSetID,
-		ExcludeProviderIDs: excludeProviderIDs,
-		DataSetMetadata:    dataSetMetadata,
-	}
-
-	got := opts.toUploadOptions()
-	opts.ExcludeProviderIDs[0] = types.NewBigInt(99)
-	opts.DataSetMetadata["env"] = "dev"
-	*opts.DataSetID = types.NewBigInt(77)
-
-	if !got.ExcludeProviderIDs[0].Equal(types.NewBigInt(2)) {
-		t.Fatalf("ExcludeProviderIDs[0]=%s want 2", got.ExcludeProviderIDs[0].String())
-	}
-	if got.DataSetMetadata["env"] != "prod" {
-		t.Fatalf("DataSetMetadata[env]=%q want prod", got.DataSetMetadata["env"])
-	}
-	if !got.DataSetIDs[0].Equal(types.NewBigInt(10)) {
-		t.Fatalf("DataSetIDs[0]=%s want 10", got.DataSetIDs[0].String())
-	}
-}
-
-func TestCreateContexts_ReturnConcreteContexts(t *testing.T) {
-	svc := newTestService()
-	ctx1, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext #1: %v", err)
-	}
-	ctx2, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext #2: %v", err)
-	}
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{ctx1, ctx2}}
-
-	got, err := svc.CreateContexts(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("CreateContexts: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len(got)=%d want 2", len(got))
-	}
-	_ = got[0].Terminate
-	if got[0] != ctx1 || got[1] != ctx2 {
-		t.Fatalf("CreateContexts returned unexpected contexts")
-	}
-}
-
-func TestCreateContexts_RejectsNilResolvedContext(t *testing.T) {
-	svc := newTestService()
-	svc.contextResolver = &fakeResolver{contextContexts: []*Context{nil}}
-
-	_, err := svc.CreateContexts(context.Background(), nil)
-	if err == nil {
-		t.Fatal("CreateContexts returned nil error; want nil context error")
-	}
-	if !strings.Contains(err.Error(), "resolver returned nil context at index 0") {
-		t.Fatalf("err=%v want nil context index message", err)
-	}
-}
-
-func TestCreateContexts_UsesExplicitContextResolver(t *testing.T) {
-	want, err := NewContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t))
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	svc := mustNewService(t, Options{
-		Resolver:        uploadOnlyResolver{},
-		ContextResolver: &fakeResolver{contextContexts: []*Context{want}},
+		if result != nil || !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
+		}
 	})
-
-	got, err := svc.CreateContexts(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("CreateContexts: %v", err)
-	}
-	if len(got) != 1 || got[0] != want {
-		t.Fatalf("CreateContexts returned %v want %p", got, want)
-	}
-}
-
-func TestCreateContexts_RejectsProviderIDsWithDataSetIDs(t *testing.T) {
-	svc := newTestService()
-	svc.contextResolver = &fakeResolver{}
-
-	_, err := svc.CreateContexts(context.Background(), &CreateContextsOptions{
-		ProviderIDs: []types.BigInt{types.NewBigInt(1)},
-		DataSetIDs:  []types.BigInt{types.NewBigInt(2)},
-	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("err=%v want ErrInvalidArgument", err)
-	}
-}
-
-func TestCreateContextsOptionsToUploadOptionsClonesCallerFields(t *testing.T) {
-	dataSetMetadata := map[string]string{"env": "prod"}
-	providerIDs := []types.BigInt{types.NewBigInt(1)}
-	dataSetIDs := []types.BigInt{types.NewBigInt(10)}
-	excludeProviderIDs := []types.BigInt{types.NewBigInt(2)}
-	opts := &CreateContextsOptions{
-		ProviderIDs:        providerIDs,
-		DataSetIDs:         dataSetIDs,
-		ExcludeProviderIDs: excludeProviderIDs,
-		DataSetMetadata:    dataSetMetadata,
-	}
-
-	got := opts.toUploadOptions()
-	opts.ProviderIDs[0] = types.NewBigInt(99)
-	opts.DataSetIDs[0] = types.NewBigInt(88)
-	opts.ExcludeProviderIDs[0] = types.NewBigInt(77)
-	opts.DataSetMetadata["env"] = "dev"
-
-	if !got.ProviderIDs[0].Equal(types.NewBigInt(1)) {
-		t.Fatalf("ProviderIDs[0]=%s want 1", got.ProviderIDs[0].String())
-	}
-	if !got.DataSetIDs[0].Equal(types.NewBigInt(10)) {
-		t.Fatalf("DataSetIDs[0]=%s want 10", got.DataSetIDs[0].String())
-	}
-	if !got.ExcludeProviderIDs[0].Equal(types.NewBigInt(2)) {
-		t.Fatalf("ExcludeProviderIDs[0]=%s want 2", got.ExcludeProviderIDs[0].String())
-	}
-	if got.DataSetMetadata["env"] != "prod" {
-		t.Fatalf("DataSetMetadata[env]=%q want prod", got.DataSetMetadata["env"])
-	}
-}
-
-func TestCreateContexts_RejectsZeroOptionIDs(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		opts     *CreateContextsOptions
-		wantText string
-	}{
-		{
-			name:     "zero ProviderID",
-			opts:     &CreateContextsOptions{ProviderIDs: []types.BigInt{types.NewBigInt(0)}},
-			wantText: "zero ProviderID",
-		},
-		{
-			name:     "zero DataSetID",
-			opts:     &CreateContextsOptions{DataSetIDs: []types.BigInt{types.NewBigInt(0)}},
-			wantText: "zero DataSetID",
-		},
-		{
-			name:     "zero ExcludeProviderID",
-			opts:     &CreateContextsOptions{ExcludeProviderIDs: []types.BigInt{types.NewBigInt(0)}},
-			wantText: "zero ExcludeProviderID",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService()
-			resolverCalled := false
-			svc.contextResolver = &fakeResolver{
-				captureFn: func(*UploadOptions) {
-					resolverCalled = true
-				},
-			}
-
-			_, err := svc.CreateContexts(context.Background(), tt.opts)
-			if !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("err=%v want ErrInvalidArgument", err)
-			}
-			if !strings.Contains(err.Error(), tt.wantText) {
-				t.Fatalf("err=%v want %q", err, tt.wantText)
-			}
-			if resolverCalled {
-				t.Fatal("resolver should not be called for zero ID")
-			}
-		})
-	}
 }

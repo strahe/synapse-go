@@ -14,11 +14,11 @@ import (
 )
 
 // ctxAwareResolver honors ctx.Done(), letting us drive Service.Upload and
-// Service.CreateContexts down a cancellation path
+// Service.SelectUploadContexts down a cancellation path
 // without setting up real provider plumbing.
 type ctxAwareResolver struct{}
 
-func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOptions) ([]UploadContext, bool, error) {
+func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOptions) ([]StorageContext, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -26,7 +26,7 @@ func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOpti
 	return nil, false, ctx.Err()
 }
 
-func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]types.BigInt, _ *UploadOptions) (UploadContext, error) {
+func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]types.BigInt, _ *UploadOptions) (StorageContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -34,7 +34,15 @@ func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]type
 	return nil, ctx.Err()
 }
 
-func (ctxAwareResolver) ResolveContexts(ctx context.Context, _ *UploadOptions) ([]*Context, error) {
+func (ctxAwareResolver) SelectProviderContext(ctx context.Context, _ SelectProviderContextOptions) (*ProviderContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (ctxAwareResolver) SelectUploadContexts(ctx context.Context, _ SelectUploadContextsOptions) (*UploadContextSelection, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -50,7 +58,7 @@ func TestServiceUpload_Cancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := mgr.Upload(ctx, bytes.NewReader([]byte("data")), nil)
+	_, err := mgr.Upload(ctx, bytes.NewReader([]byte("data")), &UploadOptions{Copies: 1})
 	if err == nil {
 		t.Fatalf("Upload returned nil error; want context.Canceled")
 	}
@@ -59,20 +67,20 @@ func TestServiceUpload_Cancellation(t *testing.T) {
 	}
 }
 
-// TestServiceCreateContexts_Cancellation verifies cancellation propagation
-// through CreateContexts.
-func TestServiceCreateContexts_Cancellation(t *testing.T) {
-	mgr := mustNewService(t, Options{Resolver: ctxAwareResolver{}})
+// TestServiceSelectUploadContexts_Cancellation verifies cancellation
+// propagation through SelectUploadContexts.
+func TestServiceSelectUploadContexts_Cancellation(t *testing.T) {
+	mgr := mustNewService(t, Options{Resolver: ctxAwareResolver{}, ContextSelector: ctxAwareResolver{}})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := mgr.CreateContexts(ctx, nil)
+	_, err := mgr.SelectUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 	if err == nil {
-		t.Fatalf("CreateContexts returned nil error; want context.Canceled")
+		t.Fatalf("SelectUploadContexts returned nil error; want context.Canceled")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("CreateContexts err = %v; want errors.Is(err, context.Canceled)", err)
+		t.Fatalf("SelectUploadContexts err = %v; want errors.Is(err, context.Canceled)", err)
 	}
 }
 
@@ -112,8 +120,8 @@ func (ctxAwarePDPConfigReader) GetPDPConfig(ctx context.Context) (*warmstorage.P
 func TestContextPieceStatus_Cancellation(t *testing.T) {
 	c := mustPieceStatusContext(t, nil, nil)
 	// Replace pdp readers with ctx-aware blockers.
-	c.pdpCaller = ctxAwarePDPReader{}
-	c.pdpConfig = ctxAwarePDPConfigReader{}
+	c.core.pdpCaller = ctxAwarePDPReader{}
+	c.core.pdpConfig = ctxAwarePDPConfigReader{}
 
 	pi, err := piecePCIDForTest()
 	if err != nil {

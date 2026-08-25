@@ -252,24 +252,24 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		"source": "integration-cdn-context-download",
 		"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
 	}
-	t.Log("start CDNContextDownload CreateContexts")
-	uploadContexts, err := client.Storage().CreateContexts(cctx, &storage.CreateContextsOptions{
+	t.Log("start CDNContextDownload SelectUploadContexts")
+	selection, err := client.Storage().SelectUploadContexts(cctx, storage.SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: metadata,
 		WithCDN:         &withCDN,
 	})
 	if err != nil {
-		t.Fatalf("CreateContexts: %v", err)
+		t.Fatalf("SelectUploadContexts: %v", err)
 	}
-	if len(uploadContexts) != 1 || uploadContexts[0] == nil {
-		t.Fatalf("CreateContexts returned %d contexts", len(uploadContexts))
+	if selection == nil || len(selection.Contexts) != 1 || selection.Contexts[0] == nil {
+		t.Fatalf("SelectUploadContexts returned %+v", selection)
 	}
-	uploadCtx := uploadContexts[0]
+	uploadCtx := selection.Contexts[0]
 
 	t.Log("start CDNContextDownload Prepare")
 	prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
 		DataSize:          uint64(len(data)),
-		Contexts:          []storage.UploadContext{uploadCtx},
+		Contexts:          []storage.StorageContext{uploadCtx},
 		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 		BufferEpochs:      integrationFundingBufferEpochs,
 	})
@@ -333,14 +333,13 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 	}
 
 	downloadDataSetID := result.Copies[0].DataSetID
-	uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-		DataSetID: &downloadDataSetID,
-		WithCDN:   &withCDN,
+	uctx, err := client.Storage().NewDataSetContext(cctx, downloadDataSetID, storage.NewDataSetContextOptions{
+		WithCDN: &withCDN,
 	})
 	if err != nil {
-		t.Fatalf("CreateContext: %v", err)
+		t.Fatalf("NewDataSetContext: %v", err)
 	}
-	if !uctx.WithCDN() {
+	if !uctx.CDNEnabled() {
 		t.Fatal("created context has WithCDN=false")
 	}
 
@@ -358,18 +357,18 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 		recorder.Reset()
 		start = time.Now()
-		t.Logf("start CDNContextDownload Context.Download attempt %d", attempt)
+		t.Logf("start CDNContextDownload StorageContext.Download attempt %d", attempt)
 		rc, err := uctx.Download(cctx, result.PieceCID)
 		if err != nil {
 			lastErr = err
-			t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v err=%v",
+			t.Logf("done CDNContextDownload StorageContext.Download attempt %d elapsed=%s requests=%+v err=%v",
 				attempt, time.Since(start).Round(time.Second), recorder.Snapshot(), err)
 			continue
 		}
 		got, readErr := io.ReadAll(rc)
 		_ = rc.Close()
 		requests := recorder.Snapshot()
-		t.Logf("done CDNContextDownload Context.Download attempt %d elapsed=%s requests=%+v",
+		t.Logf("done CDNContextDownload StorageContext.Download attempt %d elapsed=%s requests=%+v",
 			attempt, time.Since(start).Round(time.Second), requests)
 		if readErr != nil {
 			lastErr = readErr
@@ -872,7 +871,8 @@ func TestIntegration(t *testing.T) {
 
 		// Verify the session key is authorized.
 		expiry, err := client.SessionKey().AuthorizationExpiry(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission)
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+		)
 		if err != nil {
 			t.Fatalf("AuthorizationExpiry: %v", err)
 		}
@@ -883,7 +883,8 @@ func TestIntegration(t *testing.T) {
 
 		// Verify not expired.
 		isExpired, err := client.SessionKey().IsExpired(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission)
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+		)
 		if err != nil {
 			t.Fatalf("IsExpired (before revoke): %v", err)
 		}
@@ -905,7 +906,8 @@ func TestIntegration(t *testing.T) {
 
 		// Verify the session key is now expired.
 		isExpiredAfter, err := client.SessionKey().IsExpired(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission)
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+		)
 		if err != nil {
 			t.Fatalf("IsExpired (after revoke): %v", err)
 		}
@@ -1007,8 +1009,15 @@ func TestIntegration(t *testing.T) {
 		t.Run("Prepare", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
+			selection, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.UploadContextSelection, error) {
+				return sm.SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{Copies: 1})
+			})
+			checkRead(t, "SelectUploadContexts(Prepare prerequisite)", err)
 			prep, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.PrepareResult, error) {
-				return sm.Prepare(ctx, &storage.PrepareOptions{DataSize: 64 * 1024})
+				return sm.Prepare(ctx, &storage.PrepareOptions{
+					DataSize: 64 * 1024,
+					Contexts: selection.Contexts,
+				})
 			})
 			checkRead(t, "Prepare", err)
 			if prep == nil || prep.Costs == nil {
@@ -1041,42 +1050,48 @@ func TestIntegration(t *testing.T) {
 			}
 		})
 
-		t.Run("GetDefaultContext", func(t *testing.T) {
+		t.Run("SelectProviderContext", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			def, err := retryIntegrationRead(cctx, sm.GetDefaultContext)
-			checkRead(t, "GetDefaultContext", err)
+			def, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.ProviderContext, error) {
+				return sm.SelectProviderContext(ctx, storage.SelectProviderContextOptions{})
+			})
+			checkRead(t, "SelectProviderContext", err)
 			if def == nil || def.ProviderID().IsZero() {
-				t.Fatal("GetDefaultContext returned invalid context")
+				t.Fatal("SelectProviderContext returned invalid context")
 			}
 		})
 
-		t.Run("CreateContexts", func(t *testing.T) {
+		t.Run("SelectUploadContexts", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			ctxs, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.Context, error) {
-				return sm.CreateContexts(ctx, &storage.CreateContextsOptions{Copies: 1})
+			selection, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.UploadContextSelection, error) {
+				return sm.SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{Copies: 1})
 			})
-			checkRead(t, "CreateContexts", err)
-			if len(ctxs) != 1 {
-				t.Errorf("CreateContexts returned %d contexts, want 1", len(ctxs))
+			checkRead(t, "SelectUploadContexts", err)
+			if selection == nil || len(selection.Contexts) != 1 {
+				t.Errorf("SelectUploadContexts returned %+v, want one context", selection)
 			}
 		})
 
-		t.Run("CreateContext", func(t *testing.T) {
+		t.Run("NewProviderContext", func(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			single, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.Context, error) {
-				return sm.CreateContext(ctx, nil)
+			selected, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.ProviderContext, error) {
+				return sm.SelectProviderContext(ctx, storage.SelectProviderContextOptions{})
 			})
-			checkRead(t, "CreateContext(nil)", err)
+			checkRead(t, "SelectProviderContext(NewProviderContext prerequisite)", err)
+			single, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.ProviderContext, error) {
+				return sm.NewProviderContext(ctx, selected.ProviderID(), storage.NewProviderContextOptions{})
+			})
+			checkRead(t, "NewProviderContext", err)
 			if single == nil || single.ProviderID().IsZero() {
-				t.Fatal("CreateContext returned invalid context")
+				t.Fatal("NewProviderContext returned invalid context")
 			}
 		})
 	})
 
-	// --- ContextInspection: read methods on the Context produced by Upload. ---
+	// --- ContextInspection: read methods on the DataSetContext produced for the upload. ---
 	t.Run("ContextInspection", func(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("Upload subtest did not produce dataset/cid; skipping ContextInspection")
@@ -1084,11 +1099,9 @@ func TestIntegration(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 
-		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetID: &uploadedDataSetID,
-		})
+		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
 		if err != nil {
-			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+			t.Fatalf("NewDataSetContext(uploadedDataSetID): %v", err)
 		}
 
 		if uctx.ProviderID().IsZero() {
@@ -1097,10 +1110,10 @@ func TestIntegration(t *testing.T) {
 		if uctx.ServiceURL() == "" {
 			t.Errorf("ServiceURL empty")
 		}
-		if got := uctx.DataSetID(); got == nil || !got.Equal(uploadedDataSetID) {
+		if got := uctx.DataSetID(); !got.Equal(uploadedDataSetID) {
 			t.Errorf("DataSetID = %v, want %s", got, uploadedDataSetID)
 		}
-		_ = uctx.WithCDN()
+		_ = uctx.CDNEnabled()
 		prov := uctx.GetProviderInfo()
 		if prov.ID.IsZero() {
 			t.Errorf("Provider.ID == 0")
@@ -1123,13 +1136,13 @@ func TestIntegration(t *testing.T) {
 		}
 		t.Logf("scheduled removals: %d", len(removals))
 
-		// Context-level Download.
+		// DataSetContext-level Download.
 		start := time.Now()
 		t.Log("start ContextInspection Download")
 		rc, err := uctx.Download(cctx, uploadedCID)
 		if err != nil {
 			t.Logf("done ContextInspection Download elapsed=%s", time.Since(start).Round(time.Second))
-			t.Fatalf("Context.Download: %v", err)
+			t.Fatalf("DataSetContext.Download: %v", err)
 		}
 		defer func() { _ = rc.Close() }()
 		got, err := io.ReadAll(rc)
@@ -1150,11 +1163,9 @@ func TestIntegration(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 		defer cancel()
 
-		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetID: &uploadedDataSetID,
-		})
+		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
 		if err != nil {
-			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+			t.Fatalf("NewDataSetContext(uploadedDataSetID): %v", err)
 		}
 		provider, err := pdp.New(uctx.ServiceURL())
 		if err != nil {
@@ -1255,11 +1266,9 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("active piece count before existing-dataset upload invalid: %v", beforeCount)
 		}
 
-		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetID: &uploadedDataSetID,
-		})
+		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
 		if err != nil {
-			t.Fatalf("CreateContext(uploadedDataSetID): %v", err)
+			t.Fatalf("NewDataSetContext(uploadedDataSetID): %v", err)
 		}
 
 		extraData := make([]byte, 128*1024)
@@ -1272,7 +1281,7 @@ func TestIntegration(t *testing.T) {
 			DataSize:          uint64(len(extraData)),
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 			BufferEpochs:      integrationFundingBufferEpochs,
-			Contexts: []storage.UploadContext{
+			Contexts: []storage.StorageContext{
 				uctx,
 			},
 		})
@@ -1294,31 +1303,31 @@ func TestIntegration(t *testing.T) {
 		}
 
 		start := time.Now()
-		t.Log("start ExistingDataSet Context.Upload")
+		t.Log("start ExistingDataSet DataSetContext.Upload")
 		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedUploadOptions(t, "ExistingDataSet", nil))
-		t.Logf("done ExistingDataSet Context.Upload elapsed=%s", time.Since(start).Round(time.Second))
+		t.Logf("done ExistingDataSet DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
-			t.Fatalf("Context.Upload(existing dataset): %v", err)
+			t.Fatalf("DataSetContext.Upload(existing dataset): %v", err)
 		}
 		if !result.PieceCID.Defined() {
-			t.Fatal("Context.Upload(existing dataset) returned undefined PieceCID")
+			t.Fatal("DataSetContext.Upload(existing dataset) returned undefined PieceCID")
 		}
 		info, err := piece.ParseV2(result.PieceCID)
 		if err != nil {
-			t.Fatalf("Context.Upload(existing dataset) PieceCID must be v2: %v", err)
+			t.Fatalf("DataSetContext.Upload(existing dataset) PieceCID must be v2: %v", err)
 		}
 		if info.RawSize != uint64(len(extraData)) {
-			t.Fatalf("Context.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
+			t.Fatalf("DataSetContext.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
 		}
 		if len(result.Copies) != 1 {
-			t.Fatalf("Context.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
+			t.Fatalf("DataSetContext.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
 		}
 		copy0 := result.Copies[0]
 		if !copy0.DataSetID.Equal(uploadedDataSetID) {
-			t.Fatalf("Context.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
+			t.Fatalf("DataSetContext.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
 		}
 		if copy0.IsNewDataSet {
-			t.Fatal("Context.Upload(existing dataset) unexpectedly created a new dataset")
+			t.Fatal("DataSetContext.Upload(existing dataset) unexpectedly created a new dataset")
 		}
 
 		if err := ws.ValidateDataSet(cctx, uploadedDataSetID); err != nil {
@@ -1495,11 +1504,9 @@ func TestIntegration(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 
-		uctx, err := client.Storage().CreateContext(cctx, &storage.CreateContextOptions{
-			DataSetID: &uploadedDataSetID,
-		})
+		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
 		if err != nil {
-			t.Fatalf("CreateContext: %v", err)
+			t.Fatalf("NewDataSetContext: %v", err)
 		}
 
 		t.Log("start StorageLifecycle DeletePiece")

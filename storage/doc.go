@@ -1,108 +1,73 @@
-// Package storage provides the multi-copy upload orchestration service.
+// Package storage provides provider selection, immutable storage targets, and
+// single- or multi-copy upload orchestration.
 //
-// The central types are [*Service] (high-level upload/download operations),
-// [*Context] (per-provider store/pull/commit/download operations), and
-// [*ServiceResolver] (selection + dataset-reuse wiring against warmstorage and
-// spregistry services). [UploadResolver] is the upload-facing selection
-// contract; [ContextResolver] is the managed-context creation contract used by
-// CreateContext(s) and Prepare's auto-create path.
+// # Contexts
 //
-// # Manager-level operations
+// [ProviderContext] identifies one provider but no data set. Its Commit and
+// Pull operations create a new data set. [DataSetContext] identifies one
+// provider and one existing data set; its Commit and Pull operations always
+// use that data set. Neither type changes target after construction.
 //
-// [Service] also exposes manager-level operations:
+// Both types expose provider-scoped operations such as Store and Download.
+// Download therefore behaves the same on both: it retrieves the requested
+// piece from the configured provider or CDN. Data-set inspection, deletion,
+// and termination methods are available only on DataSetContext, while
+// standalone data-set creation and recovery are available only on
+// ProviderContext.
 //
-//   - [Service.FindDataSets] — enumerate the caller's data sets.
-//   - [Service.GetStorageInfo] — aggregated pricing / providers / allowances view.
-//   - [Service.TerminateService] — terminate service through the provider relay by default.
-//   - [Service.TerminateDataSet] — legacy direct FWSS termination write.
-//   - [Service.CalculateMultiContextCosts] — aggregate cost calculation across refs.
-//   - [Service.CreateContext] / [Service.CreateContexts] / [Service.GetDefaultContext] —
-//     build upload contexts without invoking the full upload pipeline.
-//   - [Service.Prepare] — compute required funding and return a deferred
-//     [PrepareTransaction] to move funds into place when the account is not Ready.
+// Use [Service.NewProviderContext] or [Service.NewDataSetContext] when the
+// target ID is already known. Use [Service.SelectProviderContext] to choose one
+// healthy provider without looking up data sets. Use
+// [Service.SelectUploadContexts] when preparing a new upload; it may reuse
+// writable data sets whose metadata matches.
 //
-// For exact preparation, create contexts first with [Service.CreateContexts],
-// pass the same contexts to [Service.Prepare], execute any returned funding
-// transaction, then upload through the matching staged or per-context path.
-// Prepare's auto-created contexts are estimate-only; they are not cached,
-// reserved, or bound to a later [Service.Upload] call.
+// [DataSetRef] is the persistent target reference shared by creation results,
+// DataSetContext, and [ProviderContext.ForDataSet]. Construct it with
+// [NewDataSetRef]; its zero value is invalid.
 //
-// Per-context manager operations live on [*Context]: [Context.Upload]
-// (single-copy), [Context.DeletePieceByID], [Context.DeletePiece],
-// [Context.PieceStatus], [Context.GetScheduledRemovals] and
-// [Context.Terminate] and [Context.TerminateService]. TerminateService asks
-// the provider to relay by default; pass SkipProvider for the direct FWSS
-// transaction path while still receiving EndEpoch from the receipt.
+// # Upload flow
 //
-// # Upload Flow
+// [Service.Upload] automatically selects targets and performs store, pull, and
+// commit. Copies must be explicitly positive. If fewer targets are available,
+// the upload continues with those targets and reports the requested and actual
+// copy counts through [UploadResult].
 //
-// The multi-copy upload follows a store → pull → commit pipeline:
+// For an exact preflight and upload, use the same context instances throughout:
 //
-//  1. Store: Upload data to the primary storage provider.
-//  2. Pull: Secondary providers fetch data from the primary (SP-to-SP).
-//  3. Commit: All providers call AddPieces on-chain with EIP-712 signatures.
+//  1. Call [Service.SelectUploadContexts]. A non-empty partial selection is
+//     returned with [InsufficientUploadContextsError].
+//  2. Pass the selected contexts to [Service.Prepare].
+//  3. Execute the returned [PrepareTransaction], if any.
+//  4. Pass the same contexts, in the desired primary-to-secondary order, to
+//     [Service.UploadToContexts].
 //
-// The Service handles orchestration of the full multi-copy flow, while
-// ServiceResolver implements both resolver contracts. It reuses provider-local
-// datasets only when metadata matches exactly and the warmstorage-approved
-// provider set intersects active PDP providers from spregistry. For explicit
-// provider IDs, the default warmstorage service checks matching data sets with
-// bounded concurrency, preferring the oldest one with active pieces and falling
-// back to the oldest empty match. Custom catalogs without active-piece reads
-// retain the original oldest-match behavior. Automatically selected providers
-// must also pass a bounded PDP health check before a context is created;
-// explicitly selected provider and data set IDs are not probed. If only some
-// automatically selected providers are healthy, the resolver returns the
-// healthy subset so upload callers can surface partial-copy results.
-// Existing data sets that cannot accept writes surface typed errors such as
-// DataSetPDPPaymentTerminatedError. Use errors.AsType to access fields like
-// PDPEndEpoch.
+// UploadToContexts does not select replacements. The first context stores the
+// reader; later contexts pull from it. Service.Upload retains automatic
+// replacement for failed secondary copies.
 //
-// Downloads are validated as they stream so callers can keep io.Reader-style
-// boundaries without skipping PieceCID verification. Context.Download can use
-// a CDN-backed retriever first when the context has CDN enabled, then fall back
-// to provider PDP retrieval on ordinary CDN failures. For URL-based
-// [Service.Download] calls, the default HTTP client refuses to dial local,
-// private, multicast, unspecified, or otherwise reserved address ranges to
-// guard against SSRF, and it ignores environment-variable proxies for the same
-// reason; set [Options.AllowPrivateNetworks] when connecting to trusted private
-// infrastructure, or provide [Options.HTTPClient] if you need explicit proxy
-// control. [Context.Download] uses the PDP/CDN clients attached to the context
-// and is not covered by this default SSRF guard. Bound the number of bytes
-// accepted per URL-based Service.Download call via [Options.DownloadMaxBytes];
-// Context.Download is not subject to this cap.
+// Contexts carry an immutable [ContextIdentity] containing payer, chain, and
+// record-keeper identities. Service validates this identity before cost
+// calculation or upload work, preventing contexts from another account or
+// chain from being used accidentally.
 //
-// [UploadOptions] exposes per-upload lifecycle hooks covering the full
-// store → pull → commit pipeline:
+// # Data-set creation recovery
 //
-//   - [UploadOptions.OnProgress] — bytes streamed to the primary provider.
-//   - [UploadOptions.OnStored] — primary provider confirmed storage.
-//   - [UploadOptions.OnPiecesAdded] — on-chain AddPieces transaction submitted
-//     (batch-shaped: carries a []SubmittedPiece per provider per commit).
-//   - [UploadOptions.OnPiecesConfirmed] — on-chain AddPieces transaction confirmed
-//     (batch-shaped: carries a []ConfirmedPiece with assigned on-chain IDs).
-//   - [UploadOptions.OnCopyComplete] — secondary SP-to-SP pull succeeded.
-//   - [UploadOptions.OnCopyFailed] — a secondary SP-to-SP copy attempt failed
-//     (presign failures remain FailedAttempts-only).
-//   - [UploadOptions.OnPullProgress] — per-piece status update during a secondary pull.
+// [ProviderContext.CreateDataSet] leaves its receiver unbound. Persist the
+// [CreateDataSetSubmission] received through [CreateDataSetOptions.OnSubmitted]
+// when confirmation must survive a restart. A fresh ProviderContext for the
+// same provider can resume with [ProviderContext.WaitForDataSetCreated]. Pass
+// the returned DataSetRef to [ProviderContext.ForDataSet] to obtain a
+// DataSetContext.
 //
-// [Service.Upload] and [Context.Upload] recover and ignore [UploadOptions]
-// callback panics. If a logger is configured, the first panic per callback name
-// in an upload is logged as a warning. Direct staged hooks on [StoreOptions],
-// [PullRequest], and [CommitRequest] are invoked as-is and are not covered by
-// this recovery guarantee.
+// # Downloads
 //
-// [Context.Pull] checks that each requested piece resolves to a non-empty
-// source URL. The PDP provider performs stricter source-URL validation before executing
-// the provider-to-provider pull.
-//
-// Callers that need restartable staged uploads can split secondary creation
-// from piece registration: build a context with [Service.CreateContext], call
-// [Context.CreateDataSet], persist the [CreateDataSetSubmission] from
-// [CreateDataSetOptions.OnSubmitted], resume with [Context.WaitForDataSetCreated]
-// if needed, then run [Context.Pull] and [Context.Commit].
+// Context downloads use the PDP and optional CDN clients attached to that
+// context. URL-based [Service.Download] uses the Service HTTP client. Its
+// default client rejects private and reserved network destinations; configure
+// [Options.AllowPrivateNetworks] only for trusted private infrastructure.
+// [Options.DownloadMaxBytes] can cap URL-based downloads.
 //
 // # Stability
 //
-// 0.x phase: public API may change between minor releases.
+// During the 0.x phase, public APIs may change between minor releases.
 package storage
