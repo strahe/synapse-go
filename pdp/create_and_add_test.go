@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,26 @@ func TestCreateDataSetAndAddPieces_TooManyPieces(t *testing.T) {
 	}
 }
 
+func TestCreateDataSetAndAddPiecesRejectsDuplicateCIDBeforeRequest(t *testing.T) {
+	info := testPieceInfoV2(t)
+	requests := 0
+	c, _ := newTestClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	_, err := c.CreateDataSetAndAddPieces(
+		context.Background(),
+		common.HexToAddress("0xabc"),
+		[]AddPieceInput{{PieceCID: info.CIDv2}, {PieceCID: info.CIDv2}},
+		[]byte{1},
+	)
+	if err == nil || !strings.Contains(err.Error(), "duplicate pieceCID") {
+		t.Fatalf("error=%v want duplicate pieceCID", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests=%d want 0", requests)
+	}
+}
+
 func TestCreateDataSetAndAddPieces_RespectsHTTPClientTimeout(t *testing.T) {
 	info, err := piece.CalculateFromBytes(make([]byte, 256))
 	if err != nil {
@@ -160,5 +181,47 @@ func TestWaitForCreateDataSetAndAddPieces_OK(t *testing.T) {
 	}
 	if len(status.ConfirmedPieceIDs) != 1 || !status.ConfirmedPieceIDs[0].Equal(pieceID) {
 		t.Fatalf("confirmedPieceIDs=%v want [%s]", status.ConfirmedPieceIDs, pieceID.String())
+	}
+}
+
+func TestCreateDataSetAndAddPiecesStatusTreatsTransientAdd404AsPending(t *testing.T) {
+	txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	dataSetID := types.NewBigInt(42)
+	createCalls := 0
+	addCalls := 0
+	c, srv := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/pdp/data-sets/created/" + txHash:
+			createCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":%s}`, txHash, dataSetID.String())
+		case fmt.Sprintf("/pdp/data-sets/%s/pieces/added/%s", dataSetID.String(), txHash):
+			addCalls++
+			if addCalls == 1 {
+				http.Error(w, "piece addition not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":%s,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[7]}`, txHash, dataSetID.String())
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	statusURL := srv.URL + "/pdp/data-sets/created/" + txHash
+
+	status, err := c.GetCreateDataSetAndAddPiecesStatus(context.Background(), statusURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Create == nil || status.Add != nil || createCalls != 1 || addCalls != 1 {
+		t.Fatalf("status=%+v createCalls=%d addCalls=%d", status, createCalls, addCalls)
+	}
+
+	confirmed, err := c.WaitForCreateDataSetAndAddPieces(context.Background(), statusURL, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmed.ConfirmedPieceIDs) != 1 || createCalls != 2 || addCalls != 2 {
+		t.Fatalf("status=%+v createCalls=%d addCalls=%d", confirmed, createCalls, addCalls)
 	}
 }

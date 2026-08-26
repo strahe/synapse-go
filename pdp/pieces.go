@@ -13,6 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -50,8 +51,10 @@ type AddPiecesResult struct {
 
 // AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData must be
 // caller-provided EIP-712 signed data encoded as the PDP provider expects.
+// Piece CIDs must be unique within one request after PieceCIDv2-to-v1
+// normalization; the same CID may be used again in a later request.
 func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
-	if err := validateAddPiecesBatch("pdp.AddPieces", len(pieces)); err != nil {
+	if err := validateAddPieceInputs("pdp.AddPieces", pieces); err != nil {
 		return nil, err
 	}
 	if len(extraData) == 0 {
@@ -61,9 +64,6 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces [
 		ExtraData: "0x" + hex.EncodeToString(extraData),
 	}
 	for _, p := range pieces {
-		if !p.PieceCID.Defined() {
-			return nil, errors.New("pdp.AddPieces: undefined pieceCID in input")
-		}
 		s := p.PieceCID.String()
 		wire.Pieces = append(wire.Pieces, addPiecesRequestPiece{
 			PieceCID:  s,
@@ -71,7 +71,7 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces [
 		})
 	}
 	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces")
-	resp, body, err := c.postJSON(ctx, urlPath, wire,
+	resp, _, err := c.postJSON(ctx, urlPath, wire,
 		http.StatusCreated, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
@@ -79,28 +79,37 @@ func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces [
 	loc := resp.Header.Get("Location")
 	hashHex := lastPathSegment(loc)
 	if loc == "" || hashHex == "" {
-		return nil, fmt.Errorf("%w: Location=%q body=%q", ErrLocationHeader, loc, string(body))
+		return nil, fmt.Errorf("%w: missing transaction status location", ErrLocationHeader)
 	}
 	if !strings.HasPrefix(hashHex, "0x") {
 		hashHex = "0x" + hashHex
 	}
+	if !common.IsHexHash(hashHex) {
+		return nil, fmt.Errorf("%w: invalid transaction hash in Location", ErrLocationHeader)
+	}
 	tx := common.HexToHash(hashHex)
 	if tx == (common.Hash{}) {
-		return nil, fmt.Errorf("%w: zero tx hash from %q", ErrLocationHeader, loc)
+		return nil, fmt.Errorf("%w: zero transaction hash in Location", ErrLocationHeader)
 	}
-	statusURL, err := c.resolve(loc)
+	statusURL, err := c.resolveStatusURL(loc)
 	if err != nil {
 		return nil, fmt.Errorf("pdp.AddPieces: resolve status URL: %w", err)
 	}
-	return &AddPiecesResult{TxHash: tx, StatusURL: statusURL.String()}, nil
+	return &AddPiecesResult{TxHash: tx, StatusURL: statusURL}, nil
 }
 
 // AddPiecesStatus mirrors GET /pdp/data-sets/{id}/pieces/added/{txHash}.
-// TxStatus reports pending, confirmed, or rejected.
+// TxStatus reports the provider's wire status. Callers should use the error
+// returned by GetAddPiecesStatus instead of interpreting it directly.
+// Providers report pending, confirmed, failed, or reorged; rejected is also
+// accepted for compatibility.
 type AddPiecesStatus struct {
-	TxHash            common.Hash    `json:"-"`
-	TxStatus          string         `json:"txStatus"` // pending | confirmed | rejected
-	DataSetID         types.BigInt   `json:"-"`
+	TxHash          common.Hash  `json:"-"`
+	ConfirmedTxHash common.Hash  `json:"-"`
+	TxStatus        string       `json:"txStatus"`
+	DataSetID       types.BigInt `json:"-"`
+	// PieceCount may be zero while processing is pending or after rejection. A
+	// successful response reports the full number of add entries.
 	PieceCount        int            `json:"pieceCount"`
 	AddMessageOK      *bool          `json:"addMessageOk"`
 	PiecesAdded       bool           `json:"piecesAdded"`
@@ -109,6 +118,7 @@ type AddPiecesStatus struct {
 
 type rawAddPiecesStatus struct {
 	TxHash            string        `json:"txHash"`
+	ConfirmedTxHash   string        `json:"confirmedTxHash,omitempty"`
 	TxStatus          string        `json:"txStatus"`
 	DataSetID         json.Number   `json:"dataSetId"`
 	PieceCount        int           `json:"pieceCount"`
@@ -121,16 +131,9 @@ type rawAddPiecesStatus struct {
 // HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*AddPiecesStatus, error) {
 	if statusURL == "" {
-		return nil, errors.New("pdp.GetAddPiecesStatus: empty statusURL")
+		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: %w: empty statusURL", ErrStatusURLOrigin)
 	}
-	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "application/json")
-		return req, nil
-	}, http.StatusOK, http.StatusAccepted)
+	body, err := c.getStatusBody(ctx, "pdp.GetAddPiecesStatus", statusURL, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -138,12 +141,21 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: decode: %w", err)
 	}
+	txHash, err := parseRequiredStatusHash("pdp.GetAddPiecesStatus", "txHash", raw.TxHash)
+	if err != nil {
+		return nil, err
+	}
+	confirmedTxHash, err := parseOptionalStatusHash("pdp.GetAddPiecesStatus", "confirmedTxHash", raw.ConfirmedTxHash)
+	if err != nil {
+		return nil, err
+	}
 	out := &AddPiecesStatus{
-		TxHash:       common.HexToHash(raw.TxHash),
-		TxStatus:     raw.TxStatus,
-		PieceCount:   raw.PieceCount,
-		AddMessageOK: raw.AddMessageOK,
-		PiecesAdded:  raw.PiecesAdded,
+		TxHash:          txHash,
+		ConfirmedTxHash: confirmedTxHash,
+		TxStatus:        raw.TxStatus,
+		PieceCount:      raw.PieceCount,
+		AddMessageOK:    raw.AddMessageOK,
+		PiecesAdded:     raw.PiecesAdded,
 	}
 	if raw.DataSetID != "" {
 		id, err := parseBigIntNumber("pdp.GetAddPiecesStatus", "dataSetId", raw.DataSetID)
@@ -159,13 +171,18 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 		}
 		out.ConfirmedPieceIDs = append(out.ConfirmedPieceIDs, id)
 	}
+	disposition, err := classifyAddPiecesStatus("pdp.GetAddPiecesStatus", out)
+	if err != nil {
+		return out, err
+	}
+	if disposition == transactionRejected {
+		return out, ErrTxRejected
+	}
 	return out, nil
 }
 
 // WaitForPiecesAdded polls until the add-pieces tx is confirmed with
-// piecesAdded=true or rejected. Transport errors, including HTTP 404s from
-// the status URL, are returned immediately rather than retried. pollInterval
-// defaults to 4s.
+// piecesAdded=true or rejected. pollInterval defaults to 4s.
 func (c *Client) WaitForPiecesAdded(ctx context.Context, statusURL string, pollInterval time.Duration) (*AddPiecesStatus, error) {
 	if pollInterval <= 0 {
 		pollInterval = 4 * time.Second
@@ -173,16 +190,14 @@ func (c *Client) WaitForPiecesAdded(ctx context.Context, statusURL string, pollI
 	for {
 		status, err := c.GetAddPiecesStatus(ctx, statusURL)
 		if err != nil {
-			return nil, err
+			return status, err
 		}
-		switch status.TxStatus {
-		case "confirmed":
-			if !status.PiecesAdded {
-				break
-			}
+		disposition, err := classifyAddPiecesStatus("pdp.WaitForPiecesAdded", status)
+		if err != nil {
+			return status, err
+		}
+		if disposition == transactionConfirmed {
 			return status, nil
-		case "rejected":
-			return status, ErrTxRejected
 		}
 		select {
 		case <-ctx.Done():
@@ -224,4 +239,29 @@ func validateAddPiecesBatch(op string, count int) error {
 		return fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, count, MaxAddPiecesBatchSize)
 	}
 	return nil
+}
+
+func validateAddPieceInputs(op string, pieces []AddPieceInput) error {
+	if err := validateAddPiecesBatch(op, len(pieces)); err != nil {
+		return err
+	}
+	seen := make(map[string]int, len(pieces))
+	for i, input := range pieces {
+		if !input.PieceCID.Defined() {
+			return fmt.Errorf("%s: undefined pieceCID at index %d", op, i)
+		}
+		key := canonicalPieceCIDKey(input.PieceCID)
+		if first, ok := seen[key]; ok {
+			return fmt.Errorf("%s: duplicate pieceCID at indexes %d and %d", op, first, i)
+		}
+		seen[key] = i
+	}
+	return nil
+}
+
+func canonicalPieceCIDKey(pieceCID cid.Cid) string {
+	if info, err := piece.ParseV2(pieceCID); err == nil {
+		return info.CIDv1.KeyString()
+	}
+	return pieceCID.KeyString()
 }

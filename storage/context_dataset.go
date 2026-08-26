@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
@@ -50,6 +51,9 @@ func (c *ProviderContext) submitCreateDataSet(ctx context.Context) (CreateDataSe
 	}
 	if created.StatusURL == "" {
 		return CreateDataSetSubmission{}, errors.New(op + ": create dataset returned empty statusURL")
+	}
+	if err := validateProviderStatusURL(c.core.provider.ServiceURL, created.StatusURL); err != nil {
+		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w", op, err)
 	}
 	return CreateDataSetSubmission{
 		ProviderID:      copyBigInt(c.core.provider.ID),
@@ -106,7 +110,7 @@ func (c *ProviderContext) signCreateDataSet(ctx context.Context, op string) ([]b
 }
 
 func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, submission CreateDataSetSubmission) (*CreateDataSetResult, error) {
-	submission, err := validateCreateDataSetSubmission(op, c.core.provider.ID, submission)
+	submission, err := validateCreateDataSetSubmission(op, c.core.provider, submission)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +130,7 @@ func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, 
 		return nil, fmt.Errorf(
 			"%s: %w: server returned mismatched transactionID: got %s want %s",
 			op,
-			ErrInvalidArgument,
+			pdp.ErrInvalidStatus,
 			got.Hex(),
 			wantTransactionID.Hex(),
 		)
@@ -137,26 +141,27 @@ func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, 
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return &CreateDataSetResult{
-		TransactionID: submission.TransactionID,
-		DataSet:       ref,
+		TransactionID:          submission.TransactionID,
+		ConfirmedTransactionID: optionalHashString(status.ConfirmedTxHash),
+		DataSet:                ref,
 	}, nil
 }
 
-func validateCreateDataSetSubmission(op string, providerID types.BigInt, submission CreateDataSetSubmission) (CreateDataSetSubmission, error) {
+func validateCreateDataSetSubmission(op string, provider Provider, submission CreateDataSetSubmission) (CreateDataSetSubmission, error) {
 	submission = copyCreateDataSetSubmission(submission)
 	if submission.ProviderID.IsZero() {
-		submission.ProviderID = copyBigInt(providerID)
+		submission.ProviderID = copyBigInt(provider.ID)
 	}
 	if submission.ProviderID.IsZero() {
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: zero providerID", op, ErrInvalidArgument)
 	}
-	if !submission.ProviderID.Equal(providerID) {
+	if !submission.ProviderID.Equal(provider.ID) {
 		return CreateDataSetSubmission{}, fmt.Errorf(
 			"%s: %w: submission providerID %s does not match context providerID %s",
 			op,
 			ErrInvalidArgument,
 			submission.ProviderID.String(),
-			providerID.String(),
+			provider.ID.String(),
 		)
 	}
 	if submission.TransactionID == "" {
@@ -171,6 +176,9 @@ func validateCreateDataSetSubmission(op string, providerID types.BigInt, submiss
 	}
 	if submission.StatusURL == "" {
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: empty statusURL", op, ErrInvalidArgument)
+	}
+	if err := validateProviderStatusURL(provider.ServiceURL, submission.StatusURL); err != nil {
+		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, err)
 	}
 	if submission.ClientDataSetID == nil {
 		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: missing clientDataSetID", op, ErrInvalidArgument)

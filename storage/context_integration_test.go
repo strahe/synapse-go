@@ -164,7 +164,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("primary Commit: %v", err)
 	}
-	if primaryCommit.DataSetID.IsZero() || !primaryCommit.IsNewDataSet {
+	if primaryCommit.DataSet.DataSetID().IsZero() || !primaryCommit.IsNewDataSet {
 		t.Fatalf("primary Commit = %+v, want a new non-zero data set", primaryCommit)
 	}
 	if len(primaryCommit.PieceIDs) != 1 {
@@ -174,7 +174,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if primaryURL == "" {
 		t.Fatal("primary PieceURL returned empty URL")
 	}
-	cleanupIDs = append(cleanupIDs, primaryCommit.DataSetID)
+	cleanupIDs = append(cleanupIDs, primaryCommit.DataSet.DataSetID())
 
 	submitCtx, cancelSubmit := context.WithCancel(ctx)
 	defer cancelSubmit()
@@ -290,8 +290,8 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if !commit.DataSetID.Equal(created.DataSet.DataSetID()) {
-		t.Fatalf("Commit DataSetID = %s, want %s", commit.DataSetID, created.DataSet.DataSetID())
+	if !commit.DataSet.DataSetID().Equal(created.DataSet.DataSetID()) {
+		t.Fatalf("Commit DataSetID = %s, want %s", commit.DataSet.DataSetID(), created.DataSet.DataSetID())
 	}
 	if commit.IsNewDataSet {
 		t.Fatal("Commit unexpectedly used create-and-add path")
@@ -351,7 +351,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	})
 
 	ws := client.WarmStorage()
-	primaryInfo, err := ws.GetDataSet(ctx, primaryCommit.DataSetID)
+	primaryInfo, err := ws.GetDataSet(ctx, primaryCommit.DataSet.DataSetID())
 	if err != nil {
 		t.Fatalf("GetDataSet(primary before terminate): %v", err)
 	}
@@ -362,7 +362,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if primaryInfo.PDPRailID.IsZero() || secondaryInfo.PDPRailID.IsZero() {
 		t.Fatalf("termination rails must be non-zero: primary=%s secondary=%s", primaryInfo.PDPRailID, secondaryInfo.PDPRailID)
 	}
-	primaryDataSet, err := sm.NewDataSetContext(ctx, primaryCommit.DataSetID, storage.NewDataSetContextOptions{})
+	primaryDataSet, err := sm.NewDataSetContext(ctx, primaryCommit.DataSet.DataSetID(), storage.NewDataSetContextOptions{})
 	if err != nil {
 		t.Fatalf("NewDataSetContext(primary data set): %v", err)
 	}
@@ -381,10 +381,10 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractPDPPaymentTerminatedEvent(primary): %v", err)
 	}
-	if !directEvent.DataSetID.Equal(primaryCommit.DataSetID) || !directEvent.PDPRailID.Equal(primaryInfo.PDPRailID) || directEvent.EndEpoch == 0 {
-		t.Fatalf("primary termination event = %+v, want dataSet=%s rail=%s and non-zero end epoch", directEvent, primaryCommit.DataSetID, primaryInfo.PDPRailID)
+	if !directEvent.DataSetID.Equal(primaryCommit.DataSet.DataSetID()) || !directEvent.PDPRailID.Equal(primaryInfo.PDPRailID) || directEvent.EndEpoch == 0 {
+		t.Fatalf("primary termination event = %+v, want dataSet=%s rail=%s and non-zero end epoch", directEvent, primaryCommit.DataSet.DataSetID(), primaryInfo.PDPRailID)
 	}
-	terminatedIDs[primaryCommit.DataSetID.String()] = struct{}{}
+	terminatedIDs[primaryCommit.DataSet.DataSetID().String()] = struct{}{}
 
 	start = time.Now()
 	t.Log("start storage staged secondary DataSetContext.TerminateService")

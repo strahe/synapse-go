@@ -96,14 +96,17 @@ var ErrPieceProcessing = errors.New("pdp: piece still processing")
 // MaxAddPiecesBatchSize.
 var ErrTooManyPieces = errors.New("pdp: too many pieces")
 
-// ErrStillPending is returned by status-polling helpers when the server
-// reports the transaction is still pending. It is the sentinel callers
-// should loop on while waiting.
-var ErrStillPending = errors.New("pdp: still pending")
-
-// ErrTxRejected is returned when an on-chain operation posted by the SP
-// was rejected by the network.
+// ErrTxRejected is returned when an on-chain operation posted by the SP was
+// rejected, failed, or removed from the canonical chain by a reorganization.
 var ErrTxRejected = errors.New("pdp: transaction rejected")
+
+// ErrInvalidStatus is returned when a provider status response is unknown,
+// incomplete, or internally inconsistent.
+var ErrInvalidStatus = errors.New("pdp: invalid status response")
+
+// ErrStatusURLOrigin is returned when a provider status URL does not use the
+// same origin as the PDP client, or redirects to another origin.
+var ErrStatusURLOrigin = errors.New("pdp: status URL origin mismatch")
 
 // ServiceAlreadyTerminatedError is returned when the provider reports the
 // service is already terminated on chain.

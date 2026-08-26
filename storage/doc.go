@@ -25,6 +25,11 @@
 // DataSetContext, and [ProviderContext.ForDataSet]. Construct it with
 // [NewDataSetRef]; its zero value is invalid.
 //
+// Persistent data-set references, context identities, and create/commit
+// lifecycle values use strict lowerCamel JSON field names. Alternate
+// capitalization, unknown or duplicate fields, and incomplete objects are
+// rejected.
+//
 // # Upload flow
 //
 // [Service.Upload] automatically selects targets and performs store, pull, and
@@ -50,7 +55,7 @@
 // calculation or upload work, preventing contexts from another account or
 // chain from being used accidentally.
 //
-// # Data-set creation recovery
+// # Submission recovery
 //
 // [ProviderContext.CreateDataSet] leaves its receiver unbound. Persist the
 // [CreateDataSetSubmission] received through [CreateDataSetOptions.OnSubmitted]
@@ -58,6 +63,19 @@
 // same provider can resume with [ProviderContext.WaitForDataSetCreated]. Pass
 // the returned DataSetRef to [ProviderContext.ForDataSet] to obtain a
 // DataSetContext.
+//
+// [ProviderContext.Commit] and [DataSetContext.Commit] are convenience methods
+// that submit once and wait for confirmation. Applications that must survive
+// process restarts can split that lifecycle with SubmitCommit,
+// GetCommitStatus, and WaitForCommit on the same concrete context type.
+// Persist the complete [CommitSubmission] returned by SubmitCommit before
+// waiting. A fresh context for the same immutable target can resume that
+// submission without signing or submitting another transaction.
+//
+// GetCommitStatus performs one logical status check and returns
+// [CommitStatePending], [CommitStateConfirmed], or [CommitStateRejected]. A
+// rejected status is returned without an error; WaitForCommit reports the same
+// terminal state as [CommitRejectedError].
 //
 // # Downloads
 //

@@ -26,6 +26,13 @@
 // retry after a server-side partial success can cause duplicate work or
 // inconsistent state.
 //
+// # Status URLs
+//
+// Transaction status URLs must be absolute HTTP(S) URLs with the same scheme,
+// hostname, and effective port as the client's service URL. The same check is
+// applied to every redirect. This pins recovery handles to their provider
+// origin; it does not block private addresses or DNS rebinding.
+//
 // # Response size cap
 //
 // Control-plane JSON responses are capped at MaxControlResponseBytes

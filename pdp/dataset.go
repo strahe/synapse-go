@@ -42,7 +42,7 @@ func (c *Client) CreateDataSet(ctx context.Context, recordKeeper common.Address,
 		RecordKeeper: recordKeeper,
 		ExtraData:    "0x" + hex.EncodeToString(extraData),
 	}
-	resp, body, err := c.postJSON(ctx, "pdp/data-sets", payload,
+	resp, _, err := c.postJSON(ctx, "pdp/data-sets", payload,
 		http.StatusCreated, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
@@ -50,28 +50,35 @@ func (c *Client) CreateDataSet(ctx context.Context, recordKeeper common.Address,
 	loc := resp.Header.Get("Location")
 	hashHex := lastPathSegment(loc)
 	if loc == "" || hashHex == "" {
-		return nil, fmt.Errorf("%w: Location=%q body=%q", ErrLocationHeader, loc, string(body))
+		return nil, fmt.Errorf("%w: missing transaction status location", ErrLocationHeader)
 	}
 	if !strings.HasPrefix(hashHex, "0x") {
 		hashHex = "0x" + hashHex
 	}
+	if !common.IsHexHash(hashHex) {
+		return nil, fmt.Errorf("%w: invalid transaction hash in Location", ErrLocationHeader)
+	}
 	tx := common.HexToHash(hashHex)
 	if tx == (common.Hash{}) {
-		return nil, fmt.Errorf("%w: parsed zero tx hash from %q", ErrLocationHeader, loc)
+		return nil, fmt.Errorf("%w: zero transaction hash in Location", ErrLocationHeader)
 	}
-	statusURL, err := c.resolve(loc)
+	statusURL, err := c.resolveStatusURL(loc)
 	if err != nil {
 		return nil, fmt.Errorf("pdp.CreateDataSet: resolve status URL: %w", err)
 	}
-	return &CreateDataSetResult{TxHash: tx, StatusURL: statusURL.String()}, nil
+	return &CreateDataSetResult{TxHash: tx, StatusURL: statusURL}, nil
 }
 
 // CreateDataSetStatus mirrors GET /pdp/data-sets/created/{txHash}.
-// TxStatus reports pending, confirmed, or rejected.
+// TxStatus reports the provider's wire status. Callers should use the error
+// returned by GetDataSetCreationStatus instead of interpreting it directly.
+// Providers report pending, confirmed, failed, or reorged; rejected is also
+// accepted for compatibility.
 type CreateDataSetStatus struct {
 	CreateMessageHash common.Hash   `json:"createMessageHash"`
+	ConfirmedTxHash   common.Hash   `json:"-"`
 	Service           string        `json:"service"`
-	TxStatus          string        `json:"txStatus"` // pending | confirmed | rejected
+	TxStatus          string        `json:"txStatus"`
 	DataSetCreated    bool          `json:"dataSetCreated"`
 	OK                *bool         `json:"ok"`
 	DataSetID         *types.BigInt `json:"-"`
@@ -81,6 +88,7 @@ type CreateDataSetStatus struct {
 // a JSON number, which doesn't fit in *big.Int directly.
 type rawCreateDataSetStatus struct {
 	CreateMessageHash string      `json:"createMessageHash"`
+	ConfirmedTxHash   string      `json:"confirmedTxHash,omitempty"`
 	Service           string      `json:"service"`
 	TxStatus          string      `json:"txStatus"`
 	DataSetCreated    bool        `json:"dataSetCreated"`
@@ -92,16 +100,9 @@ type rawCreateDataSetStatus struct {
 // either HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string) (*CreateDataSetStatus, error) {
 	if statusURL == "" {
-		return nil, errors.New("pdp.GetDataSetCreationStatus: empty statusURL")
+		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: %w: empty statusURL", ErrStatusURLOrigin)
 	}
-	_, body, err := c.doRetryable(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "application/json")
-		return req, nil
-	}, http.StatusOK, http.StatusAccepted)
+	body, err := c.getStatusBody(ctx, "pdp.GetDataSetCreationStatus", statusURL, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -109,8 +110,17 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: decode: %w", err)
 	}
+	createMessageHash, err := parseRequiredStatusHash("pdp.GetDataSetCreationStatus", "createMessageHash", raw.CreateMessageHash)
+	if err != nil {
+		return nil, err
+	}
+	confirmedTxHash, err := parseOptionalStatusHash("pdp.GetDataSetCreationStatus", "confirmedTxHash", raw.ConfirmedTxHash)
+	if err != nil {
+		return nil, err
+	}
 	out := &CreateDataSetStatus{
-		CreateMessageHash: common.HexToHash(raw.CreateMessageHash),
+		CreateMessageHash: createMessageHash,
+		ConfirmedTxHash:   confirmedTxHash,
 		Service:           raw.Service,
 		TxStatus:          raw.TxStatus,
 		DataSetCreated:    raw.DataSetCreated,
@@ -123,13 +133,19 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 		}
 		out.DataSetID = &id
 	}
+	disposition, err := classifyCreateDataSetStatus("pdp.GetDataSetCreationStatus", out)
+	if err != nil {
+		return out, err
+	}
+	if disposition == transactionRejected {
+		return out, ErrTxRejected
+	}
 	return out, nil
 }
 
 // WaitForDataSetCreated polls until the server reports txStatus=confirmed
-// with dataSetCreated=true (success) or txStatus=rejected (ErrTxRejected).
-// Transport errors, including HTTP 404s from the status URL, are returned
-// immediately rather than retried. pollInterval defaults to 4 seconds.
+// with dataSetCreated=true (success) or a rejected transaction
+// (ErrTxRejected). pollInterval defaults to 4 seconds.
 func (c *Client) WaitForDataSetCreated(ctx context.Context, statusURL string, pollInterval time.Duration) (*CreateDataSetStatus, error) {
 	if pollInterval <= 0 {
 		pollInterval = 4 * time.Second
@@ -137,16 +153,14 @@ func (c *Client) WaitForDataSetCreated(ctx context.Context, statusURL string, po
 	for {
 		status, err := c.GetDataSetCreationStatus(ctx, statusURL)
 		if err != nil {
-			return nil, err
+			return status, err
 		}
-		switch status.TxStatus {
-		case "confirmed":
-			if !status.DataSetCreated {
-				break
-			}
+		disposition, err := classifyCreateDataSetStatus("pdp.WaitForDataSetCreated", status)
+		if err != nil {
+			return status, err
+		}
+		if disposition == transactionConfirmed {
 			return status, nil
-		case "rejected":
-			return status, ErrTxRejected
 		}
 		select {
 		case <-ctx.Done():

@@ -24,6 +24,14 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
+func testCommitDataSetRef(providerID, dataSetID uint64) DataSetRef {
+	ref, err := NewDataSetRef(types.NewBigInt(providerID), types.NewBigInt(dataSetID), types.BigInt{})
+	if err != nil {
+		panic(err)
+	}
+	return ref
+}
+
 func mustNewService(t *testing.T, opts Options) *Service {
 	t.Helper()
 	if opts.SignerAddress == (common.Address{}) && opts.Signer == nil {
@@ -172,7 +180,7 @@ func TestManagerUpload_SafetyNetRejectsEndedReplacementBeforePull(t *testing.T) 
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
@@ -241,7 +249,7 @@ func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testi
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 10), PieceIDs: []types.BigInt{types.NewBigInt(100)}, IsNewDataSet: true}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
@@ -277,7 +285,7 @@ func TestManagerUpload_ReplacementPreflightFailureConsumesAttemptBudget(t *testi
 			}, nil
 		},
 		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(20), PieceIDs: []types.BigInt{types.NewBigInt(200)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(2, 20), PieceIDs: []types.BigInt{types.NewBigInt(200)}}, nil
 		},
 	}
 	reader := &fakeFWSSDataSetReader{infoErr: errors.New("fwss unavailable")}
@@ -343,7 +351,7 @@ func TestManagerUpload_ExplicitCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("primary commit should not receive secondary extraData")
 			}
 			return &CommitResult{
-				DataSetID:     types.NewBigInt(1001),
+				DataSet:       testCommitDataSetRef(101, 1001),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
 				IsNewDataSet:  true,
 				TransactionID: "0xprimary",
@@ -382,7 +390,7 @@ func TestManagerUpload_ExplicitCopiesAndPresignReuse(t *testing.T) {
 				t.Fatalf("commit extraData=%x want %x", req.ExtraData, secondaryExtra)
 			}
 			return &CommitResult{
-				DataSetID:     types.NewBigInt(1002),
+				DataSet:       testCommitDataSetRef(202, 1002),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
 				IsNewDataSet:  true,
 				TransactionID: "0xsecondary",
@@ -459,7 +467,7 @@ func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
@@ -575,7 +583,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
@@ -601,7 +609,7 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 			}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(303, 1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
 		},
 	}
 
@@ -645,7 +653,7 @@ func TestServiceUploadReplacementRejectsInvalidTargets(t *testing.T) {
 				return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 			},
 			commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-				return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}, IsNewDataSet: true}, nil
+				return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}, IsNewDataSet: true}, nil
 			},
 		}
 	}
@@ -748,7 +756,7 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
@@ -802,7 +810,9 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 		},
 	}
 	clientDataSetID := types.NewBigInt(0xFEED)
-	replacement, err := NewDataSetContext(testProvider(), replacementClient, mustTestSigner(t), testDataSetRef(dsID, clientDataSetID),
+	replacementProvider := testProvider()
+	replacementProvider.ServiceURL = "https://secondary-b.example.com"
+	replacement, err := NewDataSetContext(replacementProvider, replacementClient, mustTestSigner(t), testDataSetRef(dsID, clientDataSetID),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
@@ -851,7 +861,7 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
 		},
 	}
 	failedSecondary := &fakeUploadContext{
@@ -892,7 +902,7 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 			}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(303, 1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
 		},
 	}
 
@@ -1190,7 +1200,7 @@ func TestManagerUpload_RequestedCopiesIsCallerRequested(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 
@@ -1228,7 +1238,7 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
@@ -1275,7 +1285,7 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}, IsNewDataSet: true}, nil
 		},
 	}
 	secondary := &fakeUploadContext{
@@ -1360,7 +1370,7 @@ func TestManagerUpload_StreamsToPrimary(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1400,7 +1410,7 @@ func TestManagerUpload_LargeReader(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: n}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1433,7 +1443,7 @@ func TestManagerUpload_WithPieceCIDPrefill(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1466,7 +1476,7 @@ func TestManagerUpload_OnProgress(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1760,7 +1770,7 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 
@@ -1802,7 +1812,7 @@ func TestManagerUpload_CommitResultMissingIdentifiers(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: nil}, nil
+			return &CommitResult{DataSet: DataSetRef{}, PieceIDs: nil}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1831,7 +1841,7 @@ func TestManagerUpload_CommitResultZeroDataSetID(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(0), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: DataSetRef{}, PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1860,7 +1870,7 @@ func TestManagerUpload_CommitResultAllowsZeroPieceID(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(0)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(0)}}, nil
 		},
 	}
 	mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
@@ -1892,7 +1902,7 @@ func TestManagerUpload_PullStatusNotComplete(t *testing.T) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSetID: types.NewBigInt(1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
+			return &CommitResult{DataSet: testCommitDataSetRef(1, 1), PieceIDs: []types.BigInt{types.NewBigInt(10)}}, nil
 		},
 	}
 	secondary := &fakeUploadContext{

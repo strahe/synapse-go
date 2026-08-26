@@ -1,10 +1,8 @@
 package storage
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 
 	"github.com/strahe/synapse-go/types"
 )
@@ -48,16 +46,17 @@ func (r DataSetRef) valid() bool {
 	return !r.providerID.IsZero() && !r.dataSetID.IsZero()
 }
 
-// MarshalJSON encodes all three identity fields. Invalid zero-value refs are
-// rejected instead of being persisted as usable targets.
+// MarshalJSON encodes all three identity fields using lowerCamel names.
+// Invalid zero-value refs are rejected instead of being persisted as usable
+// targets.
 func (r DataSetRef) MarshalJSON() ([]byte, error) {
 	if !r.valid() {
 		return nil, fmt.Errorf("storage.DataSetRef.MarshalJSON: %w: invalid data-set ref", ErrInvalidArgument)
 	}
 	type wireRef struct {
-		ProviderID      types.BigInt
-		DataSetID       types.BigInt
-		ClientDataSetID types.BigInt
+		ProviderID      types.BigInt `json:"providerId"`
+		DataSetID       types.BigInt `json:"dataSetId"`
+		ClientDataSetID types.BigInt `json:"clientDataSetId"`
 	}
 	return json.Marshal(wireRef{
 		ProviderID:      r.ProviderID(),
@@ -66,31 +65,27 @@ func (r DataSetRef) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON requires all three non-null identity fields.
+// UnmarshalJSON requires the exact lowerCamel names and all three non-null
+// identity fields.
 func (r *DataSetRef) UnmarshalJSON(data []byte) error {
 	if r == nil {
 		return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: nil receiver", ErrInvalidArgument)
 	}
 	type wireRef struct {
-		ProviderID      *types.BigInt
-		DataSetID       *types.BigInt
-		ClientDataSetID *types.BigInt
+		ProviderID      *types.BigInt `json:"providerId"`
+		DataSetID       *types.BigInt `json:"dataSetId"`
+		ClientDataSetID *types.BigInt `json:"clientDataSetId"`
 	}
 	var wire wireRef
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: %w", ErrInvalidArgument, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: multiple JSON values", ErrInvalidArgument)
-		}
-		return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: %w", ErrInvalidArgument, err)
+	if err := decodeLifecycleJSON(data, "storage.DataSetRef.UnmarshalJSON", &wire, []lifecycleJSONField{
+		{name: "providerId"},
+		{name: "dataSetId"},
+		{name: "clientDataSetId"},
+	}); err != nil {
+		return err
 	}
 	if wire.ProviderID == nil || wire.DataSetID == nil || wire.ClientDataSetID == nil {
-		return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: ProviderID, DataSetID, and ClientDataSetID are required", ErrInvalidArgument)
+		return fmt.Errorf("storage.DataSetRef.UnmarshalJSON: %w: providerId, dataSetId, and clientDataSetId are required", ErrInvalidArgument)
 	}
 	parsed, err := NewDataSetRef(*wire.ProviderID, *wire.DataSetID, *wire.ClientDataSetID)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -134,6 +135,33 @@ type CommitError struct {
 	ProviderID types.BigInt
 	Endpoint   string
 	Cause      error
+}
+
+// CommitRejectedError reports a valid terminal rejection while preserving the
+// submission and final status needed for diagnostics.
+type CommitRejectedError struct {
+	Submission CommitSubmission
+	Status     CommitStatus
+}
+
+func (e *CommitRejectedError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf(
+		"storage: %s commit %s for provider %s was rejected",
+		e.Submission.Kind,
+		e.Submission.TransactionID,
+		e.Submission.ProviderID.String(),
+	)
+}
+
+// Unwrap makes CommitRejectedError match [pdp.ErrTxRejected].
+func (e *CommitRejectedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return pdp.ErrTxRejected
 }
 
 func (e *CommitError) Error() string {

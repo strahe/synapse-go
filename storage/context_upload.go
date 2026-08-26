@@ -92,12 +92,12 @@ func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r 
 		for i, id := range commit.PieceIDs {
 			confirmed[i] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
 		}
-		opts.OnPiecesConfirmed(commit.DataSetID, copyBigInt(c.provider.ID), confirmed)
+		opts.OnPiecesConfirmed(commit.DataSet.DataSetID(), copyBigInt(c.provider.ID), confirmed)
 	}
 
 	copies := []CopyResult{{
 		ProviderID:   copyBigInt(c.provider.ID),
-		DataSetID:    commit.DataSetID,
+		DataSetID:    commit.DataSet.DataSetID(),
 		PieceID:      commit.PieceIDs[0],
 		Role:         CopyRolePrimary,
 		RetrievalURL: c.pieceURLFor(storeResult.PieceCID),

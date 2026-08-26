@@ -40,6 +40,10 @@ func (*fakePDPProviderClient) AddPieces(context.Context, types.BigInt, []pdp.Add
 	return nil, nil
 }
 
+func (*fakePDPProviderClient) GetAddPiecesStatus(context.Context, string) (*pdp.AddPiecesStatus, error) {
+	return nil, nil
+}
+
 func (*fakePDPProviderClient) WaitForPiecesAdded(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error) {
 	return nil, nil
 }
@@ -48,11 +52,19 @@ func (*fakePDPProviderClient) CreateDataSet(context.Context, common.Address, []b
 	return nil, nil
 }
 
+func (*fakePDPProviderClient) GetDataSetCreationStatus(context.Context, string) (*pdp.CreateDataSetStatus, error) {
+	return nil, nil
+}
+
 func (*fakePDPProviderClient) WaitForDataSetCreated(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
 	return nil, nil
 }
 
 func (*fakePDPProviderClient) CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+	return nil, nil
+}
+
+func (*fakePDPProviderClient) GetCreateDataSetAndAddPiecesStatus(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error) {
 	return nil, nil
 }
 

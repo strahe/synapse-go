@@ -83,11 +83,12 @@ type DataSetRef struct {
 }
 
 // ContextIdentity identifies the account and chain configuration used by a
-// storage context for signing and on-chain operations.
+// storage context for signing and on-chain operations. Its JSON form uses
+// strict lowerCamel field names.
 type ContextIdentity struct {
-	Payer        common.Address
-	ChainID      types.ChainID
-	RecordKeeper common.Address
+	Payer        common.Address `json:"payer"`
+	ChainID      types.ChainID  `json:"chainId"`
+	RecordKeeper common.Address `json:"recordKeeper"`
 }
 
 // PullRequest asks a secondary provider to pull pieces from a primary.
@@ -116,18 +117,67 @@ type PullResult struct {
 type CommitRequest struct {
 	Pieces    []PieceInput
 	ExtraData []byte // EIP-712 signed payload; nil for the primary (create-or-add path)
-	// OnSubmitted is invoked with the transaction hash immediately after the
-	// on-chain AddPieces transaction is submitted, before confirmation. It may
-	// be nil. Direct Commit calls do not recover callback panics.
+	// OnSubmitted is invoked with the original transaction hash immediately
+	// after the provider returns a valid submission handle, before confirmation.
+	// It may be nil. Direct Commit calls do not recover callback panics.
 	OnSubmitted func(txHash string)
+}
+
+// CommitKind identifies whether a submission creates a data set or adds to an
+// existing one.
+type CommitKind string
+
+const (
+	// CommitKindCreateAndAdd creates a new data set and adds pieces to it.
+	CommitKindCreateAndAdd CommitKind = "create-and-add"
+	// CommitKindAddPieces adds pieces to an existing data set.
+	CommitKindAddPieces CommitKind = "add-pieces"
+)
+
+// CommitState is the durable, provider-independent state of a submission.
+type CommitState string
+
+const (
+	// CommitStatePending means the provider has not reported a terminal result.
+	CommitStatePending CommitState = "pending"
+	// CommitStateConfirmed means all submitted pieces were added successfully.
+	CommitStateConfirmed CommitState = "confirmed"
+	// CommitStateRejected means the transaction failed or was rejected.
+	CommitStateRejected CommitState = "rejected"
+)
+
+// CommitSubmission is a persistable handle returned after one successful
+// provider submission. Persist all fields together and resume it with the same
+// concrete context type. Its JSON form uses strict lowerCamel field names and
+// rejects alternate capitalization.
+type CommitSubmission struct {
+	Kind            CommitKind      `json:"kind"`
+	TransactionID   string          `json:"transactionId"`
+	StatusURL       string          `json:"statusUrl"`
+	ProviderID      types.BigInt    `json:"providerId"`
+	Identity        ContextIdentity `json:"identity"`
+	DataSet         *DataSetRef     `json:"dataSet"`
+	ClientDataSetID *types.BigInt   `json:"clientDataSetId"`
+	PieceCIDs       []cid.Cid       `json:"pieceCids"`
+}
+
+// CommitStatus is one logical status snapshot for a submission.
+type CommitStatus struct {
+	Kind                   CommitKind     `json:"kind"`
+	State                  CommitState    `json:"state"`
+	TransactionID          string         `json:"transactionId"`
+	ConfirmedTransactionID string         `json:"confirmedTransactionId"`
+	DataSet                *DataSetRef    `json:"dataSet"`
+	PieceIDs               []types.BigInt `json:"pieceIds"`
 }
 
 // CommitResult is returned by a successful Commit call.
 type CommitResult struct {
-	TransactionID string       // on-chain transaction hash
-	DataSetID     types.BigInt // data set that now holds the piece
-	PieceIDs      []types.BigInt
-	IsNewDataSet  bool // true when a new data set was created by this commit
+	TransactionID          string         `json:"transactionId"`          // transaction hash from the provider submission
+	ConfirmedTransactionID string         `json:"confirmedTransactionId"` // actual on-chain hash, when reported by the provider
+	DataSet                DataSetRef     `json:"dataSet"`
+	PieceIDs               []types.BigInt `json:"pieceIds"`
+	IsNewDataSet           bool           `json:"isNewDataSet"` // true when a new data set was created by this commit
 }
 
 // CreateDataSetOptions configures [ProviderContext.CreateDataSet].
@@ -138,20 +188,22 @@ type CreateDataSetOptions struct {
 }
 
 // CreateDataSetSubmission identifies a submitted create-dataset transaction.
-// Persist and restore all fields together; incomplete submissions are rejected.
-// A zero ProviderID is filled from the ProviderContext used to wait.
+// Persist and restore all fields together using the strict lowerCamel JSON
+// form; incomplete submissions and alternate capitalization are rejected. A
+// zero ProviderID is filled from the ProviderContext used to wait.
 type CreateDataSetSubmission struct {
-	ProviderID    types.BigInt
-	TransactionID string
-	StatusURL     string
+	ProviderID    types.BigInt `json:"providerId"`
+	TransactionID string       `json:"transactionId"`
+	StatusURL     string       `json:"statusUrl"`
 	// ClientDataSetID must be non-nil when resuming a submitted create.
-	ClientDataSetID *types.BigInt
+	ClientDataSetID *types.BigInt `json:"clientDataSetId"`
 }
 
 // CreateDataSetResult is returned after standalone dataset creation confirms.
 type CreateDataSetResult struct {
-	TransactionID string
-	DataSet       DataSetRef
+	TransactionID          string     `json:"transactionId"`
+	ConfirmedTransactionID string     `json:"confirmedTransactionId"`
+	DataSet                DataSetRef `json:"dataSet"`
 }
 
 // CopyResult describes one successfully committed copy.
