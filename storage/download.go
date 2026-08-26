@@ -134,6 +134,9 @@ func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	if body == nil {
+		return nil, fmt.Errorf("%s: PDP provider returned nil body", op)
+	}
 	if contentLength >= 0 && uint64(contentLength) > info.RawSize {
 		_ = body.Close()
 		return nil, fmt.Errorf("%s: %w: Content-Length %d > PieceCIDv2 raw size %d", op, ErrMaxBytesExceeded, contentLength, info.RawSize)

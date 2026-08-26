@@ -155,6 +155,31 @@ func TestContextDownload_RejectsOversizedDeclaredLength(t *testing.T) {
 	}
 }
 
+func TestContextDownload_RejectsNilProviderBody(t *testing.T) {
+	data := bytes.Repeat([]byte("nil-body"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			return nil, int64(info.RawSize) + 1, nil
+		},
+	}
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err == nil {
+		t.Fatal("Download returned nil error for nil provider body")
+	}
+	if reader != nil {
+		t.Fatal("Download returned a reader for nil provider body")
+	}
+}
+
 func TestContextDownload_TruncatedStreamStillFailsIntegrityValidation(t *testing.T) {
 	data := bytes.Repeat([]byte("truncated"), 128)
 	info, err := piece.CalculateFromBytes(data)
