@@ -65,10 +65,13 @@ type PDPProviderClient interface {
 	WaitForPieceParked(context.Context, cid.Cid, time.Duration) error
 	WaitForPullComplete(context.Context, pdp.PullRequest, time.Duration, func(*pdp.PullResult)) (*pdp.PullResult, error)
 	AddPieces(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
+	GetAddPiecesStatus(context.Context, string) (*pdp.AddPiecesStatus, error)
 	WaitForPiecesAdded(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	CreateDataSet(context.Context, common.Address, []byte) (*pdp.CreateDataSetResult, error)
+	GetDataSetCreationStatus(context.Context, string) (*pdp.CreateDataSetStatus, error)
 	WaitForDataSetCreated(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error)
 	CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
+	GetCreateDataSetAndAddPiecesStatus(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error)
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error)
 }
@@ -365,112 +368,112 @@ func detectSize(r io.Reader, pc cid.Cid) int64 {
 
 // PresignForCommit signs a create-and-add payload for a new data set.
 func (c *ProviderContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
-	return c.core.presignForCommit(ctx, "storage.ProviderContext.PresignForCommit", nil, pieces)
+	extraData, _, err := c.core.presignForCommit(ctx, "storage.ProviderContext.PresignForCommit", nil, pieces)
+	return extraData, err
 }
 
 // PresignForCommit signs an add-pieces payload for the bound data set.
 func (c *DataSetContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
-	return c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces)
+	extraData, _, err := c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces)
+	return extraData, err
 }
 
-func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *DataSetRef, pieces []PieceInput) ([]byte, error) {
-	if len(pieces) == 0 {
-		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
-	}
-	if err := validateAddPiecesBatch(op, len(pieces)); err != nil {
-		return nil, err
+func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *DataSetRef, pieces []PieceInput) ([]byte, *types.BigInt, error) {
+	pieceCIDs, err := validateCommitPieces(op, pieces)
+	if err != nil {
+		return nil, nil, err
 	}
 	if c.signer == nil {
-		return nil, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
+		return nil, nil, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
 	if !c.chainID.IsValid() {
-		return nil, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
+		return nil, nil, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
 	if c.recordKeeper == (common.Address{}) {
-		return nil, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
+		return nil, nil, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
 	if c.payer == (common.Address{}) {
-		return nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
+		return nil, nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
 	}
 
-	pieceCIDs := make([]cid.Cid, 0, len(pieces))
 	pieceMetadata := make([][]ityped.MetadataEntry, 0, len(pieces))
 	for _, p := range pieces {
-		if !p.PieceCID.Defined() {
-			return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
-		}
-		pieceCIDs = append(pieceCIDs, p.PieceCID)
 		meta, err := pieceMetadataEntries(p.PieceMetadata)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: %w", op, err)
 		}
 		pieceMetadata = append(pieceMetadata, meta)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	domain := ityped.NewDomain(c.chainID.BigInt(), c.recordKeeper)
 
 	if ref != nil {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: %w", op, err)
 		}
 		nonce, err := randomUint256()
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: %w", op, err)
 		}
 		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			if errors.Is(err, signer.ErrUnsupportedSigner) {
-				return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
+				return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 			}
-			return nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 		}
-		return encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
+		extraData, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
+		return extraData, nil, err
 	}
 
 	clientDataSetID, err := randomClientDataSetID()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	dataSetMetadata, err := dataSetMetadataEntries(c.dataSetMetadata, c.withCDN)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), c.provider.Payee, dataSetMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 		}
-		return nil, fmt.Errorf("%s: sign create dataset: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
 	nonce, err := randomUint256()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
+			return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
 		}
-		return nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
+		return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 	}
 	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	addPayload, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(addSig))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return encodeCreateAndAddExtraData(createPayload, addPayload)
+	extraData, err := encodeCreateAndAddExtraData(createPayload, addPayload)
+	if err != nil {
+		return nil, nil, err
+	}
+	return extraData, copyBigIntPtr(&clientDataSetID), nil
 }
 
 // Pull asks this provider to fetch pieces for a new data set.
@@ -550,91 +553,20 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 
 // Commit creates a data set, adds pieces, and waits for confirmation.
 func (c *ProviderContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
-	return c.core.commit(ctx, "storage.ProviderContext.Commit", nil, req)
+	submission, err := c.SubmitCommit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.WaitForCommit(ctx, *submission)
 }
 
 // Commit adds pieces to the bound data set and waits for confirmation.
 func (c *DataSetContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
-	return c.core.commit(ctx, "storage.DataSetContext.Commit", &c.ref, req)
-}
-
-func (c *contextCore) commit(ctx context.Context, op string, ref *DataSetRef, req CommitRequest) (*CommitResult, error) {
-	if len(req.Pieces) == 0 {
-		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
-	}
-	if err := validateAddPiecesBatch(op, len(req.Pieces)); err != nil {
+	submission, err := c.SubmitCommit(ctx, req)
+	if err != nil {
 		return nil, err
 	}
-	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
-		return nil, err
-	}
-
-	extraData := append([]byte(nil), req.ExtraData...)
-	var err error
-	if len(extraData) == 0 {
-		extraData, err = c.presignForCommit(ctx, op, ref, req.Pieces)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	pieces := make([]pdp.AddPieceInput, 0, len(req.Pieces))
-	for _, p := range req.Pieces {
-		pieces = append(pieces, pdp.AddPieceInput{PieceCID: p.PieceCID})
-	}
-
-	if ref != nil {
-		added, err := c.client.AddPieces(ctx, ref.dataSetID, pieces, extraData)
-		if err != nil {
-			return nil, fmt.Errorf("%s: add pieces: %w", op, err)
-		}
-		if req.OnSubmitted != nil {
-			req.OnSubmitted(added.TxHash.Hex())
-		}
-		status, err := c.client.WaitForPiecesAdded(ctx, added.StatusURL, 0)
-		if err != nil {
-			return nil, fmt.Errorf("%s: wait add pieces: %w", op, err)
-		}
-		if status.DataSetID.IsZero() {
-			return nil, errors.New(op + ": server returned zero dataSetID")
-		}
-		if !status.DataSetID.Equal(ref.dataSetID) {
-			return nil, fmt.Errorf("%s: server returned mismatched dataSetID: got %s want %s", op, status.DataSetID.String(), ref.dataSetID.String())
-		}
-		if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
-		}
-		return &CommitResult{
-			TransactionID: status.TxHash.Hex(),
-			DataSetID:     status.DataSetID,
-			PieceIDs:      append([]types.BigInt(nil), status.ConfirmedPieceIDs...),
-			IsNewDataSet:  false,
-		}, nil
-	}
-
-	created, err := c.client.CreateDataSetAndAddPieces(ctx, c.recordKeeper, pieces, extraData)
-	if err != nil {
-		return nil, fmt.Errorf("%s: create and add pieces: %w", op, err)
-	}
-	if req.OnSubmitted != nil {
-		req.OnSubmitted(created.TxHash.Hex())
-	}
-	status, err := c.client.WaitForCreateDataSetAndAddPieces(ctx, created.StatusURL, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%s: wait create and add pieces: %w", op, err)
-	}
-	if status.DataSetID.IsZero() {
-		return nil, errors.New(op + ": server returned zero dataSetID")
-	}
-	if err := validateConfirmedPieceIDs(status.ConfirmedPieceIDs, len(req.Pieces)); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	return &CommitResult{
-		TransactionID: status.TxHash.Hex(),
-		DataSetID:     status.DataSetID,
-		PieceIDs:      append([]types.BigInt(nil), status.ConfirmedPieceIDs...),
-		IsNewDataSet:  true,
-	}, nil
+	return c.WaitForCommit(ctx, *submission)
 }
 
 func (c *contextCore) validateWritableDataSet(ctx context.Context, op string, ref *DataSetRef) error {

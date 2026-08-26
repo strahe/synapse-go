@@ -625,13 +625,17 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 			})
 			continue
 		}
-		if outcome.result == nil || outcome.result.DataSetID.IsZero() {
+		if outcome.result == nil ||
+			!outcome.result.DataSet.valid() ||
+			!outcome.result.DataSet.ProviderID().Equal(target.ctx.ProviderID()) {
 			var err error
 			switch {
 			case outcome.result == nil:
 				err = errors.New("commit result missing confirmed identifiers: nil result")
-			case outcome.result.DataSetID.IsZero():
+			case !outcome.result.DataSet.valid():
 				err = errors.New("commit result missing confirmed identifiers: zero dataSetID")
+			default:
+				err = errors.New("commit result data-set provider does not match target context")
 			}
 			if target.role == CopyRolePrimary {
 				primaryCommitErr = err
@@ -664,11 +668,11 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 			for j, id := range outcome.result.PieceIDs {
 				confirmed[j] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
 			}
-			opts.OnPiecesConfirmed(outcome.result.DataSetID, target.ctx.ProviderID(), confirmed)
+			opts.OnPiecesConfirmed(outcome.result.DataSet.DataSetID(), target.ctx.ProviderID(), confirmed)
 		}
 		copies = append(copies, CopyResult{
 			ProviderID:   target.ctx.ProviderID(),
-			DataSetID:    outcome.result.DataSetID,
+			DataSetID:    outcome.result.DataSet.DataSetID(),
 			PieceID:      outcome.result.PieceIDs[0],
 			Role:         target.role,
 			RetrievalURL: target.ctx.PieceURL(storeResult.PieceCID),

@@ -248,7 +248,7 @@ func TestManagerUpload_CallbackPanicsAreRecoveredAndWarnOnce(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xprimary",
-				DataSetID:     types.NewBigInt(1001),
+				DataSet:       testCommitDataSetRef(101, 1001),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
 				IsNewDataSet:  true,
 			}, nil
@@ -287,7 +287,7 @@ func TestManagerUpload_CallbackPanicsAreRecoveredAndWarnOnce(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xreplacement",
-				DataSetID:     types.NewBigInt(1002),
+				DataSet:       testCommitDataSetRef(303, 1002),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
 				IsNewDataSet:  true,
 			}, nil
@@ -643,7 +643,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xprimary",
-				DataSetID:     types.NewBigInt(1001),
+				DataSet:       testCommitDataSetRef(101, 1001),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2001)},
 				IsNewDataSet:  true,
 			}, nil
@@ -683,7 +683,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 			}
 			return &CommitResult{
 				TransactionID: "0xreplacement",
-				DataSetID:     types.NewBigInt(1002),
+				DataSet:       testCommitDataSetRef(303, 1002),
 				PieceIDs:      []types.BigInt{types.NewBigInt(2002)},
 			}, nil
 		},
@@ -838,7 +838,7 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xprimary",
-				DataSetID:     types.NewBigInt(1001),
+				DataSet:       testCommitDataSetRef(101, 1001),
 				PieceIDs:      []types.BigInt{types.NewBigInt(0)},
 				IsNewDataSet:  true,
 			}, nil

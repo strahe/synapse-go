@@ -293,8 +293,8 @@ func TestWaitForCreateDataSetAndAddPieces_MissingDataSetID(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true}`, txHash)
 	}))
 	_, err := c.WaitForCreateDataSetAndAddPieces(context.Background(), c.BaseURL().String()+"status", 5*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "missing dataSetId") {
-		t.Errorf("want missing dataSetId error, got %v", err)
+	if !errors.Is(err, ErrInvalidStatus) {
+		t.Errorf("want ErrInvalidStatus, got %v", err)
 	}
 }
 
@@ -304,8 +304,8 @@ func TestWaitForCreateDataSetAndAddPieces_ZeroCreateMessageHash(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000000","service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":42}`)
 	}))
 	_, err := c.WaitForCreateDataSetAndAddPieces(context.Background(), c.BaseURL().String()+"status", 5*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "zero CreateMessageHash") {
-		t.Errorf("want zero CreateMessageHash error, got %v", err)
+	if !errors.Is(err, ErrInvalidStatus) {
+		t.Errorf("want ErrInvalidStatus, got %v", err)
 	}
 }
 
@@ -396,7 +396,7 @@ func TestWaitForPieceParked_TransportError(t *testing.T) {
 func TestWaitForPiecesAdded_Rejected(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"rejected","dataSetId":5,"pieceCount":1,"addMessageOk":false,"piecesAdded":false}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"rejected","dataSetId":5,"pieceCount":1,"addMessageOk":false,"piecesAdded":false}`)
 	}))
 	_, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", 10*time.Millisecond)
 	if !errors.Is(err, ErrTxRejected) {
@@ -407,7 +407,7 @@ func TestWaitForPiecesAdded_Rejected(t *testing.T) {
 func TestWaitForPiecesAdded_ContextCancelled(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"pending","dataSetId":5,"pieceCount":0,"piecesAdded":false}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"pending","dataSetId":5,"pieceCount":0,"piecesAdded":false}`)
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -476,7 +476,7 @@ func TestGetAddPiecesStatus_BadJSON(t *testing.T) {
 func TestGetAddPiecesStatus_BadDataSetID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"confirmed","dataSetId":1.5,"pieceCount":1,"piecesAdded":true}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":1.5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`)
 	}))
 	_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
 	if err == nil || !strings.Contains(err.Error(), "bad dataSetId") {
@@ -487,7 +487,7 @@ func TestGetAddPiecesStatus_BadDataSetID(t *testing.T) {
 func TestGetAddPiecesStatus_BadConfirmedPieceID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"piecesAdded":true,"confirmedPieceIds":[1.5]}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[1.5]}`)
 	}))
 	_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
 	if err == nil || !strings.Contains(err.Error(), "bad confirmedPieceId") {
@@ -521,7 +521,7 @@ func TestGetDataSetCreationStatus_BadJSON(t *testing.T) {
 func TestGetDataSetCreationStatus_BadDataSetID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x1","service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":1.5}`)
+		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":1.5}`)
 	}))
 	_, err := c.GetDataSetCreationStatus(context.Background(), c.BaseURL().String()+"status")
 	if err == nil || !strings.Contains(err.Error(), "bad dataSetId") {
@@ -534,7 +534,7 @@ func TestGetDataSetCreationStatus_BadDataSetID(t *testing.T) {
 func TestWaitForDataSetCreated_ContextCancelled(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x1","service":"svc","txStatus":"pending","dataSetCreated":false}`)
+		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"pending","dataSetCreated":false}`)
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -917,7 +917,7 @@ func TestAddPieces_LocationWithout0xPrefix(t *testing.T) {
 func TestWaitForPiecesAdded_ZeroPollIntervalUsesDefault(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10]}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10]}`)
 	}))
 	status, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", 0)
 	if err != nil {
@@ -933,7 +933,7 @@ func TestWaitForPiecesAdded_ZeroPollIntervalUsesDefault(t *testing.T) {
 func TestGetAddPiecesStatus_FullWidthDataSetID(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x1","txStatus":"confirmed","dataSetId":99999999999999999999999999999999,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":99999999999999999999999999999999,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`)
 	}))
 	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
 	if err != nil {

@@ -93,15 +93,19 @@ func TestDataSetRefJSONRoundTripAndStrictValidation(t *testing.T) {
 	if !decoded.Equal(ref) {
 		t.Fatalf("decoded=%+v want %+v", decoded, ref)
 	}
+	if string(encoded) != `{"providerId":"7","dataSetId":"11","clientDataSetId":"0"}` {
+		t.Fatalf("JSON=%s", encoded)
+	}
 
 	for name, tc := range map[string]struct {
 		input       string
 		wantInvalid bool
 	}{
-		"missing client ID": {input: `{"ProviderID":"7","DataSetID":"11"}`, wantInvalid: true},
-		"null client ID":    {input: `{"ProviderID":"7","DataSetID":"11","ClientDataSetID":null}`, wantInvalid: true},
-		"unknown field":     {input: `{"ProviderID":"7","DataSetID":"11","ClientDataSetID":"0","Other":1}`, wantInvalid: true},
-		"trailing value":    {input: `{"ProviderID":"7","DataSetID":"11","ClientDataSetID":"0"} {}`},
+		"missing client ID": {input: `{"providerId":"7","dataSetId":"11"}`, wantInvalid: true},
+		"null client ID":    {input: `{"providerId":"7","dataSetId":"11","clientDataSetId":null}`, wantInvalid: true},
+		"unknown field":     {input: `{"providerId":"7","dataSetId":"11","clientDataSetId":"0","other":1}`, wantInvalid: true},
+		"PascalCase":        {input: `{"ProviderID":"7","DataSetID":"11","ClientDataSetID":"0"}`, wantInvalid: true},
+		"trailing value":    {input: `{"providerId":"7","dataSetId":"11","clientDataSetId":"0"} {}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := decoded

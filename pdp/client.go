@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -148,6 +149,7 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		err = redactRequestError(err)
 		return nil, nil, fmt.Errorf("pdp: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -170,10 +172,8 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 		}
 		return resp, body, nil
 	}
-	for _, s := range expectStatuses {
-		if resp.StatusCode == s {
-			return resp, body, nil
-		}
+	if slices.Contains(expectStatuses, resp.StatusCode) {
+		return resp, body, nil
 	}
 	return resp, body, newHTTPError(req, resp, body)
 }
@@ -181,7 +181,7 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 // isRetryable reports whether the error warrants a retry attempt.
 //
 // Non-retryable (permanent):
-//   - context.Canceled / context.DeadlineExceeded
+//   - caller context cancellation or deadline
 //   - HTTP 4xx except 429
 //   - HTTP 501 Not Implemented
 //   - TLS alert errors (bad cert, expired cert, protocol violations)
@@ -196,11 +196,11 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 // Unknown error types are NOT retried. Older releases retried optimistically,
 // but that masked permanent misconfigurations (bad URL, invalid signer).
 // Callers that need broader retries should do so at the business layer.
-func isRetryable(err error) bool {
+func isRetryable(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
@@ -213,6 +213,14 @@ func isRetryable(err error) bool {
 	// mismatch. Check before url.Error since these wrap tls.AlertError inside
 	// net.OpError inside url.Error.
 	if _, ok := errors.AsType[tls.AlertError](err); ok {
+		return false
+	}
+	// http.Client and transport timeouts surface as url.Error. The caller's
+	// context was checked above, so these are safe to retry for idempotent calls.
+	if urlErr, ok := errors.AsType[*url.Error](err); ok && urlErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	// Connection-level failures are transient.
@@ -239,12 +247,18 @@ func isRetryable(err error) bool {
 	if dnsErr, ok := errors.AsType[*net.DNSError](err); ok {
 		return dnsErr.IsTemporary || dnsErr.IsTimeout
 	}
-	// url.Error surfaces timeouts (request timeout, idle timeout).
-	if urlErr, ok := errors.AsType[*url.Error](err); ok {
-		return urlErr.Timeout()
-	}
 	// Unknown error type: do not retry. Safer than optimistic retry.
 	return false
+}
+
+func redactRequestError(err error) error {
+	urlErr, ok := errors.AsType[*url.Error](err)
+	if !ok {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = redactURLString(urlErr.URL)
+	return &redacted
 }
 
 // httpRetryDelay returns the delay to wait before the next retry attempt.
@@ -263,10 +277,7 @@ func httpRetryDelay(err error, attempt int) time.Duration {
 	if attempt > maxShift {
 		attempt = maxShift
 	}
-	d := time.Duration(1<<uint(attempt)) * time.Second
-	if d > maxRetryDelay {
-		d = maxRetryDelay
-	}
+	d := min(time.Duration(1<<uint(attempt))*time.Second, maxRetryDelay)
 	return d
 }
 
@@ -280,10 +291,11 @@ func httpRetryDelay(err error, attempt int) time.Duration {
 // mutate server state must not be retried here — see postJSON/deleteJSON.
 // Long-running and streaming calls should use c.do directly.
 func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request, error), expectStatuses ...int) (*http.Response, []byte, error) {
-	maxRetries := c.maxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
+	return c.doRetryableWithClient(ctx, c.httpClient, makeReq, expectStatuses...)
+}
+
+func (c *Client) doRetryableWithClient(ctx context.Context, client *http.Client, makeReq func() (*http.Request, error), expectStatuses ...int) (*http.Response, []byte, error) {
+	maxRetries := max(c.maxRetries, 0)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -292,11 +304,11 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 		if err != nil {
 			return nil, nil, err
 		}
-		resp, body, err := c.do(req, expectStatuses...)
+		resp, body, err := c.doWithClient(client, req, expectStatuses...)
 		if err == nil {
 			return resp, body, nil
 		}
-		if !isRetryable(err) || attempt == maxRetries {
+		if !isRetryable(ctx, err) || attempt == maxRetries {
 			return resp, body, err
 		}
 		if c.logger != nil {
