@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -89,13 +90,17 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 }
 
 // Download retrieves a piece from CDN when enabled and available, otherwise
-// from the storage provider.
+// from the storage provider. It returns [ErrMaxBytesExceeded], either
+// immediately or from the reader, if the response exceeds the raw payload size
+// encoded in pieceCID.
 func (c *ProviderContext) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	return c.core.download(ctx, "storage.ProviderContext.Download", pieceCID)
 }
 
 // Download retrieves a piece from CDN when enabled and available, otherwise
-// from the storage provider.
+// from the storage provider. It returns [ErrMaxBytesExceeded], either
+// immediately or from the reader, if the response exceeds the raw payload size
+// encoded in pieceCID.
 func (c *DataSetContext) Download(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	return c.core.download(ctx, "storage.DataSetContext.Download", pieceCID)
 }
@@ -109,13 +114,14 @@ func (c *DataSetContext) Download(ctx context.Context, pieceCID cid.Cid) (io.Rea
 // because PDP provider only accepts v2 and the raw size needed to normalise v1→v2 is
 // not available here.  Use Service.Download with a URL if you only have v1.
 func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid) (io.ReadCloser, error) {
-	if _, err := piece.ParseV2(pieceCID); err != nil {
+	info, err := piece.ParseV2(pieceCID)
+	if err != nil {
 		return nil, fmt.Errorf("%s: PieceCIDv2 required: %w", op, err)
 	}
 	if c.withCDN && c.cdnRetriever != nil {
 		body, err := c.cdnRetriever.DownloadPiece(ctx, pieceCID)
 		if err == nil && body != nil {
-			return newValidatingReadCloser(body, pieceCID, 0), nil
+			return newValidatingReadCloser(body, pieceCID, info.RawSize), nil
 		}
 		if err == nil {
 			err = errors.New("CDN retriever returned nil body")
@@ -124,11 +130,18 @@ func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid)
 			return nil, fmt.Errorf("%s: CDN: %w", op, err)
 		}
 	}
-	body, _, err := c.client.DownloadPiece(ctx, pieceCID)
+	body, contentLength, err := c.client.DownloadPiece(ctx, pieceCID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	return newValidatingReadCloser(body, pieceCID, 0), nil
+	if body == nil {
+		return nil, fmt.Errorf("%s: PDP provider returned nil body", op)
+	}
+	if contentLength >= 0 && uint64(contentLength) > info.RawSize {
+		_ = body.Close()
+		return nil, fmt.Errorf("%s: %w: Content-Length %d > PieceCIDv2 raw size %d", op, ErrMaxBytesExceeded, contentLength, info.RawSize)
+	}
+	return newValidatingReadCloser(body, pieceCID, info.RawSize), nil
 }
 
 func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
@@ -157,7 +170,11 @@ func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceC
 		_ = resp.Body.Close()
 		return nil, &DownloadError{URL: rawURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, s.downloadMaxBytes)}
 	}
-	return newValidatingReadCloser(resp.Body, pieceCID, s.downloadMaxBytes), nil
+	maxBytes := uint64(0)
+	if s.downloadMaxBytes > 0 {
+		maxBytes = uint64(s.downloadMaxBytes)
+	}
+	return newValidatingReadCloser(resp.Body, pieceCID, maxBytes), nil
 }
 
 type validatingReadCloser struct {
@@ -165,13 +182,13 @@ type validatingReadCloser struct {
 	reader   io.ReadCloser
 	hasher   *commpwriter.Writer
 	expected cid.Cid
-	maxBytes int64
-	read     int64
+	maxBytes uint64
+	read     uint64
 	finished bool
 	finalErr error
 }
 
-func newValidatingReadCloser(reader io.ReadCloser, expected cid.Cid, maxBytes int64) io.ReadCloser {
+func newValidatingReadCloser(reader io.ReadCloser, expected cid.Cid, maxBytes uint64) io.ReadCloser {
 	return &validatingReadCloser{
 		reader:   reader,
 		hasher:   &commpwriter.Writer{},
@@ -187,36 +204,54 @@ func (r *validatingReadCloser) Read(p []byte) (int, error) {
 		r.mu.Unlock()
 		return 0, err
 	}
+	readBuffer := p
+	if r.maxBytes > 0 {
+		remaining := r.maxBytes - r.read
+		if uint64(len(readBuffer)) > remaining {
+			// Probe only the first byte beyond the cap. Because remaining is
+			// smaller than len(readBuffer), this conversion cannot overflow.
+			readBuffer = readBuffer[:int(remaining)+1]
+		}
+	}
 	r.mu.Unlock()
-	n, err := r.reader.Read(p)
+	n, err := r.reader.Read(readBuffer)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.finished {
 		if n > 0 {
+			if r.maxBytes > 0 && uint64(n) > r.maxBytes-r.read {
+				n = int(r.maxBytes - r.read)
+			}
 			return n, r.finalErr
 		}
 		return 0, r.finalErr
 	}
 	if n > 0 {
-		r.read += int64(n)
-		if r.maxBytes > 0 && r.read > r.maxBytes {
+		if r.maxBytes > 0 && uint64(n) > r.maxBytes-r.read {
 			// Trim written bytes so the hasher and the caller never see
 			// the overflow: the hasher must be consistent with what the
 			// caller observes, and the caller must stop at the cap.
-			over := r.read - r.maxBytes
-			n -= int(over)
-			if n < 0 {
-				n = 0
+			observed := uint64(n)
+			observedOverflow := r.read > math.MaxUint64-observed
+			if !observedOverflow {
+				observed += r.read
 			}
+			n = int(r.maxBytes - r.read)
+			r.read = r.maxBytes
 			r.finished = true
-			r.finalErr = fmt.Errorf("%w: read %d bytes (cap %d)", ErrMaxBytesExceeded, r.read, r.maxBytes)
+			if observedOverflow {
+				r.finalErr = fmt.Errorf("%w: read beyond cap %d", ErrMaxBytesExceeded, r.maxBytes)
+			} else {
+				r.finalErr = fmt.Errorf("%w: read %d bytes (cap %d)", ErrMaxBytesExceeded, observed, r.maxBytes)
+			}
 			if n > 0 {
 				if _, writeErr := r.hasher.Write(p[:n]); writeErr != nil {
-					r.finalErr = writeErr
+					r.finalErr = errors.Join(r.finalErr, writeErr)
 				}
 			}
 			return n, r.finalErr
 		}
+		r.read += uint64(n)
 		if _, writeErr := r.hasher.Write(p[:n]); writeErr != nil {
 			r.finished = true
 			r.finalErr = writeErr

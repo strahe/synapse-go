@@ -102,11 +102,13 @@ The download reader validates the PieceCID at EOF. Always check the final
 `Read` or `io.ReadAll` error.
 
 Use `DownloadOptions{Context: storageCtx}` or `storageCtx.Download` when you
-want to read from a specific provider context. URL downloads reject private
-network addresses by default; enable `WithAllowPrivateNetworks(true)` only for
-trusted infrastructure. The top-level client leaves URL downloads uncapped.
-Standalone `storage.Service` users can set `storage.Options.DownloadMaxBytes`;
-exceeding it returns `storage.ErrMaxBytesExceeded`.
+want to read from a specific provider context. Context downloads stop at the
+raw payload size encoded in PieceCIDv2; a larger response returns
+`storage.ErrMaxBytesExceeded`. URL downloads reject private network addresses
+by default; enable `WithAllowPrivateNetworks(true)` only for trusted
+infrastructure. The top-level client leaves URL downloads uncapped. Standalone
+`storage.Service` users can set `storage.Options.DownloadMaxBytes`; exceeding
+it returns the same error.
 
 ## Upload Controls
 

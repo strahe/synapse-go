@@ -61,6 +61,162 @@ func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
 	}
 }
 
+func TestContextDownload_EnforcesPieceCIDV2RawSize(t *testing.T) {
+	data := bytes.Repeat([]byte("limit"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	overflow := append(bytes.Clone(data), 0xff)
+
+	tests := []struct {
+		name    string
+		withCDN bool
+		chunks  [][]byte
+	}{
+		{name: "provider overflow in same read", chunks: [][]byte{overflow}},
+		{name: "provider overflow in later read", chunks: [][]byte{data, {0xff}}},
+		{name: "CDN overflow in same read", withCDN: true, chunks: [][]byte{overflow}},
+		{name: "CDN overflow in later read", withCDN: true, chunks: [][]byte{data, {0xff}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := io.NopCloser(&scriptedReader{chunks: append([][]byte(nil), tt.chunks...)})
+			fake := &fakePDPProviderClient{
+				downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+					if tt.withCDN {
+						t.Fatal("PDP direct should not be called after CDN success")
+					}
+					return body, -1, nil
+				},
+			}
+			options := []ContextOption(nil)
+			if tt.withCDN {
+				options = append(options,
+					WithCDN(true),
+					WithCDNRetriever(fakeCDNRetriever{
+						downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
+							return body, nil
+						},
+					}),
+				)
+			}
+			ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t), options...)
+			if err != nil {
+				t.Fatalf("NewProviderContext: %v", err)
+			}
+
+			reader, err := ctx.Download(context.Background(), info.CIDv2)
+			if err != nil {
+				t.Fatalf("Download: %v", err)
+			}
+			got, readErr := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if !errors.Is(readErr, ErrMaxBytesExceeded) {
+				t.Fatalf("ReadAll error = %v, want ErrMaxBytesExceeded", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("Close: %v", closeErr)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatalf("downloaded %d bytes, want exactly RawSize %d", len(got), info.RawSize)
+			}
+		})
+	}
+}
+
+func TestContextDownload_RejectsOversizedDeclaredLength(t *testing.T) {
+	data := bytes.Repeat([]byte("length"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	body := &trackingReadCloser{Reader: bytes.NewReader(data)}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			return body, int64(info.RawSize) + 1, nil
+		},
+	}
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if !errors.Is(err, ErrMaxBytesExceeded) {
+		t.Fatalf("Download error = %v, want ErrMaxBytesExceeded", err)
+	}
+	if reader != nil {
+		t.Fatal("Download returned a reader for an oversized declared length")
+	}
+	if !body.closed {
+		t.Fatal("oversized response body was not closed")
+	}
+}
+
+func TestContextDownload_RejectsNilProviderBody(t *testing.T) {
+	data := bytes.Repeat([]byte("nil-body"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			return nil, int64(info.RawSize) + 1, nil
+		},
+	}
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err == nil {
+		t.Fatal("Download returned nil error for nil provider body")
+	}
+	if reader != nil {
+		t.Fatal("Download returned a reader for nil provider body")
+	}
+}
+
+func TestContextDownload_TruncatedStreamStillFailsIntegrityValidation(t *testing.T) {
+	data := bytes.Repeat([]byte("truncated"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	truncated := data[:len(data)-1]
+	fake := &fakePDPProviderClient{
+		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+			return io.NopCloser(bytes.NewReader(truncated)), -1, nil
+		},
+	}
+	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t))
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+
+	reader, err := ctx.Download(context.Background(), info.CIDv2)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
+	}
+	if !bytes.Equal(got, truncated) {
+		t.Fatalf("downloaded %d bytes, want truncated length %d", len(got), len(truncated))
+	}
+	if errors.Is(readErr, ErrMaxBytesExceeded) {
+		t.Fatalf("ReadAll error = %v, must remain an integrity error", readErr)
+	}
+	if _, ok := errors.AsType[*CIDMismatchError](readErr); !ok {
+		t.Fatalf("ReadAll error = %T %v, want *CIDMismatchError", readErr, readErr)
+	}
+}
+
 func TestContextDownload_ValidationFailureSurfacesAtEOF(t *testing.T) {
 	good := bytes.Repeat([]byte("ok"), 128)
 	bad := bytes.Repeat([]byte("no"), 128)
@@ -282,6 +438,32 @@ type fakeCDNRetriever struct {
 
 func (f fakeCDNRetriever) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCloser, error) {
 	return f.downloadPieceFn(ctx, pieceCID)
+}
+
+type scriptedReader struct {
+	chunks [][]byte
+}
+
+func (r *scriptedReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, errors.New("unexpected read beyond scripted overflow")
+	}
+	n := copy(p, r.chunks[0])
+	r.chunks[0] = r.chunks[0][n:]
+	if len(r.chunks[0]) == 0 {
+		r.chunks = r.chunks[1:]
+	}
+	return n, nil
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed = true
+	return nil
 }
 
 func TestManagerDownload_URLValidatesPiece(t *testing.T) {

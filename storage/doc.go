@@ -80,8 +80,10 @@
 // # Downloads
 //
 // Context downloads use the PDP and optional CDN clients attached to that
-// context. URL-based [Service.Download] uses the Service HTTP client. Its
-// default client rejects private and reserved network destinations; configure
+// context. They enforce the exact raw payload size encoded in PieceCIDv2 and
+// return [ErrMaxBytesExceeded] if a response is larger. URL-based
+// [Service.Download] uses the Service HTTP client. Its default client rejects
+// private and reserved network destinations; configure
 // [Options.AllowPrivateNetworks] only for trusted private infrastructure.
 // [Options.DownloadMaxBytes] can cap URL-based downloads.
 //
