@@ -154,7 +154,11 @@ func (m *mockCaller) handleMulticall(data []byte) ([]byte, error) {
 		reply, err := m.handleContractCall(call.CallData)
 		if err != nil {
 			if call.AllowFailure {
-				results[i] = result3{Success: false, ReturnData: []byte(err.Error())}
+				revertData, packErr := packMockRevert(err.Error())
+				if packErr != nil {
+					return nil, packErr
+				}
+				results[i] = result3{Success: false, ReturnData: revertData}
 				continue
 			}
 			return nil, err
@@ -162,6 +166,18 @@ func (m *mockCaller) handleMulticall(data []byte) ([]byte, error) {
 		results[i] = result3{Success: true, ReturnData: reply}
 	}
 	return m.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
+}
+
+func packMockRevert(reason string) ([]byte, error) {
+	stringType, err := abi.NewType("string", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := (abi.Arguments{{Type: stringType}}).Pack(reason)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte{0x08, 0xc3, 0x79, 0xa0}, payload...), nil
 }
 
 func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {

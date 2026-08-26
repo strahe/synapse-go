@@ -61,6 +61,31 @@ func BatchCall(ctx context.Context, caller ContractCaller, calls []Call3) ([]Res
 // maxCalls entries and returns results in input order. It stops at the first
 // context or batch error and does not retry a failed batch.
 func BatchCallChunked(ctx context.Context, caller ContractCaller, calls []Call3, maxCalls int) ([]Result3, error) {
+	return batchCallChunked(ctx, caller, calls, maxCalls, nil)
+}
+
+// BatchCallChunkedUntil is BatchCallChunked with a callback that can stop
+// execution after a completed batch. The returned results include that batch.
+func BatchCallChunkedUntil(
+	ctx context.Context,
+	caller ContractCaller,
+	calls []Call3,
+	maxCalls int,
+	stop func(start int, results []Result3) bool,
+) ([]Result3, error) {
+	if stop == nil {
+		return nil, fmt.Errorf("abi.BatchCallChunkedUntil: nil stop callback")
+	}
+	return batchCallChunked(ctx, caller, calls, maxCalls, stop)
+}
+
+func batchCallChunked(
+	ctx context.Context,
+	caller ContractCaller,
+	calls []Call3,
+	maxCalls int,
+	stop func(start int, results []Result3) bool,
+) ([]Result3, error) {
 	if maxCalls <= 0 {
 		return nil, fmt.Errorf("abi.BatchCallChunked: maxCalls must be > 0")
 	}
@@ -91,6 +116,9 @@ func BatchCallChunked(ctx context.Context, caller ContractCaller, calls []Call3,
 			)
 		}
 		results = append(results, batch...)
+		if stop != nil && stop(start, batch) {
+			return results, nil
+		}
 		start = end
 	}
 	return results, nil

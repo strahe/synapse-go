@@ -15,6 +15,7 @@ import (
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -72,8 +73,15 @@ func TestGetClientDataSetsWithDetails_PropagatesEnrichmentFailure(t *testing.T) 
 	if err == nil {
 		t.Fatalf("GetClientDataSetsWithDetails err=nil, got=%+v want enrichment failure", got)
 	}
-	if !strings.Contains(err.Error(), "dataSetLive") {
-		t.Fatalf("GetClientDataSetsWithDetails err=%v, want dataSetLive context", err)
+	if !strings.Contains(err.Error(), "dataSetLive") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("GetClientDataSetsWithDetails err=%v, want dataSetLive context and revert reason", err)
+	}
+}
+
+func TestUnpackDataSetDetailsResult_PreservesUnknownFailureData(t *testing.T) {
+	_, err := unpackDataSetDetailsResult(iabi.Result3{Success: false, ReturnData: []byte{0xde, 0xad}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "0xdead") {
+		t.Fatalf("error = %v, want raw return data", err)
 	}
 }
 
@@ -297,6 +305,52 @@ func TestGetClientDataSetsWithDetails_UsesDataSetErrorOrder(t *testing.T) {
 	_, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
 	if err == nil || !strings.Contains(err.Error(), "getActivePieceCount dataSetID 1") {
 		t.Fatalf("error = %v, want data set 1 active-count failure", err)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_StopsAtResolvedErrorFrontier(t *testing.T) {
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:            mc,
+		FWSS:              common.HexToAddress("0x1111111111111111111111111111111111111111"),
+		ViewContract:      common.HexToAddress("0x2222222222222222222222222222222222222222"),
+		PDPVerifier:       common.HexToAddress("0x3333333333333333333333333333333333333333"),
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+		dataSetInfoView(2),
+	})
+	mc.handlers["getDataSetListener"] = func(data []byte) ([]byte, error) {
+		args, err := mc.pdpABI.Methods["getDataSetListener"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		if args[0].(*big.Int).Cmp(big.NewInt(1)) == 0 {
+			return nil, errors.New("listener failed")
+		}
+		return mc.pdpABI.Methods["getDataSetListener"].Outputs.Pack(s.fwssAddr)
+	}
+	batchCalls := 0
+	mc.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		if batchCalls > 1 {
+			return nil, errors.New("later transport failure")
+		}
+		return mc.handleMulticall(data)
+	}
+
+	_, err = s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err == nil || !strings.Contains(err.Error(), "getDataSetListener dataSetID 1") ||
+		!strings.Contains(err.Error(), "listener failed") {
+		t.Fatalf("error = %v, want first listener revert", err)
+	}
+	if batchCalls != 1 {
+		t.Fatalf("multicall count = %d, want 1", batchCalls)
 	}
 }
 

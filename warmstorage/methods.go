@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math/big"
 
+	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
@@ -267,6 +269,27 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 	}
 
 	states := make([]dataSetDetailsState, len(infos))
+	frontier := 0
+	runBatches := func(stage string, calls []iabi.Call3, handle func(int, iabi.Result3)) error {
+		var resolvedErr error
+		_, err := iabi.BatchCallChunkedUntil(
+			ctx,
+			s.caller,
+			calls,
+			s.maxMulticallCalls,
+			func(start int, results []iabi.Result3) bool {
+				for i, result := range results {
+					handle(start+i, result)
+				}
+				resolvedErr = dataSetDetailsFrontierError(states, onlyManaged, &frontier)
+				return resolvedErr != nil
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: %s batch: %w", stage, err)
+		}
+		return resolvedErr
+	}
 	listenerCalls := make([]iabi.Call3, len(infos))
 	for i, info := range infos {
 		states[i] = dataSetDetailsState{info: info}
@@ -276,16 +299,13 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 		}
 		listenerCalls[i] = iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: callData}
 	}
-	listenerResults, err := iabi.BatchCallChunked(ctx, s.caller, listenerCalls, s.maxMulticallCalls)
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: getDataSetListener batch: %w", err)
-	}
 	listenerMethod := pdpABI.Methods["getDataSetListener"]
-	for i, result := range listenerResults {
+	err = runBatches("getDataSetListener", listenerCalls, func(i int, result iabi.Result3) {
+		states[i].done[detailsListener] = true
 		values, err := unpackDataSetDetailsResult(result, listenerMethod.Outputs.Unpack)
 		if err != nil {
 			states[i].errs[detailsListener] = dataSetDetailsError("getDataSetListener", infos[i].DataSetID, err)
-			continue
+			return
 		}
 		listener, ok := values[0].(common.Address)
 		if !ok {
@@ -294,9 +314,12 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 				infos[i].DataSetID,
 				fmt.Errorf("unexpected output type %T", values[0]),
 			)
-			continue
+			return
 		}
 		states[i].isManaged = listener == s.fwssAddr
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	var detailCalls []iabi.Call3
@@ -323,21 +346,18 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			dataSetDetailsCallRef{state: i, operation: detailsMetadata},
 		)
 	}
-	detailResults, err := iabi.BatchCallChunked(ctx, s.caller, detailCalls, s.maxMulticallCalls)
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: live/metadata batch: %w", err)
-	}
 	liveMethod := pdpABI.Methods["dataSetLive"]
 	metadataMethod := viewABI.Methods["getAllDataSetMetadata"]
-	for i, result := range detailResults {
+	err = runBatches("live/metadata", detailCalls, func(i int, result iabi.Result3) {
 		ref := detailRefs[i]
 		state := &states[ref.state]
+		state.done[ref.operation] = true
 		switch ref.operation {
 		case detailsLive:
 			values, err := unpackDataSetDetailsResult(result, liveMethod.Outputs.Unpack)
 			if err != nil {
 				state.errs[detailsLive] = dataSetDetailsError("dataSetLive", state.info.DataSetID, err)
-				continue
+				return
 			}
 			live, ok := values[0].(bool)
 			if !ok {
@@ -346,7 +366,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 					state.info.DataSetID,
 					fmt.Errorf("unexpected output type %T", values[0]),
 				)
-				continue
+				return
 			}
 			state.isLive = live
 			if !live {
@@ -356,7 +376,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			values, err := unpackDataSetDetailsResult(result, metadataMethod.Outputs.Unpack)
 			if err != nil {
 				state.errs[detailsMetadata] = dataSetDetailsError("getAllDataSetMetadata", state.info.DataSetID, err)
-				continue
+				return
 			}
 			keys, keysOK := values[0].([]string)
 			metadataValues, valuesOK := values[1].([]string)
@@ -366,13 +386,16 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 					state.info.DataSetID,
 					fmt.Errorf("unexpected output types %T and %T", values[0], values[1]),
 				)
-				continue
+				return
 			}
 			state.metadata, err = dataSetMetadataMap(keys, metadataValues)
 			if err != nil {
 				state.errs[detailsMetadata] = dataSetDetailsError("getAllDataSetMetadata", state.info.DataSetID, err)
 			}
 		}
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	var activeCalls []iabi.Call3
@@ -390,17 +413,14 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 		activeCalls = append(activeCalls, iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: callData})
 		activeStates = append(activeStates, i)
 	}
-	activeResults, err := iabi.BatchCallChunked(ctx, s.caller, activeCalls, s.maxMulticallCalls)
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: getActivePieceCount batch: %w", err)
-	}
 	activeMethod := pdpABI.Methods["getActivePieceCount"]
-	for i, result := range activeResults {
+	err = runBatches("getActivePieceCount", activeCalls, func(i int, result iabi.Result3) {
 		state := &states[activeStates[i]]
+		state.done[detailsActivePieceCount] = true
 		values, err := unpackDataSetDetailsResult(result, activeMethod.Outputs.Unpack)
 		if err != nil {
 			state.errs[detailsActivePieceCount] = dataSetDetailsError("getActivePieceCount", state.info.DataSetID, err)
-			continue
+			return
 		}
 		count, ok := values[0].(*big.Int)
 		if !ok {
@@ -409,9 +429,12 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 				state.info.DataSetID,
 				fmt.Errorf("unexpected output type %T", values[0]),
 			)
-			continue
+			return
 		}
 		state.activePieceCount = count
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	out := make([]*EnhancedDataSetInfo, 0, len(states))
@@ -453,6 +476,7 @@ type dataSetDetailsState struct {
 	isManaged        bool
 	activePieceCount *big.Int
 	metadata         map[string]string
+	done             [detailsOperationCount]bool
 	errs             [detailsOperationCount]error
 }
 
@@ -461,8 +485,48 @@ type dataSetDetailsCallRef struct {
 	operation int
 }
 
+func dataSetDetailsFrontierError(states []dataSetDetailsState, onlyManaged bool, frontier *int) error {
+	for *frontier < len(states) {
+		state := &states[*frontier]
+		if !state.done[detailsListener] {
+			return nil
+		}
+		if state.errs[detailsListener] != nil {
+			return state.errs[detailsListener]
+		}
+		if onlyManaged && !state.isManaged {
+			(*frontier)++
+			continue
+		}
+		for operation := detailsLive; operation <= detailsMetadata; operation++ {
+			if !state.done[operation] {
+				return nil
+			}
+			if state.errs[operation] != nil {
+				return state.errs[operation]
+			}
+		}
+		if state.isLive {
+			if !state.done[detailsActivePieceCount] {
+				return nil
+			}
+			if state.errs[detailsActivePieceCount] != nil {
+				return state.errs[detailsActivePieceCount]
+			}
+		}
+		(*frontier)++
+	}
+	return nil
+}
+
 func unpackDataSetDetailsResult(result iabi.Result3, unpack func([]byte) ([]any, error)) ([]any, error) {
 	if !result.Success {
+		if reason, err := gethabi.UnpackRevert(result.ReturnData); err == nil {
+			return nil, fmt.Errorf("sub-call reverted: %s", reason)
+		}
+		if len(result.ReturnData) > 0 {
+			return nil, fmt.Errorf("sub-call failed: return data %s", hexutil.Encode(result.ReturnData))
+		}
 		return nil, errors.New("sub-call failed")
 	}
 	if len(result.ReturnData) == 0 {
