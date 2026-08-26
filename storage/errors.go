@@ -69,10 +69,11 @@ var ErrPrivateNetwork = errors.New("storage: private / local network address dis
 // uses a scheme other than http or https.
 var ErrUnsupportedScheme = errors.New("storage: unsupported URL scheme")
 
-// ErrMaxBytesExceeded is returned by Service.Download when the response body
-// exceeds Options.DownloadMaxBytes. The error is surfaced either eagerly
-// (via Content-Length when supplied by the server) or via the terminal Read
-// on the returned reader.
+// ErrMaxBytesExceeded is returned when a download exceeds its byte limit.
+// Context downloads use the raw payload size encoded in PieceCIDv2; URL-based
+// Service.Download calls use a non-zero Options.DownloadMaxBytes. The error is
+// surfaced either eagerly when a trustworthy Content-Length is too large or
+// via the terminal Read on the returned reader.
 var ErrMaxBytesExceeded = errors.New("storage: download exceeded MaxBytes")
 
 // DataSetPDPPaymentTerminatedError is returned when an existing data set's
