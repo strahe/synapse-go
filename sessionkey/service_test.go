@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +42,8 @@ type mockBackend struct {
 	// multicallErr, if set, makes the aggregate3 call fail entirely.
 	multicallErr error
 	// multicallFn, if set, overrides the default multicall handling.
-	multicallFn func(data []byte) ([]byte, error)
+	multicallFn    func(data []byte) ([]byte, error)
+	multicallSizes []int
 
 	sent      []*types.Transaction
 	receipts  map[common.Hash]*types.Receipt
@@ -131,6 +133,7 @@ func (m *mockBackend) handleMulticall(data []byte) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("mock: unexpected aggregate3 input type")
 	}
+	m.multicallSizes = append(m.multicallSizes, len(rawCalls))
 
 	type result3 struct {
 		Success    bool
@@ -303,6 +306,7 @@ func TestNew_ValidatesRequired(t *testing.T) {
 		{"zero chainID", Options{Backend: newMockBackend(t), RegistryAddress: testRegistryAddr}},
 		{"negative chainID", Options{Backend: newMockBackend(t), ChainID: sdktypes.ChainID(-1), RegistryAddress: testRegistryAddr}},
 		{"zero registry", Options{Backend: newMockBackend(t), ChainID: testChainID}},
+		{"negative max multicall calls", Options{Backend: newMockBackend(t), ChainID: testChainID, RegistryAddress: testRegistryAddr, MaxMulticallCalls: -1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,6 +330,25 @@ func TestNew_ReadOnly(t *testing.T) {
 	}
 	if svc.signer != nil {
 		t.Error("read-only service should have nil signer")
+	}
+	if got := svc.maxMulticallCalls; got != 64 {
+		t.Fatalf("default maxMulticallCalls = %d, want 64", got)
+	}
+}
+
+func TestNew_MaxMulticallCalls(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:           mb,
+		ChainID:           testChainID,
+		RegistryAddress:   testRegistryAddr,
+		MaxMulticallCalls: 65,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.maxMulticallCalls; got != 65 {
+		t.Fatalf("configured maxMulticallCalls = %d, want 65", got)
 	}
 }
 
@@ -933,6 +956,147 @@ func TestGetExpirations_Batch_PartialFailure(t *testing.T) {
 	// Second permission should retain zero and be surfaced in the joined error.
 	if expirations[AddPiecesPermission] != 0 {
 		t.Errorf("AddPieces: got %d, want 0 (failed sub-call)", expirations[AddPiecesPermission])
+	}
+}
+
+func TestGetExpirations_ChunksAndPreservesResults(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:           mb,
+		ChainID:           testChainID,
+		RegistryAddress:   testRegistryAddr,
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(2000000000))
+	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+
+	expirations, err := svc.GetExpirations(
+		context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		permissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, permission := range permissions {
+		if got := expirations[permission]; got != 2000000000 {
+			t.Fatalf("permission %s expiry = %d, want 2000000000", permission, got)
+		}
+	}
+	if want := []int{1, 1, 1}; !slices.Equal(mb.multicallSizes, want) {
+		t.Fatalf("multicall sizes = %v, want %v", mb.multicallSizes, want)
+	}
+}
+
+func TestGetExpirations_ChunkedPartialFailure(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:           mb,
+		ChainID:           testChainID,
+		RegistryAddress:   testRegistryAddr,
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uint256Type, err := abi.NewType("uint256", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successData, err := abi.Arguments{{Type: uint256Type}}.Pack(new(big.Int).SetUint64(2000000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchCalls := 0
+	mb.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		values, err := mb.multicallABI.Methods["aggregate3"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		calls := values[0].([]struct {
+			Target       common.Address `json:"target"`
+			AllowFailure bool           `json:"allowFailure"`
+			CallData     []byte         `json:"callData"`
+		})
+		if len(calls) != 1 {
+			return nil, fmt.Errorf("got %d sub-calls, want 1", len(calls))
+		}
+		type result3 struct {
+			Success    bool
+			ReturnData []byte
+		}
+		result := result3{Success: true, ReturnData: successData}
+		if batchCalls == 2 {
+			result = result3{Success: false}
+		}
+		return mb.multicallABI.Methods["aggregate3"].Outputs.Pack([]result3{result})
+	}
+	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+
+	expirations, err := svc.GetExpirations(
+		context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		permissions,
+	)
+	if !errors.Is(err, errBatchPartial) {
+		t.Fatalf("error = %v, want errBatchPartial", err)
+	}
+	if batchCalls != 3 {
+		t.Fatalf("multicall count = %d, want 3", batchCalls)
+	}
+	if expirations[CreateDataSetPermission] != 2000000000 ||
+		expirations[AddPiecesPermission] != 0 ||
+		expirations[TerminateServicePermission] != 2000000000 {
+		t.Fatalf("expirations = %+v, want success/failure/success", expirations)
+	}
+}
+
+func TestGetExpirations_ChunkFailureFallsBackToAllSequential(t *testing.T) {
+	mb := newMockBackend(t)
+	svc, err := New(Options{
+		Backend:           mb,
+		ChainID:           testChainID,
+		RegistryAddress:   testRegistryAddr,
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(1700000000))
+	batchCalls := 0
+	mb.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		if batchCalls == 2 {
+			return nil, errors.New("RPC unavailable")
+		}
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		return mb.handleMulticall(data)
+	}
+	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+
+	expirations, err := svc.GetExpirations(
+		context.Background(),
+		common.HexToAddress("0xAAAA"),
+		common.HexToAddress("0xBBBB"),
+		permissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchCalls != 2 {
+		t.Fatalf("multicall count = %d, want 2", batchCalls)
+	}
+	for _, permission := range permissions {
+		if got := expirations[permission]; got != 1700000000 {
+			t.Fatalf("permission %s expiry = %d, want fallback value 1700000000", permission, got)
+		}
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
+	"github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/txutil"
@@ -234,7 +236,9 @@ func (s *Service) GetClientDataSetIds(ctx context.Context, payer common.Address,
 // with pdpverifier liveness and active-piece counts. Requires the
 // Service to have been configured with a PDPVerifier address. When
 // onlyManaged is true, entries whose listener is not this WarmStorage
-// contract are filtered out.
+// contract are filtered out. Detail reads use serial Multicall3 batches;
+// separate batches may observe different blocks. When sub-calls fail, the
+// method returns the earliest error in data-set and operation order.
 func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common.Address, onlyManaged bool) ([]*EnhancedDataSetInfo, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -245,79 +249,242 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 	if (payer == common.Address{}) {
 		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: %w: zero payer", ErrInvalidArgument)
 	}
-	// Collect all datasets for payer via paginated GetClientDataSets.
-	var infos []*DataSetInfo
-	var offset uint64
-	const page uint64 = 100
-	for {
-		batch, berr := s.GetClientDataSets(ctx, payer, sdktypes.ListOptions{Offset: offset, Limit: page})
-		if berr != nil {
-			return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: %w", berr)
-		}
-		infos = append(infos, batch...)
-		if uint64(len(batch)) < page {
-			break
-		}
-		offset += uint64(len(batch))
+	infos, err := s.GetAllClientDataSets(ctx, payer)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: %w", err)
 	}
-	out := make([]*EnhancedDataSetInfo, 0, len(infos))
-	for _, info := range infos {
-		id := info.DataSetID.Big()
-		listener, lerr := s.pdpBind.GetDataSetListener(&bind.CallOpts{Context: ctx}, id)
-		if lerr != nil {
-			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: getDataSetListener dataSetID %s: %w",
-				info.DataSetID.String(),
-				lerr,
-			)
+	if len(infos) == 0 {
+		return []*EnhancedDataSetInfo{}, nil
+	}
+
+	pdpABI, err := pdpverifier.PDPVerifierMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: parse PDPVerifier ABI: %w", err)
+	}
+	viewABI, err := fwssview.FWSSViewMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: parse FWSSView ABI: %w", err)
+	}
+
+	states := make([]dataSetDetailsState, len(infos))
+	listenerCalls := make([]iabi.Call3, len(infos))
+	for i, info := range infos {
+		states[i] = dataSetDetailsState{info: info}
+		callData, err := pdpABI.Pack("getDataSetListener", info.DataSetID.Big())
+		if err != nil {
+			return nil, dataSetDetailsError("getDataSetListener", info.DataSetID, err)
 		}
-		isManaged := listener == s.fwssAddr
-		if onlyManaged && !isManaged {
+		listenerCalls[i] = iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: callData}
+	}
+	listenerResults, err := iabi.BatchCallChunked(ctx, s.caller, listenerCalls, s.maxMulticallCalls)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: getDataSetListener batch: %w", err)
+	}
+	listenerMethod := pdpABI.Methods["getDataSetListener"]
+	for i, result := range listenerResults {
+		values, err := unpackDataSetDetailsResult(result, listenerMethod.Outputs.Unpack)
+		if err != nil {
+			states[i].errs[detailsListener] = dataSetDetailsError("getDataSetListener", infos[i].DataSetID, err)
 			continue
 		}
-		live, lerr := s.pdpBind.DataSetLive(&bind.CallOpts{Context: ctx}, id)
-		if lerr != nil {
-			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: dataSetLive dataSetID %s: %w",
-				info.DataSetID.String(),
-				lerr,
+		listener, ok := values[0].(common.Address)
+		if !ok {
+			states[i].errs[detailsListener] = dataSetDetailsError(
+				"getDataSetListener",
+				infos[i].DataSetID,
+				fmt.Errorf("unexpected output type %T", values[0]),
 			)
+			continue
 		}
-		metadata, merr := s.GetAllDataSetMetadata(ctx, info.DataSetID)
-		if merr != nil {
-			return nil, fmt.Errorf(
-				"warmstorage.GetClientDataSetsWithDetails: getAllDataSetMetadata dataSetID %s: %w",
-				info.DataSetID.String(),
-				merr,
-			)
+		states[i].isManaged = listener == s.fwssAddr
+	}
+
+	var detailCalls []iabi.Call3
+	var detailRefs []dataSetDetailsCallRef
+	for i := range states {
+		state := &states[i]
+		if state.errs[detailsListener] != nil || onlyManaged && !state.isManaged {
+			continue
 		}
-		var active *big.Int
-		if live {
-			n, cerr := s.pdpBind.GetActivePieceCount(&bind.CallOpts{Context: ctx}, id)
-			if cerr != nil {
-				return nil, fmt.Errorf(
-					"warmstorage.GetClientDataSetsWithDetails: getActivePieceCount dataSetID %s: %w",
-					info.DataSetID.String(),
-					cerr,
-				)
+		liveData, err := pdpABI.Pack("dataSetLive", state.info.DataSetID.Big())
+		if err != nil {
+			return nil, dataSetDetailsError("dataSetLive", state.info.DataSetID, err)
+		}
+		metadataData, err := viewABI.Pack("getAllDataSetMetadata", state.info.DataSetID.Big())
+		if err != nil {
+			return nil, dataSetDetailsError("getAllDataSetMetadata", state.info.DataSetID, err)
+		}
+		detailCalls = append(detailCalls,
+			iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: liveData},
+			iabi.Call3{Target: s.viewAddr, AllowFailure: true, CallData: metadataData},
+		)
+		detailRefs = append(detailRefs,
+			dataSetDetailsCallRef{state: i, operation: detailsLive},
+			dataSetDetailsCallRef{state: i, operation: detailsMetadata},
+		)
+	}
+	detailResults, err := iabi.BatchCallChunked(ctx, s.caller, detailCalls, s.maxMulticallCalls)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: live/metadata batch: %w", err)
+	}
+	liveMethod := pdpABI.Methods["dataSetLive"]
+	metadataMethod := viewABI.Methods["getAllDataSetMetadata"]
+	for i, result := range detailResults {
+		ref := detailRefs[i]
+		state := &states[ref.state]
+		switch ref.operation {
+		case detailsLive:
+			values, err := unpackDataSetDetailsResult(result, liveMethod.Outputs.Unpack)
+			if err != nil {
+				state.errs[detailsLive] = dataSetDetailsError("dataSetLive", state.info.DataSetID, err)
+				continue
 			}
-			active = n
-		} else {
-			active = big.NewInt(0)
+			live, ok := values[0].(bool)
+			if !ok {
+				state.errs[detailsLive] = dataSetDetailsError(
+					"dataSetLive",
+					state.info.DataSetID,
+					fmt.Errorf("unexpected output type %T", values[0]),
+				)
+				continue
+			}
+			state.isLive = live
+			if !live {
+				state.activePieceCount = big.NewInt(0)
+			}
+		case detailsMetadata:
+			values, err := unpackDataSetDetailsResult(result, metadataMethod.Outputs.Unpack)
+			if err != nil {
+				state.errs[detailsMetadata] = dataSetDetailsError("getAllDataSetMetadata", state.info.DataSetID, err)
+				continue
+			}
+			keys, keysOK := values[0].([]string)
+			metadataValues, valuesOK := values[1].([]string)
+			if !keysOK || !valuesOK {
+				state.errs[detailsMetadata] = dataSetDetailsError(
+					"getAllDataSetMetadata",
+					state.info.DataSetID,
+					fmt.Errorf("unexpected output types %T and %T", values[0], values[1]),
+				)
+				continue
+			}
+			state.metadata, err = dataSetMetadataMap(keys, metadataValues)
+			if err != nil {
+				state.errs[detailsMetadata] = dataSetDetailsError("getAllDataSetMetadata", state.info.DataSetID, err)
+			}
 		}
-		_, withCDN := metadata["withCDN"]
-		withCDN = !info.CDNRailID.IsZero() && withCDN
+	}
+
+	var activeCalls []iabi.Call3
+	var activeStates []int
+	for i := range states {
+		state := &states[i]
+		if state.errs[detailsListener] != nil || state.errs[detailsLive] != nil || state.errs[detailsMetadata] != nil ||
+			onlyManaged && !state.isManaged || !state.isLive {
+			continue
+		}
+		callData, err := pdpABI.Pack("getActivePieceCount", state.info.DataSetID.Big())
+		if err != nil {
+			return nil, dataSetDetailsError("getActivePieceCount", state.info.DataSetID, err)
+		}
+		activeCalls = append(activeCalls, iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: callData})
+		activeStates = append(activeStates, i)
+	}
+	activeResults, err := iabi.BatchCallChunked(ctx, s.caller, activeCalls, s.maxMulticallCalls)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetClientDataSetsWithDetails: getActivePieceCount batch: %w", err)
+	}
+	activeMethod := pdpABI.Methods["getActivePieceCount"]
+	for i, result := range activeResults {
+		state := &states[activeStates[i]]
+		values, err := unpackDataSetDetailsResult(result, activeMethod.Outputs.Unpack)
+		if err != nil {
+			state.errs[detailsActivePieceCount] = dataSetDetailsError("getActivePieceCount", state.info.DataSetID, err)
+			continue
+		}
+		count, ok := values[0].(*big.Int)
+		if !ok {
+			state.errs[detailsActivePieceCount] = dataSetDetailsError(
+				"getActivePieceCount",
+				state.info.DataSetID,
+				fmt.Errorf("unexpected output type %T", values[0]),
+			)
+			continue
+		}
+		state.activePieceCount = count
+	}
+
+	out := make([]*EnhancedDataSetInfo, 0, len(states))
+	for i := range states {
+		state := &states[i]
+		for _, err := range state.errs {
+			if err != nil {
+				return nil, err
+			}
+		}
+		if onlyManaged && !state.isManaged {
+			continue
+		}
+		_, withCDN := state.metadata["withCDN"]
 		out = append(out, &EnhancedDataSetInfo{
-			DataSetInfo:          info,
-			PDPVerifierDataSetID: info.DataSetID,
-			IsLive:               live,
-			IsManaged:            isManaged,
-			ActivePieceCount:     active,
-			WithCDN:              withCDN,
-			Metadata:             metadata,
+			DataSetInfo:          state.info,
+			PDPVerifierDataSetID: state.info.DataSetID,
+			IsLive:               state.isLive,
+			IsManaged:            state.isManaged,
+			ActivePieceCount:     state.activePieceCount,
+			WithCDN:              !state.info.CDNRailID.IsZero() && withCDN,
+			Metadata:             state.metadata,
 		})
 	}
 	return out, nil
+}
+
+const (
+	detailsListener = iota
+	detailsLive
+	detailsMetadata
+	detailsActivePieceCount
+	detailsOperationCount
+)
+
+type dataSetDetailsState struct {
+	info             *DataSetInfo
+	isLive           bool
+	isManaged        bool
+	activePieceCount *big.Int
+	metadata         map[string]string
+	errs             [detailsOperationCount]error
+}
+
+type dataSetDetailsCallRef struct {
+	state     int
+	operation int
+}
+
+func unpackDataSetDetailsResult(result iabi.Result3, unpack func([]byte) ([]any, error)) ([]any, error) {
+	if !result.Success {
+		return nil, errors.New("sub-call failed")
+	}
+	if len(result.ReturnData) == 0 {
+		return nil, errors.New("empty return data")
+	}
+	values, err := unpack(result.ReturnData)
+	if err != nil {
+		return nil, fmt.Errorf("unpack: %w", err)
+	}
+	if len(values) == 0 {
+		return nil, errors.New("empty output")
+	}
+	return values, nil
+}
+
+func dataSetDetailsError(operation string, dataSetID sdktypes.BigInt, err error) error {
+	return fmt.Errorf(
+		"warmstorage.GetClientDataSetsWithDetails: %s dataSetID %s: %w",
+		operation,
+		dataSetID.String(),
+		err,
+	)
 }
 
 // TopUpCDNPaymentRails tops up the CDN egress and cache-miss rails

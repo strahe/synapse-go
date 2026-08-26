@@ -38,6 +38,7 @@ Common setup options:
 
 - `WithPrivateKeyHex` / `WithPrivateKey`: configure the signer.
 - `WithRPCURL` / `WithEthClient`: configure chain access.
+- `WithMaxMulticallCalls`: limit dynamic Multicall3 requests.
 - `WithSource`: namespace datasets for this application.
 - `WithCDN`: set the client default for CDN-backed storage.
 - `WithAllowPrivateNetworks`: opt into private-network URL downloads.

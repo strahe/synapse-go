@@ -23,6 +23,10 @@ type Result3 struct {
 	ReturnData []byte
 }
 
+// DefaultMaxMulticallCalls is the default maximum number of sub-calls sent in
+// one aggregate3 invocation by SDK methods whose batch size depends on input.
+const DefaultMaxMulticallCalls = 64
+
 var (
 	multicall3Address = chain.Mainnet.Addresses().Multicall3
 	multicall3ABI     = mustParseABI(`[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`)
@@ -51,6 +55,45 @@ func BatchCall(ctx context.Context, caller ContractCaller, calls []Call3) ([]Res
 		return nil, fmt.Errorf("abi.BatchCall: decode aggregate3: %w", err)
 	}
 	return out, nil
+}
+
+// BatchCallChunked executes calls in serial aggregate3 batches of at most
+// maxCalls entries and returns results in input order. It stops at the first
+// context or batch error and does not retry a failed batch.
+func BatchCallChunked(ctx context.Context, caller ContractCaller, calls []Call3, maxCalls int) ([]Result3, error) {
+	if maxCalls <= 0 {
+		return nil, fmt.Errorf("abi.BatchCallChunked: maxCalls must be > 0")
+	}
+	if caller == nil {
+		return nil, fmt.Errorf("abi.BatchCallChunked: nil caller")
+	}
+	if len(calls) == 0 {
+		return nil, nil
+	}
+
+	results := make([]Result3, 0, len(calls))
+	for start := 0; start < len(calls); {
+		end := start + min(maxCalls, len(calls)-start)
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("abi.BatchCallChunked: calls [%d:%d): %w", start, end, err)
+		}
+		batch, err := BatchCall(ctx, caller, calls[start:end])
+		if err != nil {
+			return nil, fmt.Errorf("abi.BatchCallChunked: calls [%d:%d): %w", start, end, err)
+		}
+		if len(batch) != end-start {
+			return nil, fmt.Errorf(
+				"abi.BatchCallChunked: calls [%d:%d): expected %d results, got %d",
+				start,
+				end,
+				end-start,
+				len(batch),
+			)
+		}
+		results = append(results, batch...)
+		start = end
+	}
+	return results, nil
 }
 
 func mustParseABI(def string) gethabi.ABI {

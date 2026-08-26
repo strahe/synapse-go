@@ -36,16 +36,17 @@ type Backend interface {
 // [sdktypes.WriteResult] whose Receipt is only populated when WithWait is
 // supplied.
 type Service struct {
-	backend      Backend
-	chainID      sdktypes.ChainID
-	registryAddr common.Address
-	registryCall *sessionkeyregistry.SessionKeyRegistryCaller
-	registryTx   *sessionkeyregistry.SessionKeyRegistryTransactor
-	signer       signer.EVMSigner
-	nonces       *txutil.NonceManager
-	logger       *slog.Logger
-	receiptWait  time.Duration
-	lifecycle    *lifecycle.Lifecycle
+	backend           Backend
+	chainID           sdktypes.ChainID
+	registryAddr      common.Address
+	registryCall      *sessionkeyregistry.SessionKeyRegistryCaller
+	registryTx        *sessionkeyregistry.SessionKeyRegistryTransactor
+	signer            signer.EVMSigner
+	nonces            *txutil.NonceManager
+	logger            *slog.Logger
+	receiptWait       time.Duration
+	lifecycle         *lifecycle.Lifecycle
+	maxMulticallCalls int
 }
 
 // Options bundles the dependencies for constructing a Service.
@@ -67,6 +68,12 @@ type Options struct {
 	NonceManager *txutil.NonceManager
 	// ReceiptWait overrides the default receipt polling timeout.
 	ReceiptWait time.Duration
+	// MaxMulticallCalls limits the number of actual contract calls in each
+	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
+	// are invalid. Batches execute serially and may observe different blocks;
+	// this count does not bound request or response bytes, gas, or execution
+	// time.
+	MaxMulticallCalls int
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// ErrClosed. Nil is allowed for standalone use.
@@ -84,6 +91,9 @@ func New(opts Options) (*Service, error) {
 	if (opts.RegistryAddress == common.Address{}) {
 		return nil, fmt.Errorf("sessionkey.New: %w: zero RegistryAddress", ErrInvalidArgument)
 	}
+	if opts.MaxMulticallCalls < 0 {
+		return nil, fmt.Errorf("sessionkey.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
+	}
 
 	caller, err := sessionkeyregistry.NewSessionKeyRegistryCaller(opts.RegistryAddress, opts.Backend)
 	if err != nil {
@@ -94,17 +104,22 @@ func New(opts Options) (*Service, error) {
 		return nil, fmt.Errorf("sessionkey.New: bind transactor: %w", err)
 	}
 
+	maxMulticallCalls := opts.MaxMulticallCalls
+	if maxMulticallCalls == 0 {
+		maxMulticallCalls = iabi.DefaultMaxMulticallCalls
+	}
 	s := &Service{
-		backend:      opts.Backend,
-		chainID:      opts.ChainID,
-		registryAddr: opts.RegistryAddress,
-		registryCall: caller,
-		registryTx:   writer,
-		signer:       opts.Signer,
-		logger:       opts.Logger,
-		nonces:       opts.NonceManager,
-		receiptWait:  opts.ReceiptWait,
-		lifecycle:    opts.Lifecycle,
+		backend:           opts.Backend,
+		chainID:           opts.ChainID,
+		registryAddr:      opts.RegistryAddress,
+		registryCall:      caller,
+		registryTx:        writer,
+		signer:            opts.Signer,
+		logger:            opts.Logger,
+		nonces:            opts.NonceManager,
+		receiptWait:       opts.ReceiptWait,
+		lifecycle:         opts.Lifecycle,
+		maxMulticallCalls: maxMulticallCalls,
 	}
 	if s.nonces == nil && s.signer != nil {
 		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
@@ -279,9 +294,9 @@ func authorizationExpired(exp, now uint64) bool {
 }
 
 // GetExpirations queries the on-chain authorization expiry for each of the
-// given permissions. It attempts a single Multicall3 batch first and falls
-// back to per-permission sequential reads if the transport-level batch call
-// fails.
+// given permissions. It attempts serial, size-limited Multicall3 batches first
+// and falls back to per-permission sequential reads if any transport-level
+// batch call fails.
 //
 // GetExpirations returns the best-effort partial [Expirations] together
 // with [errors.Join] of every per-permission lookup error.
@@ -354,7 +369,7 @@ func (s *Service) getExpirationsBatch(ctx context.Context, rootAddr, sessionKeyA
 		}
 	}
 
-	results, err := iabi.BatchCall(ctx, s.backend, calls)
+	results, err := iabi.BatchCallChunked(ctx, s.backend, calls, s.maxMulticallCalls)
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.GetExpirations: batch call: %w", err)
 	}

@@ -3,7 +3,9 @@ package spregistry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,13 +19,14 @@ import (
 )
 
 type mockCaller struct {
-	sprABI       abi.ABI
-	multicallABI abi.ABI
-	replies      map[string][]byte
-	errs         map[string]error
-	handlers     map[string]func([]any) ([]byte, error)
-	multicallFn  func([]byte) ([]byte, error)
-	argCheck     func(string, []any)
+	sprABI         abi.ABI
+	multicallABI   abi.ABI
+	replies        map[string][]byte
+	errs           map[string]error
+	handlers       map[string]func([]any) ([]byte, error)
+	multicallFn    func([]byte) ([]byte, error)
+	multicallSizes []int
+	argCheck       func(string, []any)
 }
 
 func newMockCaller(t *testing.T) *mockCaller {
@@ -101,6 +104,7 @@ func (m *mockCaller) handleMulticall(data []byte) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("unexpected aggregate3 input type")
 	}
+	m.multicallSizes = append(m.multicallSizes, len(rawCalls))
 	type result3 struct {
 		Success    bool
 		ReturnData []byte
@@ -173,6 +177,30 @@ func TestNew_Validation(t *testing.T) {
 	_, err = New(Options{Client: mc})
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument for zero Address, got %v", err)
+	}
+	_, err = New(Options{Client: mc, Address: common.HexToAddress("0x01"), MaxMulticallCalls: -1})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for negative MaxMulticallCalls, got %v", err)
+	}
+}
+
+func TestNew_MaxMulticallCalls(t *testing.T) {
+	defaultService, _ := newTestService(t)
+	if got := defaultService.maxMulticallCalls; got != 64 {
+		t.Fatalf("default maxMulticallCalls = %d, want 64", got)
+	}
+
+	mc := newMockCaller(t)
+	configured, err := New(Options{
+		Client:            mc,
+		Address:           common.HexToAddress("0x01"),
+		MaxMulticallCalls: 65,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configured.maxMulticallCalls; got != 65 {
+		t.Fatalf("configured maxMulticallCalls = %d, want 65", got)
 	}
 }
 
@@ -339,13 +367,13 @@ func pdpCapsFixture() (keys []string, values [][]byte) {
 		{0x01},
 		{0x00}, // NOT enabled (must be 0x01 to count)
 	}
-	return
+	return keys, values
 }
 
 func pdpCapsFixtureWithToken(token common.Address) (keys []string, values [][]byte) {
 	keys, values = pdpCapsFixture()
 	values[6] = token.Bytes()
-	return
+	return keys, values
 }
 
 func pdpProviderFixture(providerID int64, serviceProvider common.Address, name string) sprbind.ServiceProviderRegistryStorageProviderWithProduct {
@@ -592,6 +620,79 @@ func TestGetPDPProvidersByIDs_AllSuccess(t *testing.T) {
 	}
 	if out[0].Info.Name != "alpha" || out[1].Info.Name != "beta" {
 		t.Fatalf("providers out of order: %+v", out)
+	}
+}
+
+func TestGetPDPProvidersByIDs_ChunksAndPreservesOrder(t *testing.T) {
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:            mc,
+		Address:           common.HexToAddress("0xabcd"),
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc.setHandler(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		id := args[0].(*big.Int).Int64()
+		return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(id, common.BigToAddress(big.NewInt(id)), fmt.Sprintf("provider-%d", id))), nil
+	})
+
+	out, err := s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{
+		types.NewBigInt(1),
+		types.NewBigInt(2),
+		types.NewBigInt(3),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("len(providers) = %d, want 3", len(out))
+	}
+	for i := range out {
+		want := fmt.Sprintf("provider-%d", i+1)
+		if out[i].Info.Name != want {
+			t.Fatalf("providers[%d].Name = %q, want %q", i, out[i].Info.Name, want)
+		}
+	}
+	if want := []int{1, 1, 1}; !slices.Equal(mc.multicallSizes, want) {
+		t.Fatalf("multicall sizes = %v, want %v", mc.multicallSizes, want)
+	}
+}
+
+func TestGetPDPProvidersByIDs_StopsAfterChunkError(t *testing.T) {
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:            mc,
+		Address:           common.HexToAddress("0xabcd"),
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc.setHandler(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+		id := args[0].(*big.Int).Int64()
+		return mc.pack(t, "getProviderWithProduct", pdpProviderFixture(id, common.BigToAddress(big.NewInt(id)), fmt.Sprintf("provider-%d", id))), nil
+	})
+	batchCalls := 0
+	mc.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		if batchCalls == 2 {
+			return nil, errors.New("RPC unavailable")
+		}
+		return mc.handleMulticall(data)
+	}
+
+	_, err = s.GetPDPProvidersByIDs(context.Background(), []types.BigInt{
+		types.NewBigInt(1),
+		types.NewBigInt(2),
+		types.NewBigInt(3),
+	})
+	if err == nil || !strings.Contains(err.Error(), "calls [1:2)") {
+		t.Fatalf("error = %v, want second chunk context", err)
+	}
+	if batchCalls != 2 {
+		t.Fatalf("multicall count = %d, want 2", batchCalls)
 	}
 }
 

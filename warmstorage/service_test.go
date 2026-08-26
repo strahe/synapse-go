@@ -21,15 +21,18 @@ import (
 // matching ABI method based on the 4-byte selector, and returning a
 // pre-packed reply.
 type mockCaller struct {
-	fwssABI abi.ABI
-	viewABI abi.ABI
-	pdpABI  abi.ABI
+	fwssABI      abi.ABI
+	viewABI      abi.ABI
+	pdpABI       abi.ABI
+	multicallABI abi.ABI
 	// method name → reply bytes or error
 	replies               map[string][]byte
 	errs                  map[string]error
 	lastIn                map[string][]byte
 	handlers              map[string]func([]byte) ([]byte, error)
 	rejectNonZeroCallFrom bool
+	multicallFn           func([]byte) ([]byte, error)
+	multicallSizes        []int
 }
 
 func newMockCaller(t *testing.T) *mockCaller {
@@ -46,14 +49,25 @@ func newMockCaller(t *testing.T) *mockCaller {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mcABI, err := abi.JSON(strings.NewReader(`[{
+		"inputs":[{"components":[{"name":"target","type":"address"},{"name":"allowFailure","type":"bool"},{"name":"callData","type":"bytes"}],"name":"calls","type":"tuple[]"}],
+		"name":"aggregate3",
+		"outputs":[{"components":[{"name":"success","type":"bool"},{"name":"returnData","type":"bytes"}],"name":"returnData","type":"tuple[]"}],
+		"stateMutability":"payable",
+		"type":"function"
+	}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &mockCaller{
-		fwssABI:  *fABI,
-		viewABI:  *vABI,
-		pdpABI:   *pABI,
-		replies:  map[string][]byte{},
-		errs:     map[string]error{},
-		lastIn:   map[string][]byte{},
-		handlers: map[string]func([]byte) ([]byte, error){},
+		fwssABI:      *fABI,
+		viewABI:      *vABI,
+		pdpABI:       *pABI,
+		multicallABI: mcABI,
+		replies:      map[string][]byte{},
+		errs:         map[string]error{},
+		lastIn:       map[string][]byte{},
+		handlers:     map[string]func([]byte) ([]byte, error){},
 	}
 }
 
@@ -69,6 +83,17 @@ func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *b
 	if len(data) < 4 {
 		return nil, errors.New("calldata too short")
 	}
+	selector := [4]byte{data[0], data[1], data[2], data[3]}
+	if [4]byte(m.multicallABI.Methods["aggregate3"].ID) == selector {
+		if m.multicallFn != nil {
+			return m.multicallFn(data)
+		}
+		return m.handleMulticall(data)
+	}
+	return m.handleContractCall(data)
+}
+
+func (m *mockCaller) handleContractCall(data []byte) ([]byte, error) {
 	selector := [4]byte{data[0], data[1], data[2], data[3]}
 	for name, method := range m.fwssABI.Methods {
 		if [4]byte(method.ID) == selector {
@@ -104,6 +129,39 @@ func (m *mockCaller) CallContract(_ context.Context, call ethereum.CallMsg, _ *b
 		}
 	}
 	return nil, errors.New("no method matches selector")
+}
+
+func (m *mockCaller) handleMulticall(data []byte) ([]byte, error) {
+	values, err := m.multicallABI.Methods["aggregate3"].Inputs.Unpack(data[4:])
+	if err != nil {
+		return nil, err
+	}
+	calls, ok := values[0].([]struct {
+		Target       common.Address `json:"target"`
+		AllowFailure bool           `json:"allowFailure"`
+		CallData     []byte         `json:"callData"`
+	})
+	if !ok {
+		return nil, errors.New("unexpected aggregate3 input type")
+	}
+	m.multicallSizes = append(m.multicallSizes, len(calls))
+	type result3 struct {
+		Success    bool
+		ReturnData []byte
+	}
+	results := make([]result3, len(calls))
+	for i, call := range calls {
+		reply, err := m.handleContractCall(call.CallData)
+		if err != nil {
+			if call.AllowFailure {
+				results[i] = result3{Success: false, ReturnData: []byte(err.Error())}
+				continue
+			}
+			return nil, err
+		}
+		results[i] = result3{Success: true, ReturnData: reply}
+	}
+	return m.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
 }
 
 func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {
@@ -232,6 +290,36 @@ func TestNew_Validation(t *testing.T) {
 	_, err = New(Options{Client: mc, FWSS: common.HexToAddress("0x01")})
 	if err == nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("expected ErrInvalidArgument for zero View, got %v", err)
+	}
+	_, err = New(Options{
+		Client:            mc,
+		FWSS:              common.HexToAddress("0x01"),
+		ViewContract:      common.HexToAddress("0x02"),
+		MaxMulticallCalls: -1,
+	})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("expected ErrInvalidArgument for negative MaxMulticallCalls, got %v", err)
+	}
+}
+
+func TestNew_MaxMulticallCalls(t *testing.T) {
+	defaultService, _ := newTestService(t)
+	if got := defaultService.maxMulticallCalls; got != 64 {
+		t.Fatalf("default maxMulticallCalls = %d, want 64", got)
+	}
+
+	mc := newMockCaller(t)
+	configured, err := New(Options{
+		Client:            mc,
+		FWSS:              common.HexToAddress("0x01"),
+		ViewContract:      common.HexToAddress("0x02"),
+		MaxMulticallCalls: 65,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configured.maxMulticallCalls; got != 65 {
+		t.Fatalf("configured maxMulticallCalls = %d, want 65", got)
 	}
 }
 

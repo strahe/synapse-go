@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -293,6 +294,55 @@ func TestNew_WithRPCURL(t *testing.T) {
 
 	if client.Chain() != chain.Calibration {
 		t.Errorf("chain = %v, want Calibration", client.Chain())
+	}
+}
+
+func TestNew_WithMaxMulticallCalls(t *testing.T) {
+	_, err := New(context.Background(), WithMaxMulticallCalls(-1))
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("negative MaxMulticallCalls error = %v, want ErrInvalidArgument", err)
+	}
+
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+	key := testKey(t)
+	for _, tt := range []struct {
+		configured int
+		service    int
+	}{
+		{configured: 0, service: 64},
+		{configured: 1, service: 1},
+		{configured: 64, service: 64},
+		{configured: 65, service: 65},
+	} {
+		t.Run(fmt.Sprint(tt.configured), func(t *testing.T) {
+			client, err := New(context.Background(),
+				WithPrivateKey(key),
+				WithEthClient(ec),
+				WithMaxMulticallCalls(tt.configured),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			if got := client.maxMulticallCalls; got != tt.configured {
+				t.Fatalf("maxMulticallCalls = %d, want %d", got, tt.configured)
+			}
+			for name, service := range map[string]any{
+				"warmstorage": client.WarmStorage(),
+				"spregistry":  client.SPRegistry(),
+				"sessionkey":  client.SessionKey(),
+			} {
+				field := reflect.ValueOf(service).Elem().FieldByName("maxMulticallCalls")
+				if !field.IsValid() || field.Kind() != reflect.Int {
+					t.Fatalf("%s maxMulticallCalls field not found", name)
+				}
+				if got := int(field.Int()); got != tt.service {
+					t.Fatalf("%s maxMulticallCalls = %d, want %d", name, got, tt.service)
+				}
+			}
+		})
 	}
 }
 
