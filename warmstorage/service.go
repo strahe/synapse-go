@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	"github.com/strahe/synapse-go/internal/contracts/fwss"
 	"github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
@@ -45,21 +46,22 @@ type Backend interface {
 // (service pricing, dataset existence, provider approval, dataset
 // management checks).
 type Service struct {
-	caller         EthClient
-	backend        Backend
-	chainID        types.ChainID
-	fwssAddr       common.Address
-	viewAddr       common.Address
-	pdpVerifierAdr common.Address
-	fwssBind       *fwss.FWSSCaller
-	viewBind       *fwssview.FWSSViewCaller
-	pdpBind        *pdpverifier.PDPVerifierCaller
-	fwssWrite      *fwss.FWSSTransactor
-	signer         signer.EVMSigner
-	nonces         *txutil.NonceManager
-	logger         *slog.Logger
-	receiptWait    time.Duration
-	lifecycle      *lifecycle.Lifecycle
+	caller            EthClient
+	backend           Backend
+	chainID           types.ChainID
+	fwssAddr          common.Address
+	viewAddr          common.Address
+	pdpVerifierAdr    common.Address
+	fwssBind          *fwss.FWSSCaller
+	viewBind          *fwssview.FWSSViewCaller
+	pdpBind           *pdpverifier.PDPVerifierCaller
+	fwssWrite         *fwss.FWSSTransactor
+	signer            signer.EVMSigner
+	nonces            *txutil.NonceManager
+	logger            *slog.Logger
+	receiptWait       time.Duration
+	lifecycle         *lifecycle.Lifecycle
+	maxMulticallCalls int
 }
 
 // Options bundle the caller and contract addresses.
@@ -88,6 +90,12 @@ type Options struct {
 	// ReceiptWait overrides the default receipt polling timeout for
 	// WithWait calls. Zero uses txutil.DefaultReceiptWaitConfig.
 	ReceiptWait time.Duration
+	// MaxMulticallCalls limits the number of actual contract calls in each
+	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
+	// are invalid. Batches execute serially and may observe different blocks;
+	// this count does not bound request or response bytes, gas, or execution
+	// time.
+	MaxMulticallCalls int
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// ErrClosed. Nil is allowed for standalone use.
@@ -107,6 +115,13 @@ func New(opts Options) (*Service, error) {
 	if (opts.ViewContract == common.Address{}) {
 		return nil, fmt.Errorf("warmstorage.New: %w: zero ViewContract address", ErrInvalidArgument)
 	}
+	if opts.MaxMulticallCalls < 0 {
+		return nil, fmt.Errorf("warmstorage.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
+	}
+	maxMulticallCalls := opts.MaxMulticallCalls
+	if maxMulticallCalls == 0 {
+		maxMulticallCalls = iabi.DefaultMaxMulticallCalls
+	}
 	fb, err := fwss.NewFWSSCaller(opts.FWSS, opts.Client)
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.New: bind fwss: %w", err)
@@ -116,19 +131,20 @@ func New(opts Options) (*Service, error) {
 		return nil, fmt.Errorf("warmstorage.New: bind fwssview: %w", err)
 	}
 	s := &Service{
-		caller:         opts.Client,
-		backend:        opts.Backend,
-		chainID:        opts.ChainID,
-		fwssAddr:       opts.FWSS,
-		viewAddr:       opts.ViewContract,
-		pdpVerifierAdr: opts.PDPVerifier,
-		fwssBind:       fb,
-		viewBind:       vb,
-		signer:         opts.Signer,
-		logger:         opts.Logger,
-		nonces:         opts.NonceManager,
-		receiptWait:    opts.ReceiptWait,
-		lifecycle:      opts.Lifecycle,
+		caller:            opts.Client,
+		backend:           opts.Backend,
+		chainID:           opts.ChainID,
+		fwssAddr:          opts.FWSS,
+		viewAddr:          opts.ViewContract,
+		pdpVerifierAdr:    opts.PDPVerifier,
+		fwssBind:          fb,
+		viewBind:          vb,
+		signer:            opts.Signer,
+		logger:            opts.Logger,
+		nonces:            opts.NonceManager,
+		receiptWait:       opts.ReceiptWait,
+		lifecycle:         opts.Lifecycle,
+		maxMulticallCalls: maxMulticallCalls,
 	}
 	if (opts.PDPVerifier != common.Address{}) {
 		pb, err := pdpverifier.NewPDPVerifierCaller(opts.PDPVerifier, opts.Client)
@@ -421,12 +437,20 @@ func (s *Service) GetAllDataSetMetadata(ctx context.Context, dataSetID types.Big
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w", err)
 	}
-	if len(raw.Keys) != len(raw.Values) {
-		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: mismatched keys (%d) and values (%d)", len(raw.Keys), len(raw.Values))
+	out, err := dataSetMetadataMap(raw.Keys, raw.Values)
+	if err != nil {
+		return nil, fmt.Errorf("warmstorage.GetAllDataSetMetadata: %w", err)
 	}
-	out := make(map[string]string, len(raw.Keys))
-	for i, key := range raw.Keys {
-		out[key] = raw.Values[i]
+	return out, nil
+}
+
+func dataSetMetadataMap(keys, values []string) (map[string]string, error) {
+	if len(keys) != len(values) {
+		return nil, fmt.Errorf("mismatched keys (%d) and values (%d)", len(keys), len(values))
+	}
+	out := make(map[string]string, len(keys))
+	for i, key := range keys {
+		out[key] = values[i]
 	}
 	return out, nil
 }

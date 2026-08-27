@@ -43,17 +43,18 @@ type Backend interface {
 // and (when constructed with a Signer + Backend) a small, typed set of
 // state-changing provider-management methods.
 type Service struct {
-	caller      EthClient
-	backend     Backend
-	chainID     types.ChainID
-	addr        common.Address
-	contract    *spr.SPRegistryCaller
-	write       *spr.SPRegistryTransactor
-	signer      signer.EVMSigner
-	nonces      *txutil.NonceManager
-	logger      *slog.Logger
-	receiptWait time.Duration
-	lifecycle   *lifecycle.Lifecycle
+	caller            EthClient
+	backend           Backend
+	chainID           types.ChainID
+	addr              common.Address
+	contract          *spr.SPRegistryCaller
+	write             *spr.SPRegistryTransactor
+	signer            signer.EVMSigner
+	nonces            *txutil.NonceManager
+	logger            *slog.Logger
+	receiptWait       time.Duration
+	lifecycle         *lifecycle.Lifecycle
+	maxMulticallCalls int
 }
 
 // Options configures the service.
@@ -76,6 +77,12 @@ type Options struct {
 	// ReceiptWait overrides the default receipt polling timeout for
 	// WithWait calls. Zero uses txutil.DefaultReceiptWaitConfig.
 	ReceiptWait time.Duration
+	// MaxMulticallCalls limits the number of actual contract calls in each
+	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
+	// are invalid. Batches execute serially and may observe different blocks;
+	// this count does not bound request or response bytes, gas, or execution
+	// time.
+	MaxMulticallCalls int
 	// Lifecycle, when non-nil, ties this Service to the owning Client's
 	// close state. After the Lifecycle is closed, every method returns
 	// ErrClosed. Nil is allowed for standalone use.
@@ -90,6 +97,9 @@ func New(opts Options) (*Service, error) {
 	if (opts.Address == common.Address{}) {
 		return nil, fmt.Errorf("spregistry.New: %w: zero Address", ErrInvalidArgument)
 	}
+	if opts.MaxMulticallCalls < 0 {
+		return nil, fmt.Errorf("spregistry.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
+	}
 	if opts.Backend != nil && opts.Signer != nil && !opts.ChainID.IsValid() {
 		return nil, fmt.Errorf("spregistry.New: %w: ChainID is required when writes are enabled (Backend+Signer provided)", ErrInvalidArgument)
 	}
@@ -97,17 +107,22 @@ func New(opts Options) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.New: bind: %w", err)
 	}
+	maxMulticallCalls := opts.MaxMulticallCalls
+	if maxMulticallCalls == 0 {
+		maxMulticallCalls = iabi.DefaultMaxMulticallCalls
+	}
 	s := &Service{
-		caller:      opts.Client,
-		backend:     opts.Backend,
-		chainID:     opts.ChainID,
-		addr:        opts.Address,
-		contract:    c,
-		signer:      opts.Signer,
-		nonces:      opts.NonceManager,
-		logger:      opts.Logger,
-		receiptWait: opts.ReceiptWait,
-		lifecycle:   opts.Lifecycle,
+		caller:            opts.Client,
+		backend:           opts.Backend,
+		chainID:           opts.ChainID,
+		addr:              opts.Address,
+		contract:          c,
+		signer:            opts.Signer,
+		nonces:            opts.NonceManager,
+		logger:            opts.Logger,
+		receiptWait:       opts.ReceiptWait,
+		lifecycle:         opts.Lifecycle,
+		maxMulticallCalls: maxMulticallCalls,
 	}
 	if opts.Backend != nil {
 		tw, err := spr.NewSPRegistryTransactor(opts.Address, opts.Backend)
@@ -402,8 +417,9 @@ func (s *Service) GetPDPProviders(ctx context.Context, onlyActive bool, opts typ
 	return out, nil
 }
 
-// GetPDPProvidersByIDs returns PDP providers for the given ids using
-// Multicall3. Failed, missing, or non-PDP entries are skipped.
+// GetPDPProvidersByIDs returns PDP providers for the given ids using serial,
+// size-limited Multicall3 batches. Failed, missing, or non-PDP entries are
+// skipped.
 func (s *Service) GetPDPProvidersByIDs(ctx context.Context, providerIDs []types.BigInt) ([]PDPProvider, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -427,7 +443,7 @@ func (s *Service) GetPDPProvidersByIDs(ctx context.Context, providerIDs []types.
 			CallData:     data,
 		}
 	}
-	results, err := iabi.BatchCall(ctx, s.caller, calls)
+	results, err := iabi.BatchCallChunked(ctx, s.caller, calls, s.maxMulticallCalls)
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.GetPDPProvidersByIDs: batch call: %w", err)
 	}

@@ -24,16 +24,17 @@ import (
 // simple field read with no synchronisation overhead.
 func (c *Client) initServices() error {
 	ws, err := warmstorage.New(warmstorage.Options{
-		Client:       c.ethClient,
-		Backend:      c.ethClient,
-		ChainID:      types.ChainID(c.selectedChain.ChainID()),
-		FWSS:         c.addresses.FWSS,
-		ViewContract: c.addresses.ViewContract,
-		PDPVerifier:  c.addresses.PDPVerifier,
-		Signer:       c.evmSigner,
-		Logger:       c.logger,
-		NonceManager: c.nonces,
-		Lifecycle:    c.lifecycle,
+		Client:            c.ethClient,
+		Backend:           c.ethClient,
+		ChainID:           types.ChainID(c.selectedChain.ChainID()),
+		FWSS:              c.addresses.FWSS,
+		ViewContract:      c.addresses.ViewContract,
+		PDPVerifier:       c.addresses.PDPVerifier,
+		Signer:            c.evmSigner,
+		Logger:            c.logger,
+		NonceManager:      c.nonces,
+		Lifecycle:         c.lifecycle,
+		MaxMulticallCalls: c.maxMulticallCalls,
 	})
 	if err != nil {
 		return fmt.Errorf("create warmstorage service: %w", err)
@@ -41,14 +42,15 @@ func (c *Client) initServices() error {
 	c.warmStorage = ws
 
 	spReg, err := spregistry.New(spregistry.Options{
-		Client:       c.ethClient,
-		Address:      c.addresses.SPRegistry,
-		ChainID:      types.ChainID(c.selectedChain.ChainID()),
-		Backend:      c.ethClient,
-		Signer:       c.evmSigner,
-		NonceManager: c.nonces,
-		Logger:       c.logger,
-		Lifecycle:    c.lifecycle,
+		Client:            c.ethClient,
+		Address:           c.addresses.SPRegistry,
+		ChainID:           types.ChainID(c.selectedChain.ChainID()),
+		Backend:           c.ethClient,
+		Signer:            c.evmSigner,
+		NonceManager:      c.nonces,
+		Logger:            c.logger,
+		Lifecycle:         c.lifecycle,
+		MaxMulticallCalls: c.maxMulticallCalls,
 	})
 	if err != nil {
 		return fmt.Errorf("create spregistry service: %w", err)
@@ -73,13 +75,14 @@ func (c *Client) initServices() error {
 	c.payments = pay
 
 	sk, err := sessionkey.New(sessionkey.Options{
-		Backend:         c.ethClient,
-		ChainID:         types.ChainID(c.selectedChain.ChainID()),
-		RegistryAddress: c.addresses.SessionKeyRegistry,
-		Signer:          c.evmSigner,
-		Logger:          c.logger,
-		NonceManager:    c.nonces,
-		Lifecycle:       c.lifecycle,
+		Backend:           c.ethClient,
+		ChainID:           types.ChainID(c.selectedChain.ChainID()),
+		RegistryAddress:   c.addresses.SessionKeyRegistry,
+		Signer:            c.evmSigner,
+		Logger:            c.logger,
+		NonceManager:      c.nonces,
+		Lifecycle:         c.lifecycle,
+		MaxMulticallCalls: c.maxMulticallCalls,
 	})
 	if err != nil {
 		return fmt.Errorf("create sessionkey service: %w", err)

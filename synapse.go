@@ -60,6 +60,7 @@ type Client struct {
 	pdpReader   adapters.PDPReader
 
 	allowPrivateNetworks bool
+	maxMulticallCalls    int
 }
 
 type clientConfig struct {
@@ -74,6 +75,7 @@ type clientConfig struct {
 	withCDN                bool
 	filbeamRetrievalDomain string
 	allowPrivateNetworks   bool
+	maxMulticallCalls      int
 }
 
 // ClientOption configures a [Client] via [New].
@@ -97,6 +99,20 @@ func WithPrivateKeyHex(hex string) ClientOption {
 // during [New] and closed by [Client.Close].
 func WithRPCURL(url string) ClientOption {
 	return func(cfg *clientConfig) { cfg.rpcURL = url }
+}
+
+// WithMaxMulticallCalls limits the number of actual contract calls in each
+// dynamic Multicall3 request made by WarmStorage, SPRegistry, and SessionKey
+// methods. Zero uses the default of 64. Negative values cause [New] to return
+// [ErrInvalidArgument].
+//
+// Batches execute serially and may observe different blocks. The call-count
+// limit does not bound request or response bytes, gas, or execution time.
+// Choose a value based on the RPC node's request and response limits, eth_call
+// gas cap, timeout, and rate limits. Lower it when requests are rejected or
+// time out; raise it for a self-hosted node only after testing those limits.
+func WithMaxMulticallCalls(max int) ClientOption {
+	return func(cfg *clientConfig) { cfg.maxMulticallCalls = max }
 }
 
 // WithEthClient provides a pre-created [ethclient.Client].
@@ -196,6 +212,9 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	var cfg clientConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.maxMulticallCalls < 0 {
+		return nil, fmt.Errorf("synapse.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
 	}
 
 	cleanup, err := resolvePrivateKey(&cfg)
@@ -380,6 +399,7 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		withCDN:                cfg.withCDN,
 		filbeamRetrievalDomain: cfg.filbeamRetrievalDomain,
 		allowPrivateNetworks:   cfg.allowPrivateNetworks,
+		maxMulticallCalls:      cfg.maxMulticallCalls,
 		lifecycle:              lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {

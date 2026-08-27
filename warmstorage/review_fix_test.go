@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -71,8 +73,15 @@ func TestGetClientDataSetsWithDetails_PropagatesEnrichmentFailure(t *testing.T) 
 	if err == nil {
 		t.Fatalf("GetClientDataSetsWithDetails err=nil, got=%+v want enrichment failure", got)
 	}
-	if !strings.Contains(err.Error(), "dataSetLive") {
-		t.Fatalf("GetClientDataSetsWithDetails err=%v, want dataSetLive context", err)
+	if !strings.Contains(err.Error(), "dataSetLive") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("GetClientDataSetsWithDetails err=%v, want dataSetLive context and revert reason", err)
+	}
+}
+
+func TestUnpackDataSetDetailsResult_PreservesUnknownFailureData(t *testing.T) {
+	_, err := unpackDataSetDetailsResult(iabi.Result3{Success: false, ReturnData: []byte{0xde, 0xad}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "0xdead") {
+		t.Fatalf("error = %v, want raw return data", err)
 	}
 }
 
@@ -148,6 +157,238 @@ func TestGetClientDataSetsWithDetails_IncludesParityMetadata(t *testing.T) {
 	}
 	if _, ok := meta["withCDN"]; !ok {
 		t.Fatalf("Metadata missing withCDN key: %v", meta)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_ReportsMetadataMappingError(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	payer := common.HexToAddress("0x4444444444444444444444444444444444444444")
+
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+	})
+	mc.setPDPReply(t, "getDataSetListener", s.fwssAddr)
+	mc.setPDPReply(t, "dataSetLive", false)
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{"source"}, []string{})
+
+	got, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err == nil {
+		t.Fatalf("GetClientDataSetsWithDetails err=nil, got=%+v want metadata mapping error", got)
+	}
+	if !strings.Contains(err.Error(), "getAllDataSetMetadata dataSetID 1") || !strings.Contains(err.Error(), "mismatched keys") {
+		t.Fatalf("GetClientDataSetsWithDetails err=%v, want metadata operation, dataset, and mapping context", err)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_DefaultBatchLimit(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	infos := make([]fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView, 100)
+	for i := range infos {
+		infos[i] = dataSetInfoView(int64(i + 1))
+	}
+	listCalls := 0
+	mc.handlers["getClientDataSets"] = func(data []byte) ([]byte, error) {
+		listCalls++
+		args, err := mc.viewABI.Methods["getClientDataSets"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		if args[1].(*big.Int).Sign() == 0 {
+			return mc.viewABI.Methods["getClientDataSets"].Outputs.Pack(infos)
+		}
+		return mc.viewABI.Methods["getClientDataSets"].Outputs.Pack([]fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{})
+	}
+	mc.setPDPReply(t, "getDataSetListener", s.fwssAddr)
+	mc.setPDPReply(t, "dataSetLive", true)
+	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(1))
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
+
+	got, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(infos) {
+		t.Fatalf("len(details) = %d, want %d", len(got), len(infos))
+	}
+	for i := range got {
+		if got[i].DataSetID.String() != big.NewInt(int64(i+1)).String() {
+			t.Fatalf("details[%d].DataSetID = %s, want %d", i, got[i].DataSetID.String(), i+1)
+		}
+	}
+	wantSizes := []int{64, 36, 64, 64, 64, 8, 64, 36}
+	if !slices.Equal(mc.multicallSizes, wantSizes) {
+		t.Fatalf("multicall sizes = %v, want %v", mc.multicallSizes, wantSizes)
+	}
+	if listCalls != 2 {
+		t.Fatalf("getClientDataSets calls = %d, want 2", listCalls)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_FiltersBeforeDependentCalls(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+		dataSetInfoView(2),
+		dataSetInfoView(3),
+	})
+	mc.handlers["getDataSetListener"] = func(data []byte) ([]byte, error) {
+		args, err := mc.pdpABI.Methods["getDataSetListener"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		listener := s.fwssAddr
+		if args[0].(*big.Int).Cmp(big.NewInt(1)) == 0 {
+			listener = common.HexToAddress("0x9999999999999999999999999999999999999999")
+		}
+		return mc.pdpABI.Methods["getDataSetListener"].Outputs.Pack(listener)
+	}
+	mc.handlers["dataSetLive"] = func(data []byte) ([]byte, error) {
+		args, err := mc.pdpABI.Methods["dataSetLive"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		return mc.pdpABI.Methods["dataSetLive"].Outputs.Pack(args[0].(*big.Int).Cmp(big.NewInt(3)) == 0)
+	}
+	activeCalls := 0
+	mc.handlers["getActivePieceCount"] = func(_ []byte) ([]byte, error) {
+		activeCalls++
+		return mc.pdpABI.Methods["getActivePieceCount"].Outputs.Pack(big.NewInt(7))
+	}
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
+
+	got, err := s.GetClientDataSetsWithDetails(context.Background(), payer, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].DataSetID.String() != "2" || got[1].DataSetID.String() != "3" {
+		t.Fatalf("details = %+v, want data sets 2 and 3 in order", got)
+	}
+	if got[0].IsLive || got[0].ActivePieceCount.Sign() != 0 {
+		t.Fatalf("data set 2 = %+v, want non-live with zero active pieces", got[0])
+	}
+	if !got[1].IsLive || got[1].ActivePieceCount.Cmp(big.NewInt(7)) != 0 {
+		t.Fatalf("data set 3 = %+v, want live with 7 active pieces", got[1])
+	}
+	if activeCalls != 1 {
+		t.Fatalf("getActivePieceCount calls = %d, want 1", activeCalls)
+	}
+	if want := []int{3, 4, 1}; !slices.Equal(mc.multicallSizes, want) {
+		t.Fatalf("multicall sizes = %v, want %v", mc.multicallSizes, want)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_UsesDataSetErrorOrder(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+		dataSetInfoView(2),
+	})
+	mc.handlers["getDataSetListener"] = func(data []byte) ([]byte, error) {
+		args, err := mc.pdpABI.Methods["getDataSetListener"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		if args[0].(*big.Int).Cmp(big.NewInt(2)) == 0 {
+			return nil, errors.New("listener failed")
+		}
+		return mc.pdpABI.Methods["getDataSetListener"].Outputs.Pack(s.fwssAddr)
+	}
+	mc.setPDPReply(t, "dataSetLive", true)
+	mc.handlers["getActivePieceCount"] = func(_ []byte) ([]byte, error) {
+		return nil, errors.New("active count failed")
+	}
+	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
+
+	_, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err == nil || !strings.Contains(err.Error(), "getActivePieceCount dataSetID 1") {
+		t.Fatalf("error = %v, want data set 1 active-count failure", err)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_StopsAtResolvedErrorFrontier(t *testing.T) {
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:            mc,
+		FWSS:              common.HexToAddress("0x1111111111111111111111111111111111111111"),
+		ViewContract:      common.HexToAddress("0x2222222222222222222222222222222222222222"),
+		PDPVerifier:       common.HexToAddress("0x3333333333333333333333333333333333333333"),
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+		dataSetInfoView(2),
+	})
+	mc.handlers["getDataSetListener"] = func(data []byte) ([]byte, error) {
+		args, err := mc.pdpABI.Methods["getDataSetListener"].Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		if args[0].(*big.Int).Cmp(big.NewInt(1)) == 0 {
+			return nil, errors.New("listener failed")
+		}
+		return mc.pdpABI.Methods["getDataSetListener"].Outputs.Pack(s.fwssAddr)
+	}
+	batchCalls := 0
+	mc.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		if batchCalls > 1 {
+			return nil, errors.New("later transport failure")
+		}
+		return mc.handleMulticall(data)
+	}
+
+	_, err = s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err == nil || !strings.Contains(err.Error(), "getDataSetListener dataSetID 1") ||
+		!strings.Contains(err.Error(), "listener failed") {
+		t.Fatalf("error = %v, want first listener revert", err)
+	}
+	if batchCalls != 1 {
+		t.Fatalf("multicall count = %d, want 1", batchCalls)
+	}
+}
+
+func TestGetClientDataSetsWithDetails_StopsAfterTopLevelBatchFailure(t *testing.T) {
+	mc := newMockCaller(t)
+	s, err := New(Options{
+		Client:            mc,
+		FWSS:              common.HexToAddress("0x1111111111111111111111111111111111111111"),
+		ViewContract:      common.HexToAddress("0x2222222222222222222222222222222222222222"),
+		PDPVerifier:       common.HexToAddress("0x3333333333333333333333333333333333333333"),
+		MaxMulticallCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payer := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	mc.setViewReply(t, "getClientDataSets", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		dataSetInfoView(1),
+		dataSetInfoView(2),
+		dataSetInfoView(3),
+	})
+	batchCalls := 0
+	mc.multicallFn = func(data []byte) ([]byte, error) {
+		batchCalls++
+		if batchCalls == 2 {
+			return nil, errors.New("RPC unavailable")
+		}
+		return mc.handleMulticall(data)
+	}
+	mc.setPDPReply(t, "getDataSetListener", s.fwssAddr)
+
+	_, err = s.GetClientDataSetsWithDetails(context.Background(), payer, false)
+	if err == nil || !strings.Contains(err.Error(), "getDataSetListener batch") ||
+		!strings.Contains(err.Error(), "calls [1:2)") {
+		t.Fatalf("error = %v, want listener second-batch context", err)
+	}
+	if batchCalls != 2 {
+		t.Fatalf("multicall count = %d, want 2", batchCalls)
 	}
 }
 
