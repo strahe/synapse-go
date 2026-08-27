@@ -353,6 +353,34 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type lifecycleChecker func() error
+
+func (f lifecycleChecker) CheckClosed() error { return f() }
+
+func TestLifecycleErrorIsReturnedBeforeHTTP(t *testing.T) {
+	want := errors.New("lifecycle unavailable")
+	httpCalled := false
+	svc, err := New(Options{
+		Chain: chain.Calibration,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return nil, errors.New("unexpected HTTP request")
+		})},
+		Lifecycle: lifecycleChecker(func() error { return want }),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
+	if !errors.Is(err, want) {
+		t.Fatalf("GetDataSetStats error = %v, want %v", err, want)
+	}
+	if httpCalled {
+		t.Fatal("HTTP backend was called after Lifecycle returned an error")
+	}
+}
+
 func TestGetDataSetStats_Success(t *testing.T) {
 	cdnVal := "1234567890123456789"
 	cacheVal := "9876543210987654321"

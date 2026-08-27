@@ -306,6 +306,20 @@ func newTestService(t *testing.T) (*Service, *mockBackend) {
 	return newTestServiceWith(t, newTestSigner(t))
 }
 
+type recordingNonceManager struct {
+	nonce    uint64
+	acquired int
+	released bool
+}
+
+func (m *recordingNonceManager) Acquire(context.Context) (uint64, func(), error) {
+	m.acquired++
+	var once sync.Once
+	return m.nonce, func() {
+		once.Do(func() { m.released = true })
+	}, nil
+}
+
 func testRailView(owner common.Address, lockupFixed *big.Int) filpaybind.FilecoinPayV1RailView {
 	return filpaybind.FilecoinPayV1RailView{
 		Token:               tokenAddr,
@@ -728,6 +742,37 @@ func TestApprove_Broadcasts(t *testing.T) {
 	}
 	if args[1].(*big.Int).Int64() != 500 {
 		t.Errorf("amount = %s", args[1])
+	}
+}
+
+func TestApprove_UsesInjectedNonceManager(t *testing.T) {
+	mb := newMockBackend(t)
+	nonces := &recordingNonceManager{nonce: 73}
+	s, err := New(Options{
+		Backend:       mb,
+		ChainID:       sdktypes.ChainID(314159),
+		FilPayAddress: filPayAddr,
+		Signer:        newTestSigner(t),
+		NonceManager:  nonces,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1)); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if nonces.acquired != 1 {
+		t.Fatalf("Acquire calls = %d, want 1", nonces.acquired)
+	}
+	if !nonces.released {
+		t.Fatal("release was not called")
+	}
+	if len(mb.sent) != 1 {
+		t.Fatalf("sent transactions = %d, want 1", len(mb.sent))
+	}
+	if got := mb.sent[0].Nonce(); got != 73 {
+		t.Fatalf("transaction nonce = %d, want 73", got)
 	}
 }
 

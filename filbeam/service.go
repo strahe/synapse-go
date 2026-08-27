@@ -15,7 +15,6 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
-	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
@@ -28,7 +27,7 @@ type Service struct {
 	retrievalDomain string
 	httpClient      *http.Client
 	logger          *slog.Logger
-	lifecycle       *lifecycle.Lifecycle
+	lifecycle       interface{ CheckClosed() error }
 }
 
 // Options configures a [Service].
@@ -50,10 +49,12 @@ type Options struct {
 	// Logger is the structured logger. If nil, logging is silent.
 	Logger *slog.Logger
 
-	// Lifecycle, when non-nil, ties this Service to the owning Client's
-	// close state. After the Lifecycle is closed, every method returns
-	// ErrClosed. Nil is allowed for standalone use.
-	Lifecycle *lifecycle.Lifecycle
+	// Lifecycle is checked before service operations that can touch configured
+	// backends. Any error returned by CheckClosed is returned without touching
+	// those backends. The root synapse Client injects a shared checker whose
+	// closed error matches ErrClosed. Nil is allowed for standalone use. A
+	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	Lifecycle interface{ CheckClosed() error }
 }
 
 // New creates a [Service] for the given chain.

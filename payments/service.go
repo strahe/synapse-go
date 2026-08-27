@@ -14,7 +14,6 @@ import (
 
 	"github.com/strahe/synapse-go/internal/contracts/erc20"
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
-	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -27,6 +26,14 @@ type Backend interface {
 	BalanceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error)
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error)
 	BlockNumber(ctx context.Context) (uint64, error)
+}
+
+// NonceManager serializes transaction-nonce acquisition for one signing
+// address. On success, Acquire must return the next pending nonce and a
+// non-nil, idempotent release function. Callers may invoke release more than
+// once, but must invoke it after broadcasting or abandoning the transaction.
+type NonceManager interface {
+	Acquire(ctx context.Context) (nonce uint64, release func(), err error)
 }
 
 // ApprovalLockupPeriodReader returns the max lockup period Fund should grant
@@ -50,12 +57,12 @@ type Service struct {
 	filPayCall  *filpay.FilPayCaller
 	filPayWrite *filpay.FilPayTransactor
 	signer      signer.EVMSigner
-	nonces      *txutil.NonceManager
+	nonces      NonceManager
 	permits     *permitCoordinator
 	lockups     ApprovalLockupPeriodReader
 	logger      *slog.Logger
 	receiptWait time.Duration
-	lifecycle   *lifecycle.Lifecycle
+	lifecycle   interface{ CheckClosed() error }
 }
 
 // Options bundles the dependencies for constructing a Service.
@@ -86,18 +93,20 @@ type Options struct {
 	Logger *slog.Logger
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
-	// leave this nil to create one for this Service.
-	NonceManager *txutil.NonceManager
+	// leave this nil to create one for this Service. A non-nil value must be
+	// ready for use; a typed-nil implementation is invalid.
+	NonceManager NonceManager
 	// ReceiptWait overrides the default receipt polling timeout used by
 	// WithConfirmations when the call waits for a receipt but does not
-	// provide a more specific WithWait(timeout). Zero uses
-	// txutil.DefaultReceiptWaitConfig.
+	// provide a more specific WithWait(timeout). Zero uses the default receipt
+	// polling configuration.
 	ReceiptWait time.Duration
-	// Lifecycle, when non-nil, ties this Service to the owning Client's
-	// close state. After the Lifecycle is closed, every method returns
-	// ErrClosed without touching the RPC backend. Nil is allowed for
-	// standalone use.
-	Lifecycle *lifecycle.Lifecycle
+	// Lifecycle is checked before service operations that can touch configured
+	// backends. Any error returned by CheckClosed is returned without touching
+	// those backends. The root synapse Client injects a shared checker whose
+	// closed error matches ErrClosed. Nil is allowed for standalone use. A
+	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	Lifecycle interface{ CheckClosed() error }
 }
 
 // New constructs a Service.
@@ -515,9 +524,9 @@ func (s *Service) requireSigner(method string) error {
 
 // newTransactOpts builds a bind.TransactOpts with a freshly-fetched pending
 // nonce and returns a release function. The caller MUST invoke release
-// exactly once after either broadcasting the transaction or abandoning it
-// (e.g. on bind.Transactor.* failure). Until release is called all other
-// nonce acquisitions on this service are blocked.
+// after either broadcasting the transaction or abandoning it (e.g. on
+// bind.Transactor.* failure). release is idempotent. Until release is called
+// all other nonce acquisitions on this service are blocked.
 func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func(), error) {
 	opts, err := s.signer.Transactor(s.chainID.BigInt())
 	if err != nil {
