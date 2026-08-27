@@ -244,7 +244,7 @@ func TestServiceSelectProviderContextRejectsNilCore(t *testing.T) {
 }
 
 func TestServiceUploadToContextsIncompleteServiceIdentity(t *testing.T) {
-	svc, err := New(Options{SignerAddress: testPayer()})
+	svc, err := New(Options{PayerAddress: testPayer()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

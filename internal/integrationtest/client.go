@@ -14,13 +14,15 @@ import (
 //
 // The client is automatically closed via t.Cleanup; a failed dial is reported
 // with t.Fatalf so callers can treat the returned value as non-nil.
-func NewClient(t *testing.T, ctx context.Context, privateKeyHex string) *synapse.Client {
+func NewClient(t *testing.T, ctx context.Context, privateKeyHex string, opts ...synapse.ClientOption) *synapse.Client {
 	t.Helper()
-	client, err := synapse.New(ctx,
+	clientOpts := []synapse.ClientOption{
 		synapse.WithPrivateKeyHex(privateKeyHex),
 		synapse.WithRPCURL(RPCURL()),
 		synapse.WithAllowPrivateNetworks(true),
-	)
+	}
+	clientOpts = append(clientOpts, opts...)
+	client, err := synapse.New(ctx, clientOpts...)
 	if err != nil {
 		t.Fatalf("integrationtest: synapse.New: %v", err)
 	}

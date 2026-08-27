@@ -85,9 +85,9 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		if s.costCalc == nil {
 			return nil, fmt.Errorf("storage.Service.Prepare: %w: no CostCalculator configured", ErrUninitialized)
 		}
-		payer := s.signerAddr
+		payer := s.payerAddr
 		if payer == (common.Address{}) {
-			return nil, fmt.Errorf("storage.Service.Prepare: %w: zero payer and no default signer", ErrInvalidArgument)
+			return nil, fmt.Errorf("storage.Service.Prepare: %w: zero payer and no default payer", ErrInvalidArgument)
 		}
 		size := new(big.Int).SetUint64(opts.DataSize)
 		costs, err = s.costCalc.CalculateMultiContextCosts(ctx, payer, size, refs, MultiCostOptions{

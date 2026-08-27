@@ -503,7 +503,7 @@ func newWriteTestService(t *testing.T) (*Service, *mockWriteBackend) {
 	return s, backend
 }
 
-func TestReadDoesNotUseSignerAddress(t *testing.T) {
+func TestReadDoesNotSetCallFrom(t *testing.T) {
 	s, backend := newWriteTestService(t)
 	backend.rejectNonZeroCallFrom = true
 	want := common.HexToAddress("0x4444444444444444444444444444444444444444")

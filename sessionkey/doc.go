@@ -3,8 +3,9 @@
 //
 // Session keys are authorized by a root account with specific EIP-712
 // permissions (e.g., CreateDataSet, AddPieces) and a time-bounded expiry. This
-// package manages those on-chain authorizations and expiry checks; root Client
-// storage operations use the signer configured on the Client.
+// package manages those on-chain authorizations and expiry checks. A root
+// Client can remain the storage payer and direct transaction signer while a
+// separately authorized key signs Storage EIP-712 messages.
 //
 // This is separate from the signer package because session keys represent
 // a higher-level authorization concept, not just a signing primitive.

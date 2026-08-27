@@ -46,7 +46,7 @@ func newTestService() *Service {
 	return &Service{
 		httpClient:   &http.Client{},
 		lifecycle:    lifecycle.New(),
-		signerAddr:   testPayer(),
+		payerAddr:    testPayer(),
 		chainID:      sdktypes.ChainID(314159),
 		recordKeeper: testRecordKeeper(),
 	}
@@ -78,7 +78,7 @@ func (c *fakeUploadContext) CDNEnabled() bool {
 func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	svc.signerAddr = testPayer()
+	svc.payerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &MultiContextCosts{Ready: true}})
 	if err != nil {
@@ -190,7 +190,7 @@ func TestPrepare_BuildsExecuteWhenNotReady(t *testing.T) {
 	funder := &stubFunder{}
 	svc := newTestService()
 	svc.funder = funder
-	svc.signerAddr = testPayer()
+	svc.payerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
 		Costs: &MultiContextCosts{
@@ -229,7 +229,7 @@ func TestPrepareExecute_UsesComputedApprovalOptionsWithCallerWriteOptions(t *tes
 	funder := &stubFunder{}
 	svc := newTestService()
 	svc.funder = funder
-	svc.signerAddr = testPayer()
+	svc.payerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
 		Costs: &MultiContextCosts{
@@ -287,7 +287,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 			},
 			setup: func(svc *Service) {
 				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: false}}
-				svc.signerAddr = testPayer()
+				svc.payerAddr = testPayer()
 			},
 		},
 		{
@@ -303,7 +303,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 					Ready:         false,
 					DepositNeeded: big.NewInt(-1),
 				}}
-				svc.signerAddr = testPayer()
+				svc.payerAddr = testPayer()
 			},
 		},
 	}
@@ -323,7 +323,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 
 func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	svc := newTestService()
-	svc.signerAddr = common.Address{}
+	svc.payerAddr = common.Address{}
 	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
@@ -346,7 +346,7 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
 	svc := newTestService()
 	svc.costCalc = costCalc
-	svc.signerAddr = testPayer()
+	svc.payerAddr = testPayer()
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize:          128,
@@ -375,7 +375,7 @@ func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
 func TestPrepare_ReturnsErrorWhenCostCalculatorReturnsNil(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{}
-	svc.signerAddr = testPayer()
+	svc.payerAddr = testPayer()
 
 	defer func() {
 		if recovered := recover(); recovered != nil {

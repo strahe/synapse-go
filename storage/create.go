@@ -275,11 +275,11 @@ func (s *Service) validateContextIdentity(op string, storageCtx StorageContext) 
 	if isNilStorageContext(storageCtx) {
 		return fmt.Errorf("%s: %w: nil storage context", op, ErrInvalidArgument)
 	}
-	if s.signerAddr == (common.Address{}) || !s.chainID.IsValid() || s.recordKeeper == (common.Address{}) {
+	if s.payerAddr == (common.Address{}) || !s.chainID.IsValid() || s.recordKeeper == (common.Address{}) {
 		return fmt.Errorf("%s: %w: service identity is incomplete (payer, chain, and record keeper)", op, ErrInvalidArgument)
 	}
 	identity := storageCtx.ContextIdentity()
-	if identity.Payer == s.signerAddr && identity.ChainID == s.chainID && identity.RecordKeeper == s.recordKeeper {
+	if identity.Payer == s.payerAddr && identity.ChainID == s.chainID && identity.RecordKeeper == s.recordKeeper {
 		return nil
 	}
 	return fmt.Errorf("%s: %w: context identity does not match service payer, chain, and record keeper", op, ErrInvalidArgument)

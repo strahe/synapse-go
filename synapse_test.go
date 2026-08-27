@@ -18,14 +18,21 @@ import (
 	"testing"
 
 	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/testutil"
+	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
 )
@@ -49,6 +56,7 @@ func testPrivateKeyWithScalar(scalar *big.Int) *ecdsa.PrivateKey {
 type jsonRPCReq struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -82,6 +90,10 @@ func fakeRPCServer(t *testing.T, chainIDHex string) (*httptest.Server, *ethclien
 }
 
 func fakeRPCServerWithResolvedAddresses(t *testing.T, chainIDHex string, addresses ResolvedAddresses) (*httptest.Server, *ethclient.Client) {
+	return fakeRPCServerWithResolvedAddressesAndCallResult(t, chainIDHex, addresses, nil)
+}
+
+func fakeRPCServerWithResolvedAddressesAndCallResult(t *testing.T, chainIDHex string, addresses ResolvedAddresses, callResult func(common.Address) ([]byte, bool)) (*httptest.Server, *ethclient.Client) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCReq
@@ -94,6 +106,24 @@ func fakeRPCServerWithResolvedAddresses(t *testing.T, chainIDHex string, address
 		case "eth_chainId":
 			result = fmt.Sprintf(`"%s"`, chainIDHex)
 		case "eth_call":
+			if callResult != nil {
+				var params []json.RawMessage
+				if err := json.Unmarshal(req.Params, &params); err != nil || len(params) == 0 {
+					http.Error(w, "bad eth_call params", http.StatusBadRequest)
+					return
+				}
+				var call struct {
+					To common.Address `json:"to"`
+				}
+				if err := json.Unmarshal(params[0], &call); err != nil {
+					http.Error(w, "bad eth_call object", http.StatusBadRequest)
+					return
+				}
+				if output, ok := callResult(call.To); ok {
+					result = fmt.Sprintf("%q", hexutil.Encode(output))
+					break
+				}
+			}
 			result = fmt.Sprintf("%q", testutil.FWSSAddressResolutionResultHexFor(t, chain.ContractAddresses{
 				PDPVerifier:        addresses.PDPVerifier,
 				SPRegistry:         addresses.SPRegistry,
@@ -114,6 +144,45 @@ func fakeRPCServerWithResolvedAddresses(t *testing.T, chainIDHex string, address
 		t.Fatalf("dial fake RPC: %v", err)
 	}
 	return srv, ec
+}
+
+func testPDPProviderCallResult(t *testing.T, provider storage.Provider, paymentToken common.Address) []byte {
+	t.Helper()
+	keys, values, err := spregistry.EncodePDPCapabilities(spregistry.PDPOffering{
+		ServiceURL:               provider.ServiceURL,
+		MinPieceSizeInBytes:      big.NewInt(127),
+		MaxPieceSizeInBytes:      big.NewInt(1 << 20),
+		StoragePricePerTiBPerDay: big.NewInt(1),
+		MinProvingPeriodInEpochs: big.NewInt(1),
+		Location:                 "test",
+		PaymentTokenAddress:      paymentToken,
+	}, nil)
+	if err != nil {
+		t.Fatalf("EncodePDPCapabilities: %v", err)
+	}
+	registryABI, err := sprbind.SPRegistryMetaData.GetAbi()
+	if err != nil {
+		t.Fatalf("parse SPRegistry ABI: %v", err)
+	}
+	result, err := registryABI.Methods["getProviderWithProduct"].Outputs.Pack(sprbind.ServiceProviderRegistryStorageProviderWithProduct{
+		ProviderId: provider.ID.Big(),
+		ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
+			ServiceProvider: provider.ServiceProvider,
+			Payee:           provider.Payee,
+			Name:            "test-provider",
+			IsActive:        true,
+		},
+		Product: sprbind.ServiceProviderRegistryStorageServiceProduct{
+			ProductType:    uint8(spregistry.ProductTypePDP),
+			CapabilityKeys: keys,
+			IsActive:       true,
+		},
+		ProductCapabilityValues: values,
+	})
+	if err != nil {
+		t.Fatalf("pack getProviderWithProduct result: %v", err)
+	}
+	return result
 }
 
 func testResolvedAddresses(c chain.Chain) ResolvedAddresses {
@@ -275,6 +344,138 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	if got := client.SessionKey().RegistryAddress(); got != wantAddresses.SessionKeyRegistry {
 		t.Errorf("SessionKeyRegistry = %s, want %s", got, wantAddresses.SessionKeyRegistry)
 	}
+}
+
+func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
+	rootKey := testKey(t)
+	rootAddress := ethcrypto.PubkeyToAddress(rootKey.PublicKey)
+	delegatedKey := testKey(t)
+	delegatedSigner, err := signer.NewSecp256k1Signer(delegatedKey)
+	if err != nil {
+		t.Fatalf("NewSecp256k1Signer: %v", err)
+	}
+	pieceInfo, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0x42}, 256))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	provider := storage.Provider{
+		ID:              types.NewBigInt(1),
+		ServiceURL:      "https://pdp.example.com",
+		ServiceProvider: common.HexToAddress("0x1001"),
+		Payee:           common.HexToAddress("0x1002"),
+	}
+	var typedNil *signer.Secp256k1Signer
+	tests := []struct {
+		name       string
+		opt        ClientOption
+		wantSigner common.Address
+	}{
+		{name: "omitted", wantSigner: rootAddress},
+		{name: "nil", opt: WithStorageSigner(nil), wantSigner: rootAddress},
+		{name: "typed nil", opt: WithStorageSigner(typedNil), wantSigner: rootAddress},
+		{name: "delegated", opt: WithStorageSigner(delegatedSigner), wantSigner: delegatedSigner.EVMAddress()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			addresses := testResolvedAddresses(chain.Calibration)
+			providerResult := testPDPProviderCallResult(t, provider, addresses.USDFC)
+			srv, ec := fakeRPCServerWithResolvedAddressesAndCallResult(t, "0x4cb2f", addresses, func(target common.Address) ([]byte, bool) {
+				return providerResult, target == addresses.SPRegistry
+			})
+			defer srv.Close()
+			defer ec.Close()
+			opts := []ClientOption{WithPrivateKey(rootKey), WithEthClient(ec)}
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			client, err := New(context.Background(), opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			if client.Address() != rootAddress {
+				t.Fatalf("Address=%s want root %s", client.Address(), rootAddress)
+			}
+			uploadCtx, err := client.Storage().NewProviderContext(context.Background(), provider.ID, storage.NewProviderContextOptions{})
+			if err != nil {
+				t.Fatalf("Storage.NewProviderContext: %v", err)
+			}
+			extraData, err := uploadCtx.PresignForCommit(context.Background(), []storage.PieceInput{{PieceCID: pieceInfo.CIDv2}})
+			if err != nil {
+				t.Fatalf("PresignForCommit: %v", err)
+			}
+			payer, recoveredSigner := recoverClientCreateDataSetSigner(t, client, uploadCtx, extraData)
+			if uploadCtx.ContextIdentity().Payer != rootAddress || payer != rootAddress {
+				t.Fatalf("payer context=%s payload=%s want root %s", uploadCtx.ContextIdentity().Payer, payer, rootAddress)
+			}
+			if recoveredSigner != tc.wantSigner {
+				t.Fatalf("CreateDataSet signer=%s want %s", recoveredSigner, tc.wantSigner)
+			}
+		})
+	}
+}
+
+func recoverClientCreateDataSetSigner(t *testing.T, client *Client, uploadCtx storage.StorageContext, extraData []byte) (common.Address, common.Address) {
+	t.Helper()
+	createAndAddArgs := mustTestABIArguments(t, "bytes", "bytes")
+	createDataSetArgs := mustTestABIArguments(t, "address", "uint256", "string[]", "string[]", "bytes")
+	outer, err := createAndAddArgs.Unpack(extraData)
+	if err != nil {
+		t.Fatalf("unpack create-and-add extraData: %v", err)
+	}
+	createValues, err := createDataSetArgs.Unpack(outer[0].([]byte))
+	if err != nil {
+		t.Fatalf("unpack CreateDataSet extraData: %v", err)
+	}
+	keys := createValues[2].([]string)
+	values := createValues[3].([]string)
+	metadata := make([]ityped.MetadataEntry, len(keys))
+	for i := range keys {
+		metadata[i] = ityped.MetadataEntry{Key: keys[i], Value: values[i]}
+	}
+	domain := ityped.NewDomain(big.NewInt(int64(client.Chain().ChainID())), client.ResolvedAddresses().FWSS)
+	message := ityped.CreateDataSetMessage(createValues[1].(*big.Int), uploadCtx.GetProviderInfo().Payee, metadata)
+	recovered := recoverClientTypedDataSigner(t, domain, "CreateDataSet", message, createValues[4].([]byte))
+	return createValues[0].(common.Address), recovered
+}
+
+func mustTestABIArguments(t *testing.T, typeNames ...string) abi.Arguments {
+	t.Helper()
+	args := make(abi.Arguments, len(typeNames))
+	for i, typeName := range typeNames {
+		typ, err := abi.NewType(typeName, "", nil)
+		if err != nil {
+			t.Fatalf("parse ABI type %s: %v", typeName, err)
+		}
+		args[i] = abi.Argument{Type: typ}
+	}
+	return args
+}
+
+func recoverClientTypedDataSigner(t *testing.T, domain apitypes.TypedDataDomain, primaryType string, message apitypes.TypedDataMessage, signature []byte) common.Address {
+	t.Helper()
+	digest, _, err := apitypes.TypedDataAndHash(apitypes.TypedData{
+		Types:       ityped.Types,
+		PrimaryType: primaryType,
+		Domain:      domain,
+		Message:     message,
+	})
+	if err != nil {
+		t.Fatalf("hash %s: %v", primaryType, err)
+	}
+	if len(signature) != 65 {
+		t.Fatalf("%s signature length=%d want 65", primaryType, len(signature))
+	}
+	recoverySignature := append([]byte(nil), signature...)
+	if recoverySignature[64] >= 27 {
+		recoverySignature[64] -= 27
+	}
+	publicKey, err := ethcrypto.SigToPub(digest, recoverySignature)
+	if err != nil {
+		t.Fatalf("recover %s signer: %v", primaryType, err)
+	}
+	return ethcrypto.PubkeyToAddress(*publicKey)
 }
 
 func TestNew_WithRPCURL(t *testing.T) {

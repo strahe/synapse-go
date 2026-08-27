@@ -156,7 +156,7 @@ func NewProviderContext(provider Provider, client PDPProviderClient, evmSigner s
 			Payee:           provider.Payee,
 		},
 		client: client,
-		signer: evmSigner,
+		signer: normalizeOptional(evmSigner),
 	}
 	for _, opt := range opts {
 		if opt != nil {

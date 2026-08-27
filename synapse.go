@@ -19,6 +19,7 @@ import (
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/internal/adapters"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/payments"
@@ -38,6 +39,7 @@ type Client struct {
 	ethClient              *ethclient.Client
 	ownsClient             bool
 	evmSigner              signer.EVMSigner
+	storageSigner          signer.EVMSigner
 	selectedChain          chain.Chain
 	addresses              ResolvedAddresses
 	nonces                 *txutil.NonceManager
@@ -66,6 +68,7 @@ type Client struct {
 type clientConfig struct {
 	privateKey             *ecdsa.PrivateKey
 	privateKeyHex          string
+	storageSigner          signer.EVMSigner
 	rpcURL                 string
 	ethClient              *ethclient.Client
 	chain                  *chain.Chain
@@ -93,6 +96,20 @@ func WithPrivateKey(key *ecdsa.PrivateKey) ClientOption {
 // [WithPrivateKey] is also provided.
 func WithPrivateKeyHex(hex string) ClientOption {
 	return func(cfg *clientConfig) { cfg.privateKeyHex = hex }
+}
+
+// WithStorageSigner sets the signer used for Storage EIP-712 authorizations.
+// The root private key remains the payer and continues to sign transactions,
+// including payments, operator approvals, and direct storage termination via
+// TerminateDataSet or TerminateService with SkipProvider.
+//
+// Before the first storage write, authorize the signer's address by calling
+// Login or LoginWithOptions on [Client.SessionKey]. [New] does not query or
+// validate on-chain authorization. A direct [signer.Secp256k1Signer] is
+// recommended; wrapped or decorated signers that do not implement raw hash
+// signing are unsupported. A nil or typed-nil signer uses the root signer.
+func WithStorageSigner(storageSigner signer.EVMSigner) ClientOption {
+	return func(cfg *clientConfig) { cfg.storageSigner = storageSigner }
 }
 
 // WithRPCURL sets the JSON-RPC endpoint URL. An ethclient is dialed
@@ -277,7 +294,7 @@ func (c *Client) Chain() chain.Chain {
 	return c.selectedChain
 }
 
-// Address returns the EVM address derived from the private key.
+// Address returns the root EVM address derived from the private key.
 func (c *Client) Address() common.Address {
 	return c.evmSigner.EVMAddress()
 }
@@ -384,12 +401,17 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 	if err != nil {
 		return nil, fmt.Errorf("create signer: %w", err)
 	}
+	storageSigner := ifaceutil.NormalizeNil(cfg.storageSigner)
+	if storageSigner == nil {
+		storageSigner = evmSigner
+	}
 	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
 
 	c := &Client{
 		ethClient:              ec,
 		ownsClient:             ownsClient,
 		evmSigner:              evmSigner,
+		storageSigner:          storageSigner,
 		selectedChain:          selectedChain,
 		addresses:              addresses,
 		nonces:                 nonces,
