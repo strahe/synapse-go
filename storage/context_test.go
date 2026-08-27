@@ -1178,6 +1178,26 @@ func TestContextPresignAndPullRejectInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestNewProviderContextNormalizesTypedNilSigner(t *testing.T) {
+	var typedNil *signer.Secp256k1Signer
+	c, err := NewProviderContext(
+		testProvider(),
+		&fakePDPProviderClient{},
+		typedNil,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+
+	_, err = c.PresignForCommit(context.Background(), []PieceInput{{PieceCID: mustPieceInfo(t).CIDv2}})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "nil signer") {
+		t.Fatalf("PresignForCommit error=%v want nil signer ErrInvalidArgument", err)
+	}
+}
+
 func TestDataSetContextCommitRejectsMismatchedConfirmation(t *testing.T) {
 	info := mustPieceInfo(t)
 	client := &fakePDPProviderClient{

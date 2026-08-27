@@ -27,6 +27,7 @@ import (
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -238,29 +239,31 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		},
 		sessionkey.WithWait(delegatedTxWaitTimeout),
 	)
+	if login != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cleanupCancel()
+			result, revokeErr := client.SessionKey().RevokeWithOptions(
+				cleanupCtx,
+				delegatedAddress,
+				&sessionkey.RevokeOptions{
+					Permissions: permissions,
+					Origin:      "integration-test",
+				},
+				sessionkey.WithWait(delegatedTxWaitTimeout),
+			)
+			if revokeErr != nil {
+				t.Errorf("cleanup RevokeWithOptions(session=%s): %v", delegatedAddress, revokeErr)
+				return
+			}
+			if result == nil || result.Receipt == nil || result.Receipt.Status != 1 {
+				t.Errorf("cleanup RevokeWithOptions(session=%s) result=%+v", delegatedAddress, result)
+			}
+		})
+	}
 	if err != nil {
 		t.Fatalf("LoginWithOptions: %v", err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cleanupCancel()
-		result, revokeErr := client.SessionKey().RevokeWithOptions(
-			cleanupCtx,
-			delegatedAddress,
-			&sessionkey.RevokeOptions{
-				Permissions: permissions,
-				Origin:      "integration-test",
-			},
-			sessionkey.WithWait(delegatedTxWaitTimeout),
-		)
-		if revokeErr != nil {
-			t.Errorf("cleanup RevokeWithOptions(session=%s): %v", delegatedAddress, revokeErr)
-			return
-		}
-		if result == nil || result.Receipt == nil || result.Receipt.Status != 1 {
-			t.Errorf("cleanup RevokeWithOptions(session=%s) result=%+v", delegatedAddress, result)
-		}
-	})
 	if login == nil || login.Receipt == nil || login.Receipt.Status != 1 {
 		t.Fatalf("LoginWithOptions result=%+v", login)
 	}
@@ -303,33 +306,69 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 	}
 
-	result, err := uploadCtx.Upload(ctx, bytes.NewReader(data), nil)
+	providerCtx, ok := uploadCtx.(*storage.ProviderContext)
+	if !ok {
+		t.Fatalf("selected unbound context has type %T, want *storage.ProviderContext", uploadCtx)
+	}
+	storeResult, err := providerCtx.Store(ctx, bytes.NewReader(data), &storage.StoreOptions{PieceCID: pieceInfo.CIDv2})
 	if err != nil {
-		t.Fatalf("Upload: %v", err)
+		t.Fatalf("Store: %v", err)
 	}
-	if result == nil || len(result.Copies) == 0 || result.Copies[0].DataSetID.IsZero() {
-		t.Fatalf("Upload returned no data set: %+v", result)
+	if storeResult == nil || !storeResult.PieceCID.Equals(pieceInfo.CIDv2) {
+		t.Fatalf("Store PieceCID=%v want %s", storeResult, pieceInfo.CIDv2)
 	}
-	dataSetID := result.Copies[0].DataSetID
+	commitSubmission, err := providerCtx.SubmitCommit(ctx, storage.CommitRequest{
+		Pieces: []storage.PieceInput{{PieceCID: storeResult.PieceCID}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitCommit: %v", err)
+	}
+	if commitSubmission == nil {
+		t.Fatal("SubmitCommit returned nil submission")
+	}
+	var dataSetID types.BigInt
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cleanupCancel()
-		terminateResult, terminateErr := client.Storage().TerminateDataSet(cleanupCtx, dataSetID, &storage.TerminateDataSetOptions{
+		cleanupDataSetID := dataSetID
+		if cleanupDataSetID.IsZero() {
+			waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			commitResult, waitErr := providerCtx.WaitForCommit(waitCtx, *commitSubmission)
+			waitCancel()
+			if waitErr != nil {
+				t.Errorf("cleanup WaitForCommit(submission=%+v session=%s): %v", *commitSubmission, delegatedAddress, waitErr)
+				return
+			}
+			if commitResult == nil || commitResult.DataSet.DataSetID().IsZero() {
+				t.Errorf("cleanup WaitForCommit(submission=%+v session=%s) result=%+v", *commitSubmission, delegatedAddress, commitResult)
+				return
+			}
+			cleanupDataSetID = commitResult.DataSet.DataSetID()
+		}
+		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer terminateCancel()
+		terminateResult, terminateErr := client.Storage().TerminateDataSet(terminateCtx, cleanupDataSetID, &storage.TerminateDataSetOptions{
 			WriteOptions: []warmstorage.WriteOption{
 				warmstorage.WithWait(delegatedTxWaitTimeout),
 			},
 		})
 		if terminateErr != nil {
-			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s): %v", dataSetID, delegatedAddress, terminateErr)
+			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s): %v", cleanupDataSetID, delegatedAddress, terminateErr)
 			return
 		}
 		if terminateResult == nil || terminateResult.Receipt == nil || terminateResult.Receipt.Status != 1 {
-			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s) result=%+v", dataSetID, delegatedAddress, terminateResult)
+			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s) result=%+v", cleanupDataSetID, delegatedAddress, terminateResult)
 		}
 	})
 
-	if !result.Copies[0].IsNewDataSet {
-		t.Fatalf("Upload IsNewDataSet=false for data set %s", dataSetID)
+	commitResult, err := providerCtx.WaitForCommit(ctx, *commitSubmission)
+	if err != nil {
+		t.Fatalf("WaitForCommit: %v", err)
+	}
+	if commitResult == nil || commitResult.DataSet.DataSetID().IsZero() {
+		t.Fatalf("WaitForCommit returned no data set: %+v", commitResult)
+	}
+	dataSetID = commitResult.DataSet.DataSetID()
+	if !commitResult.IsNewDataSet {
+		t.Fatalf("WaitForCommit IsNewDataSet=false for data set %s", dataSetID)
 	}
 	dataSet, err := client.WarmStorage().GetDataSet(ctx, dataSetID)
 	if err != nil {
@@ -337,9 +376,6 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 	}
 	if dataSet.Payer != rootAddress {
 		t.Fatalf("on-chain payer=%s want root %s", dataSet.Payer, rootAddress)
-	}
-	if !result.PieceCID.Equals(pieceInfo.CIDv2) {
-		t.Fatalf("uploaded PieceCID=%s want %s", result.PieceCID, pieceInfo.CIDv2)
 	}
 	t.Logf("delegated storage acceptance passed: dataset=%s payer=%s signer=%s", dataSetID, rootAddress, delegatedAddress)
 }

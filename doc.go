@@ -19,6 +19,12 @@
 //	// 127 raw bytes.
 //	result, err := client.Storage().Upload(ctx, data, &storage.UploadOptions{Copies: 2})
 //
+// [WithStorageSigner] can delegate Storage EIP-712 authorization signatures to
+// an authorized key while the root key continues to determine [Client.Address]
+// and remains the payer and transaction signer. Authorize the delegated address
+// through [Client.SessionKey] before the first storage write; [New] does not
+// check that authorization during client construction.
+//
 // Sub-services are accessed via getters: [Client.Storage], [Client.Payments],
 // [Client.WarmStorage], [Client.SPRegistry], [Client.Costs], [Client.FilBeam],
 // and [Client.SessionKey]. Each getter returns the service instance created by [New].
