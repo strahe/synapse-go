@@ -353,6 +353,49 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type lifecycleChecker func() error
+
+func (f lifecycleChecker) CheckClosed() error { return f() }
+
+type panicLifecycle struct{}
+
+func (*panicLifecycle) CheckClosed() error { panic("typed-nil lifecycle was called") }
+
+func TestLifecycleErrorIsReturnedBeforeHTTP(t *testing.T) {
+	want := errors.New("lifecycle unavailable")
+	httpCalled := false
+	svc, err := New(Options{
+		Chain: chain.Calibration,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return nil, errors.New("unexpected HTTP request")
+		})},
+		Lifecycle: lifecycleChecker(func() error { return want }),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = svc.GetDataSetStats(context.Background(), types.NewBigInt(1))
+	if !errors.Is(err, want) {
+		t.Fatalf("GetDataSetStats error = %v, want %v", err, want)
+	}
+	if httpCalled {
+		t.Fatal("HTTP backend was called after Lifecycle returned an error")
+	}
+}
+
+func TestNew_TypedNilLifecycleIsIgnored(t *testing.T) {
+	var lifecycle *panicLifecycle
+	svc, err := New(Options{Chain: chain.Calibration, Lifecycle: lifecycle})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := svc.NewRetriever(common.HexToAddress("0x1")); err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+}
+
 func TestGetDataSetStats_Success(t *testing.T) {
 	cdnVal := "1234567890123456789"
 	cacheVal := "9876543210987654321"

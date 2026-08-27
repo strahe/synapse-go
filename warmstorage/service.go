@@ -16,7 +16,7 @@ import (
 	"github.com/strahe/synapse-go/internal/contracts/fwssview"
 	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/internal/idconv"
-	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -35,6 +35,14 @@ type Backend interface {
 	bind.ContractBackend
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error)
 	BlockNumber(ctx context.Context) (uint64, error)
+}
+
+// NonceManager serializes transaction-nonce acquisition for one signing
+// address. On success, Acquire must return the next pending nonce and a
+// non-nil, idempotent release function. Callers may invoke release more than
+// once, but must invoke it after broadcasting or abandoning the transaction.
+type NonceManager interface {
+	Acquire(ctx context.Context) (nonce uint64, release func(), err error)
 }
 
 // Service provides read access to FilecoinWarmStorageService (FWSS) and its
@@ -57,10 +65,10 @@ type Service struct {
 	pdpBind           *pdpverifier.PDPVerifierCaller
 	fwssWrite         *fwss.FWSSTransactor
 	signer            signer.EVMSigner
-	nonces            *txutil.NonceManager
+	nonces            NonceManager
 	logger            *slog.Logger
 	receiptWait       time.Duration
-	lifecycle         *lifecycle.Lifecycle
+	lifecycle         interface{ CheckClosed() error }
 	maxMulticallCalls int
 }
 
@@ -83,12 +91,13 @@ type Options struct {
 	Signer signer.EVMSigner
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
-	// leave this nil to create one when Backend and Signer are both set.
-	NonceManager *txutil.NonceManager
+	// leave this nil to create one when Backend and Signer are both set. A
+	// typed-nil value is treated as nil.
+	NonceManager NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
 	// ReceiptWait overrides the default receipt polling timeout for
-	// WithWait calls. Zero uses txutil.DefaultReceiptWaitConfig.
+	// WithWait calls. Zero uses the default receipt polling configuration.
 	ReceiptWait time.Duration
 	// MaxMulticallCalls limits the number of actual contract calls in each
 	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
@@ -96,10 +105,12 @@ type Options struct {
 	// this count does not bound request or response bytes, gas, or execution
 	// time.
 	MaxMulticallCalls int
-	// Lifecycle, when non-nil, ties this Service to the owning Client's
-	// close state. After the Lifecycle is closed, every method returns
-	// ErrClosed. Nil is allowed for standalone use.
-	Lifecycle *lifecycle.Lifecycle
+	// Lifecycle is checked before service operations that can touch configured
+	// backends. Any error returned by CheckClosed is returned without touching
+	// those backends. The root synapse Client injects a shared checker whose
+	// closed error matches ErrClosed. Nil is allowed for standalone use. A
+	// typed-nil value is treated as nil.
+	Lifecycle interface{ CheckClosed() error }
 }
 
 // New creates a Service. Both FWSS and ViewContract addresses are required.
@@ -141,9 +152,9 @@ func New(opts Options) (*Service, error) {
 		viewBind:          vb,
 		signer:            opts.Signer,
 		logger:            opts.Logger,
-		nonces:            opts.NonceManager,
+		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		receiptWait:       opts.ReceiptWait,
-		lifecycle:         opts.Lifecycle,
+		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}
 	if (opts.PDPVerifier != common.Address{}) {

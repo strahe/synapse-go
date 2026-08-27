@@ -15,7 +15,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/idconv"
-	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
@@ -83,7 +83,7 @@ type Service struct {
 	commitConcurrency    int
 	downloadMaxBytes     int64
 	logger               *slog.Logger
-	lifecycle            *lifecycle.Lifecycle
+	lifecycle            interface{ CheckClosed() error }
 
 	// Manager-level collaborators (all optional). When unset, the
 	// corresponding public method returns a descriptive error.
@@ -173,10 +173,12 @@ type Options struct {
 	// Logger receives internal warnings. nil disables logging.
 	Logger *slog.Logger
 
-	// Lifecycle, when non-nil, ties this Service to the owning Client's
-	// close state. After the Lifecycle is closed, every method returns
-	// ErrClosed. Nil is allowed for standalone use.
-	Lifecycle *lifecycle.Lifecycle
+	// Lifecycle is checked before service operations that can touch configured
+	// backends. Any error returned by CheckClosed is returned without touching
+	// those backends. The root synapse Client injects a shared checker whose
+	// closed error matches ErrClosed. Nil is allowed for standalone use. A
+	// typed-nil value is treated as nil.
+	Lifecycle interface{ CheckClosed() error }
 
 	// DataSetFinder backs Service.FindDataSets. Optional; when nil the
 	// method returns an ErrUninitialized-wrapped error.
@@ -284,7 +286,7 @@ func New(opts Options) (*Service, error) {
 		commitConcurrency:    opts.CommitConcurrency,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
 		logger:               opts.Logger,
-		lifecycle:            opts.Lifecycle,
+		lifecycle:            ifaceutil.NormalizeNil(opts.Lifecycle),
 		finder:               normalizeOptional(opts.DataSetFinder),
 		info:                 normalizeOptional(opts.StorageInfoReader),
 		terminator:           normalizeOptional(opts.DataSetTerminator),

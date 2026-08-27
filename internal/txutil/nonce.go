@@ -17,10 +17,10 @@ type NonceProvider interface {
 // NonceManager serializes nonce acquisition for an EOA. Each Acquire call
 // locks the manager, fetches PendingNonceAt(pending) from the network, and
 // returns both the nonce and a release function. The caller MUST invoke
-// release exactly once after either broadcasting the transaction (so that
-// subsequent Acquire calls observe the bumped pending count) or abandoning
-// the attempt. Until release is called no other goroutine can acquire a
-// nonce.
+// release after either broadcasting the transaction (so that subsequent
+// Acquire calls observe the bumped pending count) or abandoning the attempt.
+// release is idempotent, so callers may invoke it more than once. Until
+// release is called no other goroutine can acquire a nonce.
 //
 // Each transaction round-trips to the node for its nonce, with no client-side
 // cache. The added serialization is the cost of guaranteeing monotonically
@@ -37,9 +37,10 @@ func NewNonceManager(client NonceProvider, address common.Address) *NonceManager
 }
 
 // Acquire locks the manager and returns the next pending nonce together with
-// a release function. The caller MUST call release exactly once after either
-// broadcasting the transaction or abandoning it. release is idempotent. On
-// error, the returned release is a no-op.
+// a non-nil release function. The caller MUST call release after either
+// broadcasting the transaction or abandoning it. release is idempotent, so
+// callers may invoke it more than once. On error, the returned release is a
+// no-op.
 //
 // Acquire blocks until it can take the manager mutex; ctx only governs the
 // PendingNonceAt RPC call. If ctx is cancelled while another goroutine holds

@@ -15,7 +15,7 @@ import (
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
 	"github.com/strahe/synapse-go/internal/contracts/sessionkeyregistry"
-	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -27,6 +27,14 @@ type Backend interface {
 	bind.ContractBackend
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error)
 	BlockNumber(ctx context.Context) (uint64, error)
+}
+
+// NonceManager serializes transaction-nonce acquisition for one signing
+// address. On success, Acquire must return the next pending nonce and a
+// non-nil, idempotent release function. Callers may invoke release more than
+// once, but must invoke it after broadcasting or abandoning the transaction.
+type NonceManager interface {
+	Acquire(ctx context.Context) (nonce uint64, release func(), err error)
 }
 
 // Service provides session key management against the SessionKeyRegistry
@@ -42,10 +50,10 @@ type Service struct {
 	registryCall      *sessionkeyregistry.SessionKeyRegistryCaller
 	registryTx        *sessionkeyregistry.SessionKeyRegistryTransactor
 	signer            signer.EVMSigner
-	nonces            *txutil.NonceManager
+	nonces            NonceManager
 	logger            *slog.Logger
 	receiptWait       time.Duration
-	lifecycle         *lifecycle.Lifecycle
+	lifecycle         interface{ CheckClosed() error }
 	maxMulticallCalls int
 }
 
@@ -64,8 +72,9 @@ type Options struct {
 	Logger *slog.Logger
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
-	// leave this nil to create one for this Service.
-	NonceManager *txutil.NonceManager
+	// leave this nil to create one for this Service. A typed-nil value is treated
+	// as nil.
+	NonceManager NonceManager
 	// ReceiptWait overrides the default receipt polling timeout.
 	ReceiptWait time.Duration
 	// MaxMulticallCalls limits the number of actual contract calls in each
@@ -74,10 +83,12 @@ type Options struct {
 	// this count does not bound request or response bytes, gas, or execution
 	// time.
 	MaxMulticallCalls int
-	// Lifecycle, when non-nil, ties this Service to the owning Client's
-	// close state. After the Lifecycle is closed, every method returns
-	// ErrClosed. Nil is allowed for standalone use.
-	Lifecycle *lifecycle.Lifecycle
+	// Lifecycle is checked before service operations that can touch configured
+	// backends. Any error returned by CheckClosed is returned without touching
+	// those backends. The root synapse Client injects a shared checker whose
+	// closed error matches ErrClosed. Nil is allowed for standalone use. A
+	// typed-nil value is treated as nil.
+	Lifecycle interface{ CheckClosed() error }
 }
 
 // New constructs a Service.
@@ -116,9 +127,9 @@ func New(opts Options) (*Service, error) {
 		registryTx:        writer,
 		signer:            opts.Signer,
 		logger:            opts.Logger,
-		nonces:            opts.NonceManager,
+		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		receiptWait:       opts.ReceiptWait,
-		lifecycle:         opts.Lifecycle,
+		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}
 	if s.nonces == nil && s.signer != nil {
@@ -438,6 +449,9 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	nonce, release, nErr := s.nonces.Acquire(ctx)
 	if nErr != nil {
 		return nil, nil, fmt.Errorf("nonce: %w", nErr)
+	}
+	if release == nil {
+		return nil, nil, fmt.Errorf("nonce: %w: nonce manager returned nil release", ErrInvalidArgument)
 	}
 	txOpts.Nonce = new(big.Int).SetUint64(nonce)
 	return txOpts, release, nil
