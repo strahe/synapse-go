@@ -146,8 +146,8 @@ func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, 
 	if dataSet == nil {
 		return nil, fmt.Errorf("%s: GetDataSet returned nil", op)
 	}
-	if dataSet.Payer != s.signerAddr {
-		return nil, fmt.Errorf("%s: %w: data set payer %s does not match signer %s", op, ErrInvalidArgument, dataSet.Payer.Hex(), s.signerAddr.Hex())
+	if dataSet.Payer != s.payerAddr {
+		return nil, fmt.Errorf("%s: %w: data set payer %s does not match configured payer %s", op, ErrInvalidArgument, dataSet.Payer.Hex(), s.payerAddr.Hex())
 	}
 	if err := ensureTerminationAccountSettled(ctx, op, s.payments, s.epochs, s.paymentToken, dataSet.Payer); err != nil {
 		return nil, err

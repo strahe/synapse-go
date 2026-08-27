@@ -85,7 +85,7 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	terminator := &managerTerminator{result: wantWrite}
 	calculator := &managerCostCalculator{result: wantCosts}
 	svc, err := New(Options{
-		SignerAddress:     defaultPayer,
+		PayerAddress:      defaultPayer,
 		DataSetFinder:     finder,
 		StorageInfoReader: info,
 		DataSetTerminator: terminator,

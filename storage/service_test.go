@@ -19,6 +19,7 @@ import (
 
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -34,8 +35,8 @@ func testCommitDataSetRef(providerID, dataSetID uint64) DataSetRef {
 
 func mustNewService(t *testing.T, opts Options) *Service {
 	t.Helper()
-	if opts.SignerAddress == (common.Address{}) && opts.Signer == nil {
-		opts.SignerAddress = testPayer()
+	if opts.PayerAddress == (common.Address{}) && opts.Signer == nil {
+		opts.PayerAddress = testPayer()
 	}
 	if !opts.ChainID.IsValid() {
 		opts.ChainID = types.ChainID(314159)
@@ -1593,14 +1594,57 @@ func TestNewSetsUploadResolverWithoutInventingContextCapabilities(t *testing.T) 
 	}
 }
 
-func TestNewRejectsSignerAddressMismatch(t *testing.T) {
+func TestNewSeparatesPayerAndSigner(t *testing.T) {
 	s := mustTestSigner(t)
-	_, err := New(Options{
-		Signer:        s,
-		SignerAddress: common.HexToAddress("0x9999"),
-	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("New error=%v want ErrInvalidArgument", err)
+	payer := common.HexToAddress("0x9999")
+
+	mgr, err := New(Options{Signer: s, PayerAddress: payer})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if mgr.payerAddr != payer {
+		t.Fatalf("payer=%s want %s", mgr.payerAddr, payer)
+	}
+	if mgr.signer != s {
+		t.Fatal("New did not preserve the configured signer")
+	}
+}
+
+func TestNewDerivesPayerFromSignerWhenUnset(t *testing.T) {
+	s := mustTestSigner(t)
+	mgr, err := New(Options{Signer: s})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if mgr.payerAddr != s.EVMAddress() {
+		t.Fatalf("payer=%s want signer address %s", mgr.payerAddr, s.EVMAddress())
+	}
+}
+
+func TestNewAllowsPayerToMatchSigner(t *testing.T) {
+	s := mustTestSigner(t)
+	mgr, err := New(Options{Signer: s, PayerAddress: s.EVMAddress()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if mgr.payerAddr != s.EVMAddress() || mgr.signer != s {
+		t.Fatalf("payer=%s signer=%T", mgr.payerAddr, mgr.signer)
+	}
+}
+
+func TestNewNormalizesTypedNilSigner(t *testing.T) {
+	var s *signer.Secp256k1Signer
+	for _, payer := range []common.Address{{}, common.HexToAddress("0x9999")} {
+		mgr, err := New(Options{Signer: s, PayerAddress: payer})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if mgr.signer != nil {
+			t.Fatalf("signer=%T want nil", mgr.signer)
+		}
+		if mgr.payerAddr != payer {
+			t.Fatalf("payer=%s want %s", mgr.payerAddr, payer)
+		}
 	}
 }
 

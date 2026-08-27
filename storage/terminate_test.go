@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
+	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/types"
@@ -298,7 +301,7 @@ func TestService_TerminateService_RejectsDataSetOwnedByDifferentPayer(t *testing
 		EpochReader:        fakeTerminationEpochReader{block: 10},
 		PaymentToken:       common.HexToAddress("0x9999"),
 		Signer:             s,
-		SignerAddress:      s.EVMAddress(),
+		PayerAddress:       s.EVMAddress(),
 		ChainID:            types.ChainID(314159),
 		RecordKeeper:       testRecordKeeper(),
 	})
@@ -307,12 +310,15 @@ func TestService_TerminateService_RejectsDataSetOwnedByDifferentPayer(t *testing
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("err=%v want ErrInvalidArgument", err)
 	}
+	if !strings.Contains(err.Error(), "configured payer") {
+		t.Fatalf("err=%v want configured payer", err)
+	}
 	if providers.called {
 		t.Fatal("provider resolver should not be called for a different payer")
 	}
 }
 
-func TestService_TerminateService_DerivesSignerAddress(t *testing.T) {
+func TestService_TerminateService_DerivesPayerAddress(t *testing.T) {
 	s := mustTestSigner(t)
 	provider := Provider{
 		ID:              types.NewBigInt(1),
@@ -348,9 +354,11 @@ func TestService_TerminateService_DerivesSignerAddress(t *testing.T) {
 }
 
 func TestService_TerminateService_ProviderRelay(t *testing.T) {
-	signer := mustTestSigner(t)
+	storageSigner := mustTestSigner(t)
+	payer := testPayer()
 	dataSetID := types.NewBigInt(7)
 	txHash := common.HexToHash("0x1234")
+	var relayedExtraData []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/pdp/data-sets/7/terminate" {
 			t.Errorf("request path = %s", r.URL.Path)
@@ -359,6 +367,21 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 		}
 		switch r.Method {
 		case http.MethodPost:
+			var request struct {
+				ExtraData string `json:"extraData"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode terminate request: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			var err error
+			relayedExtraData, err = hexutil.Decode(request.ExtraData)
+			if err != nil {
+				t.Errorf("decode extraData: %v", err)
+				http.Error(w, "invalid extraData", http.StatusBadRequest)
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
@@ -373,25 +396,27 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 	provider := testProvider()
 	provider.ServiceURL = server.URL
 	providers := &fakeTerminationProviderResolver{provider: &provider}
+	paymentReader := &fakeTerminationPaymentReader{account: &payments.AccountState{
+		Funds:               big.NewInt(100),
+		LockupCurrent:       new(big.Int),
+		LockupRate:          new(big.Int),
+		LockupLastSettledAt: new(big.Int),
+	}}
 	mgr := mustNewService(t, Options{
 		HTTPClient: server.Client(),
 		FWSSDataSetReader: fakeTerminationDataSetReader{info: &warmstorage.DataSetInfo{
 			DataSetID:  dataSetID,
 			ProviderID: provider.ID,
-			Payer:      signer.EVMAddress(),
+			Payer:      payer,
 		}},
-		ProviderResolver: providers,
-		PaymentStateReader: &fakeTerminationPaymentReader{account: &payments.AccountState{
-			Funds:               big.NewInt(100),
-			LockupCurrent:       new(big.Int),
-			LockupRate:          new(big.Int),
-			LockupLastSettledAt: new(big.Int),
-		}},
-		EpochReader:  fakeTerminationEpochReader{block: 10},
-		PaymentToken: common.HexToAddress("0x9999"),
-		Signer:       signer,
-		ChainID:      types.ChainID(314159),
-		RecordKeeper: testRecordKeeper(),
+		ProviderResolver:   providers,
+		PaymentStateReader: paymentReader,
+		EpochReader:        fakeTerminationEpochReader{block: 10},
+		PaymentToken:       common.HexToAddress("0x9999"),
+		Signer:             storageSigner,
+		PayerAddress:       payer,
+		ChainID:            types.ChainID(314159),
+		RecordKeeper:       testRecordKeeper(),
 	})
 
 	var submitted common.Hash
@@ -406,6 +431,21 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 	}
 	if !providers.called || submitted != txHash || res == nil || res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
 		t.Fatalf("TerminateService result=%+v submitted=%s providerCalled=%v", res, submitted, providers.called)
+	}
+	if paymentReader.owner != payer {
+		t.Fatalf("payment owner=%s want payer %s", paymentReader.owner, payer)
+	}
+	values, err := bytesArgs.Unpack(relayedExtraData)
+	if err != nil {
+		t.Fatalf("unpack termination extraData: %v", err)
+	}
+	if len(values) != 1 {
+		t.Fatalf("termination extraData values=%v", values)
+	}
+	domain := ityped.NewDomain(big.NewInt(314159), testRecordKeeper())
+	recovered := recoverRawTypedDataSigner(t, domain, "TerminateService", ityped.TerminateServiceMessage(dataSetID.Big()), values[0].([]byte))
+	if recovered != storageSigner.EVMAddress() {
+		t.Fatalf("termination signer=%s want %s", recovered, storageSigner.EVMAddress())
 	}
 }
 

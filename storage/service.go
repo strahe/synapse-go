@@ -102,10 +102,10 @@ type Service struct {
 	recordKeeper common.Address
 	paymentToken common.Address
 
-	// signerAddr is the default client/payer used by manager-level
+	// payerAddr is the default payer used by manager-level
 	// helpers when the caller does not explicitly supply one. Zero
 	// address is allowed (callers must pass an address explicitly).
-	signerAddr common.Address
+	payerAddr common.Address
 }
 
 // Options configures a Service. Unset fields fall back to sensible defaults.
@@ -220,18 +220,17 @@ type Options struct {
 	EpochReader        EpochReader
 	PaymentToken       common.Address
 
-	// Signer is required for manager-level provider-relayed termination.
-	// ChainID and RecordKeeper also define the identity accepted by Prepare,
-	// Upload, UploadToContexts, and the explicit context APIs.
+	// Signer signs EIP-712 authorizations for manager-level provider-relayed
+	// termination. It may differ from PayerAddress when the payer has authorized
+	// a delegated signer. A typed-nil value is treated as nil.
 	Signer       signer.EVMSigner
 	ChainID      types.ChainID
 	RecordKeeper common.Address
 
-	// SignerAddress is the payer/client identity used by manager-level helpers
-	// and validated against every StorageContext. When Signer is set, a non-zero
-	// SignerAddress must match Signer.EVMAddress. When zero, New derives it from
-	// Signer.
-	SignerAddress common.Address
+	// PayerAddress is the payer/client identity used by manager-level helpers
+	// and validated against every StorageContext. It may differ from Signer.
+	// When zero, New derives it from a non-nil Signer.
+	PayerAddress common.Address
 }
 
 // New creates a Service from the given Options.
@@ -248,13 +247,10 @@ func New(opts Options) (*Service, error) {
 	if opts.DownloadMaxBytes < 0 {
 		opts.DownloadMaxBytes = 0
 	}
-	signerAddr := opts.SignerAddress
-	if opts.Signer != nil {
-		signerAddress := opts.Signer.EVMAddress()
-		if signerAddr != (common.Address{}) && signerAddr != signerAddress {
-			return nil, fmt.Errorf("storage.New: %w: SignerAddress does not match Signer", ErrInvalidArgument)
-		}
-		signerAddr = signerAddress
+	evmSigner := ifaceutil.NormalizeNil(opts.Signer)
+	payerAddr := opts.PayerAddress
+	if payerAddr == (common.Address{}) && evmSigner != nil {
+		payerAddr = evmSigner.EVMAddress()
 	}
 	resolver := normalizeOptional(opts.Resolver)
 	contextResolver := normalizeOptional(opts.ContextResolver)
@@ -297,11 +293,11 @@ func New(opts Options) (*Service, error) {
 		providers:            providers,
 		payments:             normalizeOptional(opts.PaymentStateReader),
 		epochs:               normalizeOptional(opts.EpochReader),
-		signer:               opts.Signer,
+		signer:               evmSigner,
 		chainID:              opts.ChainID,
 		recordKeeper:         opts.RecordKeeper,
 		paymentToken:         opts.PaymentToken,
-		signerAddr:           signerAddr,
+		payerAddr:            payerAddr,
 	}, nil
 }
 

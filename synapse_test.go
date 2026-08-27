@@ -26,6 +26,7 @@ import (
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
 )
@@ -274,6 +275,46 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	}
 	if got := client.SessionKey().RegistryAddress(); got != wantAddresses.SessionKeyRegistry {
 		t.Errorf("SessionKeyRegistry = %s, want %s", got, wantAddresses.SessionKeyRegistry)
+	}
+}
+
+func TestNew_WithStorageSignerKeepsRootAddress(t *testing.T) {
+	rootKey := testKey(t)
+	delegatedKey := testKey(t)
+	delegatedSigner, err := signer.NewSecp256k1Signer(delegatedKey)
+	if err != nil {
+		t.Fatalf("NewSecp256k1Signer: %v", err)
+	}
+	var typedNil *signer.Secp256k1Signer
+	tests := []struct {
+		name string
+		opt  ClientOption
+	}{
+		{name: "omitted"},
+		{name: "nil", opt: WithStorageSigner(nil)},
+		{name: "typed nil", opt: WithStorageSigner(typedNil)},
+		{name: "delegated", opt: WithStorageSigner(delegatedSigner)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, ec := fakeRPCServer(t, "0x4cb2f")
+			defer srv.Close()
+			defer ec.Close()
+			opts := []ClientOption{WithPrivateKey(rootKey), WithEthClient(ec)}
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			client, err := New(context.Background(), opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			want := ethcrypto.PubkeyToAddress(rootKey.PublicKey)
+			if client.Address() != want {
+				t.Fatalf("Address=%s want root %s", client.Address(), want)
+			}
+		})
 	}
 }
 

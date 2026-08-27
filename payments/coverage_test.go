@@ -245,7 +245,7 @@ func TestGetSettlementAmounts_DecodesTuple(t *testing.T) {
 	}
 }
 
-func TestReadsDoNotUseSignerAddress(t *testing.T) {
+func TestReadsDoNotSetCallFrom(t *testing.T) {
 	s, mb := newTestService(t)
 	if s.Account() == (common.Address{}) {
 		t.Fatal("test service has no signer account")

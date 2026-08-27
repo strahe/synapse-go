@@ -16,8 +16,10 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ipfs/go-cid"
 
+	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
@@ -45,6 +47,45 @@ func mustTestSigner(t *testing.T) signer.EVMSigner {
 		t.Fatalf("NewSecp256k1Signer: %v", err)
 	}
 	return s
+}
+
+func recoverRawTypedDataSigner(t *testing.T, domain apitypes.TypedDataDomain, primaryType string, message apitypes.TypedDataMessage, signature []byte) common.Address {
+	t.Helper()
+	typedData := apitypes.TypedData{
+		Types:       ityped.Types,
+		PrimaryType: primaryType,
+		Domain:      domain,
+		Message:     message,
+	}
+	domainSeparator, err := typedData.HashStruct("EIP712Domain", typedData.Domain.Map())
+	if err != nil {
+		t.Fatalf("hash EIP-712 domain: %v", err)
+	}
+	messageHash, err := typedData.HashStruct(primaryType, message)
+	if err != nil {
+		t.Fatalf("hash %s: %v", primaryType, err)
+	}
+	digest := ethcrypto.Keccak256(append(append([]byte{0x19, 0x01}, domainSeparator...), messageHash...))
+	if len(signature) != 65 {
+		t.Fatalf("signature length=%d want 65", len(signature))
+	}
+	recoverySignature := append([]byte(nil), signature...)
+	if recoverySignature[64] >= 27 {
+		recoverySignature[64] -= 27
+	}
+	publicKey, err := ethcrypto.SigToPub(digest, recoverySignature)
+	if err != nil {
+		t.Fatalf("recover %s signer: %v", primaryType, err)
+	}
+	return ethcrypto.PubkeyToAddress(*publicKey)
+}
+
+func decodedMetadataEntries(keys, values []string) []ityped.MetadataEntry {
+	entries := make([]ityped.MetadataEntry, len(keys))
+	for i := range keys {
+		entries[i] = ityped.MetadataEntry{Key: keys[i], Value: values[i]}
+	}
+	return entries
 }
 
 type fakeDataSetValidator struct {
@@ -845,10 +886,17 @@ func TestContextPullRoutesByConcreteType(t *testing.T) {
 
 func TestContextPresignWireShapesRemainStable(t *testing.T) {
 	info := mustPieceInfo(t)
-	providerCtx := mustWritableProviderContext(t, &fakePDPProviderClient{},
+	storageSigner := mustTestSigner(t)
+	providerCtx, err := NewProviderContext(testProvider(), &fakePDPProviderClient{}, storageSigner,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
 		WithCDN(true),
 		WithDataSetMetadata(map[string]string{"z": "last", "a": "first"}),
 	)
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
 	providerPayload, err := providerCtx.PresignForCommit(context.Background(), []PieceInput{{
 		PieceCID:      info.CIDv2,
 		PieceMetadata: map[string]string{"z": "last", "a": "first"},
@@ -870,8 +918,43 @@ func TestContextPresignWireShapesRemainStable(t *testing.T) {
 	if createValues[0].(common.Address) != testPayer() || strings.Join(createValues[2].([]string), ",") != "a,withCDN,z" {
 		t.Fatalf("create values=%v", createValues)
 	}
+	clientDataSetID := createValues[1].(*big.Int)
+	domain := ityped.NewDomain(big.NewInt(314159), testRecordKeeper())
+	createMessage := ityped.CreateDataSetMessage(
+		clientDataSetID,
+		testProvider().Payee,
+		decodedMetadataEntries(createValues[2].([]string), createValues[3].([]string)),
+	)
+	if recovered := recoverRawTypedDataSigner(t, domain, "CreateDataSet", createMessage, createValues[4].([]byte)); recovered != storageSigner.EVMAddress() {
+		t.Fatalf("CreateDataSet signer=%s want %s", recovered, storageSigner.EVMAddress())
+	}
+	providerAddValues, err := addPiecesArgs.Unpack(outer[1].([]byte))
+	if err != nil {
+		t.Fatalf("unpack provider add payload: %v", err)
+	}
+	pieceMetadata := [][]ityped.MetadataEntry{
+		decodedMetadataEntries(providerAddValues[1].([][]string)[0], providerAddValues[2].([][]string)[0]),
+	}
+	addMessage, err := ityped.AddPiecesMessage(clientDataSetID, providerAddValues[0].(*big.Int), []cid.Cid{info.CIDv2}, pieceMetadata)
+	if err != nil {
+		t.Fatalf("build AddPieces message: %v", err)
+	}
+	if recovered := recoverRawTypedDataSigner(t, domain, "AddPieces", addMessage, providerAddValues[3].([]byte)); recovered != storageSigner.EVMAddress() {
+		t.Fatalf("AddPieces signer=%s want %s", recovered, storageSigner.EVMAddress())
+	}
 
-	dataSetCtx := mustWritableDataSetContext(t, &fakePDPProviderClient{}, testDataSetRef(types.NewBigInt(42), types.NewBigInt(99)))
+	dataSetCtx, err := NewDataSetContext(
+		testProvider(),
+		&fakePDPProviderClient{},
+		storageSigner,
+		testDataSetRef(types.NewBigInt(42), types.NewBigInt(99)),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewDataSetContext: %v", err)
+	}
 	addPayload, err := dataSetCtx.PresignForCommit(context.Background(), []PieceInput{{
 		PieceCID:      info.CIDv2,
 		PieceMetadata: map[string]string{"k": "v"},

@@ -36,13 +36,22 @@ RPC endpoint unless you pass `WithChain`.
 
 Common setup options:
 
-- `WithPrivateKeyHex` / `WithPrivateKey`: configure the signer.
+- `WithPrivateKeyHex` / `WithPrivateKey`: configure the root payer and
+  transaction signer.
+- `WithStorageSigner`: delegate Storage EIP-712 signing to an authorized
+  `*signer.Secp256k1Signer`. Authorize it through `SessionKey()` before the
+  first storage write; client construction does not check authorization.
 - `WithRPCURL` / `WithEthClient`: configure chain access.
 - `WithMaxMulticallCalls`: limit dynamic Multicall3 requests.
 - `WithSource`: namespace datasets for this application.
 - `WithCDN`: set the client default for CDN-backed storage.
 - `WithAllowPrivateNetworks`: opt into private-network URL downloads.
 - `Close`: release SDK-owned network clients.
+
+`WithStorageSigner` does not change `Client.Address()` or the payer. Payments,
+operator approvals, nonce management, and direct storage termination continue
+to use the root private key. Direct termination includes `TerminateDataSet` and
+`TerminateService` with `SkipProvider` enabled.
 
 ## Upload And Download
 

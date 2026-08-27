@@ -23,6 +23,8 @@ import (
 // New() before the Client is returned to the caller, so every getter is a
 // simple field read with no synchronisation overhead.
 func (c *Client) initServices() error {
+	rootAddress := c.evmSigner.EVMAddress()
+
 	ws, err := warmstorage.New(warmstorage.Options{
 		Client:            c.ethClient,
 		Backend:           c.ethClient,
@@ -100,7 +102,7 @@ func (c *Client) initServices() error {
 		return fmt.Errorf("create filbeam service: %w", err)
 	}
 	c.filbeam = fb
-	fbRetriever, err := fb.NewRetriever(c.evmSigner.EVMAddress())
+	fbRetriever, err := fb.NewRetriever(rootAddress)
 	if err != nil {
 		return fmt.Errorf("create filbeam retriever: %w", err)
 	}
@@ -129,7 +131,7 @@ func (c *Client) initServices() error {
 	}
 
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
-		Payer:        c.evmSigner.EVMAddress(),
+		Payer:        rootAddress,
 		SPRegistry:   spReg,
 		WarmStorage:  ws,
 		ProviderPing: c.pingProvider,
@@ -139,7 +141,7 @@ func (c *Client) initServices() error {
 				return nil, fmt.Errorf("create PDP client for %s: %w", provider.ServiceURL, err)
 			}
 			ctxOpts := []storage.ContextOption{
-				storage.WithPayer(c.evmSigner.EVMAddress()),
+				storage.WithPayer(rootAddress),
 				storage.WithChainID(types.ChainID(c.selectedChain.ChainID())),
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(opts.DataSetMetadata),
@@ -156,7 +158,7 @@ func (c *Client) initServices() error {
 			return storage.NewProviderContext(
 				provider,
 				pdpClient,
-				c.evmSigner,
+				c.storageSigner,
 				ctxOpts...,
 			)
 		},
@@ -180,12 +182,12 @@ func (c *Client) initServices() error {
 		PaymentStateReader: pay,
 		EpochReader:        c.ethClient,
 		PaymentToken:       c.addresses.USDFC,
-		Signer:             c.evmSigner,
+		Signer:             c.storageSigner,
 		ChainID:            types.ChainID(c.selectedChain.ChainID()),
 		RecordKeeper:       c.addresses.FWSS,
 		CostCalculator:     adapters.NewCostCalculator(costsvc),
 		PaymentsFunder:     adapters.NewPaymentsFunder(pay),
-		SignerAddress:      c.evmSigner.EVMAddress(),
+		PayerAddress:       rootAddress,
 	}
 	if c.pdpReader != nil {
 		storageOpts.DataSetSizeReader = c.pdpReader

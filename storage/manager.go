@@ -12,11 +12,11 @@ import (
 )
 
 // FindDataSetsOptions configures Service.FindDataSets. A nil pointer or
-// zero value selects the configured default signer as the payer and
+// zero value selects the configured default payer and
 // disables the "only managed" filter.
 type FindDataSetsOptions struct {
-	// Payer overrides the default signer address. Zero means "use the
-	// signer configured via Options.SignerAddress".
+	// Payer overrides the address configured via Options.PayerAddress.
+	// Zero means use the configured default payer.
 	Payer common.Address
 	// OnlyManaged restricts the returned set to data sets whose
 	// record-keeper is the configured FWSS contract.
@@ -32,7 +32,7 @@ func (s *Service) FindDataSets(ctx context.Context, opts *FindDataSetsOptions) (
 	if s.finder == nil {
 		return nil, fmt.Errorf("storage.Service.FindDataSets: %w: no DataSetFinder configured", ErrUninitialized)
 	}
-	payer := s.signerAddr
+	payer := s.payerAddr
 	onlyManaged := false
 	if opts != nil {
 		if opts.Payer != (common.Address{}) {
@@ -41,16 +41,16 @@ func (s *Service) FindDataSets(ctx context.Context, opts *FindDataSetsOptions) (
 		onlyManaged = opts.OnlyManaged
 	}
 	if payer == (common.Address{}) {
-		return nil, fmt.Errorf("storage.Service.FindDataSets: %w: zero payer and no default signer", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.Service.FindDataSets: %w: zero payer and no default payer", ErrInvalidArgument)
 	}
 	return s.finder.FindDataSets(ctx, payer, onlyManaged)
 }
 
 // GetStorageInfoOptions configures Service.GetStorageInfo. A nil pointer
-// selects the configured default signer as the client address.
+// selects the configured default payer as the client address.
 type GetStorageInfoOptions struct {
-	// Client overrides the default signer. Zero means "use the signer
-	// configured via Options.SignerAddress"; if that too is zero the
+	// Client overrides the default payer. Zero means use the address
+	// configured via Options.PayerAddress; if that too is zero the
 	// allowances section of the returned StorageInfo will be nil.
 	Client common.Address
 }
@@ -64,7 +64,7 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 	if s.info == nil {
 		return nil, fmt.Errorf("storage.Service.GetStorageInfo: %w: no StorageInfoReader configured", ErrUninitialized)
 	}
-	client := s.signerAddr
+	client := s.payerAddr
 	if opts != nil && opts.Client != (common.Address{}) {
 		client = opts.Client
 	}
@@ -105,10 +105,10 @@ func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes 
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: no CostCalculator configured", ErrUninitialized)
 	}
 	if payer == (common.Address{}) {
-		payer = s.signerAddr
+		payer = s.payerAddr
 	}
 	if payer == (common.Address{}) {
-		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: zero payer and no default signer", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: zero payer and no default payer", ErrInvalidArgument)
 	}
 	if len(refs) == 0 {
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: empty refs", ErrInvalidArgument)
