@@ -357,6 +357,10 @@ type lifecycleChecker func() error
 
 func (f lifecycleChecker) CheckClosed() error { return f() }
 
+type panicLifecycle struct{}
+
+func (*panicLifecycle) CheckClosed() error { panic("typed-nil lifecycle was called") }
+
 func TestLifecycleErrorIsReturnedBeforeHTTP(t *testing.T) {
 	want := errors.New("lifecycle unavailable")
 	httpCalled := false
@@ -378,6 +382,17 @@ func TestLifecycleErrorIsReturnedBeforeHTTP(t *testing.T) {
 	}
 	if httpCalled {
 		t.Fatal("HTTP backend was called after Lifecycle returned an error")
+	}
+}
+
+func TestNew_TypedNilLifecycleIsIgnored(t *testing.T) {
+	var lifecycle *panicLifecycle
+	svc, err := New(Options{Chain: chain.Calibration, Lifecycle: lifecycle})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := svc.NewRetriever(common.HexToAddress("0x1")); err != nil {
+		t.Fatalf("NewRetriever: %v", err)
 	}
 }
 

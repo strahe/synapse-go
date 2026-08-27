@@ -18,6 +18,7 @@ import (
 	iabi "github.com/strahe/synapse-go/internal/abi"
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
@@ -78,7 +79,7 @@ type Options struct {
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
 	// leave this nil to create one when Backend and Signer are both set. A
-	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	// typed-nil value is treated as nil.
 	NonceManager NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
@@ -95,7 +96,7 @@ type Options struct {
 	// backends. Any error returned by CheckClosed is returned without touching
 	// those backends. The root synapse Client injects a shared checker whose
 	// closed error matches ErrClosed. Nil is allowed for standalone use. A
-	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	// typed-nil value is treated as nil.
 	Lifecycle interface{ CheckClosed() error }
 }
 
@@ -128,10 +129,10 @@ func New(opts Options) (*Service, error) {
 		addr:              opts.Address,
 		contract:          c,
 		signer:            opts.Signer,
-		nonces:            opts.NonceManager,
+		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		logger:            opts.Logger,
 		receiptWait:       opts.ReceiptWait,
-		lifecycle:         opts.Lifecycle,
+		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}
 	if opts.Backend != nil {
@@ -171,6 +172,9 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	nonce, release, err := s.nonces.Acquire(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("nonce: %w", err)
+	}
+	if release == nil {
+		return nil, nil, fmt.Errorf("nonce: %w: nonce manager returned nil release", ErrInvalidArgument)
 	}
 	topts.Nonce = new(big.Int).SetUint64(nonce)
 	return topts, release, nil

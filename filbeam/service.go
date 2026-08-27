@@ -15,6 +15,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
@@ -53,7 +54,7 @@ type Options struct {
 	// backends. Any error returned by CheckClosed is returned without touching
 	// those backends. The root synapse Client injects a shared checker whose
 	// closed error matches ErrClosed. Nil is allowed for standalone use. A
-	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	// typed-nil value is treated as nil.
 	Lifecycle interface{ CheckClosed() error }
 }
 
@@ -81,7 +82,7 @@ func New(opts Options) (*Service, error) {
 		retrievalDomain: endpoints.retrievalDomain,
 		httpClient:      httpClient,
 		logger:          opts.Logger,
-		lifecycle:       opts.Lifecycle,
+		lifecycle:       ifaceutil.NormalizeNil(opts.Lifecycle),
 	}, nil
 }
 

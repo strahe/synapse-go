@@ -603,6 +603,9 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	if err != nil {
 		return nil, nil, fmt.Errorf("nonce: %w", err)
 	}
+	if release == nil {
+		return nil, nil, fmt.Errorf("nonce: %w: nonce manager returned nil release", ErrInvalidArgument)
+	}
 	topts.Nonce = new(big.Int).SetUint64(nonce)
 	return topts, release, nil
 }

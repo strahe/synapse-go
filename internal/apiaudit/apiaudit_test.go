@@ -1,14 +1,19 @@
 package apiaudit
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -17,41 +22,56 @@ const modulePath = "github.com/strahe/synapse-go"
 
 func TestPublicAPIHasNoInternalTypes(t *testing.T) {
 	repoRoot := repositoryRoot(t)
-	publicPackages := []string{
-		".",
-		"chain",
-		"costs",
-		"filbeam",
-		"payments",
-		"pdp",
-		"piece",
-		"sessionkey",
-		"signer",
-		"spregistry",
-		"storage",
-		"types",
-		"warmstorage",
+	packages := listPackages(t, repoRoot)
+	exports := make(map[string]string, len(packages))
+	publicPackages := make([]listedPackage, 0, len(packages))
+	for _, pkg := range packages {
+		if pkg.Export != "" {
+			exports[pkg.ImportPath] = pkg.Export
+		}
+		if isPublicPackage(pkg) {
+			publicPackages = append(publicPackages, pkg)
+		}
 	}
-	fset := token.NewFileSet()
+	sort.Slice(publicPackages, func(i, j int) bool {
+		return publicPackages[i].ImportPath < publicPackages[j].ImportPath
+	})
 
-	for _, packageDir := range publicPackages {
-		dir := filepath.Join(repoRoot, packageDir)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("read package directory %s: %v", packageDir, err)
+	fset := token.NewFileSet()
+	lookup := func(importPath string) (io.ReadCloser, error) {
+		exportFile, ok := exports[importPath]
+		if !ok {
+			return nil, fmt.Errorf("no export data for %s", importPath)
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-				continue
-			}
-			filename := filepath.Join(dir, entry.Name())
-			file, err := parser.ParseFile(fset, filename, nil, 0)
-			if err != nil {
-				t.Fatalf("parse %s: %v", filename, err)
-			}
-			aliases := internalImportAliases(t, file, filename)
-			checkExportedDeclarations(t, fset, file, aliases)
+		return os.Open(exportFile)
+	}
+	compiledImporter := importer.ForCompiler(fset, "gc", lookup)
+
+	for _, pkg := range publicPackages {
+		files := parsePackageFiles(t, fset, pkg)
+		info := &types.Info{
+			Defs:  make(map[*ast.Ident]types.Object),
+			Types: make(map[ast.Expr]types.TypeAndValue),
 		}
+		config := types.Config{Importer: compiledImporter}
+		if _, err := config.Check(pkg.ImportPath, fset, files, info); err != nil {
+			t.Fatalf("type-check %s: %v", pkg.ImportPath, err)
+		}
+		checkExportedDeclarations(t, fset, files, info)
+	}
+}
+
+func TestInternalTypeDetectionFollowsAliases(t *testing.T) {
+	internalPackage := types.NewPackage(modulePath+"/internal/fake", "fake")
+	hiddenName := types.NewTypeName(token.NoPos, internalPackage, "Hidden", nil)
+	hidden := types.NewNamed(hiddenName, types.NewStruct(nil, nil), nil)
+
+	publicPackage := types.NewPackage(modulePath+"/public", "public")
+	aliasName := types.NewTypeName(token.NoPos, publicPackage, "leaked", nil)
+	alias := types.NewAlias(aliasName, hidden)
+
+	if got := findInternalType(alias); got != internalPackage.Path() {
+		t.Fatalf("findInternalType(alias) = %q, want %q", got, internalPackage.Path())
 	}
 }
 
@@ -217,84 +237,124 @@ func writeFile(t *testing.T, filename, contents string) {
 	}
 }
 
-func internalImportAliases(t *testing.T, file *ast.File, filename string) map[string]struct{} {
-	t.Helper()
-	aliases := make(map[string]struct{})
-	for _, spec := range file.Imports {
-		importPath, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			t.Fatalf("unquote import in %s: %v", filename, err)
-		}
-		if !strings.HasPrefix(importPath, modulePath+"/internal/") {
-			continue
-		}
-		alias := path.Base(importPath)
-		if spec.Name != nil {
-			alias = spec.Name.Name
-		}
-		switch alias {
-		case "_":
-			continue
-		case ".":
-			t.Fatalf("cannot audit dot import of internal package in %s", filename)
-		default:
-			aliases[alias] = struct{}{}
-		}
-	}
-	return aliases
+type listedPackage struct {
+	ImportPath string
+	Name       string
+	Dir        string
+	GoFiles    []string
+	CgoFiles   []string
+	Export     string
 }
 
-func checkExportedDeclarations(t *testing.T, fset *token.FileSet, file *ast.File, aliases map[string]struct{}) {
+func listPackages(t *testing.T, repoRoot string) []listedPackage {
 	t.Helper()
-	check := func(label string, expr ast.Expr) {
-		if referencesInternalImport(expr, aliases) {
-			t.Errorf("%s: %s references an internal package type", fset.Position(expr.Pos()), label)
-		}
+	cmd := exec.Command("go", "list", "-json", "-deps", "-export", "./...")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list packages: %v\n%s", err, out)
 	}
 
-	for _, decl := range file.Decls {
-		switch decl := decl.(type) {
-		case *ast.FuncDecl:
-			if decl.Name.IsExported() {
-				check("exported function or method "+decl.Name.Name, decl.Type)
-			}
-		case *ast.GenDecl:
-			for _, spec := range decl.Specs {
-				switch spec := spec.(type) {
-				case *ast.TypeSpec:
-					if !spec.Name.IsExported() {
-						continue
-					}
-					if spec.TypeParams != nil {
-						for _, field := range spec.TypeParams.List {
-							check("type parameters of "+spec.Name.Name, field.Type)
-						}
-					}
-					structure, ok := spec.Type.(*ast.StructType)
-					if !ok {
-						check("exported type "+spec.Name.Name, spec.Type)
-						continue
-					}
-					for _, field := range structure.Fields.List {
-						if len(field.Names) == 0 {
-							check("embedded field of "+spec.Name.Name, field.Type)
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	var packages []listedPackage
+	for {
+		var pkg listedPackage
+		err := decoder.Decode(&pkg)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode package list: %v", err)
+		}
+		packages = append(packages, pkg)
+	}
+	return packages
+}
+
+func isPublicPackage(pkg listedPackage) bool {
+	if pkg.Name == "main" {
+		return false
+	}
+	if pkg.ImportPath != modulePath && !strings.HasPrefix(pkg.ImportPath, modulePath+"/") {
+		return false
+	}
+	if isModuleInternalPath(pkg.ImportPath) {
+		return false
+	}
+	relative := strings.TrimPrefix(pkg.ImportPath, modulePath)
+	return relative != "/examples" &&
+		!strings.HasPrefix(relative, "/examples/") &&
+		relative != "/tests" &&
+		!strings.HasPrefix(relative, "/tests/")
+}
+
+func parsePackageFiles(t *testing.T, fset *token.FileSet, pkg listedPackage) []*ast.File {
+	t.Helper()
+	filenames := append(append([]string(nil), pkg.GoFiles...), pkg.CgoFiles...)
+	files := make([]*ast.File, 0, len(filenames))
+	for _, name := range filenames {
+		filename := filepath.Join(pkg.Dir, name)
+		file, err := parser.ParseFile(fset, filename, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", filename, err)
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+func checkExportedDeclarations(t *testing.T, fset *token.FileSet, files []*ast.File, info *types.Info) {
+	t.Helper()
+	check := func(label string, pos token.Pos, typ types.Type) {
+		if internalPath := findInternalType(typ); internalPath != "" {
+			t.Errorf("%s: %s references internal package %s", fset.Position(pos), label, internalPath)
+		}
+	}
+	checkExpr := func(label string, expr ast.Expr) {
+		check(label, expr.Pos(), info.TypeOf(expr))
+	}
+
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Name.IsExported() {
+					check("exported function or method "+decl.Name.Name, decl.Name.Pos(), info.Defs[decl.Name].Type())
+				}
+			case *ast.GenDecl:
+				for _, rawSpec := range decl.Specs {
+					switch spec := rawSpec.(type) {
+					case *ast.TypeSpec:
+						if !spec.Name.IsExported() {
 							continue
 						}
-						for _, name := range field.Names {
-							if name.IsExported() {
-								check("exported field "+spec.Name.Name+"."+name.Name, field.Type)
-								break
+						if spec.TypeParams != nil {
+							for _, field := range spec.TypeParams.List {
+								checkExpr("type parameters of "+spec.Name.Name, field.Type)
 							}
 						}
-					}
-				case *ast.ValueSpec:
-					if spec.Type == nil {
-						continue
-					}
-					for _, name := range spec.Names {
-						if name.IsExported() {
-							check("explicit type of exported value "+name.Name, spec.Type)
-							break
+						structure, ok := spec.Type.(*ast.StructType)
+						if !ok {
+							checkExpr("exported type "+spec.Name.Name, spec.Type)
+							continue
+						}
+						for _, field := range structure.Fields.List {
+							if len(field.Names) == 0 {
+								checkExpr("embedded field of "+spec.Name.Name, field.Type)
+								continue
+							}
+							for _, name := range field.Names {
+								if name.IsExported() {
+									checkExpr("exported field "+spec.Name.Name+"."+name.Name, field.Type)
+								}
+							}
+						}
+					case *ast.ValueSpec:
+						for _, name := range spec.Names {
+							if name.IsExported() {
+								check("exported value "+name.Name, name.Pos(), info.Defs[name].Type())
+							}
 						}
 					}
 				}
@@ -303,24 +363,123 @@ func checkExportedDeclarations(t *testing.T, fset *token.FileSet, file *ast.File
 	}
 }
 
-func referencesInternalImport(expr ast.Expr, aliases map[string]struct{}) bool {
-	found := false
-	ast.Inspect(expr, func(node ast.Node) bool {
-		selector, ok := node.(*ast.SelectorExpr)
-		if !ok {
+func findInternalType(typ types.Type) string {
+	seen := make(map[types.Type]bool)
+	var visit func(types.Type) string
+	visitList := func(list *types.TypeList) string {
+		for i := range list.Len() {
+			if internalPath := visit(list.At(i)); internalPath != "" {
+				return internalPath
+			}
+		}
+		return ""
+	}
+	visitTuple := func(tuple *types.Tuple) string {
+		for i := range tuple.Len() {
+			if internalPath := visit(tuple.At(i).Type()); internalPath != "" {
+				return internalPath
+			}
+		}
+		return ""
+	}
+	visitTypeParams := func(list *types.TypeParamList) string {
+		for i := range list.Len() {
+			if internalPath := visit(list.At(i).Constraint()); internalPath != "" {
+				return internalPath
+			}
+		}
+		return ""
+	}
+
+	visit = func(current types.Type) string {
+		if current == nil || seen[current] {
+			return ""
+		}
+		seen[current] = true
+		switch current := current.(type) {
+		case *types.Alias:
+			if isInternalObject(current.Obj()) {
+				return current.Obj().Pkg().Path()
+			}
+			if internalPath := visitList(current.TypeArgs()); internalPath != "" {
+				return internalPath
+			}
+			return visit(current.Rhs())
+		case *types.Named:
+			if isInternalObject(current.Obj()) {
+				return current.Obj().Pkg().Path()
+			}
+			return visitList(current.TypeArgs())
+		case *types.Pointer:
+			return visit(current.Elem())
+		case *types.Array:
+			return visit(current.Elem())
+		case *types.Slice:
+			return visit(current.Elem())
+		case *types.Map:
+			if internalPath := visit(current.Key()); internalPath != "" {
+				return internalPath
+			}
+			return visit(current.Elem())
+		case *types.Chan:
+			return visit(current.Elem())
+		case *types.Signature:
+			if internalPath := visitTypeParams(current.TypeParams()); internalPath != "" {
+				return internalPath
+			}
+			if internalPath := visitTuple(current.Params()); internalPath != "" {
+				return internalPath
+			}
+			return visitTuple(current.Results())
+		case *types.Struct:
+			for i := range current.NumFields() {
+				field := current.Field(i)
+				if field.Exported() || field.Embedded() {
+					if internalPath := visit(field.Type()); internalPath != "" {
+						return internalPath
+					}
+				}
+			}
+		case *types.Interface:
+			for i := range current.NumExplicitMethods() {
+				if internalPath := visit(current.ExplicitMethod(i).Type()); internalPath != "" {
+					return internalPath
+				}
+			}
+			for i := range current.NumEmbeddeds() {
+				if internalPath := visit(current.EmbeddedType(i)); internalPath != "" {
+					return internalPath
+				}
+			}
+		case *types.TypeParam:
+			return visit(current.Constraint())
+		case *types.Union:
+			for i := range current.Len() {
+				if internalPath := visit(current.Term(i).Type()); internalPath != "" {
+					return internalPath
+				}
+			}
+		}
+		return ""
+	}
+	return visit(typ)
+}
+
+func isInternalObject(obj *types.TypeName) bool {
+	return obj != nil && obj.Pkg() != nil && isModuleInternalPath(obj.Pkg().Path())
+}
+
+func isModuleInternalPath(importPath string) bool {
+	relative := strings.TrimPrefix(importPath, modulePath+"/")
+	if relative == importPath {
+		return false
+	}
+	for _, segment := range strings.Split(relative, "/") {
+		if segment == "internal" {
 			return true
 		}
-		identifier, ok := selector.X.(*ast.Ident)
-		if !ok {
-			return true
-		}
-		if _, ok := aliases[identifier.Name]; ok {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
+	}
+	return false
 }
 
 func isClientSelector(expr ast.Expr, field string) bool {

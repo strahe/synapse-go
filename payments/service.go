@@ -14,6 +14,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/contracts/erc20"
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
+	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -93,8 +94,8 @@ type Options struct {
 	Logger *slog.Logger
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
-	// leave this nil to create one for this Service. A non-nil value must be
-	// ready for use; a typed-nil implementation is invalid.
+	// leave this nil to create one for this Service. A typed-nil value is treated
+	// as nil.
 	NonceManager NonceManager
 	// ReceiptWait overrides the default receipt polling timeout used by
 	// WithConfirmations when the call waits for a receipt but does not
@@ -105,7 +106,7 @@ type Options struct {
 	// backends. Any error returned by CheckClosed is returned without touching
 	// those backends. The root synapse Client injects a shared checker whose
 	// closed error matches ErrClosed. Nil is allowed for standalone use. A
-	// non-nil value must be ready for use; a typed-nil implementation is invalid.
+	// typed-nil value is treated as nil.
 	Lifecycle interface{ CheckClosed() error }
 }
 
@@ -139,10 +140,10 @@ func New(opts Options) (*Service, error) {
 		signer:      opts.Signer,
 		lockups:     opts.ApprovalLockupPeriod,
 		logger:      opts.Logger,
-		nonces:      opts.NonceManager,
+		nonces:      ifaceutil.NormalizeNil(opts.NonceManager),
 		permits:     newPermitCoordinator(),
 		receiptWait: opts.ReceiptWait,
-		lifecycle:   opts.Lifecycle,
+		lifecycle:   ifaceutil.NormalizeNil(opts.Lifecycle),
 	}
 	if s.nonces == nil && s.signer != nil {
 		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())
@@ -536,6 +537,9 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	nonce, release, err := s.nonces.Acquire(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("nonce: %w", err)
+	}
+	if release == nil {
+		return nil, nil, fmt.Errorf("nonce: %w: nonce manager returned nil release", ErrInvalidArgument)
 	}
 	opts.Nonce = new(big.Int).SetUint64(nonce)
 	return opts, release, nil

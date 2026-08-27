@@ -320,6 +320,12 @@ func (m *recordingNonceManager) Acquire(context.Context) (uint64, func(), error)
 	}, nil
 }
 
+type nilReleaseNonceManager struct{}
+
+func (*nilReleaseNonceManager) Acquire(context.Context) (uint64, func(), error) {
+	return 0, nil, nil
+}
+
 func testRailView(owner common.Address, lockupFixed *big.Int) filpaybind.FilecoinPayV1RailView {
 	return filpaybind.FilecoinPayV1RailView{
 		Token:               tokenAddr,
@@ -773,6 +779,46 @@ func TestApprove_UsesInjectedNonceManager(t *testing.T) {
 	}
 	if got := mb.sent[0].Nonce(); got != 73 {
 		t.Fatalf("transaction nonce = %d, want 73", got)
+	}
+}
+
+func TestNew_TypedNilNonceManagerUsesDefault(t *testing.T) {
+	mb := newMockBackend(t)
+	var nonces *recordingNonceManager
+	s, err := New(Options{
+		Backend:       mb,
+		ChainID:       sdktypes.ChainID(314159),
+		FilPayAddress: filPayAddr,
+		Signer:        newTestSigner(t),
+		NonceManager:  nonces,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := s.nonces.(*txutil.NonceManager); !ok {
+		t.Fatalf("nonce manager = %T, want standalone default", s.nonces)
+	}
+}
+
+func TestApprove_RejectsNilRelease(t *testing.T) {
+	mb := newMockBackend(t)
+	s, err := New(Options{
+		Backend:       mb,
+		ChainID:       sdktypes.ChainID(314159),
+		FilPayAddress: filPayAddr,
+		Signer:        newTestSigner(t),
+		NonceManager:  &nilReleaseNonceManager{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Approve error = %v, want ErrInvalidArgument", err)
+	}
+	if len(mb.sent) != 0 {
+		t.Fatalf("sent transactions = %d, want 0", len(mb.sent))
 	}
 }
 
