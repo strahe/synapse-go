@@ -341,4 +341,5 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 	if !result.PieceCID.Equals(pieceInfo.CIDv2) {
 		t.Fatalf("uploaded PieceCID=%s want %s", result.PieceCID, pieceInfo.CIDv2)
 	}
+	t.Logf("delegated storage acceptance passed: dataset=%s payer=%s signer=%s", dataSetID, rootAddress, delegatedAddress)
 }
