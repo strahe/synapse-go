@@ -77,7 +77,7 @@ func TestPing_OK(t *testing.T) {
 		if r.URL.Path != "/pdp/ping" {
 			t.Errorf("path: %s", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	if err := c.Ping(context.Background()); err != nil {
 		t.Fatal(err)
@@ -98,6 +98,51 @@ func TestPing_Error(t *testing.T) {
 	}
 	if he.StatusCode != 503 {
 		t.Errorf("status=%d", he.StatusCode)
+	}
+}
+
+func TestPing_StrictResponseBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "exact", body: "curio-pdp", want: true},
+		{name: "surrounding whitespace", body: " \ncurio-pdp\t", want: true},
+		{name: "64 byte valid body", body: strings.Repeat(" ", 27) + "curio-pdp" + strings.Repeat(" ", 28), want: true},
+		{name: "empty", body: ""},
+		{name: "wrong identity", body: "ok"},
+		{name: "65 byte body", body: strings.Repeat(" ", 28) + "curio-pdp" + strings.Repeat(" ", 28)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			err := c.Ping(context.Background())
+			if tt.want && err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+			if !tt.want && !errors.Is(err, ErrPingResponseMismatch) {
+				t.Fatalf("Ping error = %v, want ErrPingResponseMismatch", err)
+			}
+		})
+	}
+}
+
+func TestPing_ResponseMismatchIsNotRetried(t *testing.T) {
+	var calls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, "not-curio")
+	}))
+	err := c.Ping(context.Background())
+	if !errors.Is(err, ErrPingResponseMismatch) {
+		t.Fatalf("Ping error = %v, want ErrPingResponseMismatch", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ping calls = %d, want 1", calls)
 	}
 }
 

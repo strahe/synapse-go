@@ -59,6 +59,14 @@ type PDPProviderSource interface {
 	SelectActivePDPProviders(context.Context, spregistry.ProviderFilter) ([]spregistry.PDPProvider, error)
 }
 
+// EndorsedProviderSource supplies the ordered provider IDs eligible to act as
+// automatic upload primaries. Implementations must be safe for concurrent use.
+// A nil slice with a nil error is an empty endorsement set; query and decoding
+// errors must be returned without being converted to an empty set.
+type EndorsedProviderSource interface {
+	GetEndorsedProviderIDs(context.Context) ([]types.BigInt, error)
+}
+
 // DataSetCatalog is the subset of warmstorage.Service used by ServiceResolver.
 type DataSetCatalog interface {
 	GetApprovedProviderIDs(context.Context, types.ListOptions) ([]types.BigInt, error)
@@ -93,8 +101,12 @@ type ContextFactory func(Provider, ContextFactoryOptions) (*ProviderContext, err
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
-	Payer            common.Address // EVM address of the paying account
-	SPRegistry       PDPProviderSource
+	Payer      common.Address // EVM address of the paying account
+	SPRegistry PDPProviderSource
+	// Endorsements is required only when automatic upload selection uses its
+	// default endorsed-primary policy. It may be nil when callers always set
+	// RequireEndorsedPrimary to false or use explicit provider contexts.
+	Endorsements     EndorsedProviderSource
 	WarmStorage      DataSetCatalog
 	DataSetValidator DataSetValidator
 	DataSetDetails   DataSetDetailsCatalog
@@ -115,6 +127,7 @@ type ServiceResolverOptions struct {
 type ServiceResolver struct {
 	payer            common.Address
 	spRegistry       PDPProviderSource
+	endorsements     EndorsedProviderSource
 	warmStorage      DataSetCatalog
 	dataSetActivity  dataSetActivityReader
 	dataSetValidator DataSetValidator
@@ -125,6 +138,7 @@ type ServiceResolver struct {
 
 var (
 	_ PDPProviderSource        = (*spregistry.Service)(nil)
+	_ EndorsedProviderSource   = (*spregistry.Service)(nil)
 	_ DataSetCatalog           = (*warmstorage.Service)(nil)
 	_ dataSetActivityReader    = (*warmstorage.Service)(nil)
 	_ pdpVerifierAddressReader = (*warmstorage.Service)(nil)
@@ -176,6 +190,7 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 	return &ServiceResolver{
 		payer:            opts.Payer,
 		spRegistry:       opts.SPRegistry,
+		endorsements:     normalizeOptional(opts.Endorsements),
 		warmStorage:      opts.WarmStorage,
 		dataSetActivity:  activity,
 		dataSetValidator: validator,
@@ -276,10 +291,11 @@ func (r *ServiceResolver) SelectProviderContext(ctx context.Context, opts Select
 		WithCDN:            copyBoolPtr(opts.WithCDN),
 	}
 	selections, err := r.selectWithRetry(ctx, &UploadOptions{
-		Copies:             1,
-		ExcludeProviderIDs: cloneBigIntSlice(opts.ExcludeProviderIDs),
-		DataSetMetadata:    cloneStringMap(opts.DataSetMetadata),
-		WithCDN:            copyBoolPtr(opts.WithCDN),
+		Copies:                 1,
+		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
+		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
+		RequireEndorsedPrimary: boolPtr(false),
+		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}, nil, false)
 	if err != nil {
 		return nil, err
@@ -297,19 +313,21 @@ func (r *ServiceResolver) SelectProviderContext(ctx context.Context, opts Select
 func (r *ServiceResolver) SelectUploadContexts(ctx context.Context, opts SelectUploadContextsOptions) (*UploadContextSelection, error) {
 	const op = "storage.ServiceResolver.SelectUploadContexts"
 	opts = SelectUploadContextsOptions{
-		Copies:             opts.Copies,
-		ExcludeProviderIDs: cloneBigIntSlice(opts.ExcludeProviderIDs),
-		DataSetMetadata:    cloneStringMap(opts.DataSetMetadata),
-		WithCDN:            copyBoolPtr(opts.WithCDN),
+		Copies:                 opts.Copies,
+		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
+		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
+		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}
 	if opts.Copies <= 0 {
 		return nil, fmt.Errorf("%s: %w: Copies must be greater than zero", op, ErrInvalidArgument)
 	}
 	selections, err := r.selectWithRetry(ctx, &UploadOptions{
-		Copies:             opts.Copies,
-		ExcludeProviderIDs: cloneBigIntSlice(opts.ExcludeProviderIDs),
-		DataSetMetadata:    cloneStringMap(opts.DataSetMetadata),
-		WithCDN:            copyBoolPtr(opts.WithCDN),
+		Copies:                 opts.Copies,
+		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
+		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
+		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}, nil, true)
 	if err != nil {
 		return nil, err
@@ -335,10 +353,11 @@ func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *Uploa
 		return nil, false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
 	}
 	selection, err := r.SelectUploadContexts(ctx, SelectUploadContextsOptions{
-		Copies:             opts.Copies,
-		ExcludeProviderIDs: cloneBigIntSlice(opts.ExcludeProviderIDs),
-		DataSetMetadata:    cloneStringMap(opts.DataSetMetadata),
-		WithCDN:            copyBoolPtr(opts.WithCDN),
+		Copies:                 opts.Copies,
+		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
+		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
+		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		WithCDN:                copyBoolPtr(opts.WithCDN),
 	})
 	if err != nil && !errors.Is(err, ErrInsufficientUploadContexts) {
 		return nil, false, err
@@ -365,6 +384,7 @@ func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders m
 		return nil, fmt.Errorf("%s: %w: nil upload options", op, ErrInvalidArgument)
 	}
 	selectionOpts := withCopies(opts, 1)
+	selectionOpts.RequireEndorsedPrimary = boolPtr(false)
 	selections, err := r.selectWithRetry(ctx, selectionOpts, usedProviders, true)
 	if err != nil {
 		return nil, err
@@ -438,11 +458,32 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	if count <= 0 {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
 	}
+	requireEndorsedPrimary := resolveBoolDefault(opts.RequireEndorsedPrimary, true)
+	var endorsedSet map[string]struct{}
+	if requireEndorsedPrimary {
+		if r.endorsements == nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w", ErrEndorsementsNotConfigured)
+		}
+		endorsedIDs, err := r.endorsements.GetEndorsedProviderIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get endorsed providers: %w", err)
+		}
+		if len(endorsedIDs) == 0 {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: endorsement set is empty", ErrNoEndorsedProvider)
+		}
+		endorsedSet = make(map[string]struct{}, len(endorsedIDs))
+		for _, id := range endorsedIDs {
+			endorsedSet[idconv.Key(id)] = struct{}{}
+		}
+	}
 	approvedIDs, err := r.getAllApprovedProviderIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: get approved providers: %w", err)
 	}
 	if len(approvedIDs) == 0 {
+		if requireEndorsedPrimary {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no approved providers", ErrNoEndorsedProvider)
+		}
 		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no approved providers")
 	}
 	excludeIDs := appendExcludedIDs(opts.ExcludeProviderIDs, extraExcludes)
@@ -459,7 +500,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	if reuseDataSets && r.dataSetDetails != nil {
 		detailedDataSets, err = r.dataSetDetails.GetClientDataSetsWithDetails(ctx, r.payer, true)
 		if err != nil {
-			if errors.Is(err, warmstorage.ErrPDPVerifierNotConfigured) {
+			if errors.Is(err, warmstorage.ErrPDPVerifierNotConfigured) || errors.Is(err, ErrDataSetUnavailable) {
 				detailedDataSets = nil
 			} else {
 				if ctxErr := ctx.Err(); ctxErr != nil {
@@ -520,11 +561,46 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		}
 	}
 	candidates := slices.Concat(withDataSet, withoutDataSet)
-	return r.selectHealthyCandidates(ctx, candidates, count)
+	if !requireEndorsedPrimary {
+		return r.selectHealthyCandidates(ctx, candidates, count, ErrNoHealthyProviders)
+	}
+
+	primaryCandidates := make([]autoSelectCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := endorsedSet[idconv.Key(candidate.provider.Info.ID)]; ok {
+			primaryCandidates = append(primaryCandidates, candidate)
+		}
+	}
+	primary, err := r.selectHealthyCandidates(ctx, primaryCandidates, 1, ErrNoEndorsedProvider)
+	if err != nil {
+		return nil, err
+	}
+	if count == 1 {
+		return primary, nil
+	}
+
+	primaryKey := idconv.Key(primary[0].Provider.ID)
+	secondaryCandidates := make([]autoSelectCandidate, 0, len(candidates)-1)
+	for _, candidate := range candidates {
+		if idconv.Key(candidate.provider.Info.ID) != primaryKey {
+			secondaryCandidates = append(secondaryCandidates, candidate)
+		}
+	}
+	secondaries, err := r.selectHealthyCandidates(ctx, secondaryCandidates, count-1, ErrNoHealthyProviders)
+	if err != nil {
+		if errors.Is(err, ErrNoHealthyProviders) {
+			return primary, nil
+		}
+		return nil, err
+	}
+	return append(primary, secondaries...), nil
 }
 
-func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidates []autoSelectCandidate, count int) ([]resolvedUploadContext, error) {
+func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidates []autoSelectCandidate, count int, noHealthyError error) ([]resolvedUploadContext, error) {
 	if len(candidates) == 0 {
+		if noHealthyError != nil {
+			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no eligible providers", noHealthyError)
+		}
 		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
 	}
 	if err := ctx.Err(); err != nil {
@@ -534,6 +610,7 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 	probeCtx, cancelProbes := context.WithCancel(ctx)
 	defer cancelProbes()
 	states := make([]providerProbeState, len(candidates))
+	probeErrors := make([]error, len(candidates))
 	results := make(chan providerProbeResult, min(providerPingConcurrency, len(candidates)))
 	probeCancels := make([]context.CancelFunc, len(candidates))
 	nextIndex := 0
@@ -578,6 +655,12 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 					states[result.index] = providerProbeHealthy
 				} else {
 					states[result.index] = providerProbeUnhealthy
+					probeErrors[result.index] = fmt.Errorf(
+						"provider %s (%s): %w",
+						candidates[result.index].provider.Info.ID.String(),
+						candidates[result.index].provider.Offering.ServiceURL,
+						result.err,
+					)
 				}
 				frontier, ready := providerSelectionProgress(states, count)
 				if frontier >= 0 && frontier+1 < probeLimit {
@@ -625,13 +708,19 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 
 	if len(selected) == 0 {
 		if len(failedProviderIDs) == 0 {
+			if noHealthyError != nil {
+				return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no eligible providers", noHealthyError)
+			}
 			return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
 		}
-		return nil, fmt.Errorf(
-			"storage.ServiceResolver.ResolveUploadContexts: %w (provider IDs: %s)",
-			ErrNoHealthyProviders,
-			formatProviderIDs(failedProviderIDs),
-		)
+		failures := make([]error, 0, len(failedProviderIDs)+1)
+		failures = append(failures, fmt.Errorf("%w (provider IDs: %s)", noHealthyError, formatProviderIDs(failedProviderIDs)))
+		for _, err := range probeErrors {
+			if err != nil {
+				failures = append(failures, err)
+			}
+		}
+		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check providers: %w", errors.Join(failures...))
 	}
 	return selected, nil
 }
@@ -976,10 +1065,13 @@ func (r *ServiceResolver) dataSetAcceptsUpload(ctx context.Context, dataSetID ty
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
 		}
-		if txutil.IsRetryableRPCError(err) {
-			return false, err
+		if errors.Is(err, ErrDataSetUnavailable) {
+			return false, nil
 		}
-		return false, nil
+		if _, ok := errors.AsType[*warmstorage.DataSetNotManagedError](err); ok {
+			return false, nil
+		}
+		return false, err
 	}
 	return true, nil
 }

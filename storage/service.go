@@ -796,6 +796,9 @@ func validateExplicitUploadOptions(opts *UploadOptions) error {
 	if len(opts.DataSetMetadata) != 0 {
 		return fmt.Errorf("%w: DataSetMetadata is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}
+	if opts.RequireEndorsedPrimary != nil {
+		return fmt.Errorf("%w: RequireEndorsedPrimary is not supported for explicit-context uploads", ErrInvalidArgument)
+	}
 	if opts.WithCDN != nil {
 		return fmt.Errorf("%w: WithCDN is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}
@@ -823,6 +826,7 @@ func cloneUploadOptions(opts *UploadOptions) *UploadOptions {
 	out.PieceMetadata = cloneStringMap(opts.PieceMetadata)
 	out.DataSetMetadata = cloneStringMap(opts.DataSetMetadata)
 	out.ExcludeProviderIDs = cloneBigIntSlice(opts.ExcludeProviderIDs)
+	out.RequireEndorsedPrimary = copyBoolPtr(opts.RequireEndorsedPrimary)
 	out.WithCDN = copyBoolPtr(opts.WithCDN)
 	return &out
 }

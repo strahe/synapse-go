@@ -1,14 +1,16 @@
 // Package spregistry provides the Storage Provider Registry service.
 //
 // It queries the ServiceProviderRegistry contract to discover storage
-// providers, their capabilities, endpoints, and endorsement status, and
-// (when constructed with a Signer + Backend) exposes the state-changing
-// surface needed to register, update, or remove a provider and manage
-// its PDP product.
+// providers and their capabilities and endpoints. Endorsement membership is
+// read from an independently deployed ProviderIdSet when configured. When
+// constructed with a Signer and Backend, the service also exposes the
+// state-changing surface needed to register, update, or remove a provider and
+// manage its PDP product.
 //
-// Provider types:
-//   - Endorsed: curated, high-quality providers (used as primary).
-//   - Approved: automated QA-checked providers (used as secondary).
+// Endorsed and approved are separate on-chain sets. Endorsed membership comes
+// from ProviderIdSet and is used by storage's default primary-selection policy;
+// approved membership comes from FWSS and defines the broader automatic
+// selection pool. These labels describe membership, not an SDK quality rating.
 //
 // # Read surface
 //
@@ -49,6 +51,8 @@
 //     or otherwise malformed.
 //   - ErrInvalidOffering: returned by ValidatePDPOffering / write methods
 //     when a PDP offering fails structural validation.
+//   - ErrEndorsementsNotConfigured: returned by GetEndorsedProviderIDs when
+//     Options.EndorsementsAddress was not configured.
 //   - ErrWriteNotConfigured: returned by write methods when Service was
 //     constructed without write dependencies.
 //   - ErrTxFailed: returned by write methods when the broadcast

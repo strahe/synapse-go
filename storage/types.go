@@ -323,6 +323,11 @@ type UploadOptions struct {
 	DataSetMetadata map[string]string
 	// ExcludeProviderIDs skips these providers only during auto-selection.
 	ExcludeProviderIDs []types.BigInt
+	// RequireEndorsedPrimary controls automatic primary selection. nil and true
+	// require the primary to be in the configured endorsement set; false uses
+	// the full approved-provider pool and does not query endorsements. Explicit-
+	// context upload methods reject this field.
+	RequireEndorsedPrimary *bool
 	// WithCDN is tri-state: nil inherits the Client-level default
 	// configured via synapse.WithCDN; non-nil explicitly overrides
 	// for this upload. Declare a local variable to take its address:

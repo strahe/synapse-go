@@ -26,6 +26,11 @@ var ErrClosed = lifecycle.ErrClosed
 // Use errors.Is to detect it.
 var ErrInvalidArgument = errors.New("spregistry: invalid argument")
 
+// ErrEndorsementsNotConfigured is returned by
+// [Service.GetEndorsedProviderIDs] when the service was constructed without
+// Options.EndorsementsAddress.
+var ErrEndorsementsNotConfigured = errors.New("spregistry: endorsements not configured")
+
 // ErrInvalidOffering is returned when a PDPOffering decoded from on-chain
 // capabilities fails validation (missing required fields, non-positive
 // numeric parameters).

@@ -31,6 +31,8 @@ func TestSyncWritesMergedABIs(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"type":"function","name":"view","inputs":[],"outputs":[],"stateMutability":"view"}]`))
 		case "/service_contracts/abi/ServiceProviderRegistry.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"register","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
+		case "/service_contracts/abi/ProviderIdSet.abi.json":
+			_, _ = w.Write([]byte(`[{"type":"function","name":"getProviderIds","inputs":[],"outputs":[{"type":"uint256[]"}],"stateMutability":"view"}]`))
 		case "/service_contracts/abi/FilecoinPayV1.abi.json":
 			_, _ = w.Write([]byte(`[]`))
 		case "/service_contracts/abi/PDPVerifier.abi.json":
@@ -75,6 +77,17 @@ func TestSyncWritesMergedABIs(t *testing.T) {
 	}
 	if !bytes.Contains(spregistryData, []byte(`"name": "Boom"`)) {
 		t.Fatalf("spregistry abi missing merged errors entry: %s", spregistryData)
+	}
+
+	providerIDSetData, err := os.ReadFile(filepath.Join(root, "provideridset", "abi.json"))
+	if err != nil {
+		t.Fatalf("read provideridset abi: %v", err)
+	}
+	if !bytes.Contains(providerIDSetData, []byte(`"name": "getProviderIds"`)) {
+		t.Fatalf("provideridset abi missing primary contract entry: %s", providerIDSetData)
+	}
+	if bytes.Contains(providerIDSetData, []byte(`"name": "Boom"`)) {
+		t.Fatalf("provideridset abi unexpectedly merged errors entry: %s", providerIDSetData)
 	}
 
 	sessionKeyData, err := os.ReadFile(filepath.Join(root, "sessionkeyregistry", "abi.json"))
@@ -203,6 +216,8 @@ func TestSyncDoesNotWriteAnyFilesWhenFetchFails(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"type":"function","name":"view","inputs":[],"outputs":[],"stateMutability":"view"}]`))
 		case "/service_contracts/abi/ServiceProviderRegistry.abi.json":
 			_, _ = w.Write([]byte(`[{"type":"function","name":"register","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]`))
+		case "/service_contracts/abi/ProviderIdSet.abi.json":
+			_, _ = w.Write([]byte(`[]`))
 		case "/service_contracts/abi/FilecoinPayV1.abi.json":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		case "/service_contracts/abi/PDPVerifier.abi.json":

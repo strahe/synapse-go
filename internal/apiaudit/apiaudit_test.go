@@ -103,6 +103,7 @@ import (
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -120,6 +121,12 @@ type blockNumberReader struct{}
 
 func (blockNumberReader) BlockNumber(context.Context) (uint64, error) { return 0, nil }
 
+type endorsedProviderSource struct{}
+
+func (endorsedProviderSource) GetEndorsedProviderIDs(context.Context) ([]types.BigInt, error) {
+	return []types.BigInt{types.NewBigInt(1)}, nil
+}
+
 var (
 	sharedNonce     nonceManager
 	sharedLifecycle lifecycle
@@ -134,6 +141,8 @@ var (
 	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer}
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle}
+	_ storage.EndorsedProviderSource = endorsedProviderSource{}
+	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
 	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
 	_ *storage.DataSetDetails

@@ -25,6 +25,8 @@ import (
 // and deletes the first returned piece ID. Prefer [DataSetContext.DeletePieceByID]
 // when the on-chain piece ID is available.
 //
+// Missing or non-live data sets return [ErrDataSetUnavailable].
+//
 // The returned WriteResult carries only the transaction hash; there is no
 // on-chain wait.
 func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
@@ -38,6 +40,7 @@ func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sd
 //
 // A data set can contain multiple piece IDs with the same piece CID. Use
 // [DataSetContext.DeletePiecesByID] to remove specific duplicate instances.
+// Missing or non-live data sets return [ErrDataSetUnavailable].
 func (c *DataSetContext) DeletePieces(ctx context.Context, pieceCIDs []cid.Cid) (*sdktypes.WriteResult, error) {
 	const op = "storage.DataSetContext.DeletePieces"
 	return c.deletePieces(ctx, op, pieceCIDs)
@@ -86,9 +89,13 @@ func (c *DataSetContext) resolveDeletePieceIDs(
 			pieceCIDs[i] = item.pieceCID
 		}
 		matches, err := resolver.FindPieceIDsByCIDs(ctx, dataSetID, pieceCIDs)
-		if err == nil && len(matches) == len(normalizedCIDs) {
-			return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+		if err != nil {
+			return nil, fmt.Errorf("%s: resolve piece CIDs: %w", op, err)
 		}
+		if len(matches) != len(normalizedCIDs) {
+			return nil, fmt.Errorf("%s: resolve piece CIDs: got %d results, want %d", op, len(matches), len(normalizedCIDs))
+		}
+		return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
 	}
 
 	matches := make([][]sdktypes.BigInt, len(normalizedCIDs))

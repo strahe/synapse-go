@@ -8,11 +8,55 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 )
+
+// TestIntegration_Endorsements performs a read-only ProviderIdSet call on
+// Calibration. It requires no private key or funded account.
+func TestIntegration_Endorsements(t *testing.T) {
+	integrationtest.EnsureEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
+	if err != nil {
+		t.Fatalf("dial RPC: %v", err)
+	}
+	defer client.Close()
+
+	addresses := chain.Calibration.Addresses()
+	service, err := spregistry.New(spregistry.Options{
+		Client:              client,
+		Address:             addresses.SPRegistry,
+		EndorsementsAddress: addresses.Endorsements,
+	})
+	if err != nil {
+		t.Fatalf("spregistry.New: %v", err)
+	}
+	ids, err := service.GetEndorsedProviderIDs(ctx)
+	if err != nil {
+		t.Fatalf("GetEndorsedProviderIDs: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("GetEndorsedProviderIDs returned an empty set")
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id.IsZero() {
+			t.Fatal("GetEndorsedProviderIDs returned zero")
+		}
+		key := id.String()
+		if _, duplicate := seen[key]; duplicate {
+			t.Fatalf("GetEndorsedProviderIDs returned duplicate %s", key)
+		}
+		seen[key] = struct{}{}
+	}
+}
 
 // TestIntegration_SPRegistry directly exercises every read-only method on
 // spregistry.Service against calibration. The six write methods are external-

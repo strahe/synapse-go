@@ -203,6 +203,9 @@ func isRetryable(ctx context.Context, err error) bool {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	if errors.Is(err, ErrPingResponseMismatch) {
+		return false
+	}
 	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
 		if httpErr.StatusCode == http.StatusTooManyRequests {
 			return true
@@ -295,6 +298,16 @@ func (c *Client) doRetryable(ctx context.Context, makeReq func() (*http.Request,
 }
 
 func (c *Client) doRetryableWithClient(ctx context.Context, client *http.Client, makeReq func() (*http.Request, error), expectStatuses ...int) (*http.Response, []byte, error) {
+	return c.doRetryableWithExecutor(ctx, makeReq, func(req *http.Request) (*http.Response, []byte, error) {
+		return c.doWithClient(client, req, expectStatuses...)
+	})
+}
+
+func (c *Client) doRetryableWithExecutor(
+	ctx context.Context,
+	makeReq func() (*http.Request, error),
+	execute func(*http.Request) (*http.Response, []byte, error),
+) (*http.Response, []byte, error) {
 	maxRetries := max(c.maxRetries, 0)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -304,7 +317,7 @@ func (c *Client) doRetryableWithClient(ctx context.Context, client *http.Client,
 		if err != nil {
 			return nil, nil, err
 		}
-		resp, body, err := c.doWithClient(client, req, expectStatuses...)
+		resp, body, err := execute(req)
 		if err == nil {
 			return resp, body, nil
 		}

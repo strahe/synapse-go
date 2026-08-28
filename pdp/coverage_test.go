@@ -27,7 +27,7 @@ func TestWithUserAgent(t *testing.T) {
 	uaCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uaCh <- r.Header.Get("User-Agent")
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	defer srv.Close()
 
@@ -57,7 +57,7 @@ func TestWithLogger(t *testing.T) {
 	var buf strings.Builder
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	defer srv.Close()
 
@@ -808,15 +808,16 @@ func TestDeleteJSON_DecodeError(t *testing.T) {
 // ---------- Ping transport error ----------
 
 func TestPing_TransportError(t *testing.T) {
+	want := errors.New("conn refused")
 	c, err := New("https://example.com", WithHTTPClient(&http.Client{
 		Timeout:   100 * time.Millisecond,
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) { return nil, errors.New("conn refused") }),
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) { return nil, want }),
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Ping(context.Background()); err == nil {
-		t.Error("expected transport error")
+	if err := c.Ping(context.Background()); !errors.Is(err, want) {
+		t.Errorf("error = %v, want wrapped transport error", err)
 	}
 }
 
@@ -846,8 +847,8 @@ func TestDoWithClient_ReadBodyError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Ping(context.Background()); err == nil {
-		t.Error("expected read body error")
+	if err := c.Ping(context.Background()); !errors.Is(err, ErrPingResponseMismatch) {
+		t.Errorf("error = %v, want ErrPingResponseMismatch", err)
 	}
 }
 

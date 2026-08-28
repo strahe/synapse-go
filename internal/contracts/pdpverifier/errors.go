@@ -3,6 +3,7 @@ package pdpverifier
 import (
 	"strings"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -18,18 +19,41 @@ func IsDataSetUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "Data set not live") ||
-		strings.Contains(msg, "DataSetNotLive") ||
-		strings.Contains(msg, "DataSetNotFound") {
-		return true
-	}
 	data, ok := ethclient.RevertErrorData(err)
-	if !ok || len(data) < 4 {
+	if ok && len(data) >= 4 {
+		return IsDataSetUnavailableData(data)
+	}
+	return isDataSetUnavailableText(err.Error())
+}
+
+// IsDataSetUnavailableData reports whether raw EVM revert data encodes one of
+// the known PDPVerifier unavailable-data-set custom errors or its legacy
+// Error(string) reason. Unknown decodable reverts are never classified by
+// surrounding error text.
+func IsDataSetUnavailableData(data []byte) bool {
+	if len(data) < 4 {
 		return false
 	}
 	selector := [4]byte{data[0], data[1], data[2], data[3]}
-	return selector == dataSetNotFoundSelector || selector == dataSetNotLiveSelector
+	if selector == dataSetNotFoundSelector || selector == dataSetNotLiveSelector {
+		return true
+	}
+	reason, err := abi.UnpackRevert(data)
+	return err == nil && isDataSetUnavailableText(reason)
+}
+
+func isDataSetUnavailableText(message string) bool {
+	message = strings.TrimSpace(message)
+	knownSuffix := strings.HasSuffix(message, "DataSetNotLive()") ||
+		strings.HasSuffix(message, "DataSetNotFound()") ||
+		strings.HasSuffix(message, "Data set not live")
+	if !knownSuffix {
+		return false
+	}
+	return message == "DataSetNotLive()" ||
+		message == "DataSetNotFound()" ||
+		message == "Data set not live" ||
+		strings.Contains(strings.ToLower(message), "execution reverted")
 }
 
 func pdpErrorSelector(signature string) [4]byte {

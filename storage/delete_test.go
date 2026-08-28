@@ -297,10 +297,11 @@ func TestContext_DeletePieces_UsesBatchCIDResolver(t *testing.T) {
 	}
 }
 
-func TestContext_DeletePieces_FallsBackWhenBatchCIDResolutionFails(t *testing.T) {
+func TestContext_DeletePieces_PropagatesBatchCIDResolutionFailure(t *testing.T) {
 	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	want := errors.New("multicall unavailable")
 	reader := &batchCIDResultPDPReader{
-		batchErr: errors.New("multicall unavailable"),
+		batchErr: want,
 		singularResults: map[string][]types.BigInt{
 			pieceCIDs[0].KeyString(): {types.NewBigInt(11)},
 			pieceCIDs[1].KeyString(): {types.NewBigInt(22)},
@@ -321,15 +322,28 @@ func TestContext_DeletePieces_FallsBackWhenBatchCIDResolutionFails(t *testing.T)
 		WithPDPVerifierReader(reader),
 	)
 
-	if _, err := c.DeletePieces(context.Background(), pieceCIDs); err != nil {
-		t.Fatalf("DeletePieces: %v", err)
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); !errors.Is(err, want) {
+		t.Fatalf("DeletePieces error = %v, want batch failure", err)
 	}
-	if reader.batchCalls != 1 || reader.singularCalls != len(pieceCIDs) {
-		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, %d)", reader.batchCalls, reader.singularCalls, len(pieceCIDs))
+	if reader.batchCalls != 1 || reader.singularCalls != 0 {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, 0)", reader.batchCalls, reader.singularCalls)
 	}
-	wantPieceIDs := []types.BigInt{types.NewBigInt(11), types.NewBigInt(22)}
-	if !equalBigInts(gotPieceIDs, wantPieceIDs) {
-		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, wantPieceIDs)
+	if gotPieceIDs != nil {
+		t.Fatalf("scheduled piece IDs = %v, want none", gotPieceIDs)
+	}
+}
+
+func TestContext_DeletePieces_PropagatesUnavailableDataSet(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	reader := &batchCIDResultPDPReader{batchErr: ErrDataSetUnavailable}
+	c := mustDeleteContext(t, &fakeBatchPDPProviderClient{fakePDPProviderClient: &fakePDPProviderClient{}},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("DeletePieces error = %v, want ErrDataSetUnavailable", err)
 	}
 }
 

@@ -35,6 +35,17 @@ type stubFunder struct {
 	gotOpt int
 }
 
+type stubDataSetSizeReader struct {
+	size  *big.Int
+	err   error
+	calls int
+}
+
+func (s *stubDataSetSizeReader) GetDataSetSizeBytes(context.Context, sdktypes.BigInt) (*big.Int, error) {
+	s.calls++
+	return s.size, s.err
+}
+
 func (s *stubFunder) FundSync(_ context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error) {
 	s.called = true
 	s.gotAmt = amount
@@ -87,6 +98,36 @@ func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	if res.Transaction != nil {
 		t.Fatalf("want nil Transaction when Ready=true, got %+v", res.Transaction)
 	}
+}
+
+func TestPrepareRefs_DataSetSizeModes(t *testing.T) {
+	dataSetID := sdktypes.NewBigInt(10)
+	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), dataSetID: &dataSetID}
+	opts := &PrepareOptions{Contexts: []StorageContext{uploadCtx}}
+
+	t.Run("configured reader propagates unavailable", func(t *testing.T) {
+		reader := &stubDataSetSizeReader{err: ErrDataSetUnavailable}
+		svc := newTestService()
+		svc.sizeReader = reader
+		refs, err := svc.prepareRefs(context.Background(), opts)
+		if refs != nil || !errors.Is(err, ErrDataSetUnavailable) {
+			t.Fatalf("prepareRefs = (%v, %v), want unavailable sentinel", refs, err)
+		}
+		if reader.calls != 1 {
+			t.Fatalf("size reader calls = %d, want 1", reader.calls)
+		}
+	})
+
+	t.Run("unconfigured reader keeps best effort zero", func(t *testing.T) {
+		svc := newTestService()
+		refs, err := svc.prepareRefs(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("prepareRefs: %v", err)
+		}
+		if len(refs) != 1 || refs[0].CurrentDataSetSizeBytes != nil {
+			t.Fatalf("refs = %+v, want an unspecified zero-size estimate", refs)
+		}
+	})
 }
 
 func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {

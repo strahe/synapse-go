@@ -12,12 +12,25 @@ import (
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
 	pdpbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
 	"github.com/strahe/synapse-go/types"
 )
+
+type warmRevertDataError struct{ data string }
+
+func (e warmRevertDataError) Error() string  { return "execution reverted" }
+func (e warmRevertDataError) ErrorCode() int { return 3 }
+func (e warmRevertDataError) ErrorData() any { return e.data }
+
+func warmCustomError(name string) error {
+	hash := crypto.Keccak256([]byte(name + "()"))
+	return warmRevertDataError{data: hexutil.Encode(hash[:4])}
+}
 
 // mockCaller implements bind.ContractCaller by routing calls to the
 // matching ABI method based on the 4-byte selector, and returning a
@@ -733,6 +746,23 @@ func TestValidateDataSet_NotLive(t *testing.T) {
 	if errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Errorf("unexpected sentinel: %v", err)
 	}
+	if !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("error = %v, want ErrDataSetUnavailable", err)
+	}
+}
+
+func TestValidateDataSet_MapsUnavailableCustomError(t *testing.T) {
+	dataSetID := types.NewBigInt(17)
+	s, mc := newTestServiceWithPDP(t)
+	mc.errs["dataSetLive"] = warmCustomError("DataSetNotFound")
+	err := s.ValidateDataSet(context.Background(), dataSetID)
+	if !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("error = %v, want ErrDataSetUnavailable", err)
+	}
+	got, ok := errors.AsType[*DataSetNotLiveError](err)
+	if !ok || !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("error = %v, want DataSetNotLiveError for %s", err, dataSetID)
+	}
 }
 
 func TestValidateDataSet_WrongListener(t *testing.T) {
@@ -851,6 +881,16 @@ func TestGetActivePieceCount_NoPDP(t *testing.T) {
 	_, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
 	if err == nil || !errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Errorf("expected ErrPDPVerifierNotConfigured, got %v", err)
+	}
+}
+
+func TestGetActivePieceCount_UnavailableDataSet(t *testing.T) {
+	s, mc := newTestServiceWithPDP(t)
+	want := warmCustomError("DataSetNotLive")
+	mc.errs["getActivePiecesByCursor"] = want
+	_, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
+	if !errors.Is(err, ErrDataSetUnavailable) || !errors.Is(err, want) {
+		t.Fatalf("error = %v, want unavailable sentinel and original error", err)
 	}
 }
 

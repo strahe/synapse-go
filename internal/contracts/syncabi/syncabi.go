@@ -40,6 +40,7 @@ var manifest = []ContractSpec{
 	{PackageName: "fwss", UpstreamABI: "FilecoinWarmStorageService.abi.json", MergeErrors: true},
 	{PackageName: "fwssview", UpstreamABI: "FilecoinWarmStorageServiceStateView.abi.json", MergeErrors: true},
 	{PackageName: "spregistry", UpstreamABI: "ServiceProviderRegistry.abi.json", MergeErrors: true},
+	{PackageName: "provideridset", UpstreamABI: "ProviderIdSet.abi.json"},
 	{PackageName: "filpay", UpstreamABI: "FilecoinPayV1.abi.json"},
 	{PackageName: "sessionkeyregistry", UpstreamABI: "SessionKeyRegistry.abi.json"},
 }

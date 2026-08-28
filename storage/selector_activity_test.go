@@ -94,6 +94,7 @@ func newActivityServiceResolver(t *testing.T, catalog *activityDataSetCatalog, v
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
 		Payer:            testPayer(),
 		SPRegistry:       &fakePDPProviderSource{fixture: catalog.fixture},
+		Endorsements:     &fakeEndorsedProviderSource{fixture: catalog.fixture},
 		WarmStorage:      catalog,
 		DataSetValidator: validator,
 		ProviderPing:     healthyProviderPing,
@@ -218,6 +219,7 @@ func TestServiceResolverProviderIDActivitySelectionFallsBackWithoutPDPVerifier(t
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
 		Payer:            testPayer(),
 		SPRegistry:       &fakePDPProviderSource{fixture: catalog.fixture},
+		Endorsements:     &fakeEndorsedProviderSource{fixture: catalog.fixture},
 		WarmStorage:      catalog,
 		DataSetValidator: allowAllDataSetValidator{},
 		ProviderPing:     healthyProviderPing,
@@ -370,7 +372,9 @@ func TestServiceResolverProviderIDActivitySelectionSkipsNonWritableCandidates(t 
 	providerID := testID(7)
 	fixture := activitySelectionFixture(providerID, []types.BigInt{testID(1), testID(2)})
 	fixture.validatorEnabled = true
-	fixture.validatorErrByID = map[string]error{testIDKey(1): errors.New("not writable")}
+	fixture.validatorErrByID = map[string]error{
+		testIDKey(1): &warmstorage.DataSetNotManagedError{DataSetID: testID(1)},
+	}
 	catalog := newActivityDataSetCatalog(fixture)
 	catalog.activeByID[testIDKey(1)] = true
 	catalog.activeByID[testIDKey(2)] = true
@@ -385,6 +389,24 @@ func TestServiceResolverProviderIDActivitySelectionSkipsNonWritableCandidates(t 
 	calls := catalog.activityCallIDs()
 	if len(calls) != 1 || !calls[0].Equal(testID(2)) {
 		t.Fatalf("HasActivePieces calls=%v, want only writable dataSetID 2", calls)
+	}
+}
+
+func TestServiceResolverProviderIDActivitySelectionPropagatesUnknownValidationError(t *testing.T) {
+	providerID := testID(7)
+	want := errors.New("ABI decode failed")
+	fixture := activitySelectionFixture(providerID, []types.BigInt{testID(1), testID(2)})
+	fixture.validatorEnabled = true
+	fixture.validatorErrByID = map[string]error{testIDKey(1): want}
+	catalog := newActivityDataSetCatalog(fixture)
+	catalog.activeByID[testIDKey(1)] = true
+	catalog.activeByID[testIDKey(2)] = true
+	validator := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
+	resolver := newActivityServiceResolver(t, catalog, validator)
+
+	contexts, err := resolveActivityProvider(t, resolver, providerID, true)
+	if contexts != nil || !errors.Is(err, want) {
+		t.Fatalf("contexts=%v error=%v, want propagated validation error", contexts, err)
 	}
 }
 

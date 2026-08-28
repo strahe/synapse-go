@@ -93,6 +93,13 @@ func TestContext_GetScheduledRemovals_NotConfigured(t *testing.T) {
 	}
 }
 
+func TestContext_GetScheduledRemovals_UnavailableDataSet(t *testing.T) {
+	c := mustPieceStatusContext(t, &fakePDPReader{scheduleErr: ErrDataSetUnavailable}, &fakePDPConfigReader{})
+	if _, err := c.GetScheduledRemovals(context.Background()); !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("GetScheduledRemovals error = %v, want ErrDataSetUnavailable", err)
+	}
+}
+
 func TestContext_PieceStatus_NotFound(t *testing.T) {
 	pdp := &fakePDPReader{findIDs: nil, nextChallenge: big.NewInt(100), blockNumber: 50}
 	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 120, ChallengeWindowSize: big.NewInt(30)}})
@@ -203,6 +210,17 @@ func TestContext_PieceStatus_PropagatesFindError(t *testing.T) {
 	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{})
 	if _, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestContext_PieceStatus_UnavailableDataSet(t *testing.T) {
+	pdp := &fakePDPReader{
+		findErr:          ErrDataSetUnavailable,
+		nextChallengeErr: ErrDataSetUnavailable,
+	}
+	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{})
+	if _, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2); !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("PieceStatus error = %v, want ErrDataSetUnavailable", err)
 	}
 }
 
