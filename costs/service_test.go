@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
@@ -108,13 +107,8 @@ func (m *strictPay) calls() (account, approval int) {
 }
 
 type mockCaller struct {
-	fee         *big.Int
 	blockNumber uint64
 	blockErr    error
-}
-
-func (m *mockCaller) CallContract(_ context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-	return nil, errors.New("unexpected ContractCaller.CallContract")
 }
 
 func (m *mockCaller) BlockNumber(_ context.Context) (uint64, error) {
@@ -155,13 +149,13 @@ func maxApproval() *payments.OperatorApproval {
 	}
 }
 
-func buildSvc(t *testing.T, ws WarmStorageReader, pay PaymentsReader, fee *big.Int) *Service {
+func buildSvc(t *testing.T, ws WarmStorageReader, pay PaymentsReader) *Service {
 	t.Helper()
 	svc, err := New(Options{
 		Chain:       chain.Calibration,
 		WarmStorage: ws,
 		Payments:    pay,
-		Caller:      &mockCaller{fee: fee},
+		Caller:      &mockCaller{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -176,7 +170,7 @@ func TestGetServicePrice(t *testing.T) {
 	svc := buildSvc(t, ws, &mockPay{
 		account:  &payments.AccountState{},
 		approval: &payments.OperatorApproval{},
-	}, new(big.Int))
+	})
 
 	price, err := svc.GetServicePrice(context.Background())
 	if err != nil {
@@ -192,7 +186,7 @@ func TestGetPriceList(t *testing.T) {
 	svc := buildSvc(t, &mockWS{priceList: want}, &mockPay{
 		account:  &payments.AccountState{},
 		approval: &payments.OperatorApproval{},
-	}, new(big.Int))
+	})
 
 	got, err := svc.GetPriceList(context.Background())
 	if err != nil {
@@ -208,24 +202,10 @@ func TestGetPriceList_PropagatesReaderError(t *testing.T) {
 	svc := buildSvc(t, &mockWS{priceListErr: wantErr}, &mockPay{
 		account:  &payments.AccountState{},
 		approval: &payments.OperatorApproval{},
-	}, new(big.Int))
+	})
+
 	if _, err := svc.GetPriceList(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("GetPriceList error = %v, want %v", err, wantErr)
-	}
-}
-
-func TestCDNFixedLockupValue_ReturnsIndependentValues(t *testing.T) {
-	first := CDNFixedLockupValue()
-	second := CDNFixedLockupValue()
-	if first.Cmp(big.NewInt(1_000_000_000_000_000_000)) != 0 {
-		t.Fatalf("CDNFixedLockupValue = %s, want 1 USDFC", first)
-	}
-	first.SetInt64(0)
-	if second.Cmp(big.NewInt(1_000_000_000_000_000_000)) != 0 {
-		t.Fatalf("mutating one result changed another: %s", second)
-	}
-	if got := CDNFixedLockupValue(); got.Cmp(second) != 0 {
-		t.Fatalf("mutating a result changed the package value: %s", got)
 	}
 }
 
@@ -299,9 +279,7 @@ func TestGetUploadCosts_NeedsApproval(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(100), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: notApproved,
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
@@ -321,9 +299,7 @@ func TestGetUploadCosts_ReadyWhenFundedAndApproved(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
@@ -346,9 +322,7 @@ func TestGetUploadCosts_DepositPositive_WhenUnderfunded(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(chain.TiB), &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
@@ -369,9 +343,7 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		new(big.Int),
-	)
+		})
 
 	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
 		IsNewDataSet: true,
@@ -409,9 +381,8 @@ func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		usdfcFrac(1),
-	)
+		})
+
 	// nil opts must not panic
 	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
 	if err != nil {
@@ -422,15 +393,106 @@ func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
 	}
 }
 
+func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
+	account := &payments.AccountState{
+		Funds:         new(big.Int),
+		LockupCurrent: new(big.Int),
+		LockupRate:    bi(100),
+	}
+	svc := buildSvc(t,
+		&mockWS{priceList: defaultPriceList()},
+		&mockPay{account: account, approval: maxApproval()})
+
+	withoutBuffer, err := svc.GetUploadCosts(
+		context.Background(), common.Address{}, bi(1024),
+		&UploadCostOptions{BufferEpochs: new(int64(0))},
+	)
+	if err != nil {
+		t.Fatalf("GetUploadCosts without buffer: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		bufferEpochs *int64
+		wantEpochs   int64
+	}{
+		{name: "default", wantEpochs: DefaultBufferEpochs},
+		{name: "explicit zero", bufferEpochs: new(int64(0))},
+		{name: "positive", bufferEpochs: new(int64(9)), wantEpochs: 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.GetUploadCosts(
+				context.Background(), common.Address{}, bi(1024),
+				&UploadCostOptions{BufferEpochs: tt.bufferEpochs},
+			)
+			if err != nil {
+				t.Fatalf("GetUploadCosts: %v", err)
+			}
+
+			combinedRate := new(big.Int).Add(account.LockupRate, got.Lockup.RateDeltaPerEpoch)
+			wantDelta := new(big.Int).Mul(combinedRate, big.NewInt(tt.wantEpochs))
+			gotDelta := new(big.Int).Sub(got.DepositNeeded, withoutBuffer.DepositNeeded)
+			if gotDelta.Cmp(wantDelta) != 0 {
+				t.Fatalf("buffer deposit delta=%s want %s", gotDelta, wantDelta)
+			}
+		})
+	}
+}
+
+func TestCostServicesRejectNegativeBufferEpochsBeforeBackendReads(t *testing.T) {
+	backendErr := errors.New("backend must not be called")
+	svc := buildSvc(t,
+		&mockWS{priceListErr: backendErr},
+		&mockPayErr{err: backendErr})
+	svc.caller = &mockCaller{blockErr: backendErr}
+	negative := new(int64(-1))
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "GetUploadCosts",
+			call: func() error {
+				_, err := svc.GetUploadCosts(
+					context.Background(), common.Address{}, bi(1024),
+					&UploadCostOptions{BufferEpochs: negative},
+				)
+				return err
+			},
+		},
+		{
+			name: "CalculateMultiContextCosts",
+			call: func() error {
+				_, err := svc.CalculateMultiContextCosts(
+					context.Background(), common.Address{}, bi(1024),
+					[]MultiContextRef{{}}, &UploadCostOptions{BufferEpochs: negative},
+				)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error=%v want ErrInvalidArgument", err)
+			}
+			if errors.Is(err, backendErr) {
+				t.Fatalf("error=%v unexpectedly includes backend error", err)
+			}
+		})
+	}
+}
+
 func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{nilPriceListResult: true},
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		new(big.Int),
-	)
+		})
 
 	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
 	if err != nil {
@@ -441,8 +503,27 @@ func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
 	}
 }
 
+func TestAdditionalLockup_OnlyExposesCurrentFields(t *testing.T) {
+	typ := reflect.TypeFor[AdditionalLockup]()
+	got := make([]string, typ.NumField())
+	for i := range typ.NumField() {
+		got[i] = typ.Field(i).Name
+	}
+	want := []string{
+		"RateDeltaPerEpoch",
+		"StreamingLockup",
+		"LifecycleLockup",
+		"CDNLockup",
+		"CacheMissLockup",
+		"Total",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AdditionalLockup fields=%v want %v", got, want)
+	}
+}
+
 func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
-	typ := reflect.TypeOf(UploadCostOptions{})
+	typ := reflect.TypeFor[UploadCostOptions]()
 	got := make([]string, typ.NumField())
 	for i := range typ.NumField() {
 		got[i] = typ.Field(i).Name
@@ -493,9 +574,7 @@ func TestGetAccountSummary(t *testing.T) {
 				LockupRate:    rate,
 			},
 			approval: &payments.OperatorApproval{},
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
@@ -526,10 +605,9 @@ func TestGetAccountSummary(t *testing.T) {
 func TestCurrentEpochPrefersCallerBlockNumber(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{price: defaultPrice()},
-		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}},
-		new(big.Int),
-	)
-	svc.caller = &mockCaller{fee: new(big.Int), blockNumber: 1234}
+		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}})
+
+	svc.caller = &mockCaller{blockNumber: 1234}
 
 	got, err := svc.currentEpoch(context.Background())
 	if err != nil {
@@ -544,10 +622,9 @@ func TestCurrentEpochPrefersCallerBlockNumber(t *testing.T) {
 func TestCurrentEpochErrorsWhenBlockNumberFails(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{price: defaultPrice()},
-		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}},
-		new(big.Int),
-	)
-	svc.caller = &mockCaller{fee: new(big.Int), blockErr: errors.New("rpc down")}
+		&mockPay{account: &payments.AccountState{}, approval: &payments.OperatorApproval{}})
+
+	svc.caller = &mockCaller{blockErr: errors.New("rpc down")}
 
 	_, err := svc.currentEpoch(context.Background())
 	if err == nil {
@@ -565,9 +642,7 @@ func TestGetAccountSummary_Debt(t *testing.T) {
 				LockupRate:    new(big.Int),
 			},
 			approval: &payments.OperatorApproval{},
-		},
-		new(big.Int),
-	)
+		})
 
 	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
@@ -587,9 +662,7 @@ func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
 	payErr := fmt.Errorf("rpc unavailable")
 	svc := buildSvc(t,
 		&mockWS{price: defaultPrice()},
-		&mockPayErr{err: payErr},
-		usdfcFrac(1),
-	)
+		&mockPayErr{err: payErr})
 
 	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
 	if err == nil {
@@ -608,7 +681,7 @@ func TestNew_NilWarmStorage(t *testing.T) {
 	_, err := New(Options{
 		Chain:    chain.Calibration,
 		Payments: &mockPay{},
-		Caller:   &mockCaller{fee: new(big.Int)},
+		Caller:   &mockCaller{},
 	})
 	if err == nil {
 		t.Fatal("expected error for nil WarmStorage")
@@ -619,7 +692,7 @@ func TestNew_NilPayments(t *testing.T) {
 	_, err := New(Options{
 		Chain:       chain.Calibration,
 		WarmStorage: &mockWS{},
-		Caller:      &mockCaller{fee: new(big.Int)},
+		Caller:      &mockCaller{},
 	})
 	if err == nil {
 		t.Fatal("expected error for nil Payments")
@@ -643,7 +716,7 @@ func TestNew_LoggerViaOptions(t *testing.T) {
 		Chain:       chain.Calibration,
 		WarmStorage: &mockWS{},
 		Payments:    &mockPay{},
-		Caller:      &mockCaller{fee: new(big.Int)},
+		Caller:      &mockCaller{},
 		Logger:      logger,
 	})
 	if err != nil {
@@ -662,7 +735,7 @@ func TestNew_ChainZeroValueIsMainnet(t *testing.T) {
 	svc, err := New(Options{
 		WarmStorage: &mockWS{},
 		Payments:    &mockPay{},
-		Caller:      &mockCaller{fee: new(big.Int)},
+		Caller:      &mockCaller{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -678,7 +751,7 @@ func TestNew_UnsupportedChain(t *testing.T) {
 		Chain:       chain.Chain(255),
 		WarmStorage: &mockWS{},
 		Payments:    &mockPay{},
-		Caller:      &mockCaller{fee: new(big.Int)},
+		Caller:      &mockCaller{},
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported chain")
@@ -694,9 +767,8 @@ func TestGetAccountSummary_Error(t *testing.T) {
 	payErr := fmt.Errorf("rpc down")
 	svc := buildSvc(t,
 		&mockWS{price: defaultPrice()},
-		&mockPayErr{err: payErr},
-		new(big.Int),
-	)
+		&mockPayErr{err: payErr})
+
 	_, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if !errors.Is(err, payErr) {
 		t.Fatalf("want wrapped payErr, got %v", err)
@@ -715,9 +787,8 @@ func TestGetAccountSummary_NilFields(t *testing.T) {
 				LockupRate:    nil,
 			},
 			approval: &payments.OperatorApproval{},
-		},
-		new(big.Int),
-	)
+		})
+
 	summary, err := svc.GetAccountSummary(context.Background(), common.Address{}) //nolint:staticcheck // compatibility entry point must stay covered
 	if err != nil {
 		t.Fatal(err)

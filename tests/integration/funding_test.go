@@ -17,11 +17,12 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 			RatePerMonth: big.NewInt(60),
 		},
 		Lockup: costs.AdditionalLockup{
-			RateDelta:      big.NewInt(2),
-			RateLockup:     big.NewInt(20),
-			CDNFixedLockup: big.NewInt(30),
-			SybilFee:       big.NewInt(50),
-			TotalLockup:    big.NewInt(100),
+			RateDeltaPerEpoch: big.NewInt(2),
+			StreamingLockup:   big.NewInt(20),
+			LifecycleLockup:   big.NewInt(50),
+			CDNLockup:         big.NewInt(10),
+			CacheMissLockup:   big.NewInt(20),
+			Total:             big.NewInt(100),
 		},
 	}
 	account := &payments.AccountState{
@@ -39,11 +40,23 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 	if twoCopies.DepositNeeded.Cmp(big.NewInt(50)) != 0 {
 		t.Fatalf("twoCopies.DepositNeeded=%s want 50", twoCopies.DepositNeeded)
 	}
-	if twoCopies.Lockup.TotalLockup.Cmp(big.NewInt(200)) != 0 {
-		t.Fatalf("twoCopies.Lockup.TotalLockup=%s want 200", twoCopies.Lockup.TotalLockup)
+	if twoCopies.Lockup.RateDeltaPerEpoch.Cmp(big.NewInt(4)) != 0 {
+		t.Fatalf("twoCopies.Lockup.RateDeltaPerEpoch=%s want 4", twoCopies.Lockup.RateDeltaPerEpoch)
 	}
-	if twoCopies.Lockup.SybilFee.Cmp(big.NewInt(100)) != 0 {
-		t.Fatalf("twoCopies.Lockup.SybilFee=%s want 100", twoCopies.Lockup.SybilFee)
+	if twoCopies.Lockup.StreamingLockup.Cmp(big.NewInt(40)) != 0 {
+		t.Fatalf("twoCopies.Lockup.StreamingLockup=%s want 40", twoCopies.Lockup.StreamingLockup)
+	}
+	if twoCopies.Lockup.LifecycleLockup.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("twoCopies.Lockup.LifecycleLockup=%s want 100", twoCopies.Lockup.LifecycleLockup)
+	}
+	if twoCopies.Lockup.CDNLockup.Cmp(big.NewInt(20)) != 0 {
+		t.Fatalf("twoCopies.Lockup.CDNLockup=%s want 20", twoCopies.Lockup.CDNLockup)
+	}
+	if twoCopies.Lockup.CacheMissLockup.Cmp(big.NewInt(40)) != 0 {
+		t.Fatalf("twoCopies.Lockup.CacheMissLockup=%s want 40", twoCopies.Lockup.CacheMissLockup)
+	}
+	if twoCopies.Lockup.Total.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("twoCopies.Lockup.Total=%s want 200", twoCopies.Lockup.Total)
 	}
 	if twoCopies.Rate.RatePerEpoch.Cmp(big.NewInt(4)) != 0 {
 		t.Fatalf("twoCopies.Rate.RatePerEpoch=%s want 4", twoCopies.Rate.RatePerEpoch)

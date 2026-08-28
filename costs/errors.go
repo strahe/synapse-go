@@ -13,3 +13,8 @@ var ErrUninitialized = errors.New("costs: service not initialized; use costs.New
 // ErrClosed is returned when a method is called after the owning Client
 // has been closed. It aliases the shared closed-client sentinel.
 var ErrClosed = lifecycle.ErrClosed
+
+// ErrInvalidArgument is returned, wrapped via fmt.Errorf with %w, when a
+// caller passes an argument that violates a precondition. Match with
+// errors.Is(err, costs.ErrInvalidArgument).
+var ErrInvalidArgument = errors.New("costs: invalid argument")

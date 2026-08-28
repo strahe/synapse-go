@@ -37,11 +37,12 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 	multiplier := big.NewInt(int64(copies))
 	totalRatePerEpoch := new(big.Int).Mul(copyBig(base.Rate.RatePerEpoch), multiplier)
 	totalRatePerMonth := new(big.Int).Mul(copyBig(base.Rate.RatePerMonth), multiplier)
-	totalRateDelta := new(big.Int).Mul(copyBig(base.Lockup.RateDelta), multiplier)
-	totalRateLockup := new(big.Int).Mul(copyBig(base.Lockup.RateLockup), multiplier)
-	totalCDNLockup := new(big.Int).Mul(copyBig(base.Lockup.CDNFixedLockup), multiplier)
-	totalSybilFee := new(big.Int).Mul(copyBig(base.Lockup.SybilFee), multiplier)
-	totalLockup := new(big.Int).Mul(copyBig(base.Lockup.TotalLockup), multiplier)
+	totalRateDelta := new(big.Int).Mul(copyBig(base.Lockup.RateDeltaPerEpoch), multiplier)
+	totalStreamingLockup := new(big.Int).Mul(copyBig(base.Lockup.StreamingLockup), multiplier)
+	totalLifecycleLockup := new(big.Int).Mul(copyBig(base.Lockup.LifecycleLockup), multiplier)
+	totalCDNLockup := new(big.Int).Mul(copyBig(base.Lockup.CDNLockup), multiplier)
+	totalCacheMissLockup := new(big.Int).Mul(copyBig(base.Lockup.CacheMissLockup), multiplier)
+	totalLockup := new(big.Int).Mul(copyBig(base.Lockup.Total), multiplier)
 
 	depositNeeded := costs.CalculateDepositNeeded(costs.DepositCalculation{
 		AdditionalLockup:  totalLockup,
@@ -60,11 +61,12 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 			RatePerMonth: totalRatePerMonth,
 		},
 		Lockup: costs.AdditionalLockup{
-			RateDelta:      totalRateDelta,
-			RateLockup:     totalRateLockup,
-			CDNFixedLockup: totalCDNLockup,
-			SybilFee:       totalSybilFee,
-			TotalLockup:    totalLockup,
+			RateDeltaPerEpoch: totalRateDelta,
+			StreamingLockup:   totalStreamingLockup,
+			LifecycleLockup:   totalLifecycleLockup,
+			CDNLockup:         totalCDNLockup,
+			CacheMissLockup:   totalCacheMissLockup,
+			Total:             totalLockup,
 		},
 		DepositNeeded:        depositNeeded,
 		NeedsFWSSMaxApproval: base.NeedsFWSSMaxApproval,

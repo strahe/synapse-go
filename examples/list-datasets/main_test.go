@@ -32,7 +32,7 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 				LockupAllowance: big.NewInt(400),
 			},
 		},
-		dataSets: []*storage.DataSetInfo{
+		dataSets: []*storage.DataSetDetails{
 			{
 				DataSetInfo: &warmstorage.DataSetInfo{
 					DataSetID:  types.NewBigInt(10),
@@ -78,7 +78,7 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 func TestRunListFiltersByDataSetID(t *testing.T) {
 	fake := &fakeDatasetReader{
 		info: &storage.StorageInfo{},
-		dataSets: []*storage.DataSetInfo{
+		dataSets: []*storage.DataSetDetails{
 			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(1)}},
 			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(2)}},
 		},
@@ -95,11 +95,11 @@ func TestRunListFiltersByDataSetID(t *testing.T) {
 
 type fakeDatasetReader struct {
 	info        *storage.StorageInfo
-	dataSets    []*storage.DataSetInfo
+	dataSets    []*storage.DataSetDetails
 	onlyManaged bool
 }
 
-func (f *fakeDatasetReader) FindDataSets(_ context.Context, opts *storage.FindDataSetsOptions) ([]*storage.DataSetInfo, error) {
+func (f *fakeDatasetReader) FindDataSets(_ context.Context, opts *storage.FindDataSetsOptions) ([]*storage.DataSetDetails, error) {
 	if opts != nil {
 		f.onlyManaged = opts.OnlyManaged
 	}

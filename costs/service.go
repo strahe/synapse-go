@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
@@ -16,11 +15,8 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// ContractCaller is the chain reader accepted by Service. CallContract remains
-// part of the public interface for compatibility; current cost calculations
-// only use BlockNumber.
+// ContractCaller is the chain reader accepted by Service.
 type ContractCaller interface {
-	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
@@ -166,9 +162,9 @@ func (s *Service) GetUploadCosts(
 		opts = &UploadCostOptions{}
 	}
 	runwayEpochs := opts.ExtraRunwayEpochs
-	bufferEpochs := opts.BufferEpochs
-	if bufferEpochs == 0 {
-		bufferEpochs = DefaultBufferEpochs
+	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
 	currentDataSetSize := opts.CurrentDataSetSizeBytes
 	if currentDataSetSize == nil {
@@ -351,4 +347,14 @@ func (s *Service) currentEpoch(ctx context.Context) (*big.Int, error) {
 		return nil, fmt.Errorf("block number: %w", err)
 	}
 	return new(big.Int).SetUint64(block), nil
+}
+
+func resolveBufferEpochs(bufferEpochs *int64) (int64, error) {
+	if bufferEpochs == nil {
+		return DefaultBufferEpochs, nil
+	}
+	if *bufferEpochs < 0 {
+		return 0, fmt.Errorf("%w: BufferEpochs must be non-negative", ErrInvalidArgument)
+	}
+	return *bufferEpochs, nil
 }

@@ -155,7 +155,6 @@ func CalculateAdditionalLockupRequired(
 	totalLockup := new(big.Int).Add(streamingLockup, lifecycleLockup)
 	totalLockup.Add(totalLockup, cdnLockup)
 	totalLockup.Add(totalLockup, cacheMissLockup)
-	cdnFixedAlias := new(big.Int).Add(cdnLockup, cacheMissLockup)
 
 	return AdditionalLockup{
 		RateDeltaPerEpoch: rateDelta,
@@ -164,11 +163,6 @@ func CalculateAdditionalLockupRequired(
 		CDNLockup:         cdnLockup,
 		CacheMissLockup:   cacheMissLockup,
 		Total:             totalLockup,
-		RateDelta:         copyBigOrDefault(rateDelta, nil),
-		RateLockup:        copyBigOrDefault(streamingLockup, nil),
-		CDNFixedLockup:    cdnFixedAlias,
-		SybilFee:          copyBigOrDefault(lifecycleLockup, nil),
-		TotalLockup:       copyBigOrDefault(totalLockup, nil),
 	}
 }
 
@@ -279,7 +273,6 @@ func aggregateLockup(rateDelta, streaming, lifecycle, cdn, cacheMiss, total *big
 	cdnOut := copyBigOrDefault(cdn, nil)
 	cacheMissOut := copyBigOrDefault(cacheMiss, nil)
 	totalOut := copyBigOrDefault(total, nil)
-	cdnFixedAlias := new(big.Int).Add(cdnOut, cacheMissOut)
 	return AdditionalLockup{
 		RateDeltaPerEpoch: rateDeltaOut,
 		StreamingLockup:   streamingOut,
@@ -287,10 +280,5 @@ func aggregateLockup(rateDelta, streaming, lifecycle, cdn, cacheMiss, total *big
 		CDNLockup:         cdnOut,
 		CacheMissLockup:   cacheMissOut,
 		Total:             totalOut,
-		RateDelta:         copyBigOrDefault(rateDeltaOut, nil),
-		RateLockup:        copyBigOrDefault(streamingOut, nil),
-		CDNFixedLockup:    cdnFixedAlias,
-		SybilFee:          copyBigOrDefault(lifecycleOut, nil),
-		TotalLockup:       copyBigOrDefault(totalOut, nil),
 	}
 }

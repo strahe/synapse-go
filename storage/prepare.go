@@ -32,10 +32,10 @@ type PrepareOptions struct {
 	// valid only when Costs is nil and must be non-negative.
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit cushion above current lockup usage
-	// used to absorb transaction-latency epochs. Zero falls back to
-	// the cost service default. It is valid only when Costs is nil and
-	// must be non-negative.
-	BufferEpochs int64
+	// used to absorb transaction-latency epochs. Nil uses the cost service
+	// default; a pointer to zero disables the buffer. It is valid only when
+	// Costs is nil. Negative values return ErrInvalidArgument.
+	BufferEpochs *int64
 }
 
 // PrepareTransaction is the deferred funding step returned by Prepare
@@ -150,6 +150,10 @@ func clonePrepareOptions(opts *PrepareOptions) *PrepareOptions {
 	if opts.PieceCount != nil {
 		out.PieceCount = new(big.Int).Set(opts.PieceCount)
 	}
+	if opts.BufferEpochs != nil {
+		bufferEpochs := *opts.BufferEpochs
+		out.BufferEpochs = &bufferEpochs
+	}
 	return &out
 }
 
@@ -160,7 +164,7 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 	if opts.ExtraRunwayEpochs < 0 {
 		return fmt.Errorf("%w: ExtraRunwayEpochs must be non-negative", ErrInvalidArgument)
 	}
-	if opts.BufferEpochs < 0 {
+	if opts.BufferEpochs != nil && *opts.BufferEpochs < 0 {
 		return fmt.Errorf("%w: BufferEpochs must be non-negative", ErrInvalidArgument)
 	}
 	if opts.Costs != nil {
@@ -176,7 +180,7 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 		if opts.ExtraRunwayEpochs != 0 {
 			return fmt.Errorf("%w: ExtraRunwayEpochs cannot be set when Costs is set", ErrInvalidArgument)
 		}
-		if opts.BufferEpochs != 0 {
+		if opts.BufferEpochs != nil {
 			return fmt.Errorf("%w: BufferEpochs cannot be set when Costs is set", ErrInvalidArgument)
 		}
 		return nil

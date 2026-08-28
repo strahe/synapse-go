@@ -112,41 +112,6 @@ func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) 
 	}
 }
 
-func TestCalculateAdditionalLockupRequired_LegacyFieldsDoNotAlias(t *testing.T) {
-	priceList := defaultPriceList()
-	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
-		nil,
-		priceList,
-		priceList.Lockups.DefaultLockupPeriod,
-		true,
-		true,
-	)
-
-	rateDelta := new(big.Int).Set(lockup.RateDeltaPerEpoch)
-	streaming := new(big.Int).Set(lockup.StreamingLockup)
-	lifecycle := new(big.Int).Set(lockup.LifecycleLockup)
-	total := new(big.Int).Set(lockup.Total)
-
-	lockup.RateDelta.SetInt64(0)
-	lockup.RateLockup.SetInt64(0)
-	lockup.SybilFee.SetInt64(0)
-	lockup.TotalLockup.SetInt64(0)
-
-	if lockup.RateDeltaPerEpoch.Cmp(rateDelta) != 0 {
-		t.Fatalf("RateDeltaPerEpoch changed through legacy alias")
-	}
-	if lockup.StreamingLockup.Cmp(streaming) != 0 {
-		t.Fatalf("StreamingLockup changed through legacy alias")
-	}
-	if lockup.LifecycleLockup.Cmp(lifecycle) != 0 {
-		t.Fatalf("LifecycleLockup changed through legacy alias")
-	}
-	if lockup.Total.Cmp(total) != 0 {
-		t.Fatalf("Total changed through legacy alias")
-	}
-}
-
 func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) {
 	priceList := defaultPriceList()
 	lockup := CalculateAdditionalLockupRequired(

@@ -116,17 +116,27 @@ type lifecycle struct{}
 
 func (lifecycle) CheckClosed() error { return nil }
 
+type blockNumberReader struct{}
+
+func (blockNumberReader) BlockNumber(context.Context) (uint64, error) { return 0, nil }
+
 var (
 	sharedNonce     nonceManager
 	sharedLifecycle lifecycle
+	sharedBuffer    int64
 
 	_ = payments.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = warmstorage.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = spregistry.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = sessionkey.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
-	_ = costs.Options{Lifecycle: sharedLifecycle}
+	_ costs.ContractCaller = blockNumberReader{}
+	_                      = costs.Options{Caller: blockNumberReader{}, Lifecycle: sharedLifecycle}
+	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer}
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle}
+	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
+	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
+	_ *storage.DataSetDetails
 )
 `)
 

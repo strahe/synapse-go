@@ -288,7 +288,7 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		DataSize:          uint64(len(data)),
 		Contexts:          []storage.StorageContext{uploadCtx},
 		ExtraRunwayEpochs: delegatedFundingExtraRunwayEpochs,
-		BufferEpochs:      delegatedFundingBufferEpochs,
+		BufferEpochs:      new(int64(delegatedFundingBufferEpochs)),
 	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

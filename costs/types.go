@@ -26,17 +26,6 @@ type AdditionalLockup struct {
 	CDNLockup         *big.Int
 	CacheMissLockup   *big.Int
 	Total             *big.Int
-
-	// Deprecated: Use RateDeltaPerEpoch.
-	RateDelta *big.Int
-	// Deprecated: Use StreamingLockup.
-	RateLockup *big.Int
-	// Deprecated: Use CDNLockup and CacheMissLockup.
-	CDNFixedLockup *big.Int
-	// Deprecated: Use LifecycleLockup.
-	SybilFee *big.Int
-	// Deprecated: Use Total.
-	TotalLockup *big.Int
 }
 
 // UploadCosts is the result of GetUploadCosts.
@@ -55,9 +44,9 @@ type UploadCostOptions struct {
 	// ExtraRunwayEpochs is extra epoch runway on top of lockup. Defaults to DefaultExtraRunwayEpochs (0).
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit buffer for execution latency.
-	// Zero (the zero value) uses DefaultBufferEpochs (5); there is no way to
-	// request a zero-epoch buffer via this field.
-	BufferEpochs int64
+	// Nil uses DefaultBufferEpochs (5); a pointer to zero disables the buffer.
+	// Negative values return ErrInvalidArgument.
+	BufferEpochs *int64
 	// EnableCDN adds CDN and cache-miss lockup for a new dataset.
 	EnableCDN bool
 	// IsNewDataSet must be true when creating a fresh dataset.
