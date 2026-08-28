@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"path"
 	"strings"
@@ -17,9 +18,14 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-// MaxAddPiecesBatchSize is the maximum number of pieces accepted by
-// add-pieces style PDP requests.
-const MaxAddPiecesBatchSize = 40
+const (
+	// MaxAddPiecesBatchSize is the maximum number of pieces accepted by
+	// add-pieces style PDP requests.
+	MaxAddPiecesBatchSize = 40
+	// MaxDeletePiecesBatchSize is the maximum number of pieces accepted by a
+	// batch deletion request.
+	MaxDeletePiecesBatchSize = 35
+)
 
 // AddPieceInput mirrors one entry of the pieces array for
 // POST /pdp/data-sets/{id}/pieces. The wire format uses the piece CID
@@ -207,28 +213,72 @@ func (c *Client) WaitForPiecesAdded(ctx context.Context, statusURL string, pollI
 	}
 }
 
-// SchedulePieceDeletion issues DELETE /pdp/data-sets/{id}/pieces/{pieceId}
-// with the provided EIP-712 signed extraData.
-func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
+// SchedulePieceDeletions issues DELETE /pdp/data-sets/{id}/pieces/{pieceId}
+// with the provided EIP-712 signed extraData. pieceIDs must be unique and in
+// the same order used to construct extraData.
+func (c *Client) SchedulePieceDeletions(ctx context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
+	const op = "pdp.SchedulePieceDeletions"
+	numericIDs, err := validateDeletePieceIDs(op, pieceIDs)
+	if err != nil {
+		return common.Hash{}, err
+	}
 	if len(extraData) == 0 {
-		return common.Hash{}, errors.New("pdp.SchedulePieceDeletion: empty extraData")
+		return common.Hash{}, errors.New(op + ": empty extraData")
 	}
 	payload := struct {
-		ExtraData string `json:"extraData"`
-	}{ExtraData: "0x" + hex.EncodeToString(extraData)}
+		ExtraData string   `json:"extraData"`
+		PieceIDs  []uint64 `json:"pieceIds"`
+	}{
+		ExtraData: "0x" + hex.EncodeToString(extraData),
+		PieceIDs:  numericIDs,
+	}
 
 	var out struct {
 		TxHash string `json:"txHash"`
 	}
-	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces", pieceID.String())
+	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces", pieceIDs[0].String())
 	if err := c.deleteJSON(ctx, urlPath, payload, &out); err != nil {
 		return common.Hash{}, err
 	}
+	if !common.IsHexHash(out.TxHash) {
+		return common.Hash{}, fmt.Errorf("%s: invalid txHash in response", op)
+	}
 	h := common.HexToHash(out.TxHash)
 	if h == (common.Hash{}) {
-		return common.Hash{}, fmt.Errorf("pdp.SchedulePieceDeletion: empty txHash in response")
+		return common.Hash{}, fmt.Errorf("%s: zero txHash in response", op)
 	}
 	return h, nil
+}
+
+// SchedulePieceDeletion issues a single-piece deletion request.
+//
+// Deprecated: use [Client.SchedulePieceDeletions].
+func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
+	return c.SchedulePieceDeletions(ctx, dataSetID, []types.BigInt{pieceID}, extraData)
+}
+
+func validateDeletePieceIDs(op string, pieceIDs []types.BigInt) ([]uint64, error) {
+	if len(pieceIDs) == 0 {
+		return nil, fmt.Errorf("%s: no pieces provided", op)
+	}
+	if len(pieceIDs) > MaxDeletePiecesBatchSize {
+		return nil, fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, len(pieceIDs), MaxDeletePiecesBatchSize)
+	}
+
+	numericIDs := make([]uint64, len(pieceIDs))
+	seen := make(map[uint64]int, len(pieceIDs))
+	for i, pieceID := range pieceIDs {
+		id, ok := pieceID.Uint64()
+		if !ok || id > math.MaxInt64 {
+			return nil, fmt.Errorf("%s: pieceID at index %d is outside Curio's supported range 0..%d", op, i, int64(math.MaxInt64))
+		}
+		if first, ok := seen[id]; ok {
+			return nil, fmt.Errorf("%s: duplicate pieceID at indexes %d and %d", op, first, i)
+		}
+		seen[id] = i
+		numericIDs[i] = id
+	}
+	return numericIDs, nil
 }
 
 func validateAddPiecesBatch(op string, count int) error {

@@ -48,8 +48,8 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	if sdkPackage.Name != "@filoz/synapse-sdk" {
 		t.Fatalf("synapse-sdk package name = %q, want @filoz/synapse-sdk", sdkPackage.Name)
 	}
-	if sdkPackage.Version != "1.1.1" {
-		t.Fatalf("synapse-sdk package version = %q, want 1.1.1", sdkPackage.Version)
+	if sdkPackage.Version != "1.2.1" {
+		t.Fatalf("synapse-sdk package version = %q, want 1.2.1", sdkPackage.Version)
 	}
 	coreDep := sdkPackage.Dependencies["@filoz/synapse-core"]
 	if coreDep == "" {
@@ -63,8 +63,8 @@ func TestLocalTSSDKBaseline(t *testing.T) {
 	if corePackage.Name != "@filoz/synapse-core" {
 		t.Fatalf("synapse-core package name = %q, want @filoz/synapse-core", corePackage.Name)
 	}
-	if corePackage.Version != "0.7.1" {
-		t.Fatalf("synapse-core package version = %q, want 0.7.1", corePackage.Version)
+	if corePackage.Version != "0.8.1" {
+		t.Fatalf("synapse-core package version = %q, want 0.8.1", corePackage.Version)
 	}
 	t.Logf("local TS baseline packages: %s@%s depends on %s@%s via %s", sdkPackage.Name, sdkPackage.Version, corePackage.Name, corePackage.Version, coreDep)
 
@@ -157,8 +157,7 @@ func gitHead(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			stderr := strings.TrimSpace(string(exitErr.Stderr))
 			if stderr != "" {
 				return "", fmt.Errorf("git rev-parse HEAD failed: %w: %s", err, stderr)

@@ -875,10 +875,63 @@ func TestSchedulePieceDeletion(t *testing.T) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/9" {
 			t.Fatalf("bad req: %s %s", r.Method, r.URL.Path)
 		}
+		var body struct {
+			ExtraData string        `json:"extraData"`
+			PieceIDs  []json.Number `json:"pieceIds"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.ExtraData != "0x01" || len(body.PieceIDs) != 1 || body.PieceIDs[0].String() != "9" {
+			t.Fatalf("body=%+v", body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0xabc0000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
 	h, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h == (common.Hash{}) {
+		t.Fatal("zero hash")
+	}
+}
+
+func TestSchedulePieceDeletions(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/9" {
+			t.Fatalf("bad req: %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			ExtraData string        `json:"extraData"`
+			PieceIDs  []json.Number `json:"pieceIds"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		want := []string{"9", "9223372036854775807", "0"}
+		if body.ExtraData != "0x0102" || len(body.PieceIDs) != len(want) {
+			t.Fatalf("body=%+v", body)
+		}
+		for i := range want {
+			if body.PieceIDs[i].String() != want[i] {
+				t.Fatalf("pieceIds[%d]=%s want %s", i, body.PieceIDs[i], want[i])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"txHash":"0xabc0000000000000000000000000000000000000000000000000000000000000"}`)
+	}))
+	maxID, err := types.ParseBigInt("9223372036854775807")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{
+		types.NewBigInt(9), maxID, types.NewBigInt(0),
+	}, []byte{1, 2})
 	if err != nil {
 		t.Fatal(err)
 	}

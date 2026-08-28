@@ -78,8 +78,7 @@ func TestTerminateService_MapsProviderErrors(t *testing.T) {
 			body:   `{"code":1,"message":"queued","serviceTerminationEpoch":null}`,
 			assert: func(t *testing.T, err error) {
 				t.Helper()
-				var target *TerminateServicePendingError
-				if !errors.As(err, &target) {
+				if _, ok := errors.AsType[*TerminateServicePendingError](err); !ok {
 					t.Fatalf("err=%T %v want TerminateServicePendingError", err, err)
 				}
 			},
@@ -90,8 +89,7 @@ func TestTerminateService_MapsProviderErrors(t *testing.T) {
 			body:   `old provider`,
 			assert: func(t *testing.T, err error) {
 				t.Helper()
-				var target *TerminateServiceNotSupportedError
-				if !errors.As(err, &target) {
+				if _, ok := errors.AsType[*TerminateServiceNotSupportedError](err); !ok {
 					t.Fatalf("err=%T %v want TerminateServiceNotSupportedError", err, err)
 				}
 			},
@@ -117,6 +115,7 @@ func TestTerminateService_MapsProviderErrors(t *testing.T) {
 func TestWaitForTerminateService_SuccessAndRejected404(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		txHash := common.HexToHash("0x1234")
+		confirmedTxHash := common.HexToHash("0x5678")
 		var calls int
 		var callbackHash common.Hash
 		c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -125,7 +124,7 @@ func TestWaitForTerminateService_SuccessAndRejected404(t *testing.T) {
 				_, _ = w.Write([]byte(`{"terminationTxHash":"` + txHash.Hex() + `","fwssTerminated":null,"serviceTerminationEpoch":null}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"terminationTxHash":"` + txHash.Hex() + `","fwssTerminated":true,"serviceTerminationEpoch":456}`))
+			_, _ = w.Write([]byte(`{"terminationTxHash":"` + txHash.Hex() + `","confirmedTxHash":"` + confirmedTxHash.Hex() + `","fwssTerminated":true,"serviceTerminationEpoch":456}`))
 		}))
 
 		status, err := c.WaitForTerminateService(context.Background(), types.NewBigInt(7), time.Nanosecond, func(h common.Hash) {
@@ -143,6 +142,9 @@ func TestWaitForTerminateService_SuccessAndRejected404(t *testing.T) {
 		if !status.FWSSTerminated || status.ServiceTerminationEpoch != 456 {
 			t.Fatalf("status=%+v want terminated epoch 456", status)
 		}
+		if status.ConfirmedTxHash == nil || *status.ConfirmedTxHash != confirmedTxHash {
+			t.Fatalf("confirmed hash=%v want %s", status.ConfirmedTxHash, confirmedTxHash)
+		}
 	})
 
 	t.Run("not found before hash", func(t *testing.T) {
@@ -150,8 +152,7 @@ func TestWaitForTerminateService_SuccessAndRejected404(t *testing.T) {
 			http.NotFound(w, nil)
 		}))
 		_, err := c.WaitForTerminateService(context.Background(), types.NewBigInt(7), time.Nanosecond, nil)
-		var target *WaitForTerminateServiceNotFoundError
-		if !errors.As(err, &target) {
+		if _, ok := errors.AsType[*WaitForTerminateServiceNotFoundError](err); !ok {
 			t.Fatalf("err=%T %v want WaitForTerminateServiceNotFoundError", err, err)
 		}
 	})
@@ -176,4 +177,26 @@ func TestWaitForTerminateService_SuccessAndRejected404(t *testing.T) {
 			t.Fatalf("TxHash=%s want %s", target.TxHash, txHash)
 		}
 	})
+}
+
+func TestGetTerminateServiceStatus_RejectsInvalidHashes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "invalid original", body: `{"terminationTxHash":"0x1234","fwssTerminated":null,"serviceTerminationEpoch":null}`},
+		{name: "zero original", body: `{"terminationTxHash":"0x0000000000000000000000000000000000000000000000000000000000000000","fwssTerminated":null,"serviceTerminationEpoch":null}`},
+		{name: "invalid confirmed", body: `{"terminationTxHash":"","confirmedTxHash":"0x1234","fwssTerminated":null,"serviceTerminationEpoch":null}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			_, err := c.GetTerminateServiceStatus(context.Background(), types.NewBigInt(7))
+			if !errors.Is(err, ErrInvalidStatus) {
+				t.Fatalf("err=%v want ErrInvalidStatus", err)
+			}
+		})
+	}
 }

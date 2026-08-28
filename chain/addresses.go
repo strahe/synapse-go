@@ -20,7 +20,7 @@ var knownAddresses = [chainCount]ContractAddresses{
 	Mainnet: {
 		FWSS:               common.HexToAddress("0x8408502033C418E1bbC97cE9ac48E5528F371A9f"),
 		Payments:           common.HexToAddress("0x23b1e018F08BB982348b15a86ee926eEBf7F4DAa"),
-		StateView:          common.HexToAddress("0xB1B3A3d979c1f233c1021EF98dff9c0932FF1bb9"),
+		StateView:          common.HexToAddress("0xdDd8F083a3fe9C66547D46bee24e5AaF56BCa0ab"),
 		PDPVerifier:        common.HexToAddress("0xBADd0B92C1c71d02E7d520f64c0876538fa2557F"),
 		SPRegistry:         common.HexToAddress("0xf55dDbf63F1b55c3F1D4FA7e339a68AB7b64A5eB"),
 		USDFC:              common.HexToAddress("0x80B98d3aa09ffff255c3ba4A241111Ff1262F045"),
@@ -30,7 +30,7 @@ var knownAddresses = [chainCount]ContractAddresses{
 	Calibration: {
 		FWSS:               common.HexToAddress("0x02925630df557F957f70E112bA06e50965417CA0"),
 		Payments:           common.HexToAddress("0x09a0fDc2723fAd1A7b8e3e00eE5DF73841df55a0"),
-		StateView:          common.HexToAddress("0x537320bd004a7FDd3c1932ca64BD88268301322A"),
+		StateView:          common.HexToAddress("0x9BF9e67e83EC8613883FDdDec4D3b38AEE937177"),
 		PDPVerifier:        common.HexToAddress("0x85e366Cf9DD2c0aE37E963d9556F5f4718d6417C"),
 		SPRegistry:         common.HexToAddress("0x839e5c9988e4e9977d40708d0094103c0839Ac9D"),
 		USDFC:              common.HexToAddress("0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0"),

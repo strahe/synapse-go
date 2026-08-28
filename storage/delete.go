@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
-	sdktypes "github.com/strahe/synapse-go/types"
-
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/pdp"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
+	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 // DeletePiece schedules removal of the first piece matching pieceCID from
@@ -23,38 +25,77 @@ import (
 // and deletes the first returned piece ID. Prefer [DataSetContext.DeletePieceByID]
 // when the on-chain piece ID is available.
 //
-// The implementation:
-//  1. Resolves one on-chain pieceID via PDPVerifier.findPieceIdsByCid.
-//  2. Signs an EIP-712 SchedulePieceRemovals message over (clientDataSetID,
-//     pieceID) and ABI-encodes the signature as bytes.
-//  3. Calls the provider's DELETE /pdp/data-sets/{id}/pieces/{pieceId}
-//     endpoint via PDPProviderClient.SchedulePieceDeletion.
-//
 // The returned WriteResult carries only the transaction hash; there is no
 // on-chain wait.
 func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
 	const op = "storage.DataSetContext.DeletePiece"
+	return c.deletePieces(ctx, op, []cid.Cid{pieceCID})
+}
 
+// DeletePieces schedules removal of the first piece matching each CID in one
+// provider transaction. Duplicate resolved piece IDs are removed while
+// preserving their first occurrence.
+//
+// A data set can contain multiple piece IDs with the same piece CID. Use
+// [DataSetContext.DeletePiecesByID] to remove specific duplicate instances.
+func (c *DataSetContext) DeletePieces(ctx context.Context, pieceCIDs []cid.Cid) (*sdktypes.WriteResult, error) {
+	const op = "storage.DataSetContext.DeletePieces"
+	return c.deletePieces(ctx, op, pieceCIDs)
+}
+
+func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs []cid.Cid) (*sdktypes.WriteResult, error) {
+	pieceCIDs, err := normalizeDeletePieceCIDs(op, pieceCIDs)
+	if err != nil {
+		return nil, err
+	}
 	if c.core.pdpCaller == nil {
 		return nil, errors.New(op + ": PDPVerifier reader not configured")
-	}
-	if !pieceCID.Defined() {
-		return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
 	}
 	target, err := c.snapshotDeletePieceTarget(op)
 	if err != nil {
 		return nil, err
 	}
 
-	pieceIDs, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, pieceCID, 0, 1)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	if len(pieceIDs) == 0 {
-		return nil, fmt.Errorf("%s: %w: piece not found in data set", op, ErrInvalidArgument)
+	pieceIDs := make([]sdktypes.BigInt, 0, len(pieceCIDs))
+	for i, pieceCID := range pieceCIDs {
+		matches, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, pieceCID, 0, 1)
+		if err != nil {
+			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, i, err)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("%s: %w: pieceCID at index %d not found in data set", op, ErrInvalidArgument, i)
+		}
+		pieceIDs = append(pieceIDs, matches[0])
 	}
 
-	return c.schedulePieceDeletionByID(ctx, op, target, pieceIDs[0])
+	pieceIDs, err = normalizeDeletePieceIDs(op, pieceIDs)
+	if err != nil {
+		return nil, err
+	}
+	return c.schedulePieceDeletionsByID(ctx, op, target, pieceIDs)
+}
+
+func normalizeDeletePieceCIDs(op string, pieceCIDs []cid.Cid) ([]cid.Cid, error) {
+	if len(pieceCIDs) == 0 {
+		return nil, fmt.Errorf("%s: %w: no piece CIDs provided", op, ErrInvalidArgument)
+	}
+	normalized := make([]cid.Cid, 0, len(pieceCIDs))
+	seen := make(map[string]struct{}, len(pieceCIDs))
+	for i, pieceCID := range pieceCIDs {
+		if !pieceCID.Defined() {
+			return nil, fmt.Errorf("%s: %w: undefined pieceCID at index %d", op, ErrInvalidArgument, i)
+		}
+		key := pieceCID.KeyString()
+		if info, err := piece.ParseV2(pieceCID); err == nil {
+			key = info.CIDv1.KeyString()
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, pieceCID)
+	}
+	return normalized, nil
 }
 
 // DeletePieceByID schedules removal of the piece identified by its on-chain
@@ -64,13 +105,28 @@ func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sd
 // guaranteed to be unique within a data set.
 func (c *DataSetContext) DeletePieceByID(ctx context.Context, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
 	const op = "storage.DataSetContext.DeletePieceByID"
+	return c.deletePiecesByID(ctx, op, []sdktypes.BigInt{pieceID})
+}
 
+// DeletePiecesByID schedules removal of the identified on-chain piece IDs in
+// one provider transaction. Duplicate IDs are removed while preserving their
+// first occurrence.
+func (c *DataSetContext) DeletePiecesByID(ctx context.Context, pieceIDs []sdktypes.BigInt) (*sdktypes.WriteResult, error) {
+	const op = "storage.DataSetContext.DeletePiecesByID"
+	return c.deletePiecesByID(ctx, op, pieceIDs)
+}
+
+func (c *DataSetContext) deletePiecesByID(ctx context.Context, op string, pieceIDs []sdktypes.BigInt) (*sdktypes.WriteResult, error) {
+	pieceIDs, err := normalizeDeletePieceIDs(op, pieceIDs)
+	if err != nil {
+		return nil, err
+	}
 	target, err := c.snapshotDeletePieceTarget(op)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.schedulePieceDeletionByID(ctx, op, target, pieceID)
+	return c.schedulePieceDeletionsByID(ctx, op, target, pieceIDs)
 }
 
 type deletePieceTarget struct {
@@ -101,13 +157,25 @@ func (c *DataSetContext) snapshotDeletePieceTarget(op string) (deletePieceTarget
 	}, nil
 }
 
-func (c *DataSetContext) schedulePieceDeletionByID(ctx context.Context, op string, target deletePieceTarget, pieceID sdktypes.BigInt) (*sdktypes.WriteResult, error) {
+type batchPieceDeletionClient interface {
+	SchedulePieceDeletions(context.Context, sdktypes.BigInt, []sdktypes.BigInt, []byte) (common.Hash, error)
+}
+
+func (c *DataSetContext) schedulePieceDeletionsByID(ctx context.Context, op string, target deletePieceTarget, pieceIDs []sdktypes.BigInt) (*sdktypes.WriteResult, error) {
+	batchClient, supportsBatch := c.core.client.(batchPieceDeletionClient)
+	if len(pieceIDs) > 1 && !supportsBatch {
+		return nil, fmt.Errorf("%s: %w", op, ErrBatchPieceDeletionNotSupported)
+	}
+	typedPieceIDs := make([]*big.Int, len(pieceIDs))
+	for i, pieceID := range pieceIDs {
+		typedPieceIDs[i] = pieceID.Big()
+	}
 	domain := ityped.NewDomain(target.chainID.BigInt(), target.recordKeeper)
 	sig, err := ityped.SignSchedulePieceRemovals(
 		c.core.signHashFunc(),
 		domain,
 		target.clientDataSetID,
-		[]*big.Int{pieceID.Big()},
+		typedPieceIDs,
 	)
 	if err != nil {
 		if errors.Is(err, signer.ErrUnsupportedSigner) {
@@ -121,12 +189,40 @@ func (c *DataSetContext) schedulePieceDeletionByID(ctx context.Context, op strin
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	txHash, err := c.core.client.SchedulePieceDeletion(ctx, target.dataSetID, pieceID, extraData)
+	var txHash common.Hash
+	if supportsBatch {
+		txHash, err = batchClient.SchedulePieceDeletions(ctx, target.dataSetID, pieceIDs, extraData)
+	} else if len(pieceIDs) == 1 {
+		txHash, err = c.core.client.SchedulePieceDeletion(ctx, target.dataSetID, pieceIDs[0], extraData)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	return &sdktypes.WriteResult{Hash: txHash}, nil
+}
+
+func normalizeDeletePieceIDs(op string, pieceIDs []sdktypes.BigInt) ([]sdktypes.BigInt, error) {
+	if len(pieceIDs) == 0 {
+		return nil, fmt.Errorf("%s: %w: no piece IDs provided", op, ErrInvalidArgument)
+	}
+	normalized := make([]sdktypes.BigInt, 0, len(pieceIDs))
+	seen := make(map[uint64]struct{}, len(pieceIDs))
+	for i, pieceID := range pieceIDs {
+		id, ok := pieceID.Uint64()
+		if !ok || id > math.MaxInt64 {
+			return nil, fmt.Errorf("%s: %w: pieceID at index %d is outside Curio's supported range 0..%d", op, ErrInvalidArgument, i, int64(math.MaxInt64))
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, pieceID.Copy())
+	}
+	if len(normalized) > pdp.MaxDeletePiecesBatchSize {
+		return nil, fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, len(normalized), pdp.MaxDeletePiecesBatchSize)
+	}
+	return normalized, nil
 }
 
 // encodeSignatureExtraData wraps a raw 65-byte signature as

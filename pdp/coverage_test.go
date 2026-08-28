@@ -435,9 +435,77 @@ func TestSchedulePieceDeletion_ZeroTxHash(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
 	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
-	if err == nil || !strings.Contains(err.Error(), "empty txHash") {
-		t.Errorf("want empty txHash error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "zero txHash") {
+		t.Errorf("want zero txHash error, got %v", err)
 	}
+}
+
+func TestSchedulePieceDeletions_Validation(t *testing.T) {
+	tooLarge, err := types.ParseBigInt("9223372036854775808")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		pieceIDs  []types.BigInt
+		extraData []byte
+		wantIs    error
+		wantText  string
+	}{
+		{name: "empty", extraData: []byte{1}, wantText: "no pieces"},
+		{name: "too many", pieceIDs: makeBigInts(MaxDeletePiecesBatchSize + 1), extraData: []byte{1}, wantIs: ErrTooManyPieces},
+		{name: "duplicate", pieceIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(1)}, extraData: []byte{1}, wantText: "duplicate pieceID"},
+		{name: "above Curio range", pieceIDs: []types.BigInt{tooLarge}, extraData: []byte{1}, wantText: "outside Curio's supported range"},
+		{name: "empty extraData", pieceIDs: []types.BigInt{types.NewBigInt(1)}, wantText: "empty extraData"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("should not be called")
+			}))
+			_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), tt.pieceIDs, tt.extraData)
+			if err == nil || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("err=%v want text %q", err, tt.wantText)
+			}
+			if tt.wantIs != nil && !errors.Is(err, tt.wantIs) {
+				t.Fatalf("err=%v want errors.Is(%v)", err, tt.wantIs)
+			}
+		})
+	}
+}
+
+func TestSchedulePieceDeletions_InvalidTxHash(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"txHash":"0x1234"}`)
+	}))
+	_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(1)}, []byte{1})
+	if err == nil || !strings.Contains(err.Error(), "invalid txHash") {
+		t.Fatalf("err=%v want invalid txHash", err)
+	}
+}
+
+func TestSchedulePieceDeletions_TooManyQueued(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "too many queued removals", http.StatusTooManyRequests)
+	}))
+	_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(1)}, []byte{1})
+	httpErr, ok := errors.AsType[*HTTPError](err)
+	if !ok {
+		t.Fatalf("err=%T %v want *HTTPError", err, err)
+	}
+	if httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != 30*time.Second {
+		t.Fatalf("HTTPError=%+v", httpErr)
+	}
+}
+
+func makeBigInts(count int) []types.BigInt {
+	ids := make([]types.BigInt, count)
+	for i := range ids {
+		ids[i] = types.NewBigInt(uint64(i))
+	}
+	return ids
 }
 
 func TestSchedulePieceDeletion_ServerError(t *testing.T) {

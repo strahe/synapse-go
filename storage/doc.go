@@ -10,9 +10,9 @@
 //
 // Both types expose provider-scoped operations such as Store and Download.
 // Download therefore behaves the same on both: it retrieves the requested
-// piece from the configured provider or CDN. Data-set inspection, deletion,
-// and termination methods are available only on DataSetContext, while
-// standalone data-set creation and recovery are available only on
+// piece from the configured provider or CDN. Data-set inspection, single or
+// batch deletion, and termination methods are available only on DataSetContext,
+// while standalone data-set creation and recovery are available only on
 // ProviderContext.
 //
 // Use [Service.NewProviderContext] or [Service.NewDataSetContext] when the

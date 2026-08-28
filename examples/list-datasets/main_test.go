@@ -39,10 +39,10 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 					ProviderID: types.NewBigInt(20),
 					Payer:      payer,
 				},
-				IsLive:           true,
-				IsManaged:        true,
-				WithCDN:          true,
-				ActivePieceCount: big.NewInt(3),
+				IsLive:          true,
+				IsManaged:       true,
+				WithCDN:         true,
+				HasActivePieces: true,
 				Metadata: map[string]string{
 					"source": "example",
 				},
@@ -66,6 +66,7 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 		"datasetCount=1",
 		"dataset.1.dataSetID=10",
 		"dataset.1.providerID=20",
+		"dataset.1.hasActivePieces=true",
 		"dataset.1.metadata.source=example",
 	} {
 		if !strings.Contains(out, want) {

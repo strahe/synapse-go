@@ -94,6 +94,7 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 	payer := s.EVMAddress()
 	dataSetID := types.NewBigInt(7)
 	txHash := common.HexToHash("0x1234")
+	confirmedTxHash := common.HexToHash("0x5678")
 	pay := &fakeTerminationPaymentReader{
 		account: &payments.AccountState{
 			Funds:         big.NewInt(100),
@@ -121,6 +122,7 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 			onHash(txHash)
 			return &pdp.TerminateServiceStatus{
 				TerminationTxHash:       &txHash,
+				ConfirmedTxHash:         &confirmedTxHash,
 				FWSSTerminated:          true,
 				ServiceTerminationEpoch: 456,
 			}, nil
@@ -149,7 +151,7 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 	if submitted != txHash {
 		t.Fatalf("submitted=%s want %s", submitted, txHash)
 	}
-	if res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
+	if res.TxHash == nil || *res.TxHash != txHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != confirmedTxHash || res.EndEpoch != 456 {
 		t.Fatalf("result=%+v want tx hash and end epoch", res)
 	}
 	if pay.owner != payer {
@@ -248,6 +250,9 @@ func TestContext_TerminateService_ResumesPendingRequest(t *testing.T) {
 	if res.EndEpoch != 99 {
 		t.Fatalf("EndEpoch=%d want 99", res.EndEpoch)
 	}
+	if res.TxHash != nil || res.ConfirmedTxHash != nil {
+		t.Fatalf("result hashes=%v/%v want nil for an older provider response", res.TxHash, res.ConfirmedTxHash)
+	}
 }
 
 func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
@@ -255,7 +260,7 @@ func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
 	txHash := common.HexToHash("0x1234")
 	term := &fakeFWSSTerminator{res: &types.WriteResult{
 		Hash:    txHash,
-		Receipt: terminateReceipt(t, dataSetID, 456, 99),
+		Receipt: terminateReceipt(t, dataSetID, txHash, 456, 99),
 	}}
 	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(testPayer()),
@@ -280,8 +285,30 @@ func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
 	if submitted != txHash {
 		t.Fatalf("submitted=%s want %s", submitted, txHash)
 	}
-	if res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
+	if res.TxHash == nil || *res.TxHash != txHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != txHash || res.EndEpoch != 456 {
 		t.Fatalf("result=%+v want tx hash and end epoch", res)
+	}
+}
+
+func TestContext_TerminateService_SkipProviderRejectsZeroReceiptHash(t *testing.T) {
+	dataSetID := types.NewBigInt(7)
+	term := &fakeFWSSTerminator{res: &types.WriteResult{
+		Hash:    common.HexToHash("0x1234"),
+		Receipt: terminateReceipt(t, dataSetID, common.Hash{}, 456, 99),
+	}}
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(dataSetID, types.BigInt{}),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithFWSSTerminator(term),
+	)
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
+
+	_, err = c.TerminateService(context.Background(), &TerminateServiceOptions{SkipProvider: true})
+	if err == nil || !strings.Contains(err.Error(), "zero transaction hash") {
+		t.Fatalf("err=%v want zero receipt transaction hash error", err)
 	}
 }
 
@@ -513,7 +540,7 @@ func (f *fakeTerminationProviderResolver) ResolveProvider(context.Context, types
 	return testProvider(), nil
 }
 
-func terminateReceipt(t *testing.T, dataSetID types.BigInt, endEpoch uint64, pdpRailID int64) *coretypes.Receipt {
+func terminateReceipt(t *testing.T, dataSetID types.BigInt, txHash common.Hash, endEpoch uint64, pdpRailID int64) *coretypes.Receipt {
 	t.Helper()
 	contractABI, err := fwssbind.FWSSMetaData.GetAbi()
 	if err != nil {
@@ -531,5 +558,5 @@ func terminateReceipt(t *testing.T, dataSetID types.BigInt, endEpoch uint64, pdp
 		},
 		Data: data,
 	}
-	return &coretypes.Receipt{Logs: []*coretypes.Log{log}}
+	return &coretypes.Receipt{TxHash: txHash, Logs: []*coretypes.Log{log}}
 }

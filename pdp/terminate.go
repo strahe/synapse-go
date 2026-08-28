@@ -30,7 +30,10 @@ type TerminateServiceResult struct {
 
 // TerminateServiceStatus is the provider's termination status.
 type TerminateServiceStatus struct {
-	TerminationTxHash       *common.Hash
+	// TerminationTxHash is the provider's original submission hash.
+	TerminationTxHash *common.Hash
+	// ConfirmedTxHash is the hash included on chain after any replacement.
+	ConfirmedTxHash         *common.Hash
 	FWSSTerminated          bool
 	ServiceTerminationEpoch types.Epoch
 }
@@ -47,6 +50,7 @@ type terminateConflictWire struct {
 
 type terminateStatusWire struct {
 	TerminationTxHash       string       `json:"terminationTxHash"`
+	ConfirmedTxHash         string       `json:"confirmedTxHash"`
 	FWSSTerminated          *bool        `json:"fwssTerminated"`
 	ServiceTerminationEpoch *json.Number `json:"serviceTerminationEpoch"`
 }
@@ -128,15 +132,25 @@ func (c *Client) GetTerminateServiceStatus(ctx context.Context, dataSetID types.
 
 func parseTerminateStatus(wire terminateStatusWire) (*TerminateServiceStatus, error) {
 	var hash *common.Hash
-	if wire.TerminationTxHash != "" {
-		if !common.IsHexHash(wire.TerminationTxHash) {
-			return nil, fmt.Errorf("pdp.GetTerminateServiceStatus: invalid terminationTxHash %q", wire.TerminationTxHash)
-		}
-		h := common.HexToHash(wire.TerminationTxHash)
+	parsedHash, err := parseOptionalStatusHash("pdp.GetTerminateServiceStatus", "terminationTxHash", wire.TerminationTxHash)
+	if err != nil {
+		return nil, err
+	}
+	if parsedHash != (common.Hash{}) {
+		h := parsedHash
 		hash = &h
 	}
+	var confirmedHash *common.Hash
+	parsedConfirmedHash, err := parseOptionalStatusHash("pdp.GetTerminateServiceStatus", "confirmedTxHash", wire.ConfirmedTxHash)
+	if err != nil {
+		return nil, err
+	}
+	if parsedConfirmedHash != (common.Hash{}) {
+		h := parsedConfirmedHash
+		confirmedHash = &h
+	}
 	if wire.FWSSTerminated == nil || !*wire.FWSSTerminated {
-		return &TerminateServiceStatus{TerminationTxHash: hash}, nil
+		return &TerminateServiceStatus{TerminationTxHash: hash, ConfirmedTxHash: confirmedHash}, nil
 	}
 	epoch, err := epochFromJSONNumber(wire.ServiceTerminationEpoch)
 	if err != nil {
@@ -144,6 +158,7 @@ func parseTerminateStatus(wire terminateStatusWire) (*TerminateServiceStatus, er
 	}
 	return &TerminateServiceStatus{
 		TerminationTxHash:       hash,
+		ConfirmedTxHash:         confirmedHash,
 		FWSSTerminated:          true,
 		ServiceTerminationEpoch: epoch,
 	}, nil
@@ -200,10 +215,7 @@ func (c *Client) postJSONRetry429(ctx context.Context, path string, payload any,
 	if err != nil {
 		return nil, nil, fmt.Errorf("pdp: marshal %s: %w", path, err)
 	}
-	maxRetries := c.maxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
+	maxRetries := max(c.maxRetries, 0)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err

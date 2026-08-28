@@ -92,8 +92,8 @@ var ErrPieceNotFound = errors.New("pdp: piece not found")
 // the piece is known but not yet parked and queryable.
 var ErrPieceProcessing = errors.New("pdp: piece still processing")
 
-// ErrTooManyPieces is returned when an add-pieces style request exceeds
-// MaxAddPiecesBatchSize.
+// ErrTooManyPieces is returned when a piece batch exceeds the corresponding
+// add or delete request limit.
 var ErrTooManyPieces = errors.New("pdp: too many pieces")
 
 // ErrTxRejected is returned when an on-chain operation posted by the SP was

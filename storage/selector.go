@@ -951,7 +951,7 @@ func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstor
 		if !metadataMatches(dataSet.Metadata, requestedMetadata) {
 			continue
 		}
-		hasPieces := dataSet.ActivePieceCount != nil && dataSet.ActivePieceCount.Sign() > 0
+		hasPieces := dataSet.HasActivePieces
 		if best == nil ||
 			(hasPieces && !bestHasPieces) ||
 			(hasPieces == bestHasPieces && dataSet.DataSetID.Cmp(best.DataSetID) < 0) {
