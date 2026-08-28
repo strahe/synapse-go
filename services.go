@@ -127,7 +127,12 @@ func (c *Client) initServices() error {
 		if err != nil {
 			return fmt.Errorf("create pdpverifier caller: %w", err)
 		}
-		c.pdpReader = adapters.NewPDPVerifierReader(caller, c.ethClient)
+		c.pdpReader = adapters.NewPDPVerifierReader(
+			caller,
+			c.ethClient,
+			c.addresses.PDPVerifier,
+			c.maxMulticallCalls,
+		)
 	}
 
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{

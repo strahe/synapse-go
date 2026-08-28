@@ -59,23 +59,62 @@ func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs 
 		return nil, err
 	}
 
-	pieceIDs := make([]sdktypes.BigInt, 0, len(normalizedCIDs))
-	for _, item := range normalizedCIDs {
-		matches, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, item.pieceCID, 0, 1)
-		if err != nil {
-			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
-		}
-		if len(matches) == 0 {
-			return nil, fmt.Errorf("%s: %w: pieceCID at index %d not found in data set", op, ErrInvalidArgument, item.originalIndex)
-		}
-		pieceIDs = append(pieceIDs, matches[0])
+	pieceIDs, err := c.resolveDeletePieceIDs(ctx, op, target.dataSetID, normalizedCIDs)
+	if err != nil {
+		return nil, err
 	}
-
 	pieceIDs, err = normalizeDeletePieceIDs(op, pieceIDs)
 	if err != nil {
 		return nil, err
 	}
 	return c.schedulePieceDeletionsByID(ctx, op, target, pieceIDs)
+}
+
+type batchPieceIDResolver interface {
+	FindPieceIDsByCIDs(context.Context, sdktypes.BigInt, []cid.Cid) ([][]sdktypes.BigInt, error)
+}
+
+func (c *DataSetContext) resolveDeletePieceIDs(
+	ctx context.Context,
+	op string,
+	dataSetID sdktypes.BigInt,
+	normalizedCIDs []normalizedDeletePieceCID,
+) ([]sdktypes.BigInt, error) {
+	if resolver, ok := c.core.pdpCaller.(batchPieceIDResolver); ok && len(normalizedCIDs) > 1 {
+		pieceCIDs := make([]cid.Cid, len(normalizedCIDs))
+		for i, item := range normalizedCIDs {
+			pieceCIDs[i] = item.pieceCID
+		}
+		matches, err := resolver.FindPieceIDsByCIDs(ctx, dataSetID, pieceCIDs)
+		if err == nil && len(matches) == len(normalizedCIDs) {
+			return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+		}
+	}
+
+	matches := make([][]sdktypes.BigInt, len(normalizedCIDs))
+	for i, item := range normalizedCIDs {
+		resolved, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, dataSetID, item.pieceCID, 0, 1)
+		if err != nil {
+			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
+		}
+		matches[i] = resolved
+	}
+	return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+}
+
+func firstDeletePieceIDMatches(
+	op string,
+	normalizedCIDs []normalizedDeletePieceCID,
+	matches [][]sdktypes.BigInt,
+) ([]sdktypes.BigInt, error) {
+	pieceIDs := make([]sdktypes.BigInt, 0, len(normalizedCIDs))
+	for i, item := range normalizedCIDs {
+		if len(matches[i]) == 0 {
+			return nil, fmt.Errorf("%s: %w: pieceCID at index %d not found in data set", op, ErrInvalidArgument, item.originalIndex)
+		}
+		pieceIDs = append(pieceIDs, matches[i][0])
+	}
+	return pieceIDs, nil
 }
 
 type normalizedDeletePieceCID struct {
