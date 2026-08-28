@@ -17,6 +17,8 @@
 // Non-success PDP HTTP responses surface *HTTPError. Use
 // errors.AsType[*pdp.HTTPError] to inspect status code, response body, and
 // Retry-After.
+// A full piece-deletion queue additionally matches ErrTooManyPiecesQueued;
+// the wrapped *HTTPError remains available for Retry-After handling.
 //
 // POST and DELETE requests are executed exactly once unless an endpoint
 // documents server-side idempotency. The PullPieces POST is retried for

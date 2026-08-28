@@ -534,6 +534,7 @@ func TestNew_WithMaxMulticallCalls(t *testing.T) {
 				"warmstorage": client.WarmStorage(),
 				"spregistry":  client.SPRegistry(),
 				"sessionkey":  client.SessionKey(),
+				"storage":     client.pdpReader,
 			} {
 				field := reflect.ValueOf(service).Elem().FieldByName("maxMulticallCalls")
 				if !field.IsValid() || field.Kind() != reflect.Int {

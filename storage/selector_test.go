@@ -52,24 +52,24 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{"source": "app", "withCDN": ""},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"source": "app", "withCDN": ""},
 			},
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(0),
-				Metadata:         map[string]string{"source": "other"},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: false,
+				Metadata:        map[string]string{"source": "other"},
 			},
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
 			},
 		},
 		dataSetMetadata: map[string]map[string]string{
@@ -832,11 +832,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectSkipsUnusableDetailedDat
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           false,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{"source": "app"},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          false,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"source": "app"},
 			},
 		},
 		dataSetMetadata: map[string]map[string]string{
@@ -865,18 +865,18 @@ func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSn
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(2),
-				Metadata:         map[string]string{"source": "app"},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"source": "app"},
 			},
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{"source": "app"},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"source": "app"},
 			},
 		},
 		validatorEnabled: true,
@@ -900,25 +900,25 @@ func TestSelectMatchingDetailedDataSet_PrefersActiveThenLowestID(t *testing.T) {
 	providerID := testID(1)
 	dataSetID, clientDataSetID, metadata := selectMatchingDetailedDataSet(providerID, []*warmstorage.EnhancedDataSetInfo{
 		{
-			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(1), ProviderID: providerID, ClientDataSetID: testID(101)},
-			IsLive:           true,
-			IsManaged:        true,
-			ActivePieceCount: new(big.Int),
-			Metadata:         map[string]string{"source": "app"},
+			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(1), ProviderID: providerID, ClientDataSetID: testID(101)},
+			IsLive:          true,
+			IsManaged:       true,
+			HasActivePieces: false,
+			Metadata:        map[string]string{"source": "app"},
 		},
 		{
-			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(3), ProviderID: providerID, ClientDataSetID: testID(103)},
-			IsLive:           true,
-			IsManaged:        true,
-			ActivePieceCount: bigInt(2),
-			Metadata:         map[string]string{"source": "app"},
+			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(3), ProviderID: providerID, ClientDataSetID: testID(103)},
+			IsLive:          true,
+			IsManaged:       true,
+			HasActivePieces: true,
+			Metadata:        map[string]string{"source": "app"},
 		},
 		{
-			DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(2), ProviderID: providerID, ClientDataSetID: testID(102)},
-			IsLive:           true,
-			IsManaged:        true,
-			ActivePieceCount: bigInt(1),
-			Metadata:         map[string]string{"source": "app"},
+			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(2), ProviderID: providerID, ClientDataSetID: testID(102)},
+			IsLive:          true,
+			IsManaged:       true,
+			HasActivePieces: true,
+			Metadata:        map[string]string{"source": "app"},
 		},
 	}, map[string]string{"source": "app"})
 
@@ -941,11 +941,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{"source": "app"},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"source": "app"},
 			},
 		},
 	}
@@ -1059,11 +1059,11 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRequestsOnlyManagedDetai
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{},
 			},
 		},
 		dataSetDetailsOnlyManaged: &onlyManaged,
@@ -1272,9 +1272,6 @@ func (f *fakeEnhancedDataSetCatalog) GetClientDataSetsWithDetails(_ context.Cont
 			cloned.DataSetInfo = &base
 		}
 		cloned.Metadata = cloneStringMap(dataSet.Metadata)
-		if dataSet.ActivePieceCount != nil {
-			cloned.ActivePieceCount = new(big.Int).Set(dataSet.ActivePieceCount)
-		}
 		out = append(out, &cloned)
 	}
 	return out, nil
@@ -1461,11 +1458,11 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{},
 			},
 		},
 	})
@@ -1599,11 +1596,11 @@ func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *test
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 0},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 0},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{},
 			},
 		},
 		validatorEnabled: true,
@@ -1762,11 +1759,11 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 			approvedProviderIDs: []types.BigInt{testID(1)},
 			activeProviders:     []spregistry.PDPProvider{testPDPProvider(testID(1), "https://sp-1.example.com")},
 			detailedDataSets: []*warmstorage.EnhancedDataSetInfo{{
-				DataSetInfo:      &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)},
-				IsLive:           true,
-				IsManaged:        true,
-				ActivePieceCount: bigInt(1),
-				Metadata:         map[string]string{},
+				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{},
 			}},
 		})
 		selection, err := resolver.SelectUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})

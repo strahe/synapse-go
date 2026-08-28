@@ -153,7 +153,7 @@ func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetInfo) err
 	if err := exampleutil.WriteKV(stdout, prefix+".withCDN", dataSet.WithCDN); err != nil {
 		return err
 	}
-	if err := exampleutil.WriteKV(stdout, prefix+".activePieceCount", dataSet.ActivePieceCount); err != nil {
+	if err := exampleutil.WriteKV(stdout, prefix+".hasActivePieces", dataSet.HasActivePieces); err != nil {
 		return err
 	}
 	return exampleutil.WriteMap(stdout, prefix+".metadata", dataSet.Metadata)

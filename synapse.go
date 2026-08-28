@@ -119,9 +119,9 @@ func WithRPCURL(url string) ClientOption {
 }
 
 // WithMaxMulticallCalls limits the number of actual contract calls in each
-// dynamic Multicall3 request made by WarmStorage, SPRegistry, and SessionKey
-// methods. Zero uses the default of 64. Negative values cause [New] to return
-// [ErrInvalidArgument].
+// dynamic Multicall3 request made by Storage, WarmStorage, SPRegistry, and
+// SessionKey methods. Zero uses the default of 64. Negative values cause [New]
+// to return [ErrInvalidArgument].
 //
 // Batches execute serially and may observe different blocks. The call-count
 // limit does not bound request or response bytes, gas, or execution time.

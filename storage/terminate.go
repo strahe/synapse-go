@@ -36,15 +36,21 @@ type TerminateServiceOptions struct {
 	ProviderWaitTimeout time.Duration
 	// PollInterval is used only for provider-relayed status polling.
 	PollInterval time.Duration
-	// OnSubmitted is called when a transaction hash becomes known.
+	// OnSubmitted is called when the provider's original transaction hash
+	// becomes known. A replacement-by-fee hash is returned as ConfirmedTxHash.
 	OnSubmitted func(common.Hash)
 }
 
 // TerminateServiceResult is the high-level service termination result.
 type TerminateServiceResult struct {
-	TxHash    *common.Hash
-	DataSetID types.BigInt
-	EndEpoch  types.Epoch
+	// TxHash is the provider's original submission hash when available.
+	TxHash *common.Hash
+	// ConfirmedTxHash is the hash included on chain. It may differ from TxHash
+	// after replacement-by-fee. For explorers and receipt lookups, prefer this
+	// field when non-nil and otherwise use TxHash.
+	ConfirmedTxHash *common.Hash
+	DataSetID       types.BigInt
+	EndEpoch        types.Epoch
 }
 
 // Terminate schedules termination of this context's data set via the
@@ -263,12 +269,21 @@ func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTermi
 	if opts != nil && opts.OnSubmitted != nil {
 		opts.OnSubmitted(res.Hash)
 	}
+	confirmedHash := res.Receipt.TxHash
+	if confirmedHash == (common.Hash{}) {
+		confirmedHash = res.Hash
+	}
 	ev, err := warmstorage.ExtractPDPPaymentTerminatedEvent(res.Receipt)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	hash := res.Hash
-	return &TerminateServiceResult{TxHash: &hash, DataSetID: dataSetID, EndEpoch: ev.EndEpoch}, nil
+	submittedHash := res.Hash
+	return &TerminateServiceResult{
+		TxHash:          &submittedHash,
+		ConfirmedTxHash: &confirmedHash,
+		DataSetID:       dataSetID,
+		EndEpoch:        ev.EndEpoch,
+	}, nil
 }
 
 func signTerminateServiceExtraData(signHash func([]byte) ([]byte, error), chainID types.ChainID, recordKeeper common.Address, dataSetID types.BigInt) ([]byte, error) {
@@ -351,6 +366,10 @@ func terminateResultFromStatus(dataSetID types.BigInt, status *pdp.TerminateServ
 	if status.TerminationTxHash != nil {
 		h := *status.TerminationTxHash
 		out.TxHash = &h
+	}
+	if status.ConfirmedTxHash != nil {
+		h := *status.ConfirmedTxHash
+		out.ConfirmedTxHash = &h
 	}
 	out.EndEpoch = status.ServiceTerminationEpoch
 	return out

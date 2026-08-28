@@ -1433,28 +1433,6 @@
   },
   {
     "type": "error",
-    "name": "InvalidServiceDescriptionLength",
-    "inputs": [
-      {
-        "name": "length",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidServiceNameLength",
-    "inputs": [
-      {
-        "name": "length",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidSignature",
     "inputs": [
       {
@@ -1806,17 +1784,6 @@
       },
       {
         "name": "nowBlock",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "RailNotAssociated",
-    "inputs": [
-      {
-        "name": "railId",
         "type": "uint256",
         "internalType": "uint256"
       }

@@ -45,7 +45,7 @@ type EnhancedDataSetInfo struct {
 	PDPVerifierDataSetID sdktypes.BigInt
 	IsLive               bool
 	IsManaged            bool
-	ActivePieceCount     *big.Int
+	HasActivePieces      bool
 	WithCDN              bool
 	Metadata             map[string]string
 }
@@ -85,8 +85,10 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt
 	return nil
 }
 
-// GetActivePieceCount returns the number of live (non-removed) pieces in
-// the given data set.
+// GetActivePieceCount returns the exact number of live (non-removed) pieces in
+// the given data set. It traverses bounded cursor pages, so its cost grows with
+// the number of pieces. Prefer [Service.HasActivePieces] when only presence is
+// needed.
 func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -97,16 +99,57 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Bi
 	if s.pdpBind == nil {
 		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", ErrPDPVerifierNotConfigured)
 	}
-	n, err := s.pdpBind.GetActivePieceCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", err)
+	const pageSize = 100
+	count := new(big.Int)
+	cursor := new(big.Int)
+	limit := big.NewInt(pageSize)
+	for {
+		page, err := s.pdpBind.GetActivePiecesByCursor(
+			&bind.CallOpts{Context: ctx},
+			dataSetID.Big(),
+			cursor,
+			limit,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", err)
+		}
+		if len(page.Pieces) != len(page.PieceIds) {
+			return nil, fmt.Errorf(
+				"warmstorage.GetActivePieceCount: mismatched pieces (%d) and piece IDs (%d)",
+				len(page.Pieces), len(page.PieceIds),
+			)
+		}
+		var previous *big.Int
+		for i, pieceID := range page.PieceIds {
+			if pieceID == nil {
+				return nil, fmt.Errorf("warmstorage.GetActivePieceCount: nil piece ID at page index %d", i)
+			}
+			if pieceID.Cmp(cursor) < 0 || previous != nil && pieceID.Cmp(previous) <= 0 {
+				return nil, fmt.Errorf("warmstorage.GetActivePieceCount: non-increasing piece ID %s at page index %d", pieceID, i)
+			}
+			previous = pieceID
+		}
+		count.Add(count, big.NewInt(int64(len(page.PieceIds))))
+		if !page.HasMore {
+			return count, nil
+		}
+		if previous == nil {
+			return nil, fmt.Errorf("warmstorage.GetActivePieceCount: empty page reported more pieces")
+		}
+		nextCursor := new(big.Int).Add(previous, big.NewInt(1))
+		if nextCursor.BitLen() > 256 {
+			return nil, fmt.Errorf("warmstorage.GetActivePieceCount: cursor cannot advance beyond uint256")
+		}
+		if nextCursor.Cmp(cursor) <= 0 {
+			return nil, fmt.Errorf("warmstorage.GetActivePieceCount: cursor did not advance from %s", cursor)
+		}
+		cursor = nextCursor
 	}
-	return n, nil
 }
 
 // HasActivePieces reports whether the data set contains at least one active
-// piece. It reads at most one piece, so its cost does not grow with the total
-// number of pieces. Missing and non-live data sets report false.
+// piece. It uses the data-set leaf count, so its cost does not grow with the
+// total number of pieces. Missing and non-live data sets report false.
 func (s *Service) HasActivePieces(ctx context.Context, dataSetID sdktypes.BigInt) (bool, error) {
 	if err := s.checkInit(); err != nil {
 		return false, err
@@ -117,22 +160,23 @@ func (s *Service) HasActivePieces(ctx context.Context, dataSetID sdktypes.BigInt
 	if s.pdpBind == nil {
 		return false, fmt.Errorf("warmstorage.HasActivePieces: %w", ErrPDPVerifierNotConfigured)
 	}
-	result, err := s.pdpBind.GetActivePieces(
-		&bind.CallOpts{Context: ctx},
-		dataSetID.Big(),
-		new(big.Int),
-		big.NewInt(1),
-	)
+	leafCount, err := s.pdpBind.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("warmstorage.HasActivePieces: %w", err)
 	}
-	return len(result.Pieces) > 0, nil
+	if leafCount == nil {
+		return false, fmt.Errorf("warmstorage.HasActivePieces: nil data-set leaf count")
+	}
+	return leafCount.Sign() > 0, nil
 }
 
 // GetPieceMetadata returns the (exists, value) pair for (dataSetID, pieceID, key).
+//
+// Deprecated: FWSS piece metadata getters are being removed. Read metadata
+// from PieceAdded events or an indexer instead.
 func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt, key string) (bool, string, error) {
 	if err := s.checkInit(); err != nil {
 		return false, "", err
@@ -149,6 +193,9 @@ func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID, pieceID sdkty
 
 // GetAllPieceMetadata returns a key/value map of all metadata for a
 // specific (dataSetID, pieceID) pair.
+//
+// Deprecated: FWSS piece metadata getters are being removed. Read metadata
+// from PieceAdded events or an indexer instead.
 func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt) (map[string]string, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -235,7 +282,7 @@ func (s *Service) GetClientDataSetIds(ctx context.Context, payer common.Address,
 }
 
 // GetClientDataSetsWithDetails returns the client's data sets enriched
-// with pdpverifier liveness and active-piece counts. Requires the
+// with pdpverifier liveness and active-piece presence. Requires the
 // Service to have been configured with a PDPVerifier address. When
 // onlyManaged is true, entries whose listener is not this WarmStorage
 // contract are filtered out. Detail reads use serial Multicall3 batches;
@@ -369,9 +416,6 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 				return
 			}
 			state.isLive = live
-			if !live {
-				state.activePieceCount = big.NewInt(0)
-			}
 		case detailsMetadata:
 			values, err := unpackDataSetDetailsResult(result, metadataMethod.Outputs.Unpack)
 			if err != nil {
@@ -406,32 +450,32 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			onlyManaged && !state.isManaged || !state.isLive {
 			continue
 		}
-		callData, err := pdpABI.Pack("getActivePieceCount", state.info.DataSetID.Big())
+		callData, err := pdpABI.Pack("getDataSetLeafCount", state.info.DataSetID.Big())
 		if err != nil {
-			return nil, dataSetDetailsError("getActivePieceCount", state.info.DataSetID, err)
+			return nil, dataSetDetailsError("getDataSetLeafCount", state.info.DataSetID, err)
 		}
 		activeCalls = append(activeCalls, iabi.Call3{Target: s.pdpVerifierAdr, AllowFailure: true, CallData: callData})
 		activeStates = append(activeStates, i)
 	}
-	activeMethod := pdpABI.Methods["getActivePieceCount"]
-	err = runBatches("getActivePieceCount", activeCalls, func(i int, result iabi.Result3) {
+	activeMethod := pdpABI.Methods["getDataSetLeafCount"]
+	err = runBatches("getDataSetLeafCount", activeCalls, func(i int, result iabi.Result3) {
 		state := &states[activeStates[i]]
-		state.done[detailsActivePieceCount] = true
+		state.done[detailsHasActivePieces] = true
 		values, err := unpackDataSetDetailsResult(result, activeMethod.Outputs.Unpack)
 		if err != nil {
-			state.errs[detailsActivePieceCount] = dataSetDetailsError("getActivePieceCount", state.info.DataSetID, err)
+			state.errs[detailsHasActivePieces] = dataSetDetailsError("getDataSetLeafCount", state.info.DataSetID, err)
 			return
 		}
-		count, ok := values[0].(*big.Int)
-		if !ok {
-			state.errs[detailsActivePieceCount] = dataSetDetailsError(
-				"getActivePieceCount",
+		leafCount, ok := values[0].(*big.Int)
+		if !ok || leafCount == nil {
+			state.errs[detailsHasActivePieces] = dataSetDetailsError(
+				"getDataSetLeafCount",
 				state.info.DataSetID,
 				fmt.Errorf("unexpected output type %T", values[0]),
 			)
 			return
 		}
-		state.activePieceCount = count
+		state.hasActivePieces = leafCount.Sign() > 0
 	})
 	if err != nil {
 		return nil, err
@@ -454,7 +498,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 			PDPVerifierDataSetID: state.info.DataSetID,
 			IsLive:               state.isLive,
 			IsManaged:            state.isManaged,
-			ActivePieceCount:     state.activePieceCount,
+			HasActivePieces:      state.hasActivePieces,
 			WithCDN:              !state.info.CDNRailID.IsZero() && withCDN,
 			Metadata:             state.metadata,
 		})
@@ -466,18 +510,18 @@ const (
 	detailsListener = iota
 	detailsLive
 	detailsMetadata
-	detailsActivePieceCount
+	detailsHasActivePieces
 	detailsOperationCount
 )
 
 type dataSetDetailsState struct {
-	info             *DataSetInfo
-	isLive           bool
-	isManaged        bool
-	activePieceCount *big.Int
-	metadata         map[string]string
-	done             [detailsOperationCount]bool
-	errs             [detailsOperationCount]error
+	info            *DataSetInfo
+	isLive          bool
+	isManaged       bool
+	hasActivePieces bool
+	metadata        map[string]string
+	done            [detailsOperationCount]bool
+	errs            [detailsOperationCount]error
 }
 
 type dataSetDetailsCallRef struct {
@@ -507,11 +551,11 @@ func dataSetDetailsFrontierError(states []dataSetDetailsState, onlyManaged bool,
 			}
 		}
 		if state.isLive {
-			if !state.done[detailsActivePieceCount] {
+			if !state.done[detailsHasActivePieces] {
 				return nil
 			}
-			if state.errs[detailsActivePieceCount] != nil {
-				return state.errs[detailsActivePieceCount]
+			if state.errs[detailsHasActivePieces] != nil {
+				return state.errs[detailsHasActivePieces]
 			}
 		}
 		(*frontier)++

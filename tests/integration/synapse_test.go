@@ -169,7 +169,7 @@ func hasFilBeamMethod(requests []recordedFilBeamRequest, method string) bool {
 	return false
 }
 
-func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
+func tracedContextUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
 	t.Helper()
 	cloned := &storage.UploadOptions{}
 	if opts != nil {
@@ -200,6 +200,13 @@ func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions
 			prevPiecesConfirmed(dataSetID, providerID, pieces)
 		}
 	}
+
+	return cloned
+}
+
+func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
+	t.Helper()
+	cloned := tracedContextUploadOptions(t, label, opts)
 
 	prevCopyComplete := cloned.OnCopyComplete
 	cloned.OnCopyComplete = func(providerID types.BigInt, pieceCID cid.Cid) {
@@ -292,7 +299,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 	start := time.Now()
 	t.Log("start CDNContextDownload Upload")
-	result, err := uploadCtx.Upload(cctx, bytes.NewReader(data), tracedUploadOptions(t, "CDNContextDownload", nil))
+	result, err := uploadCtx.Upload(cctx, bytes.NewReader(data), tracedContextUploadOptions(t, "CDNContextDownload", nil))
 	t.Logf("done CDNContextDownload Upload elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -1304,7 +1311,7 @@ func TestIntegration(t *testing.T) {
 
 		start := time.Now()
 		t.Log("start ExistingDataSet DataSetContext.Upload")
-		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedUploadOptions(t, "ExistingDataSet", nil))
+		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedContextUploadOptions(t, "ExistingDataSet", nil))
 		t.Logf("done ExistingDataSet DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("DataSetContext.Upload(existing dataset): %v", err)

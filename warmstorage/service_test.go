@@ -3,7 +3,9 @@ package warmstorage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 
@@ -769,13 +771,70 @@ func TestValidateDataSet_OK(t *testing.T) {
 
 func TestGetActivePieceCount(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
-	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(42))
+	var cursors []string
+	mc.handlers["getActivePiecesByCursor"] = func(data []byte) ([]byte, error) {
+		method := mc.pdpABI.Methods["getActivePiecesByCursor"]
+		args, err := method.Inputs.Unpack(data[4:])
+		if err != nil {
+			return nil, err
+		}
+		cursor := args[1].(*big.Int)
+		cursors = append(cursors, cursor.String())
+		if args[2].(*big.Int).Cmp(big.NewInt(100)) != 0 {
+			return nil, fmt.Errorf("limit = %s, want 100", args[2])
+		}
+		switch cursor.Int64() {
+		case 0:
+			return method.Outputs.Pack(
+				[]pdpbind.CidsCid{{Data: []byte{1}}, {Data: []byte{2}}},
+				[]*big.Int{big.NewInt(1), big.NewInt(3)},
+				true,
+			)
+		case 4:
+			return method.Outputs.Pack(
+				[]pdpbind.CidsCid{{Data: []byte{3}}},
+				[]*big.Int{big.NewInt(7)},
+				false,
+			)
+		default:
+			return nil, fmt.Errorf("unexpected cursor %s", cursor)
+		}
+	}
 	n, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.Int64() != 42 {
+	if n.Int64() != 3 {
 		t.Errorf("got %d", n.Int64())
+	}
+	if !slices.Equal(cursors, []string{"0", "4"}) {
+		t.Fatalf("cursors=%v want [0 4]", cursors)
+	}
+}
+
+func TestGetActivePieceCount_RejectsMalformedPages(t *testing.T) {
+	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	tests := []struct {
+		name     string
+		pieces   []pdpbind.CidsCid
+		pieceIDs []*big.Int
+		hasMore  bool
+		want     string
+	}{
+		{name: "mismatched arrays", pieces: []pdpbind.CidsCid{{}}, want: "mismatched pieces"},
+		{name: "empty continuation", hasMore: true, want: "empty page reported more"},
+		{name: "non-increasing IDs", pieces: []pdpbind.CidsCid{{}, {}}, pieceIDs: []*big.Int{big.NewInt(2), big.NewInt(2)}, want: "non-increasing piece ID"},
+		{name: "cursor overflow", pieces: []pdpbind.CidsCid{{}}, pieceIDs: []*big.Int{maxUint256}, hasMore: true, want: "cursor cannot advance"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mc := newTestServiceWithPDP(t)
+			mc.setPDPReply(t, "getActivePiecesByCursor", tt.pieces, tt.pieceIDs, tt.hasMore)
+			_, err := s.GetActivePieceCount(context.Background(), types.NewBigInt(1))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err=%v want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -797,18 +856,18 @@ func TestGetActivePieceCount_NoPDP(t *testing.T) {
 
 func TestHasActivePieces(t *testing.T) {
 	tests := []struct {
-		name   string
-		pieces []pdpbind.CidsCid
-		want   bool
+		name      string
+		leafCount *big.Int
+		want      bool
 	}{
-		{name: "has piece", pieces: []pdpbind.CidsCid{{Data: []byte{0x01}}}, want: true},
-		{name: "empty", pieces: []pdpbind.CidsCid{}, want: false},
+		{name: "has piece", leafCount: big.NewInt(1), want: true},
+		{name: "empty", leafCount: new(big.Int), want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, mc := newTestServiceWithPDP(t)
-			mc.setPDPReply(t, "getActivePieces", tt.pieces, []*big.Int{}, false)
+			mc.setPDPReply(t, "getDataSetLeafCount", tt.leafCount)
 
 			got, err := s.HasActivePieces(context.Background(), types.NewBigInt(42))
 			if err != nil {
@@ -818,14 +877,13 @@ func TestHasActivePieces(t *testing.T) {
 				t.Fatalf("HasActivePieces() = %t, want %t", got, tt.want)
 			}
 
-			method := mc.pdpABI.Methods["getActivePieces"]
-			args, err := method.Inputs.Unpack(mc.lastIn["getActivePieces"][4:])
+			method := mc.pdpABI.Methods["getDataSetLeafCount"]
+			args, err := method.Inputs.Unpack(mc.lastIn["getDataSetLeafCount"][4:])
 			if err != nil {
-				t.Fatalf("unpack getActivePieces input: %v", err)
+				t.Fatalf("unpack getDataSetLeafCount input: %v", err)
 			}
-			if len(args) != 3 || args[0].(*big.Int).Cmp(big.NewInt(42)) != 0 ||
-				args[1].(*big.Int).Sign() != 0 || args[2].(*big.Int).Cmp(big.NewInt(1)) != 0 {
-				t.Fatalf("getActivePieces args = %v, want [42 0 1]", args)
+			if len(args) != 1 || args[0].(*big.Int).Cmp(big.NewInt(42)) != 0 {
+				t.Fatalf("getDataSetLeafCount args = %v, want [42]", args)
 			}
 		})
 	}
@@ -839,7 +897,7 @@ func TestHasActivePieces_UnavailableDataSet(t *testing.T) {
 	for _, wantErr := range tests {
 		t.Run(wantErr.Error(), func(t *testing.T) {
 			s, mc := newTestServiceWithPDP(t)
-			mc.errs["getActivePieces"] = wantErr
+			mc.errs["getDataSetLeafCount"] = wantErr
 
 			got, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
 			if err != nil {
@@ -855,7 +913,7 @@ func TestHasActivePieces_UnavailableDataSet(t *testing.T) {
 func TestHasActivePieces_PropagatesError(t *testing.T) {
 	s, mc := newTestServiceWithPDP(t)
 	want := errors.New("rpc unavailable")
-	mc.errs["getActivePieces"] = want
+	mc.errs["getDataSetLeafCount"] = want
 
 	_, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
 	if !errors.Is(err, want) {

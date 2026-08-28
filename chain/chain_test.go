@@ -117,6 +117,21 @@ func TestAddresses_Multicall3Same(t *testing.T) {
 	}
 }
 
+func TestAddresses_StateView(t *testing.T) {
+	tests := []struct {
+		chain Chain
+		want  common.Address
+	}{
+		{Mainnet, common.HexToAddress("0xdDd8F083a3fe9C66547D46bee24e5AaF56BCa0ab")},
+		{Calibration, common.HexToAddress("0x9BF9e67e83EC8613883FDdDec4D3b38AEE937177")},
+	}
+	for _, tt := range tests {
+		if got := tt.chain.Addresses().StateView; got != tt.want {
+			t.Errorf("%s StateView = %s, want %s", tt.chain, got, tt.want)
+		}
+	}
+}
+
 func TestAddresses_Unknown(t *testing.T) {
 	addrs := Chain(99).Addresses()
 	if addrs.FWSS != (common.Address{}) {

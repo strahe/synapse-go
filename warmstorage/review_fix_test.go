@@ -120,7 +120,7 @@ func TestGetClientDataSetsWithDetails_IncludesParityMetadata(t *testing.T) {
 	})
 	mc.setPDPReply(t, "getDataSetListener", s.fwssAddr)
 	mc.setPDPReply(t, "dataSetLive", true)
-	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(3))
+	mc.setPDPReply(t, "getDataSetLeafCount", big.NewInt(3))
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{"withCDN", "source"}, []string{"", "app"})
 
 	got, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
@@ -201,7 +201,7 @@ func TestGetClientDataSetsWithDetails_DefaultBatchLimit(t *testing.T) {
 	}
 	mc.setPDPReply(t, "getDataSetListener", s.fwssAddr)
 	mc.setPDPReply(t, "dataSetLive", true)
-	mc.setPDPReply(t, "getActivePieceCount", big.NewInt(1))
+	mc.setPDPReply(t, "getDataSetLeafCount", big.NewInt(1))
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
 
 	got, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
@@ -252,9 +252,9 @@ func TestGetClientDataSetsWithDetails_FiltersBeforeDependentCalls(t *testing.T) 
 		return mc.pdpABI.Methods["dataSetLive"].Outputs.Pack(args[0].(*big.Int).Cmp(big.NewInt(3)) == 0)
 	}
 	activeCalls := 0
-	mc.handlers["getActivePieceCount"] = func(_ []byte) ([]byte, error) {
+	mc.handlers["getDataSetLeafCount"] = func(_ []byte) ([]byte, error) {
 		activeCalls++
-		return mc.pdpABI.Methods["getActivePieceCount"].Outputs.Pack(big.NewInt(7))
+		return mc.pdpABI.Methods["getDataSetLeafCount"].Outputs.Pack(big.NewInt(7))
 	}
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
 
@@ -265,14 +265,14 @@ func TestGetClientDataSetsWithDetails_FiltersBeforeDependentCalls(t *testing.T) 
 	if len(got) != 2 || got[0].DataSetID.String() != "2" || got[1].DataSetID.String() != "3" {
 		t.Fatalf("details = %+v, want data sets 2 and 3 in order", got)
 	}
-	if got[0].IsLive || got[0].ActivePieceCount.Sign() != 0 {
+	if got[0].IsLive || got[0].HasActivePieces {
 		t.Fatalf("data set 2 = %+v, want non-live with zero active pieces", got[0])
 	}
-	if !got[1].IsLive || got[1].ActivePieceCount.Cmp(big.NewInt(7)) != 0 {
-		t.Fatalf("data set 3 = %+v, want live with 7 active pieces", got[1])
+	if !got[1].IsLive || !got[1].HasActivePieces {
+		t.Fatalf("data set 3 = %+v, want live with active pieces", got[1])
 	}
 	if activeCalls != 1 {
-		t.Fatalf("getActivePieceCount calls = %d, want 1", activeCalls)
+		t.Fatalf("getDataSetLeafCount calls = %d, want 1", activeCalls)
 	}
 	if want := []int{3, 4, 1}; !slices.Equal(mc.multicallSizes, want) {
 		t.Fatalf("multicall sizes = %v, want %v", mc.multicallSizes, want)
@@ -297,14 +297,14 @@ func TestGetClientDataSetsWithDetails_UsesDataSetErrorOrder(t *testing.T) {
 		return mc.pdpABI.Methods["getDataSetListener"].Outputs.Pack(s.fwssAddr)
 	}
 	mc.setPDPReply(t, "dataSetLive", true)
-	mc.handlers["getActivePieceCount"] = func(_ []byte) ([]byte, error) {
+	mc.handlers["getDataSetLeafCount"] = func(_ []byte) ([]byte, error) {
 		return nil, errors.New("active count failed")
 	}
 	mc.setViewReply(t, "getAllDataSetMetadata", []string{}, []string{})
 
 	_, err := s.GetClientDataSetsWithDetails(context.Background(), payer, false)
-	if err == nil || !strings.Contains(err.Error(), "getActivePieceCount dataSetID 1") {
-		t.Fatalf("error = %v, want data set 1 active-count failure", err)
+	if err == nil || !strings.Contains(err.Error(), "getDataSetLeafCount dataSetID 1") {
+		t.Fatalf("error = %v, want data set 1 leaf-count failure", err)
 	}
 }
 

@@ -3,18 +3,34 @@ package storage
 import (
 	"context"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 
+	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/types"
 )
 
 func mustDeleteContext(t *testing.T, client PDPProviderClient, opts ...ContextOption) *DataSetContext {
 	t.Helper()
 	return mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(77), types.NewBigInt(3)), opts...)
+}
+
+type fakeBatchPDPProviderClient struct {
+	*fakePDPProviderClient
+	scheduleDeletionsFn func(context.Context, types.BigInt, []types.BigInt, []byte) (common.Hash, error)
+}
+
+func (f *fakeBatchPDPProviderClient) SchedulePieceDeletions(ctx context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
+	if f.scheduleDeletionsFn == nil {
+		return common.Hash{}, errors.New("unexpected SchedulePieceDeletions")
+	}
+	return f.scheduleDeletionsFn(ctx, dataSetID, pieceIDs, extraData)
 }
 
 func TestContext_DeletePiece_DeletesFirstCIDMatch(t *testing.T) {
@@ -155,6 +171,285 @@ func TestContext_DeletePieceByID_AllowsZeroPieceID(t *testing.T) {
 	}
 }
 
+func TestContext_DeletePiecesByID_NormalizesBeforeBatchCall(t *testing.T) {
+	var gotDataSetID types.BigInt
+	var gotPieceIDs []types.BigInt
+	var gotExtraData []byte
+	fake := &fakeBatchPDPProviderClient{
+		fakePDPProviderClient: &fakePDPProviderClient{},
+		scheduleDeletionsFn: func(_ context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
+			gotDataSetID = dataSetID
+			gotPieceIDs = append([]types.BigInt(nil), pieceIDs...)
+			gotExtraData = append([]byte(nil), extraData...)
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c := mustDeleteContext(t, fake,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+
+	res, err := c.DeletePiecesByID(context.Background(), []types.BigInt{
+		types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(3), types.NewBigInt(0),
+	})
+	if err != nil {
+		t.Fatalf("DeletePiecesByID: %v", err)
+	}
+	want := []types.BigInt{types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(0)}
+	if !equalBigInts(gotPieceIDs, want) {
+		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, want)
+	}
+	if !gotDataSetID.Equal(types.NewBigInt(77)) {
+		t.Fatalf("dataSetID=%s want 77", gotDataSetID.String())
+	}
+	if len(gotExtraData) == 0 || res.Hash == (common.Hash{}) {
+		t.Fatal("expected signed extraData and transaction hash")
+	}
+	values, err := bytesArgs.Unpack(gotExtraData)
+	if err != nil {
+		t.Fatalf("unpack extraData: %v", err)
+	}
+	domain := ityped.NewDomain(big.NewInt(314159), testRecordKeeper())
+	message := ityped.SchedulePieceRemovalsMessage(
+		types.NewBigInt(3).Big(),
+		[]*big.Int{big.NewInt(3), big.NewInt(2), new(big.Int)},
+	)
+	recovered := recoverRawTypedDataSigner(t, domain, "SchedulePieceRemovals", message, values[0].([]byte))
+	if recovered != c.core.signer.EVMAddress() {
+		t.Fatalf("signature signer=%s want %s", recovered, c.core.signer.EVMAddress())
+	}
+}
+
+func TestContext_DeletePieces_DeduplicatesResolvedIDs(t *testing.T) {
+	info := mustPieceInfo(t)
+	reader := &dataSetMutatingPDPReader{fakePDPReader: fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42)}}}
+	var gotPieceIDs []types.BigInt
+	fake := &fakeBatchPDPProviderClient{
+		fakePDPProviderClient: &fakePDPProviderClient{},
+		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
+			gotPieceIDs = append([]types.BigInt(nil), pieceIDs...)
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c := mustDeleteContext(t, fake,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	if _, err := c.DeletePieces(context.Background(), []cid.Cid{info.CIDv2, info.CIDv2}); err != nil {
+		t.Fatalf("DeletePieces: %v", err)
+	}
+	if len(gotPieceIDs) != 1 || !gotPieceIDs[0].Equal(types.NewBigInt(42)) {
+		t.Fatalf("pieceIDs=%v want [42]", gotPieceIDs)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("FindPieceIdsByCid calls=%d want 1", reader.calls)
+	}
+}
+
+func TestContext_DeletePieces_UsesBatchCIDResolver(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 3)
+	reader := &batchCIDResultPDPReader{
+		batchResults: [][]types.BigInt{
+			{types.NewBigInt(42), types.NewBigInt(99)},
+			{types.NewBigInt(7)},
+			{types.NewBigInt(42)},
+		},
+	}
+	var gotPieceIDs []types.BigInt
+	fake := &fakeBatchPDPProviderClient{
+		fakePDPProviderClient: &fakePDPProviderClient{},
+		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
+			gotPieceIDs = append([]types.BigInt(nil), pieceIDs...)
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c := mustDeleteContext(t, fake,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); err != nil {
+		t.Fatalf("DeletePieces: %v", err)
+	}
+	if reader.batchCalls != 1 || reader.singularCalls != 0 {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, 0)", reader.batchCalls, reader.singularCalls)
+	}
+	if !reader.gotDataSetID.Equal(types.NewBigInt(77)) {
+		t.Fatalf("batch dataSetID=%s want 77", reader.gotDataSetID.String())
+	}
+	if len(reader.gotPieceCIDs) != len(pieceCIDs) {
+		t.Fatalf("batch piece CIDs=%d want %d", len(reader.gotPieceCIDs), len(pieceCIDs))
+	}
+	for i := range pieceCIDs {
+		if !reader.gotPieceCIDs[i].Equals(pieceCIDs[i]) {
+			t.Fatalf("batch pieceCID[%d]=%s want %s", i, reader.gotPieceCIDs[i], pieceCIDs[i])
+		}
+	}
+	wantPieceIDs := []types.BigInt{types.NewBigInt(42), types.NewBigInt(7)}
+	if !equalBigInts(gotPieceIDs, wantPieceIDs) {
+		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, wantPieceIDs)
+	}
+}
+
+func TestContext_DeletePieces_FallsBackWhenBatchCIDResolutionFails(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	reader := &batchCIDResultPDPReader{
+		batchErr: errors.New("multicall unavailable"),
+		singularResults: map[string][]types.BigInt{
+			pieceCIDs[0].KeyString(): {types.NewBigInt(11)},
+			pieceCIDs[1].KeyString(): {types.NewBigInt(22)},
+		},
+	}
+	var gotPieceIDs []types.BigInt
+	fake := &fakeBatchPDPProviderClient{
+		fakePDPProviderClient: &fakePDPProviderClient{},
+		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
+			gotPieceIDs = append([]types.BigInt(nil), pieceIDs...)
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c := mustDeleteContext(t, fake,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); err != nil {
+		t.Fatalf("DeletePieces: %v", err)
+	}
+	if reader.batchCalls != 1 || reader.singularCalls != len(pieceCIDs) {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, %d)", reader.batchCalls, reader.singularCalls, len(pieceCIDs))
+	}
+	wantPieceIDs := []types.BigInt{types.NewBigInt(11), types.NewBigInt(22)}
+	if !equalBigInts(gotPieceIDs, wantPieceIDs) {
+		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, wantPieceIDs)
+	}
+}
+
+func TestContext_DeletePieces_RejectsOversizedBatchBeforeResolution(t *testing.T) {
+	reader := &dataSetMutatingPDPReader{}
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	_, err := c.DeletePieces(context.Background(), sequenceDeleteCIDs(t, pdp.MaxDeletePiecesBatchSize+1))
+	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrTooManyPieces) {
+		t.Fatalf("err=%v want ErrInvalidArgument and pdp.ErrTooManyPieces", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("FindPieceIdsByCid calls=%d want 0", reader.calls)
+	}
+}
+
+func TestContext_DeletePieces_ReportsOriginalCIDIndexAfterDeduplication(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	reader := &cidResultPDPReader{
+		results: map[string][]types.BigInt{
+			pieceCIDs[0].KeyString(): {types.NewBigInt(42)},
+		},
+	}
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	_, err := c.DeletePieces(context.Background(), []cid.Cid{pieceCIDs[0], pieceCIDs[0], pieceCIDs[1]})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "index 2 not found") {
+		t.Fatalf("err=%v want original index 2 not-found error", err)
+	}
+}
+
+func TestContext_DeletePiecesByID_UnsupportedCustomClient(t *testing.T) {
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+
+	_, err := c.DeletePiecesByID(context.Background(), []types.BigInt{types.NewBigInt(1), types.NewBigInt(2)})
+	if !errors.Is(err, ErrBatchPieceDeletionNotSupported) {
+		t.Fatalf("err=%v want ErrBatchPieceDeletionNotSupported", err)
+	}
+}
+
+func TestContext_DeletePiecesByID_Validation(t *testing.T) {
+	tests := []struct {
+		name        string
+		pieceIDs    []types.BigInt
+		wantTooMany bool
+	}{
+		{name: "empty"},
+		{name: "above Curio range", pieceIDs: []types.BigInt{mustBigInt(t, "9223372036854775808")}},
+		{name: "too many", pieceIDs: sequenceBigInts(pdp.MaxDeletePiecesBatchSize + 1), wantTooMany: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := mustDeleteContext(t, &fakePDPProviderClient{})
+			_, err := c.DeletePiecesByID(context.Background(), tt.pieceIDs)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("err=%v want ErrInvalidArgument", err)
+			}
+			if got := errors.Is(err, pdp.ErrTooManyPieces); got != tt.wantTooMany {
+				t.Fatalf("errors.Is(ErrTooManyPieces)=%t want %t", got, tt.wantTooMany)
+			}
+		})
+	}
+}
+
+func mustBigInt(t *testing.T, value string) types.BigInt {
+	t.Helper()
+	id, err := types.ParseBigInt(value)
+	if err != nil {
+		t.Fatalf("ParseBigInt(%q): %v", value, err)
+	}
+	return id
+}
+
+func sequenceBigInts(count int) []types.BigInt {
+	ids := make([]types.BigInt, count)
+	for i := range ids {
+		ids[i] = types.NewBigInt(uint64(i))
+	}
+	return ids
+}
+
+func sequenceDeleteCIDs(t *testing.T, count int) []cid.Cid {
+	t.Helper()
+	pieceCIDs := make([]cid.Cid, count)
+	for i := range pieceCIDs {
+		hash, err := multihash.Sum([]byte{byte(i)}, multihash.SHA2_256, -1)
+		if err != nil {
+			t.Fatalf("create multihash %d: %v", i, err)
+		}
+		pieceCIDs[i] = cid.NewCidV1(cid.Raw, hash)
+	}
+	return pieceCIDs
+}
+
+func equalBigInts(got, want []types.BigInt) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if !got[i].Equal(want[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
 	want := errors.New("validator should not block delete")
 	var gotPieceID types.BigInt
@@ -274,9 +569,43 @@ type dataSetMutatingPDPReader struct {
 	fakePDPReader
 	mutate       func()
 	gotDataSetID types.BigInt
+	calls        int
+}
+
+type cidResultPDPReader struct {
+	fakePDPReader
+	results map[string][]types.BigInt
+}
+
+type batchCIDResultPDPReader struct {
+	fakePDPReader
+	batchResults    [][]types.BigInt
+	batchErr        error
+	singularResults map[string][]types.BigInt
+	gotDataSetID    types.BigInt
+	gotPieceCIDs    []cid.Cid
+	batchCalls      int
+	singularCalls   int
+}
+
+func (r *cidResultPDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, pieceCID cid.Cid, _, _ uint64) ([]types.BigInt, error) {
+	return r.results[pieceCID.KeyString()], nil
+}
+
+func (r *batchCIDResultPDPReader) FindPieceIDsByCIDs(_ context.Context, dataSetID types.BigInt, pieceCIDs []cid.Cid) ([][]types.BigInt, error) {
+	r.batchCalls++
+	r.gotDataSetID = dataSetID
+	r.gotPieceCIDs = append([]cid.Cid(nil), pieceCIDs...)
+	return r.batchResults, r.batchErr
+}
+
+func (r *batchCIDResultPDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, pieceCID cid.Cid, _, _ uint64) ([]types.BigInt, error) {
+	r.singularCalls++
+	return r.singularResults[pieceCID.KeyString()], nil
 }
 
 func (r *dataSetMutatingPDPReader) FindPieceIdsByCid(_ context.Context, dataSetID types.BigInt, _ cid.Cid, _, _ uint64) ([]types.BigInt, error) {
+	r.calls++
 	r.gotDataSetID = dataSetID
 	if r.mutate != nil {
 		r.mutate()

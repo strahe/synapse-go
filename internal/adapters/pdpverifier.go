@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"math/big"
 
+	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
@@ -18,31 +19,51 @@ import (
 
 // PDPReader is the union of [storage.PDPVerifierReader] and
 // [storage.DataSetSizeReader] satisfied by a single adapter around the
-// abigen PDPVerifierCaller plus an ethclient. Root synapse holds a
+// abigen PDPVerifierCaller plus an RPC backend. Root synapse holds a
 // single field of this type and fans it out to both storage options.
 type PDPReader interface {
 	storage.PDPVerifierReader
 	storage.DataSetSizeReader
 }
 
-// pdpVerifierReader adapts the abigen PDPVerifierCaller plus an
-// ethclient into [PDPReader], converting between Go-friendly types
+// pdpVerifierReader adapts the abigen PDPVerifierCaller plus an RPC
+// backend into [PDPReader], converting between Go-friendly types
 // (sdktypes.BigInt / cid.Cid) and the abigen-native types
 // (*big.Int / pdpverifier.CidsCid).
 type pdpVerifierReader struct {
-	caller  *pdpverifier.PDPVerifierCaller
-	backend *ethclient.Client
+	caller            *pdpverifier.PDPVerifierCaller
+	backend           pdpReaderBackend
+	address           common.Address
+	maxMulticallCalls int
+}
+
+type pdpReaderBackend interface {
+	iabi.ContractCaller
+	BlockNumber(context.Context) (uint64, error)
 }
 
 // NewPDPVerifierReader returns a [PDPReader] wrapping caller and backend.
 // When caller is nil it returns a nil interface value, letting callers
 // keep the plain `if r != nil` check without hitting Go's typed-nil
 // interface trap.
-func NewPDPVerifierReader(caller *pdpverifier.PDPVerifierCaller, backend *ethclient.Client) PDPReader {
+func NewPDPVerifierReader(
+	caller *pdpverifier.PDPVerifierCaller,
+	backend pdpReaderBackend,
+	address common.Address,
+	maxMulticallCalls int,
+) PDPReader {
 	if caller == nil {
 		return nil
 	}
-	return &pdpVerifierReader{caller: caller, backend: backend}
+	if maxMulticallCalls == 0 {
+		maxMulticallCalls = iabi.DefaultMaxMulticallCalls
+	}
+	return &pdpVerifierReader{
+		caller:            caller,
+		backend:           backend,
+		address:           address,
+		maxMulticallCalls: maxMulticallCalls,
+	}
 }
 
 func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error) {
@@ -63,6 +84,61 @@ func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdk
 	out, err := idconv.FromBigSlice("pieceID", raw)
 	if err != nil {
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", err)
+	}
+	return out, nil
+}
+
+func (a *pdpVerifierReader) FindPieceIDsByCIDs(ctx context.Context, dataSetID sdktypes.BigInt, pieceCIDs []cid.Cid) ([][]sdktypes.BigInt, error) {
+	if len(pieceCIDs) == 0 {
+		return [][]sdktypes.BigInt{}, nil
+	}
+	if a.backend == nil {
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: backend not configured")
+	}
+	contractABI, err := pdpverifier.PDPVerifierMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: parse ABI: %w", err)
+	}
+	calls := make([]iabi.Call3, len(pieceCIDs))
+	for i, pieceCID := range pieceCIDs {
+		callData, err := contractABI.Pack(
+			"findPieceIdsByCid",
+			dataSetID.Big(),
+			iabi.EncodePieceCID(pieceCID),
+			new(big.Int),
+			big.NewInt(1),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: pack pieceCID at index %d: %w", i, err)
+		}
+		calls[i] = iabi.Call3{Target: a.address, AllowFailure: true, CallData: callData}
+	}
+	results, err := iabi.BatchCallChunked(ctx, a.backend, calls, a.maxMulticallCalls)
+	if err != nil {
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: %w", err)
+	}
+	if len(results) != len(pieceCIDs) {
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: expected %d results, got %d", len(pieceCIDs), len(results))
+	}
+
+	method := contractABI.Methods["findPieceIdsByCid"]
+	out := make([][]sdktypes.BigInt, len(results))
+	for i, result := range results {
+		if !result.Success {
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d returned unsuccessful result", i)
+		}
+		values, err := method.Outputs.Unpack(result.ReturnData)
+		if err != nil {
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: unpack pieceCID at index %d: %w", i, err)
+		}
+		if len(values) != 1 {
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d returned %d values, want 1", i, len(values))
+		}
+		raw := *gethabi.ConvertType(values[0], new([]*big.Int)).(*[]*big.Int)
+		out[i], err = idconv.FromBigSlice("pieceID", raw)
+		if err != nil {
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d: %w", i, err)
+		}
 	}
 	return out, nil
 }
