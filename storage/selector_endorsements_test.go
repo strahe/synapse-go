@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -31,6 +32,50 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 		got := contextsToFake(t, contexts)
 		if len(got) != 2 || !got[0].ProviderID().Equal(testID(2)) || !got[1].ProviderID().Equal(testID(1)) {
 			t.Fatalf("providers = %v, want [2 1]", providerIDs(got))
+		}
+	})
+
+	t.Run("reuses endorsed probes for secondary selection", func(t *testing.T) {
+		var mu sync.Mutex
+		calls := make(map[string]int)
+		thirdFinished := make(chan struct{})
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{testID(1), testID(2), testID(3)},
+			endorsedProviderIDs: []types.BigInt{testID(2), testID(3)},
+			endorsementsSet:     true,
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(2), "https://sp-2.example.com"),
+				testPDPProvider(testID(3), "https://sp-3.example.com"),
+			},
+			providerPing: func(_ context.Context, serviceURL string) error {
+				mu.Lock()
+				calls[serviceURL]++
+				mu.Unlock()
+				switch serviceURL {
+				case "https://sp-2.example.com":
+					<-thirdFinished
+				case "https://sp-3.example.com":
+					close(thirdFinished)
+				}
+				return nil
+			},
+		})
+
+		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		if err != nil {
+			t.Fatalf("ResolveUploadContexts: %v", err)
+		}
+		got := contextsToFake(t, contexts)
+		if len(got) != 2 || !got[0].ProviderID().Equal(testID(2)) || !got[1].ProviderID().Equal(testID(1)) {
+			t.Fatalf("providers = %v, want [2 1]", providerIDs(got))
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, serviceURL := range []string{"https://sp-1.example.com", "https://sp-2.example.com", "https://sp-3.example.com"} {
+			if calls[serviceURL] != 1 {
+				t.Fatalf("ping calls for %s = %d, want 1; all calls=%v", serviceURL, calls[serviceURL], calls)
+			}
 		}
 	})
 
@@ -140,14 +185,13 @@ func TestServiceResolverEndorsementConfiguration(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit false skips query", func(t *testing.T) {
+	t.Run("allow unendorsed skips query", func(t *testing.T) {
 		var calls atomic.Int32
 		source := &fakeEndorsedProviderSource{fixture: serviceResolverFixture{endorsementCalls: &calls}}
 		resolver := newResolver(t, source)
-		requireEndorsed := false
 		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 			Copies:                 1,
-			RequireEndorsedPrimary: &requireEndorsed,
+			AllowUnendorsedPrimary: true,
 		})
 		if err != nil || len(contexts) != 1 {
 			t.Fatalf("ResolveUploadContexts = (%d, %v), want one context", len(contexts), err)

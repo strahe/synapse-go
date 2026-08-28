@@ -38,9 +38,9 @@ type SelectUploadContextsOptions struct {
 	Copies             int
 	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
-	// RequireEndorsedPrimary defaults to true. Set it to false to select the
-	// primary from the full approved-provider pool without an endorsement read.
-	RequireEndorsedPrimary *bool
+	// AllowUnendorsedPrimary selects the primary from the full approved-provider
+	// pool without an endorsement read. The zero value requires endorsement.
+	AllowUnendorsedPrimary bool
 	WithCDN                *bool
 }
 
@@ -214,7 +214,7 @@ func (s *Service) resolveSelectUploadContextsOptions(opts SelectUploadContextsOp
 		Copies:                 opts.Copies,
 		ExcludeProviderIDs:     providerOpts.ExcludeProviderIDs,
 		DataSetMetadata:        providerOpts.DataSetMetadata,
-		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
 		WithCDN:                providerOpts.WithCDN,
 	}, nil
 }

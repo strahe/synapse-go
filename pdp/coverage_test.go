@@ -834,12 +834,13 @@ func TestBuildJSONRequest_MarshalError(t *testing.T) {
 // ---------- doWithClient read body error ----------
 
 func TestDoWithClient_ReadBodyError(t *testing.T) {
+	want := errors.New("read err")
 	c, err := New("https://example.com", WithHTTPClient(&http.Client{
 		Timeout: 100 * time.Millisecond,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(&errReader{}),
+				Body:       io.NopCloser(&errReader{err: want}),
 				Header:     make(http.Header),
 			}, nil
 		}),
@@ -847,14 +848,14 @@ func TestDoWithClient_ReadBodyError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Ping(context.Background()); !errors.Is(err, ErrPingResponseMismatch) {
-		t.Errorf("error = %v, want ErrPingResponseMismatch", err)
+	if err := c.Ping(context.Background()); !errors.Is(err, want) || errors.Is(err, ErrPingResponseMismatch) {
+		t.Errorf("error = %v, want original read error without ErrPingResponseMismatch", err)
 	}
 }
 
-type errReader struct{}
+type errReader struct{ err error }
 
-func (e *errReader) Read(_ []byte) (int, error) { return 0, errors.New("read err") }
+func (e *errReader) Read(_ []byte) (int, error) { return 0, e.err }
 
 // ---------- CreateDataSetAndAddPieces location without 0x prefix ----------
 

@@ -83,30 +83,46 @@ func (c *DataSetContext) resolveDeletePieceIDs(
 	dataSetID sdktypes.BigInt,
 	normalizedCIDs []normalizedDeletePieceCID,
 ) ([]sdktypes.BigInt, error) {
+	var batchErr error
 	if resolver, ok := c.core.pdpCaller.(batchPieceIDResolver); ok && len(normalizedCIDs) > 1 {
 		pieceCIDs := make([]cid.Cid, len(normalizedCIDs))
 		for i, item := range normalizedCIDs {
 			pieceCIDs[i] = item.pieceCID
 		}
 		matches, err := resolver.FindPieceIDsByCIDs(ctx, dataSetID, pieceCIDs)
+		if err == nil && len(matches) == len(normalizedCIDs) {
+			return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("%s: resolve piece CIDs: %w", op, err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, ctxErr)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDataSetUnavailable) {
+				return nil, fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, err)
+			}
+			batchErr = fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, err)
+		} else {
+			batchErr = fmt.Errorf("%s: resolve piece CIDs in batch: got %d results, want %d", op, len(matches), len(normalizedCIDs))
 		}
-		if len(matches) != len(normalizedCIDs) {
-			return nil, fmt.Errorf("%s: resolve piece CIDs: got %d results, want %d", op, len(matches), len(normalizedCIDs))
-		}
-		return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
 	}
 
 	matches := make([][]sdktypes.BigInt, len(normalizedCIDs))
 	for i, item := range normalizedCIDs {
 		resolved, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, dataSetID, item.pieceCID, 0, 1)
 		if err != nil {
-			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
+			singularErr := fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
+			if batchErr != nil {
+				return nil, errors.Join(batchErr, singularErr)
+			}
+			return nil, singularErr
 		}
 		matches[i] = resolved
 	}
-	return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+	pieceIDs, err := firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+	if err != nil && batchErr != nil {
+		return nil, errors.Join(batchErr, err)
+	}
+	return pieceIDs, err
 }
 
 func firstDeletePieceIDMatches(

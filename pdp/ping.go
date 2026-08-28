@@ -15,7 +15,8 @@ const (
 )
 
 // Ping issues GET /pdp/ping and accepts only a 2xx response whose trimmed body
-// is exactly "curio-pdp". Responses larger than 64 bytes are rejected.
+// is exactly "curio-pdp". Responses larger than 64 bytes are rejected. The
+// identity response is supported by Curio v1.28.3 and later.
 func (c *Client) Ping(ctx context.Context) error {
 	u, err := c.resolve("pdp/ping")
 	if err != nil {
@@ -44,11 +45,15 @@ func (c *Client) doPingWithClient(client *http.Client, req *http.Request) (*http
 	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxPingResponseBytes+1))
-	if readErr != nil {
-		return resp, nil, fmt.Errorf("pdp: read ping body: %w", errors.Join(ErrPingResponseMismatch, readErr))
-	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return resp, body, newHTTPError(req, resp, body)
+		httpErr := newHTTPError(req, resp, body)
+		if readErr != nil {
+			return resp, body, errors.Join(httpErr, fmt.Errorf("pdp: read ping body: %w", readErr))
+		}
+		return resp, body, httpErr
+	}
+	if readErr != nil {
+		return resp, body, fmt.Errorf("pdp: read ping body: %w", readErr)
 	}
 	if len(body) > maxPingResponseBytes {
 		return resp, nil, fmt.Errorf("%w: response body exceeds %d bytes", ErrPingResponseMismatch, maxPingResponseBytes)

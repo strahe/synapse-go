@@ -1080,13 +1080,12 @@ func TestServiceUploadToContextsValidatesBeforeReading(t *testing.T) {
 
 func TestServiceUploadToContextsRejectsSelectionOptionsBeforeReading(t *testing.T) {
 	withCDN := true
-	requireEndorsed := true
 	tests := map[string]*UploadOptions{
 		"Copies":                 {Copies: 1},
 		"ExcludeProviderIDs":     {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
 		"DataSetMetadata":        {DataSetMetadata: map[string]string{"source": "app"}},
 		"WithCDN":                {WithCDN: &withCDN},
-		"RequireEndorsedPrimary": {RequireEndorsedPrimary: &requireEndorsed},
+		"AllowUnendorsedPrimary": {AllowUnendorsedPrimary: true},
 	}
 	for name, opts := range tests {
 		t.Run(name, func(t *testing.T) {

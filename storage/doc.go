@@ -36,18 +36,18 @@
 // primary is selected from providers that are endorsed, FWSS-approved,
 // registry-active, and healthy. Secondary copies use the complete approved,
 // active, healthy pool after excluding the primary. Set
-// [UploadOptions.RequireEndorsedPrimary] or
-// [SelectUploadContextsOptions.RequireEndorsedPrimary] to false to use the
+// [UploadOptions.AllowUnendorsedPrimary] or
+// [SelectUploadContextsOptions.AllowUnendorsedPrimary] to true to use the
 // complete approved pool for the primary and skip the endorsement query.
 // [Service.SelectProviderContext], explicit provider or data-set contexts, and
 // replacement selection do not query endorsements.
 //
 // Standalone [ServiceResolver] users configure the single-method
 // [EndorsedProviderSource] through [ServiceResolverOptions.Endorsements]. With
-// that source configured, nil or true RequireEndorsedPrimary values use strict
-// endorsed-primary selection. Without it, nil or true returns
-// [ErrEndorsementsNotConfigured] when upload selection runs; false continues
-// normally with the approved pool. A nil slice with a nil source error is an
+// that source configured, the zero-value selection policy is strict. Without
+// it, strict selection returns [ErrEndorsementsNotConfigured] when upload
+// selection runs; setting AllowUnendorsedPrimary continues normally with the
+// approved pool. A nil slice with a nil source error is an
 // empty set, while source errors remain query errors. Implementations outside
 // this module may satisfy the interface directly; its one-method shape and
 // nil/error contract are part of the public dependency-injection contract.

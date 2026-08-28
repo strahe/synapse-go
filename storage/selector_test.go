@@ -211,10 +211,9 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		requireEndorsed := false
 		contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 			Copies:                 2,
-			RequireEndorsedPrimary: &requireEndorsed,
+			AllowUnendorsedPrimary: true,
 		})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
@@ -337,10 +336,9 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		requireEndorsed := false
 		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 			Copies:                 2,
-			RequireEndorsedPrimary: &requireEndorsed,
+			AllowUnendorsedPrimary: true,
 		})
 		if !errors.Is(err, ErrNoHealthyProviders) {
 			t.Fatalf("ResolveUploadContexts error=%v want ErrNoHealthyProviders", err)
@@ -423,10 +421,9 @@ func TestServiceResolverResolveUploadContexts_HealthCheckConcurrencyIsBounded(t 
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		requireEndorsed := false
 		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
 			Copies:                 candidateCount,
-			RequireEndorsedPrimary: &requireEndorsed,
+			AllowUnendorsedPrimary: true,
 		})
 		resultCh <- result{contexts: contexts, err: err}
 	}()

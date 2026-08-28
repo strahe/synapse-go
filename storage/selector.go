@@ -53,6 +53,43 @@ type providerProbeResult struct {
 	err   error
 }
 
+type cachedProviderProbe struct {
+	err error
+}
+
+type providerProbeCache struct {
+	ping    func(context.Context, string) error
+	mu      sync.Mutex
+	entries map[string]cachedProviderProbe
+}
+
+func newProviderProbeCache(ping func(context.Context, string) error) *providerProbeCache {
+	return &providerProbeCache{
+		ping:    ping,
+		entries: make(map[string]cachedProviderProbe),
+	}
+}
+
+func (c *providerProbeCache) probe(ctx context.Context, providerKey, serviceURL string) error {
+	c.mu.Lock()
+	result, ok := c.entries[providerKey]
+	c.mu.Unlock()
+	if ok {
+		return result.err
+	}
+
+	err := c.ping(ctx, serviceURL)
+	// A speculative probe canceled after the stable selection frontier is known
+	// has no reusable result. Completed failures, including the probe timeout,
+	// remain valid for the secondary selection phase.
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		c.mu.Lock()
+		c.entries[providerKey] = cachedProviderProbe{err: err}
+		c.mu.Unlock()
+	}
+	return err
+}
+
 // PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
 type PDPProviderSource interface {
 	GetPDPProvider(context.Context, types.BigInt) (*spregistry.PDPProvider, error)
@@ -105,7 +142,7 @@ type ServiceResolverOptions struct {
 	SPRegistry PDPProviderSource
 	// Endorsements is required only when automatic upload selection uses its
 	// default endorsed-primary policy. It may be nil when callers always set
-	// RequireEndorsedPrimary to false or use explicit provider contexts.
+	// AllowUnendorsedPrimary or use explicit provider contexts.
 	Endorsements     EndorsedProviderSource
 	WarmStorage      DataSetCatalog
 	DataSetValidator DataSetValidator
@@ -294,7 +331,7 @@ func (r *ServiceResolver) SelectProviderContext(ctx context.Context, opts Select
 		Copies:                 1,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		RequireEndorsedPrimary: boolPtr(false),
+		AllowUnendorsedPrimary: true,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}, nil, false)
 	if err != nil {
@@ -316,7 +353,7 @@ func (r *ServiceResolver) SelectUploadContexts(ctx context.Context, opts SelectU
 		Copies:                 opts.Copies,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}
 	if opts.Copies <= 0 {
@@ -326,7 +363,7 @@ func (r *ServiceResolver) SelectUploadContexts(ctx context.Context, opts SelectU
 		Copies:                 opts.Copies,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
 	}, nil, true)
 	if err != nil {
@@ -356,7 +393,7 @@ func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *Uploa
 		Copies:                 opts.Copies,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		RequireEndorsedPrimary: copyBoolPtr(opts.RequireEndorsedPrimary),
+		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
 	})
 	if err != nil && !errors.Is(err, ErrInsufficientUploadContexts) {
@@ -384,7 +421,7 @@ func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders m
 		return nil, fmt.Errorf("%s: %w: nil upload options", op, ErrInvalidArgument)
 	}
 	selectionOpts := withCopies(opts, 1)
-	selectionOpts.RequireEndorsedPrimary = boolPtr(false)
+	selectionOpts.AllowUnendorsedPrimary = true
 	selections, err := r.selectWithRetry(ctx, selectionOpts, usedProviders, true)
 	if err != nil {
 		return nil, err
@@ -458,7 +495,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	if count <= 0 {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
 	}
-	requireEndorsedPrimary := resolveBoolDefault(opts.RequireEndorsedPrimary, true)
+	requireEndorsedPrimary := !opts.AllowUnendorsedPrimary
 	var endorsedSet map[string]struct{}
 	if requireEndorsedPrimary {
 		if r.endorsements == nil {
@@ -562,8 +599,9 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	}
 	candidates := slices.Concat(withDataSet, withoutDataSet)
 	if !requireEndorsedPrimary {
-		return r.selectHealthyCandidates(ctx, candidates, count, ErrNoHealthyProviders)
+		return r.selectHealthyCandidates(ctx, candidates, count, ErrNoHealthyProviders, nil)
 	}
+	probes := newProviderProbeCache(r.providerPing)
 
 	primaryCandidates := make([]autoSelectCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -571,7 +609,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			primaryCandidates = append(primaryCandidates, candidate)
 		}
 	}
-	primary, err := r.selectHealthyCandidates(ctx, primaryCandidates, 1, ErrNoEndorsedProvider)
+	primary, err := r.selectHealthyCandidates(ctx, primaryCandidates, 1, ErrNoEndorsedProvider, probes)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +624,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			secondaryCandidates = append(secondaryCandidates, candidate)
 		}
 	}
-	secondaries, err := r.selectHealthyCandidates(ctx, secondaryCandidates, count-1, ErrNoHealthyProviders)
+	secondaries, err := r.selectHealthyCandidates(ctx, secondaryCandidates, count-1, ErrNoHealthyProviders, probes)
 	if err != nil {
 		if errors.Is(err, ErrNoHealthyProviders) {
 			return primary, nil
@@ -596,7 +634,13 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 	return append(primary, secondaries...), nil
 }
 
-func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidates []autoSelectCandidate, count int, noHealthyError error) ([]resolvedUploadContext, error) {
+func (r *ServiceResolver) selectHealthyCandidates(
+	ctx context.Context,
+	candidates []autoSelectCandidate,
+	count int,
+	noHealthyError error,
+	probes *providerProbeCache,
+) ([]resolvedUploadContext, error) {
 	if len(candidates) == 0 {
 		if noHealthyError != nil {
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no eligible providers", noHealthyError)
@@ -627,7 +671,13 @@ func (r *ServiceResolver) selectHealthyCandidates(ctx context.Context, candidate
 			pingCtx, cancel := context.WithTimeout(probeCtx, providerPingTimeout)
 			probeCancels[index] = cancel
 			go func() {
-				err := r.providerPing(pingCtx, candidates[index].provider.Offering.ServiceURL)
+				provider := candidates[index].provider
+				var err error
+				if probes == nil {
+					err = r.providerPing(pingCtx, provider.Offering.ServiceURL)
+				} else {
+					err = probes.probe(pingCtx, idconv.Key(provider.Info.ID), provider.Offering.ServiceURL)
+				}
 				cancel()
 				results <- providerProbeResult{index: index, err: err}
 			}()

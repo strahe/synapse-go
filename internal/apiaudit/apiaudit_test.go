@@ -143,6 +143,8 @@ var (
 	_ = storage.Options{Lifecycle: sharedLifecycle}
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
+	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}
+	_ = storage.SelectUploadContextsOptions{AllowUnendorsedPrimary: true}
 	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
 	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
 	_ *storage.DataSetDetails

@@ -127,9 +127,9 @@ it returns the same error.
 
 - `Copies`: required number of provider copies. It must be greater than zero.
 - `ExcludeProviderIDs`: skip providers only during automatic selection.
-- `RequireEndorsedPrimary`: `nil` and `true` require the primary provider to
-  be endorsed; `false` selects the primary from the full approved pool and
-  skips the endorsement query.
+- `AllowUnendorsedPrimary`: the zero value requires an endorsed primary;
+  `true` selects the primary from the full approved pool and skips the
+  endorsement query.
 - `DataSetMetadata`: metadata used when creating or reusing datasets.
 - `PieceMetadata`: metadata stored with the committed piece.
 - `WithCDN`: per-upload CDN override. `nil` inherits the client default.
@@ -154,12 +154,15 @@ traffic among a smaller provider set. Applications that deliberately accept
 any approved provider as primary can opt out for one upload:
 
 ```go
-requireEndorsed := false
 result, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{
-    Copies:                   2,
-    RequireEndorsedPrimary: &requireEndorsed,
+	Copies:                   2,
+	AllowUnendorsedPrimary: true,
 })
 ```
+
+The default health check requires `/pdp/ping` to return HTTP 2xx with a body
+that trims exactly to `curio-pdp`. Providers therefore need Curio v1.28.3 or
+later; older empty-body ping responses are intentionally rejected.
 
 An empty endorsement set or no eligible healthy endorsed provider returns
 `storage.ErrNoEndorsedProvider`; endorsement query failures are returned as

@@ -146,6 +146,69 @@ func TestPing_ResponseMismatchIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestPing_ReadFailurePreservesRetryClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		firstStatus    int
+		retryAfter     string
+		wantHTTPError  bool
+		wantRetryAfter time.Duration
+	}{
+		{name: "successful status retries unexpected EOF", firstStatus: http.StatusOK},
+		{name: "service unavailable keeps HTTP error and retry after", firstStatus: http.StatusServiceUnavailable, retryAfter: "7", wantHTTPError: true, wantRetryAfter: 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			client, err := New("https://example.com", WithHTTPClient(&http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						header := make(http.Header)
+						header.Set("Retry-After", tc.retryAfter)
+						return &http.Response{
+							StatusCode: tc.firstStatus,
+							Header:     header,
+							Body:       io.NopCloser(&errReader{err: io.ErrUnexpectedEOF}),
+							Request:    req,
+						}, nil
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("curio-pdp")),
+						Request:    req,
+					}, nil
+				}),
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retryErr error
+			client.retryDelayFn = func(err error, _ int) time.Duration {
+				retryErr = err
+				return 0
+			}
+
+			if err := client.Ping(context.Background()); err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+			if calls != 2 {
+				t.Fatalf("ping calls = %d, want 2", calls)
+			}
+			if !errors.Is(retryErr, io.ErrUnexpectedEOF) || errors.Is(retryErr, ErrPingResponseMismatch) {
+				t.Fatalf("retry error = %v, want unexpected EOF without response mismatch", retryErr)
+			}
+			httpErr, hasHTTPError := errors.AsType[*HTTPError](retryErr)
+			if hasHTTPError != tc.wantHTTPError {
+				t.Fatalf("retry error has HTTPError = %t, want %t: %v", hasHTTPError, tc.wantHTTPError, retryErr)
+			}
+			if hasHTTPError && httpErr.RetryAfter != tc.wantRetryAfter {
+				t.Fatalf("RetryAfter = %s, want %s", httpErr.RetryAfter, tc.wantRetryAfter)
+			}
+		})
+	}
+}
+
 // streamingUploadHandler is a reusable httptest handler implementing the
 // CommP-last 3-step streaming upload protocol for client-side unit tests.
 //
