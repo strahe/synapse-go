@@ -255,12 +255,13 @@ func TestContext_TerminateService_ResumesPendingRequest(t *testing.T) {
 	}
 }
 
-func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
+func TestContext_TerminateService_SkipProviderPreservesSubmittedAndConfirmedHashes(t *testing.T) {
 	dataSetID := types.NewBigInt(7)
-	txHash := common.HexToHash("0x1234")
+	submittedHash := common.HexToHash("0x1234")
+	confirmedHash := common.HexToHash("0x5678")
 	term := &fakeFWSSTerminator{res: &types.WriteResult{
-		Hash:    txHash,
-		Receipt: terminateReceipt(t, dataSetID, txHash, 456, 99),
+		Hash:    submittedHash,
+		Receipt: terminateReceipt(t, dataSetID, confirmedHash, 456, 99),
 	}}
 	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(dataSetID, types.BigInt{}),
 		WithPayer(testPayer()),
@@ -282,18 +283,19 @@ func TestContext_TerminateService_SkipProviderParsesReceiptEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TerminateService: %v", err)
 	}
-	if submitted != txHash {
-		t.Fatalf("submitted=%s want %s", submitted, txHash)
+	if submitted != submittedHash {
+		t.Fatalf("submitted=%s want %s", submitted, submittedHash)
 	}
-	if res.TxHash == nil || *res.TxHash != txHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != txHash || res.EndEpoch != 456 {
-		t.Fatalf("result=%+v want tx hash and end epoch", res)
+	if res.TxHash == nil || *res.TxHash != submittedHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != confirmedHash || res.EndEpoch != 456 {
+		t.Fatalf("result=%+v want submitted and confirmed hashes with end epoch", res)
 	}
 }
 
-func TestContext_TerminateService_SkipProviderRejectsZeroReceiptHash(t *testing.T) {
+func TestContext_TerminateService_SkipProviderFallsBackFromZeroReceiptHash(t *testing.T) {
 	dataSetID := types.NewBigInt(7)
+	submittedHash := common.HexToHash("0x1234")
 	term := &fakeFWSSTerminator{res: &types.WriteResult{
-		Hash:    common.HexToHash("0x1234"),
+		Hash:    submittedHash,
 		Receipt: terminateReceipt(t, dataSetID, common.Hash{}, 456, 99),
 	}}
 	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(dataSetID, types.BigInt{}),
@@ -306,9 +308,12 @@ func TestContext_TerminateService_SkipProviderRejectsZeroReceiptHash(t *testing.
 		t.Fatalf("NewContext: %v", err)
 	}
 
-	_, err = c.TerminateService(context.Background(), &TerminateServiceOptions{SkipProvider: true})
-	if err == nil || !strings.Contains(err.Error(), "zero transaction hash") {
-		t.Fatalf("err=%v want zero receipt transaction hash error", err)
+	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{SkipProvider: true})
+	if err != nil {
+		t.Fatalf("TerminateService: %v", err)
+	}
+	if res.TxHash == nil || *res.TxHash != submittedHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != submittedHash {
+		t.Fatalf("result=%+v want submitted hash fallback", res)
 	}
 }
 

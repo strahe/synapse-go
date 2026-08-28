@@ -44,9 +44,12 @@ func (c *DataSetContext) DeletePieces(ctx context.Context, pieceCIDs []cid.Cid) 
 }
 
 func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs []cid.Cid) (*sdktypes.WriteResult, error) {
-	pieceCIDs, err := normalizeDeletePieceCIDs(op, pieceCIDs)
+	normalizedCIDs, err := normalizeDeletePieceCIDs(op, pieceCIDs)
 	if err != nil {
 		return nil, err
+	}
+	if len(normalizedCIDs) > pdp.MaxDeletePiecesBatchSize {
+		return nil, fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, len(normalizedCIDs), pdp.MaxDeletePiecesBatchSize)
 	}
 	if c.core.pdpCaller == nil {
 		return nil, errors.New(op + ": PDPVerifier reader not configured")
@@ -56,14 +59,14 @@ func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs 
 		return nil, err
 	}
 
-	pieceIDs := make([]sdktypes.BigInt, 0, len(pieceCIDs))
-	for i, pieceCID := range pieceCIDs {
-		matches, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, pieceCID, 0, 1)
+	pieceIDs := make([]sdktypes.BigInt, 0, len(normalizedCIDs))
+	for _, item := range normalizedCIDs {
+		matches, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, target.dataSetID, item.pieceCID, 0, 1)
 		if err != nil {
-			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, i, err)
+			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
 		}
 		if len(matches) == 0 {
-			return nil, fmt.Errorf("%s: %w: pieceCID at index %d not found in data set", op, ErrInvalidArgument, i)
+			return nil, fmt.Errorf("%s: %w: pieceCID at index %d not found in data set", op, ErrInvalidArgument, item.originalIndex)
 		}
 		pieceIDs = append(pieceIDs, matches[0])
 	}
@@ -75,11 +78,16 @@ func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs 
 	return c.schedulePieceDeletionsByID(ctx, op, target, pieceIDs)
 }
 
-func normalizeDeletePieceCIDs(op string, pieceCIDs []cid.Cid) ([]cid.Cid, error) {
+type normalizedDeletePieceCID struct {
+	pieceCID      cid.Cid
+	originalIndex int
+}
+
+func normalizeDeletePieceCIDs(op string, pieceCIDs []cid.Cid) ([]normalizedDeletePieceCID, error) {
 	if len(pieceCIDs) == 0 {
 		return nil, fmt.Errorf("%s: %w: no piece CIDs provided", op, ErrInvalidArgument)
 	}
-	normalized := make([]cid.Cid, 0, len(pieceCIDs))
+	normalized := make([]normalizedDeletePieceCID, 0, len(pieceCIDs))
 	seen := make(map[string]struct{}, len(pieceCIDs))
 	for i, pieceCID := range pieceCIDs {
 		if !pieceCID.Defined() {
@@ -93,7 +101,7 @@ func normalizeDeletePieceCIDs(op string, pieceCIDs []cid.Cid) ([]cid.Cid, error)
 			continue
 		}
 		seen[key] = struct{}{}
-		normalized = append(normalized, pieceCID)
+		normalized = append(normalized, normalizedDeletePieceCID{pieceCID: pieceCID, originalIndex: i})
 	}
 	return normalized, nil
 }

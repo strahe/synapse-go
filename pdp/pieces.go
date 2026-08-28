@@ -238,6 +238,9 @@ func (c *Client) SchedulePieceDeletions(ctx context.Context, dataSetID types.Big
 	}
 	urlPath := path.Join("pdp/data-sets", dataSetID.String(), "pieces", pieceIDs[0].String())
 	if err := c.deleteJSON(ctx, urlPath, payload, &out); err != nil {
+		if isTooManyPiecesQueuedResponse(err) {
+			return common.Hash{}, fmt.Errorf("%s: %w: %w", op, ErrTooManyPiecesQueued, err)
+		}
 		return common.Hash{}, err
 	}
 	if !common.IsHexHash(out.TxHash) {
@@ -248,6 +251,12 @@ func (c *Client) SchedulePieceDeletions(ctx context.Context, dataSetID types.Big
 		return common.Hash{}, fmt.Errorf("%s: zero txHash in response", op)
 	}
 	return h, nil
+}
+
+func isTooManyPiecesQueuedResponse(err error) bool {
+	httpErr, ok := errors.AsType[*HTTPError](err)
+	return ok && httpErr.StatusCode == http.StatusTooManyRequests &&
+		strings.Contains(strings.ToLower(httpErr.Body), "scheduled removals queued")
 }
 
 // SchedulePieceDeletion issues a single-piece deletion request.

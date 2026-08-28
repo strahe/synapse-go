@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
@@ -249,6 +250,44 @@ func TestContext_DeletePieces_DeduplicatesResolvedIDs(t *testing.T) {
 	}
 }
 
+func TestContext_DeletePieces_RejectsOversizedBatchBeforeResolution(t *testing.T) {
+	reader := &dataSetMutatingPDPReader{}
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	_, err := c.DeletePieces(context.Background(), sequenceDeleteCIDs(t, pdp.MaxDeletePiecesBatchSize+1))
+	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrTooManyPieces) {
+		t.Fatalf("err=%v want ErrInvalidArgument and pdp.ErrTooManyPieces", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("FindPieceIdsByCid calls=%d want 0", reader.calls)
+	}
+}
+
+func TestContext_DeletePieces_ReportsOriginalCIDIndexAfterDeduplication(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	reader := &cidResultPDPReader{
+		results: map[string][]types.BigInt{
+			pieceCIDs[0].KeyString(): {types.NewBigInt(42)},
+		},
+	}
+	c := mustDeleteContext(t, &fakePDPProviderClient{},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	_, err := c.DeletePieces(context.Background(), []cid.Cid{pieceCIDs[0], pieceCIDs[0], pieceCIDs[1]})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "index 2 not found") {
+		t.Fatalf("err=%v want original index 2 not-found error", err)
+	}
+}
+
 func TestContext_DeletePiecesByID_UnsupportedCustomClient(t *testing.T) {
 	c := mustDeleteContext(t, &fakePDPProviderClient{},
 		WithPayer(testPayer()),
@@ -301,6 +340,19 @@ func sequenceBigInts(count int) []types.BigInt {
 		ids[i] = types.NewBigInt(uint64(i))
 	}
 	return ids
+}
+
+func sequenceDeleteCIDs(t *testing.T, count int) []cid.Cid {
+	t.Helper()
+	pieceCIDs := make([]cid.Cid, count)
+	for i := range pieceCIDs {
+		hash, err := multihash.Sum([]byte{byte(i)}, multihash.SHA2_256, -1)
+		if err != nil {
+			t.Fatalf("create multihash %d: %v", i, err)
+		}
+		pieceCIDs[i] = cid.NewCidV1(cid.Raw, hash)
+	}
+	return pieceCIDs
 }
 
 func equalBigInts(got, want []types.BigInt) bool {
@@ -435,6 +487,15 @@ type dataSetMutatingPDPReader struct {
 	mutate       func()
 	gotDataSetID types.BigInt
 	calls        int
+}
+
+type cidResultPDPReader struct {
+	fakePDPReader
+	results map[string][]types.BigInt
+}
+
+func (r *cidResultPDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, pieceCID cid.Cid, _, _ uint64) ([]types.BigInt, error) {
+	return r.results[pieceCID.KeyString()], nil
 }
 
 func (r *dataSetMutatingPDPReader) FindPieceIdsByCid(_ context.Context, dataSetID types.BigInt, _ cid.Cid, _, _ uint64) ([]types.BigInt, error) {

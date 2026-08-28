@@ -271,14 +271,15 @@ func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTermi
 	}
 	confirmedHash := res.Receipt.TxHash
 	if confirmedHash == (common.Hash{}) {
-		return nil, fmt.Errorf("%s: direct termination receipt has zero transaction hash", op)
+		confirmedHash = res.Hash
 	}
 	ev, err := warmstorage.ExtractPDPPaymentTerminatedEvent(res.Receipt)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	submittedHash := res.Hash
 	return &TerminateServiceResult{
-		TxHash:          &confirmedHash,
+		TxHash:          &submittedHash,
 		ConfirmedTxHash: &confirmedHash,
 		DataSetID:       dataSetID,
 		EndEpoch:        ev.EndEpoch,

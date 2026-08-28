@@ -485,18 +485,43 @@ func TestSchedulePieceDeletions_InvalidTxHash(t *testing.T) {
 	}
 }
 
-func TestSchedulePieceDeletions_TooManyQueued(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Retry-After", "30")
-		http.Error(w, "too many queued removals", http.StatusTooManyRequests)
-	}))
-	_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(1)}, []byte{1})
-	httpErr, ok := errors.AsType[*HTTPError](err)
-	if !ok {
-		t.Fatalf("err=%T %v want *HTTPError", err, err)
+func TestSchedulePieceDeletions_HTTP429Classification(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantQueueFull  bool
+		wantRetryAfter time.Duration
+	}{
+		{
+			name:           "deletion queue full",
+			body:           "data set 5 already has 200 scheduled removals queued (limit 200); retry once they have been processed",
+			wantQueueFull:  true,
+			wantRetryAfter: 30 * time.Second,
+		},
+		{
+			name:           "IP throttled",
+			body:           "too many requests",
+			wantRetryAfter: 30 * time.Second,
+		},
 	}
-	if httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != 30*time.Second {
-		t.Fatalf("HTTPError=%+v", httpErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "30")
+				http.Error(w, tt.body, http.StatusTooManyRequests)
+			}))
+			_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(1)}, []byte{1})
+			if got := errors.Is(err, ErrTooManyPiecesQueued); got != tt.wantQueueFull {
+				t.Fatalf("errors.Is(ErrTooManyPiecesQueued)=%t want %t: %v", got, tt.wantQueueFull, err)
+			}
+			httpErr, ok := errors.AsType[*HTTPError](err)
+			if !ok {
+				t.Fatalf("err=%T %v want *HTTPError", err, err)
+			}
+			if httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != tt.wantRetryAfter {
+				t.Fatalf("HTTPError=%+v", httpErr)
+			}
+		})
 	}
 }
 
