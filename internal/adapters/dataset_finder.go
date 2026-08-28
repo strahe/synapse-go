@@ -10,7 +10,7 @@ import (
 )
 
 // dataSetFinder adapts *warmstorage.Service to [storage.DataSetFinder].
-// storage.DataSetInfo aliases warmstorage.EnhancedDataSetInfo, so no
+// storage.DataSetDetails aliases warmstorage.EnhancedDataSetInfo, so no
 // conversion is required.
 type dataSetFinder struct {
 	ws *warmstorage.Service
@@ -21,6 +21,6 @@ func NewDataSetFinder(ws *warmstorage.Service) storage.DataSetFinder {
 	return &dataSetFinder{ws: ws}
 }
 
-func (a *dataSetFinder) FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*storage.DataSetInfo, error) {
+func (a *dataSetFinder) FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*storage.DataSetDetails, error) {
 	return a.ws.GetClientDataSetsWithDetails(ctx, payer, onlyManaged)
 }

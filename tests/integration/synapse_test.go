@@ -278,7 +278,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		DataSize:          uint64(len(data)),
 		Contexts:          []storage.StorageContext{uploadCtx},
 		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-		BufferEpochs:      integrationFundingBufferEpochs,
+		BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -459,12 +459,12 @@ func TestIntegration(t *testing.T) {
 		if uploadCosts.Rate.RatePerMonth == nil || uploadCosts.Rate.RatePerMonth.Sign() <= 0 {
 			t.Errorf("RatePerMonth should be positive, got %v", uploadCosts.Rate.RatePerMonth)
 		}
-		if uploadCosts.Lockup.TotalLockup == nil || uploadCosts.Lockup.TotalLockup.Sign() < 0 {
-			t.Errorf("TotalLockup should be >= 0, got %v", uploadCosts.Lockup.TotalLockup)
+		if uploadCosts.Lockup.Total == nil || uploadCosts.Lockup.Total.Sign() < 0 {
+			t.Errorf("Total should be >= 0, got %v", uploadCosts.Lockup.Total)
 		}
 		t.Logf("rate/epoch=%s, rate/month=%s, lockup=%s, depositNeeded=%s, ready=%v",
 			uploadCosts.Rate.RatePerEpoch, uploadCosts.Rate.RatePerMonth,
-			uploadCosts.Lockup.TotalLockup, uploadCosts.DepositNeeded, uploadCosts.Ready)
+			uploadCosts.Lockup.Total, uploadCosts.DepositNeeded, uploadCosts.Ready)
 
 		summary, err := client.Payments().AccountSummary(cctx, addr)
 		if err != nil {
@@ -505,7 +505,7 @@ func TestIntegration(t *testing.T) {
 		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, dataSize,
 			&costs.UploadCostOptions{
 				ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-				BufferEpochs:      integrationFundingBufferEpochs,
+				BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 				IsNewDataSet:      true,
 			})
 		if err != nil {
@@ -525,12 +525,12 @@ func TestIntegration(t *testing.T) {
 		if uploadCosts.Rate.RatePerEpoch == nil {
 			t.Fatal("uploadCosts.Rate.RatePerEpoch is nil")
 		}
-		if uploadCosts.Lockup.TotalLockup == nil {
-			t.Fatal("uploadCosts.Lockup.TotalLockup is nil")
+		if uploadCosts.Lockup.Total == nil {
+			t.Fatal("uploadCosts.Lockup.Total is nil")
 		}
 		if !svcApproval.IsApproved {
 			maxRate := new(big.Int).Mul(uploadCosts.Rate.RatePerEpoch, big.NewInt(100))
-			maxLockup := new(big.Int).Mul(uploadCosts.Lockup.TotalLockup, big.NewInt(100))
+			maxLockup := new(big.Int).Mul(uploadCosts.Lockup.Total, big.NewInt(100))
 			maxPeriod := big.NewInt(365 * 24 * 60 * 2) // ~1 year in epochs
 			t.Log("start Payments ApproveService")
 			res, err := client.Payments().ApproveService(cctx, usdfc, fwss,
@@ -745,7 +745,7 @@ func TestIntegration(t *testing.T) {
 
 		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, big.NewInt(testDataSize), &costs.UploadCostOptions{
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      integrationFundingBufferEpochs,
+			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			EnableCDN:         true,
 			IsNewDataSet:      true,
 		})
@@ -758,7 +758,7 @@ func TestIntegration(t *testing.T) {
 		}
 		multiCosts := aggregateNewUploadCosts(perCopyCosts, acct, 2)
 		t.Logf("multicopy funding: depositNeeded=%s, totalLockup=%s, rate/epoch=%s, ready=%v",
-			multiCosts.DepositNeeded, multiCosts.Lockup.TotalLockup, multiCosts.Rate.RatePerEpoch, multiCosts.Ready)
+			multiCosts.DepositNeeded, multiCosts.Lockup.Total, multiCosts.Rate.RatePerEpoch, multiCosts.Ready)
 		if multiCosts.DepositNeeded.Sign() > 0 {
 			allowance, err := client.Payments().Allowance(cctx, usdfc, addr, filPay)
 			if err != nil {
@@ -981,14 +981,14 @@ func TestIntegration(t *testing.T) {
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 
-			sets, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetInfo, error) {
+			sets, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetDetails, error) {
 				return sm.FindDataSets(ctx, nil)
 			})
 			checkRead(t, "FindDataSets(default)", err)
 			t.Logf("FindDataSets(default): %d", len(sets))
 
 			start := time.Now()
-			setsManaged, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetInfo, error) {
+			setsManaged, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]*storage.DataSetDetails, error) {
 				return sm.FindDataSets(ctx, &storage.FindDataSetsOptions{OnlyManaged: true})
 			})
 			t.Logf("done FindDataSets(onlyManaged) elapsed=%s", time.Since(start).Round(time.Second))
@@ -1287,7 +1287,7 @@ func TestIntegration(t *testing.T) {
 		prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
 			DataSize:          uint64(len(extraData)),
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      integrationFundingBufferEpochs,
+			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			Contexts: []storage.StorageContext{
 				uctx,
 			},

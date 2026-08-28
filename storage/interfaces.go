@@ -75,7 +75,7 @@ type EpochReader interface {
 // DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
 // by *warmstorage.Service via GetClientDataSetsWithDetails.
 type DataSetFinder interface {
-	FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*DataSetInfo, error)
+	FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*DataSetDetails, error)
 }
 
 // StorageInfoReader returns the chain-wide StorageInfo view for the given client.
@@ -96,9 +96,9 @@ type MultiCostOptions struct {
 	// minimum lockup period. Defaults to 0 when unset.
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit cushion above current lockup usage to
-	// cover transaction latency. Zero uses the cost service default
-	// (5 epochs).
-	BufferEpochs int64
+	// cover transaction latency. Nil uses the cost service default; a pointer
+	// to zero disables the buffer. Negative values return ErrInvalidArgument.
+	BufferEpochs *int64
 }
 
 // MultiCostCalculator computes an upload-cost summary for a fan-out

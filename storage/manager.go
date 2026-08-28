@@ -25,7 +25,7 @@ type FindDataSetsOptions struct {
 
 // FindDataSets returns the enriched list of data sets owned by the caller
 // or by the payer in opts.
-func (s *Service) FindDataSets(ctx context.Context, opts *FindDataSetsOptions) ([]*DataSetInfo, error) {
+func (s *Service) FindDataSets(ctx context.Context, opts *FindDataSetsOptions) ([]*DataSetDetails, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -100,6 +100,9 @@ func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.BigInt, 
 func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
+	}
+	if opts.BufferEpochs != nil && *opts.BufferEpochs < 0 {
+		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: BufferEpochs must be non-negative", ErrInvalidArgument)
 	}
 	if s.costCalc == nil {
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: no CostCalculator configured", ErrUninitialized)

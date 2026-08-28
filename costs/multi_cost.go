@@ -65,8 +65,7 @@ type MultiContextCosts struct {
 // Each ref contributes its own lockup; debt, runway and buffer are computed
 // once from the payer's account state.
 //
-// Default buffer/runway follow DefaultBufferEpochs / DefaultExtraRunwayEpochs
-// when the corresponding opts field is zero.
+// A nil BufferEpochs uses DefaultBufferEpochs.
 func (s *Service) CalculateMultiContextCosts(
 	ctx context.Context,
 	payer common.Address,
@@ -87,9 +86,9 @@ func (s *Service) CalculateMultiContextCosts(
 		opts = &UploadCostOptions{}
 	}
 	runwayEpochs := opts.ExtraRunwayEpochs
-	bufferEpochs := opts.BufferEpochs
-	if bufferEpochs == 0 {
-		bufferEpochs = DefaultBufferEpochs
+	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
+	if err != nil {
+		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w", err)
 	}
 
 	var (

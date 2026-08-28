@@ -5,13 +5,13 @@ import (
 	"math/big"
 	"testing"
 
-	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -152,11 +152,73 @@ func TestCostCalculator_CalculateMultiContextCosts_IgnoresCurrentSizeForNewDataS
 	}
 }
 
-type noopContractCaller struct{}
+func TestCostCalculator_CalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testing.T) {
+	costSvc, err := costs.New(costs.Options{
+		Chain: chain.Calibration,
+		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
+			Rates: warmstorage.PriceListRates{StoragePerTiBPerMonth: big.NewInt(288000)},
+			Lockups: warmstorage.PriceListLockups{
+				DefaultLockupPeriod: big.NewInt(costs.DefaultLockupPeriod),
+			},
+		}},
+		Payments: fixedPaymentsReader{
+			account: &payments.AccountState{
+				Funds:         new(big.Int),
+				LockupCurrent: new(big.Int),
+				LockupRate:    big.NewInt(100),
+			},
+			approval: &payments.OperatorApproval{},
+		},
+		Caller: noopContractCaller{},
+	})
+	if err != nil {
+		t.Fatalf("costs.New: %v", err)
+	}
 
-func (noopContractCaller) CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
-	return make([]byte, 32), nil
+	zeroBuffer := int64(0)
+	dataSetID := types.NewBigInt(1)
+	adapter := &costCalculator{c: costSvc}
+	actual, err := adapter.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		big.NewInt(chain.TiB),
+		[]storage.ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetSizeBytes: new(big.Int)}},
+		storage.MultiCostOptions{BufferEpochs: &zeroBuffer},
+	)
+	if err != nil {
+		t.Fatalf("adapter.CalculateMultiContextCosts: %v", err)
+	}
+
+	expected, err := costSvc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		big.NewInt(chain.TiB),
+		[]costs.MultiContextRef{{}},
+		&costs.UploadCostOptions{BufferEpochs: &zeroBuffer},
+	)
+	if err != nil {
+		t.Fatalf("costSvc.CalculateMultiContextCosts with zero buffer: %v", err)
+	}
+	withDefault, err := costSvc.CalculateMultiContextCosts(
+		context.Background(),
+		common.Address{},
+		big.NewInt(chain.TiB),
+		[]costs.MultiContextRef{{}},
+		&costs.UploadCostOptions{},
+	)
+	if err != nil {
+		t.Fatalf("costSvc.CalculateMultiContextCosts with default buffer: %v", err)
+	}
+
+	if actual.DepositNeeded.Cmp(expected.DepositNeeded) != 0 {
+		t.Fatalf("DepositNeeded=%s want explicit-zero result %s", actual.DepositNeeded, expected.DepositNeeded)
+	}
+	if actual.DepositNeeded.Cmp(withDefault.DepositNeeded) >= 0 {
+		t.Fatalf("explicit-zero deposit=%s want less than default %s", actual.DepositNeeded, withDefault.DepositNeeded)
+	}
 }
+
+type noopContractCaller struct{}
 
 func (noopContractCaller) BlockNumber(context.Context) (uint64, error) {
 	return 0, nil

@@ -154,10 +154,10 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			},
 		},
 		{
-			name: "costs with buffer",
+			name: "costs with explicit zero buffer",
 			opts: &PrepareOptions{
 				Costs:        readyCosts,
-				BufferEpochs: 1,
+				BufferEpochs: new(int64(0)),
 			},
 		},
 		{
@@ -171,7 +171,7 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			name: "negative buffer",
 			opts: &PrepareOptions{
 				DataSize:     128,
-				BufferEpochs: -1,
+				BufferEpochs: new(int64(-1)),
 			},
 		},
 	}
@@ -342,33 +342,49 @@ func TestPrepare_RequiresExplicitContexts(t *testing.T) {
 	assertInvalidArgument(t, err)
 }
 
-func TestPrepare_AllowsRunwayAndBufferWhenContextsSupplied(t *testing.T) {
-	costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
-	svc := newTestService()
-	svc.costCalc = costCalc
-	svc.payerAddr = testPayer()
+func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
+	tests := []struct {
+		name         string
+		bufferEpochs *int64
+	}{
+		{name: "default"},
+		{name: "explicit zero", bufferEpochs: new(int64(0))},
+		{name: "positive", bufferEpochs: new(int64(9))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+			svc := newTestService()
+			svc.costCalc = costCalc
+			svc.payerAddr = testPayer()
 
-	_, err := svc.Prepare(context.Background(), &PrepareOptions{
-		DataSize:          128,
-		Contexts:          []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
-		PieceCount:        big.NewInt(41),
-		ExtraRunwayEpochs: 7,
-		BufferEpochs:      9,
-	})
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	if costCalc.gotOpts.ExtraRunwayEpochs != 7 {
-		t.Fatalf("ExtraRunwayEpochs=%d want 7", costCalc.gotOpts.ExtraRunwayEpochs)
-	}
-	if costCalc.gotOpts.BufferEpochs != 9 {
-		t.Fatalf("BufferEpochs=%d want 9", costCalc.gotOpts.BufferEpochs)
-	}
-	if costCalc.gotOpts.PieceCount.Cmp(big.NewInt(41)) != 0 {
-		t.Fatalf("PieceCount=%s want 41", costCalc.gotOpts.PieceCount)
-	}
-	if len(costCalc.gotRefs) != 1 {
-		t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
+			_, err := svc.Prepare(context.Background(), &PrepareOptions{
+				DataSize:          128,
+				Contexts:          []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+				PieceCount:        big.NewInt(41),
+				ExtraRunwayEpochs: 7,
+				BufferEpochs:      tt.bufferEpochs,
+			})
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			if costCalc.gotOpts.ExtraRunwayEpochs != 7 {
+				t.Fatalf("ExtraRunwayEpochs=%d want 7", costCalc.gotOpts.ExtraRunwayEpochs)
+			}
+			if tt.bufferEpochs == nil {
+				if costCalc.gotOpts.BufferEpochs != nil {
+					t.Fatalf("BufferEpochs=%v want nil", costCalc.gotOpts.BufferEpochs)
+				}
+			} else if costCalc.gotOpts.BufferEpochs == nil || *costCalc.gotOpts.BufferEpochs != *tt.bufferEpochs {
+				t.Fatalf("BufferEpochs=%v want %d", costCalc.gotOpts.BufferEpochs, *tt.bufferEpochs)
+			}
+			if costCalc.gotOpts.PieceCount.Cmp(big.NewInt(41)) != 0 {
+				t.Fatalf("PieceCount=%s want 41", costCalc.gotOpts.PieceCount)
+			}
+			if len(costCalc.gotRefs) != 1 {
+				t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
+			}
+		})
 	}
 }
 

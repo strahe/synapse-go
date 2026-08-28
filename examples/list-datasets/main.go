@@ -25,7 +25,7 @@ type listConfig struct {
 }
 
 type datasetReader interface {
-	FindDataSets(context.Context, *storage.FindDataSetsOptions) ([]*storage.DataSetInfo, error)
+	FindDataSets(context.Context, *storage.FindDataSetsOptions) ([]*storage.DataSetDetails, error)
 	GetStorageInfo(context.Context, *storage.GetStorageInfoOptions) (*storage.StorageInfo, error)
 }
 
@@ -130,7 +130,7 @@ func printStorageInfo(stdout io.Writer, info *storage.StorageInfo) error {
 	return exampleutil.WriteKV(stdout, "allowances.lockupAllowance", info.Allowances.LockupAllowance)
 }
 
-func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetInfo) error {
+func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetDetails) error {
 	prefix := fmt.Sprintf("dataset.%d", index)
 	if dataSet == nil || dataSet.DataSetInfo == nil {
 		return exampleutil.WriteKV(stdout, prefix, "<nil>")
@@ -159,8 +159,8 @@ func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetInfo) err
 	return exampleutil.WriteMap(stdout, prefix+".metadata", dataSet.Metadata)
 }
 
-func filterDataSets(dataSets []*storage.DataSetInfo, id types.BigInt) []*storage.DataSetInfo {
-	out := make([]*storage.DataSetInfo, 0, len(dataSets))
+func filterDataSets(dataSets []*storage.DataSetDetails, id types.BigInt) []*storage.DataSetDetails {
+	out := make([]*storage.DataSetDetails, 0, len(dataSets))
 	for _, dataSet := range dataSets {
 		if dataSet == nil || dataSet.DataSetInfo == nil {
 			continue

@@ -17,9 +17,7 @@ func TestCalculateMultiContextCosts_ReadyWhenFunded(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	refs := []MultiContextRef{
 		{IsNewDataSet: true},
@@ -52,9 +50,7 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		usdfcFrac(1),
-	)
+		})
 
 	single, err := svc.GetUploadCosts(
 		context.Background(),
@@ -97,10 +93,9 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		new(big.Int),
-	)
-	opts := &UploadCostOptions{BufferEpochs: -1}
+		})
+
+	opts := &UploadCostOptions{BufferEpochs: new(int64(0))}
 
 	allExisting, err := svc.CalculateMultiContextCosts(
 		context.Background(),
@@ -161,16 +156,14 @@ func TestCalculateMultiContextCosts_UsesPieceCountForAddPiecesFees(t *testing.T)
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		new(big.Int),
-	)
+		})
 
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
 		bi(1024),
 		[]MultiContextRef{{IsNewDataSet: true}, {}},
-		&UploadCostOptions{BufferEpochs: -1, PieceCount: bi(41)},
+		&UploadCostOptions{BufferEpochs: new(int64(0)), PieceCount: bi(41)},
 	)
 	if err != nil {
 		t.Fatalf("CalculateMultiContextCosts: %v", err)
@@ -190,9 +183,7 @@ func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
-		},
-		new(big.Int),
-	)
+		})
 
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
@@ -209,8 +200,56 @@ func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
 	}
 }
 
+func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
+	account := &payments.AccountState{
+		Funds:         new(big.Int),
+		LockupCurrent: new(big.Int),
+		LockupRate:    bi(100),
+	}
+	svc := buildSvc(t,
+		&mockWS{priceList: defaultPriceList()},
+		&mockPay{account: account, approval: maxApproval()})
+	refs := []MultiContextRef{{}}
+
+	withoutBuffer, err := svc.CalculateMultiContextCosts(
+		context.Background(), common.Address{}, bi(1024), refs,
+		&UploadCostOptions{BufferEpochs: new(int64(0))},
+	)
+	if err != nil {
+		t.Fatalf("CalculateMultiContextCosts without buffer: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		bufferEpochs *int64
+		wantEpochs   int64
+	}{
+		{name: "default", wantEpochs: DefaultBufferEpochs},
+		{name: "explicit zero", bufferEpochs: new(int64(0))},
+		{name: "positive", bufferEpochs: new(int64(9)), wantEpochs: 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.CalculateMultiContextCosts(
+				context.Background(), common.Address{}, bi(1024), refs,
+				&UploadCostOptions{BufferEpochs: tt.bufferEpochs},
+			)
+			if err != nil {
+				t.Fatalf("CalculateMultiContextCosts: %v", err)
+			}
+
+			combinedRate := new(big.Int).Add(account.LockupRate, got.Lockup.RateDeltaPerEpoch)
+			wantDelta := new(big.Int).Mul(combinedRate, big.NewInt(tt.wantEpochs))
+			gotDelta := new(big.Int).Sub(got.DepositNeeded, withoutBuffer.DepositNeeded)
+			if gotDelta.Cmp(wantDelta) != 0 {
+				t.Fatalf("buffer deposit delta=%s want %s", gotDelta, wantDelta)
+			}
+		})
+	}
+}
+
 func TestCalculateMultiContextCosts_EmptyRefs(t *testing.T) {
-	svc := buildSvc(t, &mockWS{price: defaultPrice()}, &mockPay{}, usdfcFrac(1))
+	svc := buildSvc(t, &mockWS{price: defaultPrice()}, &mockPay{})
 	if _, err := svc.CalculateMultiContextCosts(
 		context.Background(), common.Address{}, bi(1024), nil, nil,
 	); err == nil {

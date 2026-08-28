@@ -10,11 +10,11 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// DataSetInfo aliases warmstorage.EnhancedDataSetInfo, the richer record
+// DataSetDetails aliases warmstorage.EnhancedDataSetInfo, the richer record
 // returned by Service.FindDataSets. Kept as an alias (not a copy) so that
 // callers that already hold *warmstorage.EnhancedDataSetInfo can pass
 // values through without conversion.
-type DataSetInfo = warmstorage.EnhancedDataSetInfo
+type DataSetDetails = warmstorage.EnhancedDataSetInfo
 
 // PricePerTiB holds the effective price per TiB for one provisioning
 // profile at three time granularities.
