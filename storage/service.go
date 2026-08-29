@@ -796,6 +796,9 @@ func validateExplicitUploadOptions(opts *UploadOptions) error {
 	if len(opts.DataSetMetadata) != 0 {
 		return fmt.Errorf("%w: DataSetMetadata is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}
+	if opts.AllowUnendorsedPrimary {
+		return fmt.Errorf("%w: AllowUnendorsedPrimary is not supported for explicit-context uploads", ErrInvalidArgument)
+	}
 	if opts.WithCDN != nil {
 		return fmt.Errorf("%w: WithCDN is not supported for explicit-context uploads; pass it to SelectUploadContexts or the context constructor instead", ErrInvalidArgument)
 	}

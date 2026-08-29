@@ -53,6 +53,7 @@ func newTrackingMetadataResolver(t *testing.T, fixture serviceResolverFixture, c
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
 		Payer:            testPayer(),
 		SPRegistry:       &fakePDPProviderSource{fixture: fixture},
+		Endorsements:     &fakeEndorsedProviderSource{fixture: fixture},
 		WarmStorage:      catalog,
 		DataSetValidator: allowAllDataSetValidator{},
 		ProviderPing:     healthyProviderPing,

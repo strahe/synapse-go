@@ -62,8 +62,10 @@ type PrepareResult struct {
 	Transaction *PrepareTransaction
 }
 
-// Prepare returns the funding transaction needed, if any, to cover one
-// upload of DataSize bytes across the supplied contexts.
+// Prepare returns the funding transaction needed, if any, to cover one upload
+// of DataSize bytes across the supplied contexts. When a DataSetSizeReader is
+// configured, unavailable existing data sets return [ErrDataSetUnavailable].
+// Without one, existing size remains a zero-size best-effort estimate.
 func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err

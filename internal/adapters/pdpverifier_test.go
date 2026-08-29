@@ -16,6 +16,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	pdpverifierbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
+	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -31,7 +32,7 @@ func (e revertDataError) ErrorCode() int {
 	return 3
 }
 
-func (e revertDataError) ErrorData() interface{} {
+func (e revertDataError) ErrorData() any {
 	return e.data
 }
 
@@ -85,7 +86,40 @@ func TestPDPVerifierReader_FindPieceIDsByCIDs_UsesChunkedMulticall(t *testing.T)
 	}
 }
 
-func TestPDPVerifierReader_ReturnsEmptyValuesForUnavailableDataSet(t *testing.T) {
+func TestPDPVerifierReader_FindPieceIDsByCIDs_ClassifiesUnavailableSubcall(t *testing.T) {
+	target := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	backend := newPDPBatchTestBackend(t, target, [][]*big.Int{nil})
+	hash := crypto.Keccak256([]byte("DataSetNotFound()"))
+	backend.failures = map[int][]byte{0: hash[:4]}
+	caller, err := pdpverifierbind.NewPDPVerifierCaller(target, backend)
+	if err != nil {
+		t.Fatalf("NewPDPVerifierCaller: %v", err)
+	}
+	reader := NewPDPVerifierReader(caller, backend, target, 2).(*pdpVerifierReader)
+
+	got, err := reader.FindPieceIDsByCIDs(context.Background(), types.NewBigInt(42), []cid.Cid{testPieceCID})
+	if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) {
+		t.Fatalf("result=%v error=%v, want unavailable sentinel", got, err)
+	}
+}
+
+func TestPDPVerifierReader_FindPieceIDsByCIDs_PreservesUnknownSubcallData(t *testing.T) {
+	target := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	backend := newPDPBatchTestBackend(t, target, [][]*big.Int{nil})
+	backend.failures = map[int][]byte{0: {0xde, 0xad}}
+	caller, err := pdpverifierbind.NewPDPVerifierCaller(target, backend)
+	if err != nil {
+		t.Fatalf("NewPDPVerifierCaller: %v", err)
+	}
+	reader := NewPDPVerifierReader(caller, backend, target, 2).(*pdpVerifierReader)
+
+	_, err = reader.FindPieceIDsByCIDs(context.Background(), types.NewBigInt(42), []cid.Cid{testPieceCID})
+	if err == nil || errors.Is(err, storage.ErrDataSetUnavailable) || !strings.Contains(err.Error(), "0xdead") {
+		t.Fatalf("error = %v, want raw unknown failure without unavailable sentinel", err)
+	}
+}
+
+func TestPDPVerifierReader_ReturnsSentinelForUnavailableDataSet(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
@@ -108,11 +142,8 @@ func TestPDPVerifierReader_ReturnsEmptyValuesForUnavailableDataSet(t *testing.T)
 			}
 
 			got, err := (&pdpVerifierReader{caller: caller}).FindPieceIdsByCid(context.Background(), types.NewBigInt(42), testPieceCID, 0, 1)
-			if err != nil {
-				t.Fatalf("FindPieceIdsByCid: %v", err)
-			}
-			if len(got) != 0 {
-				t.Fatalf("piece ids=%v want empty", got)
+			if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) || !errors.Is(err, tt.err) {
+				t.Fatalf("piece ids=%v error=%v, want nil and unavailable sentinel", got, err)
 			}
 		})
 
@@ -126,11 +157,8 @@ func TestPDPVerifierReader_ReturnsEmptyValuesForUnavailableDataSet(t *testing.T)
 			}
 
 			got, err := (&pdpVerifierReader{caller: caller}).GetScheduledRemovals(context.Background(), types.NewBigInt(42))
-			if err != nil {
-				t.Fatalf("GetScheduledRemovals: %v", err)
-			}
-			if len(got) != 0 {
-				t.Fatalf("scheduled removals=%v want empty", got)
+			if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) || !errors.Is(err, tt.err) {
+				t.Fatalf("scheduled removals=%v error=%v, want nil and unavailable sentinel", got, err)
 			}
 		})
 
@@ -144,11 +172,8 @@ func TestPDPVerifierReader_ReturnsEmptyValuesForUnavailableDataSet(t *testing.T)
 			}
 
 			got, err := (&pdpVerifierReader{caller: caller}).GetNextChallengeEpoch(context.Background(), types.NewBigInt(42))
-			if err != nil {
-				t.Fatalf("GetNextChallengeEpoch: %v", err)
-			}
-			if got != nil {
-				t.Fatalf("next challenge epoch=%v want nil", got)
+			if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) || !errors.Is(err, tt.err) {
+				t.Fatalf("next challenge epoch=%v error=%v, want nil and unavailable sentinel", got, err)
 			}
 		})
 
@@ -162,11 +187,8 @@ func TestPDPVerifierReader_ReturnsEmptyValuesForUnavailableDataSet(t *testing.T)
 			}
 
 			got, err := (&pdpVerifierReader{caller: caller}).GetDataSetSizeBytes(context.Background(), types.NewBigInt(42))
-			if err != nil {
-				t.Fatalf("GetDataSetSizeBytes: %v", err)
-			}
-			if got.Sign() != 0 {
-				t.Fatalf("dataset size=%v want 0", got)
+			if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) || !errors.Is(err, tt.err) {
+				t.Fatalf("dataset size=%v error=%v, want nil and unavailable sentinel", got, err)
 			}
 		})
 	}
@@ -256,6 +278,7 @@ type pdpBatchTestBackend struct {
 	multicall  abi.ABI
 	pdp        abi.ABI
 	replies    [][]*big.Int
+	failures   map[int][]byte
 	nextReply  int
 	batchSizes []int
 }
@@ -311,14 +334,20 @@ func (b *pdpBatchTestBackend) CallContract(_ context.Context, msg ethereum.CallM
 		if args[0].(*big.Int).Cmp(big.NewInt(42)) != 0 || args[2].(*big.Int).Sign() != 0 || args[3].(*big.Int).Cmp(big.NewInt(1)) != 0 {
 			b.t.Fatalf("call[%d] has unexpected findPieceIdsByCid arguments", i)
 		}
-		if b.nextReply >= len(b.replies) {
+		resultIndex := b.nextReply
+		b.nextReply++
+		if failure, ok := b.failures[resultIndex]; ok {
+			results[i].Success = false
+			results[i].ReturnData = failure
+			continue
+		}
+		if resultIndex >= len(b.replies) {
 			b.t.Fatalf("call[%d] has no configured reply", i)
 		}
-		returnData, err := pdpMethod.Outputs.Pack(b.replies[b.nextReply])
+		returnData, err := pdpMethod.Outputs.Pack(b.replies[resultIndex])
 		if err != nil {
 			return nil, err
 		}
-		b.nextReply++
 		results[i].Success = true
 		results[i].ReturnData = returnData
 	}

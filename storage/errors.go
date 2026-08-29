@@ -9,7 +9,9 @@ import (
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/pdp"
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 // ErrUninitialized is returned when a method is invoked on a zero-value
@@ -39,6 +41,19 @@ var ErrBatchPieceDeletionNotSupported = errors.New("storage: PDP provider client
 // ErrNoHealthyProviders is returned when every eligible automatically selected
 // provider fails its PDP health check.
 var ErrNoHealthyProviders = errors.New("storage: no healthy providers")
+
+// ErrEndorsementsNotConfigured is returned when endorsed-primary selection is
+// required but the resolver has no EndorsedProviderSource. It aliases the
+// spregistry sentinel so callers can match either package's error.
+var ErrEndorsementsNotConfigured = spregistry.ErrEndorsementsNotConfigured
+
+// ErrNoEndorsedProvider is returned when no endorsed provider is both approved,
+// active, and healthy for the requested automatic upload selection.
+var ErrNoEndorsedProvider = errors.New("storage: no eligible endorsed provider")
+
+// ErrDataSetUnavailable is returned when a data set does not exist or is no
+// longer live. It aliases the canonical warmstorage sentinel.
+var ErrDataSetUnavailable = warmstorage.ErrDataSetUnavailable
 
 // ErrInsufficientUploadContexts is matched by
 // [InsufficientUploadContextsError] when selection found at least one, but

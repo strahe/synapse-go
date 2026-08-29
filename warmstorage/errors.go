@@ -28,6 +28,10 @@ var ErrClosed = lifecycle.ErrClosed
 // Use errors.Is to detect it.
 var ErrInvalidArgument = errors.New("warmstorage: invalid argument")
 
+// ErrDataSetUnavailable is returned when PDPVerifier reports that a data set
+// does not exist or is no longer live.
+var ErrDataSetUnavailable = errors.New("warmstorage: data set unavailable")
+
 // DataSetNotLiveError is returned when PDPVerifier reports that a data set is
 // not live, which prevents adding pieces to it.
 type DataSetNotLiveError struct {
@@ -39,6 +43,11 @@ func (e *DataSetNotLiveError) Error() string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("warmstorage: data set %s does not exist or is not live", e.DataSetID.String())
+}
+
+// Is makes DataSetNotLiveError match ErrDataSetUnavailable.
+func (e *DataSetNotLiveError) Is(target error) bool {
+	return target == ErrDataSetUnavailable
 }
 
 // DataSetNotManagedError is returned when a data set is live but managed by a

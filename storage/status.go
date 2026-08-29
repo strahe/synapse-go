@@ -59,6 +59,7 @@ type PieceStatus struct {
 
 // GetScheduledRemovals returns the list of piece ids that have been
 // scheduled for removal from this data set but have not yet been processed.
+// Missing or non-live data sets return [ErrDataSetUnavailable].
 func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigInt, error) {
 	if c.core.pdpCaller == nil {
 		return nil, errors.New("storage.DataSetContext.GetScheduledRemovals: PDPVerifier reader not configured")
@@ -73,6 +74,7 @@ func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigI
 // PieceStatus returns the current status of pieceCID relative to this
 // context's data set and the proving schedule. If the piece is not present
 // in the data set, Exists is false and the other fields are zero-valued.
+// Missing or non-live data sets return [ErrDataSetUnavailable].
 //
 // The call performs up to five concurrent reads: findPieceIdsByCid,
 // getNextChallengeEpoch, BlockNumber, getPDPConfig, and provider info.

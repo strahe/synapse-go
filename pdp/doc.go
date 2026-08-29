@@ -10,6 +10,13 @@
 // transient errors — HTTP 5xx (except 501), 429, connection resets,
 // DNS temporaries, unexpected EOF, and request timeouts — with
 // exponential backoff up to MaxRetries.
+// Ping follows the same transient HTTP and transport retry policy, but succeeds
+// only when a 2xx response body is at most 64 bytes and trims exactly to
+// "curio-pdp". This identity response requires Curio v1.28.3 or later. Empty,
+// oversized, or different complete successful bodies match
+// ErrPingResponseMismatch and are not retried. Response-body read failures
+// preserve their I/O and HTTP classifications and follow the transient retry
+// policy.
 //
 // Streaming piece downloads (DownloadPiece) are executed once with the
 // caller's context as the sole lifetime control; they do not go through
@@ -45,7 +52,7 @@
 // Endpoints covered:
 //
 //   - GET    /piece/{pieceCid}                              (download bytes)
-//   - GET    /pdp/ping
+//   - GET    /pdp/ping                                      (strict Curio identity)
 //   - POST   /pdp/piece/uploads                           (create upload)
 //   - PUT    /pdp/piece/uploads/{uploadUUID}               (upload bytes)
 //   - POST   /pdp/piece/uploads/{uploadUUID}               (finalize upload)

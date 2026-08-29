@@ -297,10 +297,11 @@ func TestContext_DeletePieces_UsesBatchCIDResolver(t *testing.T) {
 	}
 }
 
-func TestContext_DeletePieces_FallsBackWhenBatchCIDResolutionFails(t *testing.T) {
+func TestContext_DeletePieces_FallsBackAfterBatchCIDResolutionFailure(t *testing.T) {
 	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	want := errors.New("multicall unavailable")
 	reader := &batchCIDResultPDPReader{
-		batchErr: errors.New("multicall unavailable"),
+		batchErr: want,
 		singularResults: map[string][]types.BigInt{
 			pieceCIDs[0].KeyString(): {types.NewBigInt(11)},
 			pieceCIDs[1].KeyString(): {types.NewBigInt(22)},
@@ -324,12 +325,49 @@ func TestContext_DeletePieces_FallsBackWhenBatchCIDResolutionFails(t *testing.T)
 	if _, err := c.DeletePieces(context.Background(), pieceCIDs); err != nil {
 		t.Fatalf("DeletePieces: %v", err)
 	}
-	if reader.batchCalls != 1 || reader.singularCalls != len(pieceCIDs) {
-		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, %d)", reader.batchCalls, reader.singularCalls, len(pieceCIDs))
+	if reader.batchCalls != 1 || reader.singularCalls != 2 {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, 2)", reader.batchCalls, reader.singularCalls)
 	}
-	wantPieceIDs := []types.BigInt{types.NewBigInt(11), types.NewBigInt(22)}
-	if !equalBigInts(gotPieceIDs, wantPieceIDs) {
-		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, wantPieceIDs)
+	if !equalBigInts(gotPieceIDs, []types.BigInt{types.NewBigInt(11), types.NewBigInt(22)}) {
+		t.Fatalf("scheduled piece IDs = %v, want [11 22]", gotPieceIDs)
+	}
+}
+
+func TestContext_DeletePieces_PreservesBatchAndFallbackFailures(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	batchErr := errors.New("multicall unavailable")
+	singularErr := errors.New("direct call unavailable")
+	reader := &batchCIDResultPDPReader{batchErr: batchErr, singularErr: singularErr}
+	c := mustDeleteContext(t, &fakeBatchPDPProviderClient{fakePDPProviderClient: &fakePDPProviderClient{}},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+
+	_, err := c.DeletePieces(context.Background(), pieceCIDs)
+	if !errors.Is(err, batchErr) || !errors.Is(err, singularErr) {
+		t.Fatalf("DeletePieces error = %v, want batch and fallback failures", err)
+	}
+	if reader.batchCalls != 1 || reader.singularCalls != 1 {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, 1)", reader.batchCalls, reader.singularCalls)
+	}
+}
+
+func TestContext_DeletePieces_PropagatesUnavailableDataSet(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 2)
+	reader := &batchCIDResultPDPReader{batchErr: ErrDataSetUnavailable}
+	c := mustDeleteContext(t, &fakeBatchPDPProviderClient{fakePDPProviderClient: &fakePDPProviderClient{}},
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+		WithPDPVerifierReader(reader),
+	)
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("DeletePieces error = %v, want ErrDataSetUnavailable", err)
+	}
+	if reader.batchCalls != 1 || reader.singularCalls != 0 {
+		t.Fatalf("resolver calls=(batch %d, singular %d), want (1, 0)", reader.batchCalls, reader.singularCalls)
 	}
 }
 
@@ -581,6 +619,7 @@ type batchCIDResultPDPReader struct {
 	fakePDPReader
 	batchResults    [][]types.BigInt
 	batchErr        error
+	singularErr     error
 	singularResults map[string][]types.BigInt
 	gotDataSetID    types.BigInt
 	gotPieceCIDs    []cid.Cid
@@ -601,7 +640,7 @@ func (r *batchCIDResultPDPReader) FindPieceIDsByCIDs(_ context.Context, dataSetI
 
 func (r *batchCIDResultPDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, pieceCID cid.Cid, _, _ uint64) ([]types.BigInt, error) {
 	r.singularCalls++
-	return r.singularResults[pieceCID.KeyString()], nil
+	return r.singularResults[pieceCID.KeyString()], r.singularErr
 }
 
 func (r *dataSetMutatingPDPReader) FindPieceIdsByCid(_ context.Context, dataSetID types.BigInt, _ cid.Cid, _, _ uint64) ([]types.BigInt, error) {

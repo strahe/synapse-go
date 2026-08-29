@@ -27,7 +27,7 @@ func TestWithUserAgent(t *testing.T) {
 	uaCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uaCh <- r.Header.Get("User-Agent")
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	defer srv.Close()
 
@@ -57,7 +57,7 @@ func TestWithLogger(t *testing.T) {
 	var buf strings.Builder
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	defer srv.Close()
 
@@ -808,15 +808,16 @@ func TestDeleteJSON_DecodeError(t *testing.T) {
 // ---------- Ping transport error ----------
 
 func TestPing_TransportError(t *testing.T) {
+	want := errors.New("conn refused")
 	c, err := New("https://example.com", WithHTTPClient(&http.Client{
 		Timeout:   100 * time.Millisecond,
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) { return nil, errors.New("conn refused") }),
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) { return nil, want }),
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Ping(context.Background()); err == nil {
-		t.Error("expected transport error")
+	if err := c.Ping(context.Background()); !errors.Is(err, want) {
+		t.Errorf("error = %v, want wrapped transport error", err)
 	}
 }
 
@@ -833,12 +834,13 @@ func TestBuildJSONRequest_MarshalError(t *testing.T) {
 // ---------- doWithClient read body error ----------
 
 func TestDoWithClient_ReadBodyError(t *testing.T) {
+	want := errors.New("read err")
 	c, err := New("https://example.com", WithHTTPClient(&http.Client{
 		Timeout: 100 * time.Millisecond,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(&errReader{}),
+				Body:       io.NopCloser(&errReader{err: want}),
 				Header:     make(http.Header),
 			}, nil
 		}),
@@ -846,14 +848,14 @@ func TestDoWithClient_ReadBodyError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Ping(context.Background()); err == nil {
-		t.Error("expected read body error")
+	if err := c.Ping(context.Background()); !errors.Is(err, want) || errors.Is(err, ErrPingResponseMismatch) {
+		t.Errorf("error = %v, want original read error without ErrPingResponseMismatch", err)
 	}
 }
 
-type errReader struct{}
+type errReader struct{ err error }
 
-func (e *errReader) Read(_ []byte) (int, error) { return 0, errors.New("read err") }
+func (e *errReader) Read(_ []byte) (int, error) { return 0, e.err }
 
 // ---------- CreateDataSetAndAddPieces location without 0x prefix ----------
 

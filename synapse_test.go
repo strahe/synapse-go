@@ -27,6 +27,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	provideridsetbind "github.com/strahe/synapse-go/internal/contracts/provideridset"
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/testutil"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
@@ -219,6 +220,43 @@ func TestResolveAddresses(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("addresses = %+v, want %+v", got, want)
+	}
+}
+
+func TestNew_WiresChainEndorsementsAddress(t *testing.T) {
+	contract, err := provideridsetbind.ProviderIDSetMetaData.GetAbi()
+	if err != nil {
+		t.Fatalf("parse ProviderIdSet ABI: %v", err)
+	}
+	result, err := contract.Methods["getProviderIds"].Outputs.Pack([]*big.Int{big.NewInt(9), big.NewInt(4)})
+	if err != nil {
+		t.Fatalf("pack provider IDs: %v", err)
+	}
+
+	wantTarget := chain.Calibration.Addresses().Endorsements
+	var called common.Address
+	srv, ec := fakeRPCServerWithResolvedAddressesAndCallResult(t, "0x4cb2f", testResolvedAddresses(chain.Calibration), func(target common.Address) ([]byte, bool) {
+		if target != wantTarget {
+			return nil, false
+		}
+		called = target
+		return result, true
+	})
+	defer srv.Close()
+	defer ec.Close()
+
+	client, err := New(context.Background(), WithPrivateKey(testKey(t)), WithEthClient(ec))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	ids, err := client.SPRegistry().GetEndorsedProviderIDs(context.Background())
+	if err != nil {
+		t.Fatalf("GetEndorsedProviderIDs: %v", err)
+	}
+	if called != wantTarget || len(ids) != 2 || !ids[0].Equal(types.NewBigInt(9)) || !ids[1].Equal(types.NewBigInt(4)) {
+		t.Fatalf("target=%s ids=%v, want target=%s ids=[9 4]", called, ids, wantTarget)
 	}
 }
 
@@ -872,11 +910,14 @@ func TestNew_WithHTTPClient(t *testing.T) {
 		seenRequests[req.URL.Host+req.URL.Path] = true
 		status := http.StatusOK
 		var body io.ReadCloser = http.NoBody
-		if req.URL.Host == "calibration.stats.filbeam.com" {
+		switch {
+		case req.URL.Host == "calibration.stats.filbeam.com":
 			body = io.NopCloser(strings.NewReader(`{"cdnEgressQuota":"1","cacheMissEgressQuota":"2"}`))
-		} else if req.URL.Host == "retry.provider.example" && retryRequests.Add(1) < 3 {
+		case req.URL.Host == "retry.provider.example" && retryRequests.Add(1) < 3:
 			status = http.StatusServiceUnavailable
 			body = io.NopCloser(strings.NewReader("unavailable"))
+		case strings.HasSuffix(req.URL.Path, "/pdp/ping"):
+			body = io.NopCloser(strings.NewReader("curio-pdp"))
 		}
 		return &http.Response{StatusCode: status, Header: make(http.Header), Body: body, Request: req}, nil
 	})}

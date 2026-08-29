@@ -110,7 +110,8 @@ type MultiCostCalculator interface {
 // DataSetSizeReader returns the current on-chain size (bytes) of an
 // existing data set, used by Service.Prepare to price lockup
 // accurately for add-pieces scenarios. Satisfied by an adapter around
-// PDPVerifier.getDataSetLeafCount (leafCount * 32).
+// PDPVerifier.getDataSetLeafCount (leafCount * 32). Implementations should
+// return [ErrDataSetUnavailable] when the data set is missing or non-live.
 type DataSetSizeReader interface {
 	GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 }

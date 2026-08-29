@@ -27,10 +27,15 @@
 //     or otherwise malformed.
 //   - ErrPDPVerifierNotConfigured: returned when a PDPVerifier-dependent read
 //     is used without configuring a PDPVerifier address.
+//   - ErrDataSetUnavailable: returned by strict PDPVerifier-backed queries when
+//     a data set is missing or no longer live. HasActivePieces is deliberately
+//     an existence predicate and reports those data sets as false, nil;
+//     GetActivePieceCount remains a strict exact-value query and returns the
+//     sentinel.
 //   - ErrWriteNotConfigured: returned when a write method is used without
 //     write dependencies.
 //   - DataSetNotLiveError: returned by ValidateDataSet when PDPVerifier reports
-//     that the data set is not live.
+//     that the data set is not live. It matches ErrDataSetUnavailable.
 //   - DataSetNotManagedError: returned by ValidateDataSet when the data set is
 //     managed by another listener.
 //

@@ -73,9 +73,10 @@ func TestManagerNewDataSetContext_AllowsEndedDataSet(t *testing.T) {
 	}
 	catalog := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
 	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:       testPayer(),
-		SPRegistry:  &fakePDPProviderSource{fixture: fixture},
-		WarmStorage: catalog,
+		Payer:        testPayer(),
+		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
+		Endorsements: &fakeEndorsedProviderSource{fixture: fixture},
+		WarmStorage:  catalog,
 		NewContext: func(provider Provider, opts ContextFactoryOptions) (*ProviderContext, error) {
 			return newTestContextForSelection(t, provider, opts, &fakePDPProviderClient{},
 				WithPayer(testPayer()),
@@ -1080,10 +1081,11 @@ func TestServiceUploadToContextsValidatesBeforeReading(t *testing.T) {
 func TestServiceUploadToContextsRejectsSelectionOptionsBeforeReading(t *testing.T) {
 	withCDN := true
 	tests := map[string]*UploadOptions{
-		"Copies":             {Copies: 1},
-		"ExcludeProviderIDs": {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
-		"DataSetMetadata":    {DataSetMetadata: map[string]string{"source": "app"}},
-		"WithCDN":            {WithCDN: &withCDN},
+		"Copies":                 {Copies: 1},
+		"ExcludeProviderIDs":     {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
+		"DataSetMetadata":        {DataSetMetadata: map[string]string{"source": "app"}},
+		"WithCDN":                {WithCDN: &withCDN},
+		"AllowUnendorsedPrimary": {AllowUnendorsedPrimary: true},
 	}
 	for name, opts := range tests {
 		t.Run(name, func(t *testing.T) {

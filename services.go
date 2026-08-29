@@ -44,15 +44,16 @@ func (c *Client) initServices() error {
 	c.warmStorage = ws
 
 	spReg, err := spregistry.New(spregistry.Options{
-		Client:            c.ethClient,
-		Address:           c.addresses.SPRegistry,
-		ChainID:           types.ChainID(c.selectedChain.ChainID()),
-		Backend:           c.ethClient,
-		Signer:            c.evmSigner,
-		NonceManager:      c.nonces,
-		Logger:            c.logger,
-		Lifecycle:         c.lifecycle,
-		MaxMulticallCalls: c.maxMulticallCalls,
+		Client:              c.ethClient,
+		Address:             c.addresses.SPRegistry,
+		EndorsementsAddress: c.selectedChain.Addresses().Endorsements,
+		ChainID:             types.ChainID(c.selectedChain.ChainID()),
+		Backend:             c.ethClient,
+		Signer:              c.evmSigner,
+		NonceManager:        c.nonces,
+		Logger:              c.logger,
+		Lifecycle:           c.lifecycle,
+		MaxMulticallCalls:   c.maxMulticallCalls,
 	})
 	if err != nil {
 		return fmt.Errorf("create spregistry service: %w", err)
@@ -138,6 +139,7 @@ func (c *Client) initServices() error {
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
 		Payer:        rootAddress,
 		SPRegistry:   spReg,
+		Endorsements: spReg,
 		WarmStorage:  ws,
 		ProviderPing: c.pingProvider,
 		NewContext: func(provider storage.Provider, opts storage.ContextFactoryOptions) (*storage.ProviderContext, error) {

@@ -85,6 +85,14 @@ func TestUnpackDataSetDetailsResult_PreservesUnknownFailureData(t *testing.T) {
 	}
 }
 
+func TestUnpackDataSetDetailsResult_ClassifiesUnavailableDataSet(t *testing.T) {
+	selector := crypto.Keccak256([]byte("DataSetNotLive()"))[:4]
+	_, err := unpackDataSetDetailsResult(iabi.Result3{Success: false, ReturnData: selector}, nil)
+	if !errors.Is(err, ErrDataSetUnavailable) {
+		t.Fatalf("error = %v, want ErrDataSetUnavailable", err)
+	}
+}
+
 func TestTopUpCDNPaymentRails_RejectsDoubleZeroTopUp(t *testing.T) {
 	s, backend := newWriteTestService(t)
 

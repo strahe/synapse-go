@@ -52,7 +52,8 @@ type EnhancedDataSetInfo struct {
 
 // ValidateDataSet verifies that the given data set is alive on the
 // PDPVerifier contract and that its listener is this WarmStorage contract.
-// Returns nil on success.
+// It returns an error matching [ErrDataSetUnavailable] when PDPVerifier reports
+// that the data set is missing or no longer live. Returns nil on success.
 func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt) error {
 	if err := s.checkInit(); err != nil {
 		return err
@@ -66,6 +67,9 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt
 	id := dataSetID.Big()
 	live, err := s.pdpBind.DataSetLive(&bind.CallOpts{Context: ctx}, id)
 	if err != nil {
+		if pdpverifier.IsDataSetUnavailable(err) {
+			return errors.Join(&DataSetNotLiveError{DataSetID: dataSetID.Copy()}, err)
+		}
 		return fmt.Errorf("warmstorage.ValidateDataSet: dataSetLive: %w", err)
 	}
 	if !live {
@@ -73,6 +77,9 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt
 	}
 	listener, err := s.pdpBind.GetDataSetListener(&bind.CallOpts{Context: ctx}, id)
 	if err != nil {
+		if pdpverifier.IsDataSetUnavailable(err) {
+			return errors.Join(&DataSetNotLiveError{DataSetID: dataSetID.Copy()}, err)
+		}
 		return fmt.Errorf("warmstorage.ValidateDataSet: getDataSetListener: %w", err)
 	}
 	if listener != s.fwssAddr {
@@ -88,7 +95,7 @@ func (s *Service) ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt
 // GetActivePieceCount returns the exact number of live (non-removed) pieces in
 // the given data set. It traverses bounded cursor pages, so its cost grows with
 // the number of pieces. Prefer [Service.HasActivePieces] when only presence is
-// needed.
+// needed. Missing or non-live data sets return [ErrDataSetUnavailable].
 func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -111,6 +118,9 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Bi
 			limit,
 		)
 		if err != nil {
+			if pdpverifier.IsDataSetUnavailable(err) {
+				return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", errors.Join(ErrDataSetUnavailable, err))
+			}
 			return nil, fmt.Errorf("warmstorage.GetActivePieceCount: %w", err)
 		}
 		if len(page.Pieces) != len(page.PieceIds) {
@@ -149,7 +159,9 @@ func (s *Service) GetActivePieceCount(ctx context.Context, dataSetID sdktypes.Bi
 
 // HasActivePieces reports whether the data set contains at least one active
 // piece. It uses the data-set leaf count, so its cost does not grow with the
-// total number of pieces. Missing and non-live data sets report false.
+// total number of pieces. As an existence predicate, missing and non-live data
+// sets deliberately report false; exact-value queries such as
+// [Service.GetActivePieceCount] return ErrDataSetUnavailable instead.
 func (s *Service) HasActivePieces(ctx context.Context, dataSetID sdktypes.BigInt) (bool, error) {
 	if err := s.checkInit(); err != nil {
 		return false, err
@@ -565,6 +577,9 @@ func dataSetDetailsFrontierError(states []dataSetDetailsState, onlyManaged bool,
 
 func unpackDataSetDetailsResult(result iabi.Result3, unpack func([]byte) ([]any, error)) ([]any, error) {
 	if !result.Success {
+		if pdpverifier.IsDataSetUnavailableData(result.ReturnData) {
+			return nil, fmt.Errorf("%w: return data %s", ErrDataSetUnavailable, hexutil.Encode(result.ReturnData))
+		}
 		if reason, err := gethabi.UnpackRevert(result.ReturnData); err == nil {
 			return nil, fmt.Errorf("sub-call reverted: %s", reason)
 		}

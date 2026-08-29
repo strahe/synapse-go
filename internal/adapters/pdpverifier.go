@@ -2,12 +2,14 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 
 	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ipfs/go-cid"
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
@@ -77,7 +79,7 @@ func (a *pdpVerifierReader) FindPieceIdsByCid(ctx context.Context, dataSetID sdk
 	)
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
-			return []sdktypes.BigInt{}, nil
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", errors.Join(storage.ErrDataSetUnavailable, err))
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIdsByCid: %w", err)
 	}
@@ -125,7 +127,19 @@ func (a *pdpVerifierReader) FindPieceIDsByCIDs(ctx context.Context, dataSetID sd
 	out := make([][]sdktypes.BigInt, len(results))
 	for i, result := range results {
 		if !result.Success {
-			return nil, fmt.Errorf("adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d returned unsuccessful result", i)
+			if pdpverifier.IsDataSetUnavailableData(result.ReturnData) {
+				return nil, fmt.Errorf(
+					"adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d: %w (return data %s)",
+					i,
+					storage.ErrDataSetUnavailable,
+					hexutil.Encode(result.ReturnData),
+				)
+			}
+			return nil, fmt.Errorf(
+				"adapters.pdpVerifierReader.FindPieceIDsByCIDs: pieceCID at index %d returned unsuccessful result (return data %s)",
+				i,
+				hexutil.Encode(result.ReturnData),
+			)
 		}
 		values, err := method.Outputs.Unpack(result.ReturnData)
 		if err != nil {
@@ -147,7 +161,7 @@ func (a *pdpVerifierReader) GetScheduledRemovals(ctx context.Context, dataSetID 
 	raw, err := a.caller.GetScheduledRemovals(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
-			return []sdktypes.BigInt{}, nil
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.GetScheduledRemovals: %w", errors.Join(storage.ErrDataSetUnavailable, err))
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetScheduledRemovals: %w", err)
 	}
@@ -162,7 +176,7 @@ func (a *pdpVerifierReader) GetNextChallengeEpoch(ctx context.Context, dataSetID
 	v, err := a.caller.GetNextChallengeEpoch(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
-			return nil, nil
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.GetNextChallengeEpoch: %w", errors.Join(storage.ErrDataSetUnavailable, err))
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetNextChallengeEpoch: %w", err)
 	}
@@ -179,16 +193,11 @@ func (a *pdpVerifierReader) BlockNumber(ctx context.Context) (uint64, error) {
 // GetDataSetSizeBytes returns the on-chain size in bytes of a data set
 // by reading PDPVerifier.getDataSetLeafCount and multiplying by the
 // fixed 32-byte leaf size. Satisfies storage.DataSetSizeReader.
-//
-// A "Data set not live" revert from the contract means the data set has
-// already been terminated. Treat it as size 0 instead of propagating the
-// error so Service.Prepare can still compute floor-priced costs for
-// recently-terminated contexts.
 func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	leafCount, err := a.caller.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
-			return new(big.Int), nil
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetSizeBytes: %w", errors.Join(storage.ErrDataSetUnavailable, err))
 		}
 		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetSizeBytes: %w", err)
 	}

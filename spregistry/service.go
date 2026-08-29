@@ -16,6 +16,7 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	iabi "github.com/strahe/synapse-go/internal/abi"
+	provideridset "github.com/strahe/synapse-go/internal/contracts/provideridset"
 	spr "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
@@ -56,6 +57,8 @@ type Service struct {
 	chainID           types.ChainID
 	addr              common.Address
 	contract          *spr.SPRegistryCaller
+	endorsementsAddr  common.Address
+	endorsements      *provideridset.ProviderIDSetCaller
 	write             *spr.SPRegistryTransactor
 	signer            signer.EVMSigner
 	nonces            NonceManager
@@ -69,6 +72,11 @@ type Service struct {
 type Options struct {
 	Client  EthClient
 	Address common.Address
+	// EndorsementsAddress is the independently deployed ProviderIdSet used
+	// for endorsed-provider reads. A zero address keeps those reads disabled;
+	// [Service.GetEndorsedProviderIDs] then returns
+	// [ErrEndorsementsNotConfigured].
+	EndorsementsAddress common.Address
 	// ChainID is required only when writes are used.
 	ChainID types.ChainID
 	// Backend provides a full RPC surface for writes. When nil Service is
@@ -128,12 +136,20 @@ func New(opts Options) (*Service, error) {
 		chainID:           opts.ChainID,
 		addr:              opts.Address,
 		contract:          c,
+		endorsementsAddr:  opts.EndorsementsAddress,
 		signer:            opts.Signer,
 		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		logger:            opts.Logger,
 		receiptWait:       opts.ReceiptWait,
 		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
+	}
+	if opts.EndorsementsAddress != (common.Address{}) {
+		endorsements, err := provideridset.NewProviderIDSetCaller(opts.EndorsementsAddress, opts.Client)
+		if err != nil {
+			return nil, fmt.Errorf("spregistry.New: bind endorsements: %w", err)
+		}
+		s.endorsements = endorsements
 	}
 	if opts.Backend != nil {
 		tw, err := spr.NewSPRegistryTransactor(opts.Address, opts.Backend)

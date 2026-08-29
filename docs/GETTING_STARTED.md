@@ -127,6 +127,9 @@ it returns the same error.
 
 - `Copies`: required number of provider copies. It must be greater than zero.
 - `ExcludeProviderIDs`: skip providers only during automatic selection.
+- `AllowUnendorsedPrimary`: the zero value requires an endorsed primary;
+  `true` selects the primary from the full approved pool and skips the
+  endorsement query.
 - `DataSetMetadata`: metadata used when creating or reusing datasets.
 - `PieceMetadata`: metadata stored with the committed piece.
 - `WithCDN`: per-upload CDN override. `nil` inherits the client default.
@@ -143,6 +146,27 @@ to know whether every requested copy succeeded.
 
 Dataset metadata must match exactly for automatic dataset reuse. Use stable
 metadata values when you want uploads to share payment rails.
+
+The root client configures strict endorsed-primary selection by default. The
+primary must be endorsed, approved, active, and healthy; secondary copies use
+the full approved, active, healthy pool. This policy can concentrate primary
+traffic among a smaller provider set. Applications that deliberately accept
+any approved provider as primary can opt out for one upload:
+
+```go
+result, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{
+	Copies:                   2,
+	AllowUnendorsedPrimary: true,
+})
+```
+
+The default health check requires `/pdp/ping` to return HTTP 2xx with a body
+that trims exactly to `curio-pdp`. Providers therefore need Curio v1.28.3 or
+later; older empty-body ping responses are intentionally rejected.
+
+An empty endorsement set or no eligible healthy endorsed provider returns
+`storage.ErrNoEndorsedProvider`; endorsement query failures are returned as
+query errors rather than treated as an empty set.
 
 Use `NewProviderContext` or `NewDataSetContext` for a known target. Use
 `UploadToContexts` when the caller, rather than the SDK, must determine the

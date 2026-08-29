@@ -3,10 +3,13 @@ package storage
 import (
 	"errors"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func TestStoreError_Error(t *testing.T) {
@@ -135,6 +138,15 @@ func TestErrInvalidArgument_NegativeMatch(t *testing.T) {
 	}
 	if errors.Is(errors.New("unrelated"), ErrInvalidArgument) {
 		t.Fatal("unrelated error must not match ErrInvalidArgument")
+	}
+}
+
+func TestCrossPackageErrorAliases(t *testing.T) {
+	if reflect.ValueOf(ErrEndorsementsNotConfigured) != reflect.ValueOf(spregistry.ErrEndorsementsNotConfigured) {
+		t.Fatal("ErrEndorsementsNotConfigured is not the spregistry sentinel")
+	}
+	if reflect.ValueOf(ErrDataSetUnavailable) != reflect.ValueOf(warmstorage.ErrDataSetUnavailable) {
+		t.Fatal("ErrDataSetUnavailable is not the warmstorage sentinel")
 	}
 }
 

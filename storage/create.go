@@ -38,7 +38,10 @@ type SelectUploadContextsOptions struct {
 	Copies             int
 	ExcludeProviderIDs []types.BigInt
 	DataSetMetadata    map[string]string
-	WithCDN            *bool
+	// AllowUnendorsedPrimary selects the primary from the full approved-provider
+	// pool without an endorsement read. The zero value requires endorsement.
+	AllowUnendorsedPrimary bool
+	WithCDN                *bool
 }
 
 // UploadContextSelection contains the targets selected for one upload.
@@ -208,10 +211,11 @@ func (s *Service) resolveSelectUploadContextsOptions(opts SelectUploadContextsOp
 		return SelectUploadContextsOptions{}, err
 	}
 	return SelectUploadContextsOptions{
-		Copies:             opts.Copies,
-		ExcludeProviderIDs: providerOpts.ExcludeProviderIDs,
-		DataSetMetadata:    providerOpts.DataSetMetadata,
-		WithCDN:            providerOpts.WithCDN,
+		Copies:                 opts.Copies,
+		ExcludeProviderIDs:     providerOpts.ExcludeProviderIDs,
+		DataSetMetadata:        providerOpts.DataSetMetadata,
+		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
+		WithCDN:                providerOpts.WithCDN,
 	}, nil
 }
 

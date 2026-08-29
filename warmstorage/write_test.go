@@ -246,6 +246,9 @@ func TestDataSetErrors_IncludeIdentifiers(t *testing.T) {
 	if !strings.Contains(live, "data set 5") {
 		t.Fatalf("DataSetNotLiveError = %q", live)
 	}
+	if !errors.Is(&DataSetNotLiveError{DataSetID: sdktypes.NewBigInt(5)}, ErrDataSetUnavailable) {
+		t.Fatal("DataSetNotLiveError does not match ErrDataSetUnavailable")
+	}
 	managed := (&DataSetNotManagedError{
 		DataSetID:        sdktypes.NewBigInt(6),
 		Listener:         common.HexToAddress("0x6001"),

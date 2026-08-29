@@ -77,7 +77,7 @@ func TestPing_OK(t *testing.T) {
 		if r.URL.Path != "/pdp/ping" {
 			t.Errorf("path: %s", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("curio-pdp"))
 	}))
 	if err := c.Ping(context.Background()); err != nil {
 		t.Fatal(err)
@@ -98,6 +98,114 @@ func TestPing_Error(t *testing.T) {
 	}
 	if he.StatusCode != 503 {
 		t.Errorf("status=%d", he.StatusCode)
+	}
+}
+
+func TestPing_StrictResponseBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "exact", body: "curio-pdp", want: true},
+		{name: "surrounding whitespace", body: " \ncurio-pdp\t", want: true},
+		{name: "64 byte valid body", body: strings.Repeat(" ", 27) + "curio-pdp" + strings.Repeat(" ", 28), want: true},
+		{name: "empty", body: ""},
+		{name: "wrong identity", body: "ok"},
+		{name: "65 byte body", body: strings.Repeat(" ", 28) + "curio-pdp" + strings.Repeat(" ", 28)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			err := c.Ping(context.Background())
+			if tt.want && err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+			if !tt.want && !errors.Is(err, ErrPingResponseMismatch) {
+				t.Fatalf("Ping error = %v, want ErrPingResponseMismatch", err)
+			}
+		})
+	}
+}
+
+func TestPing_ResponseMismatchIsNotRetried(t *testing.T) {
+	var calls int
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, "not-curio")
+	}))
+	err := c.Ping(context.Background())
+	if !errors.Is(err, ErrPingResponseMismatch) {
+		t.Fatalf("Ping error = %v, want ErrPingResponseMismatch", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ping calls = %d, want 1", calls)
+	}
+}
+
+func TestPing_ReadFailurePreservesRetryClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		firstStatus    int
+		retryAfter     string
+		wantHTTPError  bool
+		wantRetryAfter time.Duration
+	}{
+		{name: "successful status retries unexpected EOF", firstStatus: http.StatusOK},
+		{name: "service unavailable keeps HTTP error and retry after", firstStatus: http.StatusServiceUnavailable, retryAfter: "7", wantHTTPError: true, wantRetryAfter: 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			client, err := New("https://example.com", WithHTTPClient(&http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						header := make(http.Header)
+						header.Set("Retry-After", tc.retryAfter)
+						return &http.Response{
+							StatusCode: tc.firstStatus,
+							Header:     header,
+							Body:       io.NopCloser(&errReader{err: io.ErrUnexpectedEOF}),
+							Request:    req,
+						}, nil
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("curio-pdp")),
+						Request:    req,
+					}, nil
+				}),
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retryErr error
+			client.retryDelayFn = func(err error, _ int) time.Duration {
+				retryErr = err
+				return 0
+			}
+
+			if err := client.Ping(context.Background()); err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+			if calls != 2 {
+				t.Fatalf("ping calls = %d, want 2", calls)
+			}
+			if !errors.Is(retryErr, io.ErrUnexpectedEOF) || errors.Is(retryErr, ErrPingResponseMismatch) {
+				t.Fatalf("retry error = %v, want unexpected EOF without response mismatch", retryErr)
+			}
+			httpErr, hasHTTPError := errors.AsType[*HTTPError](retryErr)
+			if hasHTTPError != tc.wantHTTPError {
+				t.Fatalf("retry error has HTTPError = %t, want %t: %v", hasHTTPError, tc.wantHTTPError, retryErr)
+			}
+			if hasHTTPError && httpErr.RetryAfter != tc.wantRetryAfter {
+				t.Fatalf("RetryAfter = %s, want %s", httpErr.RetryAfter, tc.wantRetryAfter)
+			}
+		})
 	}
 }
 

@@ -25,6 +25,8 @@ import (
 // and deletes the first returned piece ID. Prefer [DataSetContext.DeletePieceByID]
 // when the on-chain piece ID is available.
 //
+// Missing or non-live data sets return [ErrDataSetUnavailable].
+//
 // The returned WriteResult carries only the transaction hash; there is no
 // on-chain wait.
 func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sdktypes.WriteResult, error) {
@@ -38,6 +40,7 @@ func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sd
 //
 // A data set can contain multiple piece IDs with the same piece CID. Use
 // [DataSetContext.DeletePiecesByID] to remove specific duplicate instances.
+// Missing or non-live data sets return [ErrDataSetUnavailable].
 func (c *DataSetContext) DeletePieces(ctx context.Context, pieceCIDs []cid.Cid) (*sdktypes.WriteResult, error) {
 	const op = "storage.DataSetContext.DeletePieces"
 	return c.deletePieces(ctx, op, pieceCIDs)
@@ -80,6 +83,7 @@ func (c *DataSetContext) resolveDeletePieceIDs(
 	dataSetID sdktypes.BigInt,
 	normalizedCIDs []normalizedDeletePieceCID,
 ) ([]sdktypes.BigInt, error) {
+	var batchErr error
 	if resolver, ok := c.core.pdpCaller.(batchPieceIDResolver); ok && len(normalizedCIDs) > 1 {
 		pieceCIDs := make([]cid.Cid, len(normalizedCIDs))
 		for i, item := range normalizedCIDs {
@@ -89,17 +93,36 @@ func (c *DataSetContext) resolveDeletePieceIDs(
 		if err == nil && len(matches) == len(normalizedCIDs) {
 			return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
 		}
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, ctxErr)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDataSetUnavailable) {
+				return nil, fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, err)
+			}
+			batchErr = fmt.Errorf("%s: resolve piece CIDs in batch: %w", op, err)
+		} else {
+			batchErr = fmt.Errorf("%s: resolve piece CIDs in batch: got %d results, want %d", op, len(matches), len(normalizedCIDs))
+		}
 	}
 
 	matches := make([][]sdktypes.BigInt, len(normalizedCIDs))
 	for i, item := range normalizedCIDs {
 		resolved, err := c.core.pdpCaller.FindPieceIdsByCid(ctx, dataSetID, item.pieceCID, 0, 1)
 		if err != nil {
-			return nil, fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
+			singularErr := fmt.Errorf("%s: resolve pieceCID at index %d: %w", op, item.originalIndex, err)
+			if batchErr != nil {
+				return nil, errors.Join(batchErr, singularErr)
+			}
+			return nil, singularErr
 		}
 		matches[i] = resolved
 	}
-	return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+	pieceIDs, err := firstDeletePieceIDMatches(op, normalizedCIDs, matches)
+	if err != nil && batchErr != nil {
+		return nil, errors.Join(batchErr, err)
+	}
+	return pieceIDs, err
 }
 
 func firstDeletePieceIDMatches(
