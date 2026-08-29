@@ -32,7 +32,9 @@ type EVMSigner interface {
 
 // StorageSigner signs Storage EIP-712 authorizations without requiring native
 // Filecoin signing or Ethereum transaction submission. EVMAddress must return
-// the address derived from the key used by HashSigner.
+// the address derived from the key used by HashSigner. Storage operations may
+// call SignHash concurrently; implementations must be safe for concurrent use
+// or serialize calls internally.
 type StorageSigner interface {
 	EVMAddress() common.Address
 	HashSigner

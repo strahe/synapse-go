@@ -249,10 +249,10 @@ func New(opts Options) (*Service, error) {
 	if opts.DownloadMaxBytes < 0 {
 		opts.DownloadMaxBytes = 0
 	}
-	evmSigner := ifaceutil.NormalizeNil(opts.Signer)
+	storageSigner := ifaceutil.NormalizeNil(opts.Signer)
 	payerAddr := opts.PayerAddress
-	if payerAddr == (common.Address{}) && evmSigner != nil {
-		payerAddr = evmSigner.EVMAddress()
+	if payerAddr == (common.Address{}) && storageSigner != nil {
+		payerAddr = storageSigner.EVMAddress()
 	}
 	resolver := normalizeOptional(opts.Resolver)
 	contextResolver := normalizeOptional(opts.ContextResolver)
@@ -295,7 +295,7 @@ func New(opts Options) (*Service, error) {
 		providers:            providers,
 		payments:             normalizeOptional(opts.PaymentStateReader),
 		epochs:               normalizeOptional(opts.EpochReader),
-		signer:               evmSigner,
+		signer:               storageSigner,
 		chainID:              opts.ChainID,
 		recordKeeper:         opts.RecordKeeper,
 		paymentToken:         opts.PaymentToken,
