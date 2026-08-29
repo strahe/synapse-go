@@ -348,6 +348,28 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 		}
 	})
 
+	t.Run("does not classify an empty candidate set as unhealthy", func(t *testing.T) {
+		providerID := testID(1)
+		resolver := newTestServiceResolver(t, serviceResolverFixture{
+			approvedProviderIDs: []types.BigInt{providerID},
+			activeProviders: []spregistry.PDPProvider{
+				testPDPProvider(providerID, "https://sp-1.example.com"),
+			},
+		})
+
+		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+			Copies:                 1,
+			ExcludeProviderIDs:     []types.BigInt{providerID},
+			AllowUnendorsedPrimary: true,
+		})
+		if err == nil || errors.Is(err, ErrNoHealthyProviders) {
+			t.Fatalf("ResolveUploadContexts error=%v want non-health empty-candidate error", err)
+		}
+		if !strings.Contains(err.Error(), "no eligible providers") {
+			t.Fatalf("ResolveUploadContexts error=%q want no eligible providers", err)
+		}
+	})
+
 	t.Run("preserves provider ranking across out-of-order responses", func(t *testing.T) {
 		lowerRankReturned := make(chan struct{})
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1009,6 +1031,7 @@ func TestServiceResolverDataSetAcceptsUpload_PropagatesRetryableValidatorError(t
 func TestServiceResolverDataSetAcceptsUpload_ClassifiesSkippableErrors(t *testing.T) {
 	for _, err := range []error{
 		warmstorage.ErrDataSetUnavailable,
+		warmstorage.ErrPDPVerifierNotConfigured,
 		&warmstorage.DataSetNotManagedError{DataSetID: testID(11)},
 	} {
 		resolver := &ServiceResolver{dataSetValidator: &fakeDataSetValidator{err: err}}
@@ -1097,7 +1120,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectTreatsUnconfiguredPDPVer
 			testIDKey(11): {"source": "app"},
 		},
 		validatorEnabled: true,
-		validatorErr:     warmstorage.ErrDataSetUnavailable,
+		validatorErr:     warmstorage.ErrPDPVerifierNotConfigured,
 	})
 
 	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{

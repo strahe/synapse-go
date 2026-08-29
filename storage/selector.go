@@ -624,6 +624,9 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 			secondaryCandidates = append(secondaryCandidates, candidate)
 		}
 	}
+	if len(secondaryCandidates) == 0 {
+		return primary, nil
+	}
 	secondaries, err := r.selectHealthyCandidates(ctx, secondaryCandidates, count-1, ErrNoHealthyProviders, probes)
 	if err != nil {
 		if errors.Is(err, ErrNoHealthyProviders) {
@@ -642,10 +645,10 @@ func (r *ServiceResolver) selectHealthyCandidates(
 	probes *providerProbeCache,
 ) ([]resolvedUploadContext, error) {
 	if len(candidates) == 0 {
-		if noHealthyError != nil {
+		if errors.Is(noHealthyError, ErrNoEndorsedProvider) {
 			return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: no eligible providers", noHealthyError)
 		}
-		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no remaining providers")
+		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no eligible providers")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: health-check providers: %w", err)
@@ -1116,6 +1119,9 @@ func (r *ServiceResolver) dataSetAcceptsUpload(ctx context.Context, dataSetID ty
 			return false, err
 		}
 		if errors.Is(err, ErrDataSetUnavailable) {
+			return false, nil
+		}
+		if errors.Is(err, warmstorage.ErrPDPVerifierNotConfigured) {
 			return false, nil
 		}
 		if _, ok := errors.AsType[*warmstorage.DataSetNotManagedError](err); ok {
