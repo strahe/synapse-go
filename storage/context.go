@@ -106,7 +106,7 @@ type DataSetContext struct {
 type contextCore struct {
 	provider     Provider
 	client       PDPProviderClient
-	signer       signer.EVMSigner
+	signer       signer.StorageSigner
 	payer        common.Address
 	chainID      types.ChainID
 	recordKeeper common.Address
@@ -134,11 +134,12 @@ type contextCore struct {
 
 // NewProviderContext creates an immutable context for the given provider and
 // PDP client. Commit and Pull create a new data set.
-// provider.ID, provider.ServiceURL, and client are validated here. Signing
-// prerequisites (such as a non-nil signer plus chain/payer/record-keeper
-// options) are validated by the write paths that need them, e.g.
-// PresignForCommit.
-func NewProviderContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, opts ...ContextOption) (*ProviderContext, error) {
+// provider.ID, provider.ServiceURL, and client are validated here. storageSigner
+// may be nil or typed-nil; signing prerequisites (such as a non-nil signer plus
+// chain/payer/record-keeper options) are validated by the write paths that need
+// them, e.g. PresignForCommit. [WithPayer] configures the payer independently
+// from storageSigner.
+func NewProviderContext(provider Provider, client PDPProviderClient, storageSigner signer.StorageSigner, opts ...ContextOption) (*ProviderContext, error) {
 	if provider.ID.IsZero() {
 		return nil, fmt.Errorf("storage.NewProviderContext: %w: zero provider ID", ErrInvalidArgument)
 	}
@@ -156,7 +157,7 @@ func NewProviderContext(provider Provider, client PDPProviderClient, evmSigner s
 			Payee:           provider.Payee,
 		},
 		client: client,
-		signer: normalizeOptional(evmSigner),
+		signer: normalizeOptional(storageSigner),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -167,9 +168,11 @@ func NewProviderContext(provider Provider, client PDPProviderClient, evmSigner s
 	return &ProviderContext{core: core}, nil
 }
 
-// NewDataSetContext creates an immutable context bound to ref.
-func NewDataSetContext(provider Provider, client PDPProviderClient, evmSigner signer.EVMSigner, ref DataSetRef, opts ...ContextOption) (*DataSetContext, error) {
-	providerCtx, err := NewProviderContext(provider, client, evmSigner, opts...)
+// NewDataSetContext creates an immutable context bound to ref. storageSigner
+// and [WithPayer] have the same independent signer and payer semantics as
+// [NewProviderContext].
+func NewDataSetContext(provider Provider, client PDPProviderClient, storageSigner signer.StorageSigner, ref DataSetRef, opts ...ContextOption) (*DataSetContext, error) {
+	providerCtx, err := NewProviderContext(provider, client, storageSigner, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -420,9 +423,6 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 		}
 		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
-			if errors.Is(err, signer.ErrUnsupportedSigner) {
-				return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
-			}
 			return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 		}
 		extraData, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
@@ -442,9 +442,6 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 	}
 	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), c.provider.Payee, dataSetMetadata)
 	if err != nil {
-		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
-		}
 		return nil, nil, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
 	nonce, err := randomUint256()
@@ -456,9 +453,6 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 	}
 	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
-		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
-		}
 		return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 	}
 	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
@@ -722,12 +716,9 @@ func (c *contextCore) pieceURLFor(pieceCID cid.Cid) string {
 }
 
 // signHashFunc returns a closure that signs a 32-byte hash using c.signer.
-// The closure indirects through [signer.SignHash] so the EVMSigner contract
-// remains free of the dangerous SignHash method while internal SDK code can
-// still produce EIP-712 signatures.
 func (c *contextCore) signHashFunc() func([]byte) ([]byte, error) {
 	return func(hash []byte) ([]byte, error) {
-		return signer.SignHash(c.signer, hash)
+		return c.signer.SignHash(hash)
 	}
 }
 

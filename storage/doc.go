@@ -30,6 +30,22 @@
 // capitalization, unknown or duplicate fields, and incomplete objects are
 // rejected.
 //
+// # Signing and payer identity
+//
+// Storage authorization uses the [signer.StorageSigner] capability: an EVM
+// address plus 32-byte hash signing. Context constructors accept a nil or
+// typed-nil signer so read-only contexts remain usable; operations that require
+// a signature then return [ErrInvalidArgument]. [WithPayer] configures the
+// paying account independently from the signer.
+//
+// Standalone [Service] configuration has two additional payer inputs.
+// [Options.PayerAddress] applies to manager-level helpers and defaults to the
+// configured signer address only when left zero. Set it explicitly when a
+// delegated signer acts for another payer. [ServiceResolverOptions.Payer]
+// independently determines the payer assigned to contexts created by that
+// resolver. The root synapse Client keeps both values on the root account when
+// [synapse.WithStorageSigner] configures a delegated signer.
+//
 // # Provider selection
 //
 // Automatic upload selection requires an endorsed primary by default. The
@@ -112,4 +128,7 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
+//
+// [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
+// [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner
 package storage

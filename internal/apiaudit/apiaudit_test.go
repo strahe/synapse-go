@@ -151,6 +151,99 @@ var (
 )
 `)
 
+	writeFile(t, filepath.Join(dir, "storage_signer_test.go"), `package apiconfigtest
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+
+	synapse "github.com/strahe/synapse-go"
+	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
+)
+
+type kmsStorageSigner struct {
+	key     *ecdsa.PrivateKey
+	digests [][]byte
+}
+
+var _ signer.HashSigner = (*kmsStorageSigner)(nil)
+var _ signer.StorageSigner = (*kmsStorageSigner)(nil)
+
+func (s *kmsStorageSigner) EVMAddress() common.Address {
+	return ethcrypto.PubkeyToAddress(s.key.PublicKey)
+}
+
+func (s *kmsStorageSigner) SignHash(hash []byte) ([]byte, error) {
+	s.digests = append(s.digests, bytes.Clone(hash))
+	return ethcrypto.Sign(hash, s.key)
+}
+
+type unusedPDPClient struct {
+	storage.PDPProviderClient
+}
+
+func TestStorageSignerContract(t *testing.T) {
+	key, err := ethcrypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kms := &kmsStorageSigner{key: key}
+	if _, ok := any(kms).(signer.Signer); ok {
+		t.Fatal("KMS signer unexpectedly implements signer.Signer")
+	}
+	if _, ok := any(kms).(signer.EVMSigner); ok {
+		t.Fatal("KMS signer unexpectedly implements signer.EVMSigner")
+	}
+
+	_ = synapse.WithStorageSigner(kms)
+	_ = storage.Options{Signer: kms}
+
+	ctx, err := storage.NewProviderContext(
+		storage.Provider{
+			ID:              types.NewBigInt(1),
+			ServiceURL:      "https://pdp.example.com",
+			ServiceProvider: common.HexToAddress("0x1001"),
+			Payee:           common.HexToAddress("0x1002"),
+		},
+		&unusedPDPClient{},
+		kms,
+		storage.WithPayer(common.HexToAddress("0x2001")),
+		storage.WithChainID(types.ChainID(314159)),
+		storage.WithRecordKeeper(common.HexToAddress("0x2002")),
+	)
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+	pieceInfo, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0x42}, 256))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	extraData, err := ctx.PresignForCommit(context.Background(), []storage.PieceInput{{PieceCID: pieceInfo.CIDv2}})
+	if err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+	if len(extraData) == 0 {
+		t.Fatal("PresignForCommit returned empty extra data")
+	}
+	if len(kms.digests) != 2 {
+		t.Fatalf("SignHash calls=%d want 2", len(kms.digests))
+	}
+	for i, digest := range kms.digests {
+		if len(digest) != 32 {
+			t.Fatalf("digest %d length=%d want 32", i, len(digest))
+		}
+	}
+}
+`)
+
 	cmd := exec.Command("go", "test", "-mod=mod", ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

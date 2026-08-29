@@ -13,7 +13,6 @@ import (
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
-	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
@@ -248,9 +247,6 @@ func (c *DataSetContext) schedulePieceDeletionsByID(ctx context.Context, op stri
 		typedPieceIDs,
 	)
 	if err != nil {
-		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
-		}
 		return nil, fmt.Errorf("%s: sign schedule removals: %w", op, err)
 	}
 

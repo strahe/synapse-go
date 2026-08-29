@@ -3,34 +3,31 @@ package signer
 import "errors"
 
 // ErrUnsupportedSigner is returned when an EVMSigner does not implement
-// raw 32-byte hash signing. Only secp256k1-backed signers do.
-//
-// Note: Wrappers, decorators, or any type that does not directly implement
-// the internal hashSigner interface are also unsupported. This boundary is
-// intentional and enforced.
+// [HashSigner].
 var ErrUnsupportedSigner = errors.New("signer: raw hash signing not supported by this signer")
 
-// hashSigner is the internal interface satisfied by signers that can sign a
-// pre-computed 32-byte hash. It is intentionally not exported and not part
-// of EVMSigner: hash signing is dangerous (allows signing arbitrary
-// messages, bypasses EIP-712 domain separation) and is reserved for
-// internal SDK use such as EIP-712 typed-data signing.
+// HashSigner signs a pre-computed 32-byte digest and returns a 65-byte
+// Ethereum R‖S‖V signature. V may be encoded as 0/1 or 27/28. Implementations
+// must return an error for any other digest length.
 //
-// Only direct, concrete types implementing hashSigner are supported. Wrappers
-// or decorators are not recognized and will be rejected.
-type hashSigner interface {
+// This is a high-trust capability because the signer receives only a digest
+// and cannot verify the original message or its domain separation. External
+// implementations should dedicate the key to the intended SDK authorization
+// flows and restrict access instead of exposing a general-purpose signing
+// oracle.
+type HashSigner interface {
 	SignHash(hash []byte) ([]byte, error)
 }
 
 // SignHash signs a pre-computed 32-byte hash using the underlying secp256k1
-// key, returning a 65-byte R‖S‖V signature. It is intended for internal SDK
-// use (EIP-712 typed-data signing); user code should prefer Sign or one of
-// the higher-level APIs that domain-separate the message.
+// key, returning a 65-byte R‖S‖V signature. User code should prefer one of the
+// higher-level APIs that constructs and domain-separates the message.
 //
-// Returns ErrUnsupportedSigner if s does not back its key with secp256k1,
-// or if s is a wrapper/decorator that does not directly implement hashSigner.
+// SignHash returns [ErrUnsupportedSigner] when s does not implement
+// [HashSigner]. Wrappers and external signers are supported when they expose
+// that capability.
 func SignHash(s EVMSigner, hash []byte) ([]byte, error) {
-	hs, ok := s.(hashSigner)
+	hs, ok := s.(HashSigner)
 	if !ok {
 		return nil, ErrUnsupportedSigner
 	}

@@ -9,7 +9,6 @@ import (
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
-	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -97,9 +96,6 @@ func (c *ProviderContext) signCreateDataSet(ctx context.Context, op string) ([]b
 		dataSetMetadata,
 	)
 	if err != nil {
-		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, types.BigInt{}, fmt.Errorf("%s: wrapped/decorated EVMSigner values are unsupported: %w", op, err)
-		}
 		return nil, types.BigInt{}, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
 	extraData, err := encodeCreateDataSetExtraData(c.core.payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))

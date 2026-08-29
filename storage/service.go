@@ -97,7 +97,7 @@ type Service struct {
 	providers    ProviderResolver
 	payments     PaymentStateReader
 	epochs       EpochReader
-	signer       signer.EVMSigner
+	signer       signer.StorageSigner
 	chainID      types.ChainID
 	recordKeeper common.Address
 	paymentToken common.Address
@@ -222,14 +222,16 @@ type Options struct {
 
 	// Signer signs EIP-712 authorizations for manager-level provider-relayed
 	// termination. It may differ from PayerAddress when the payer has authorized
-	// a delegated signer. A typed-nil value is treated as nil.
-	Signer       signer.EVMSigner
+	// a delegated signer. It is independent from the signer attached to contexts
+	// returned by Resolver. A typed-nil value is treated as nil.
+	Signer       signer.StorageSigner
 	ChainID      types.ChainID
 	RecordKeeper common.Address
 
 	// PayerAddress is the payer/client identity used by manager-level helpers
 	// and validated against every StorageContext. It may differ from Signer.
-	// When zero, New derives it from a non-nil Signer.
+	// When zero, New derives it from a non-nil Signer. Set it explicitly when a
+	// delegated Signer authorizes operations for a different payer.
 	PayerAddress common.Address
 }
 
@@ -247,10 +249,10 @@ func New(opts Options) (*Service, error) {
 	if opts.DownloadMaxBytes < 0 {
 		opts.DownloadMaxBytes = 0
 	}
-	evmSigner := ifaceutil.NormalizeNil(opts.Signer)
+	storageSigner := ifaceutil.NormalizeNil(opts.Signer)
 	payerAddr := opts.PayerAddress
-	if payerAddr == (common.Address{}) && evmSigner != nil {
-		payerAddr = evmSigner.EVMAddress()
+	if payerAddr == (common.Address{}) && storageSigner != nil {
+		payerAddr = storageSigner.EVMAddress()
 	}
 	resolver := normalizeOptional(opts.Resolver)
 	contextResolver := normalizeOptional(opts.ContextResolver)
@@ -293,7 +295,7 @@ func New(opts Options) (*Service, error) {
 		providers:            providers,
 		payments:             normalizeOptional(opts.PaymentStateReader),
 		epochs:               normalizeOptional(opts.EpochReader),
-		signer:               evmSigner,
+		signer:               storageSigner,
 		chainID:              opts.ChainID,
 		recordKeeper:         opts.RecordKeeper,
 		paymentToken:         opts.PaymentToken,

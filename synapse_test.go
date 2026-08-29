@@ -384,14 +384,25 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	}
 }
 
+type kmsStorageSigner struct {
+	key *ecdsa.PrivateKey
+}
+
+var _ signer.StorageSigner = (*kmsStorageSigner)(nil)
+
+func (s *kmsStorageSigner) EVMAddress() common.Address {
+	return ethcrypto.PubkeyToAddress(s.key.PublicKey)
+}
+
+func (s *kmsStorageSigner) SignHash(hash []byte) ([]byte, error) {
+	return ethcrypto.Sign(hash, s.key)
+}
+
 func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
 	rootKey := testKey(t)
 	rootAddress := ethcrypto.PubkeyToAddress(rootKey.PublicKey)
 	delegatedKey := testKey(t)
-	delegatedSigner, err := signer.NewSecp256k1Signer(delegatedKey)
-	if err != nil {
-		t.Fatalf("NewSecp256k1Signer: %v", err)
-	}
+	delegatedSigner := &kmsStorageSigner{key: delegatedKey}
 	pieceInfo, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0x42}, 256))
 	if err != nil {
 		t.Fatalf("CalculateFromBytes: %v", err)
@@ -402,7 +413,7 @@ func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
 		ServiceProvider: common.HexToAddress("0x1001"),
 		Payee:           common.HexToAddress("0x1002"),
 	}
-	var typedNil *signer.Secp256k1Signer
+	var typedNil *kmsStorageSigner
 	tests := []struct {
 		name       string
 		opt        ClientOption
