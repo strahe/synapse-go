@@ -36,7 +36,7 @@ func mustPieceInfo(t *testing.T) piece.PieceInfo {
 	return info
 }
 
-func mustTestSigner(t *testing.T) signer.EVMSigner {
+func mustTestSigner(t *testing.T) signer.StorageSigner {
 	t.Helper()
 	key, err := ethcrypto.GenerateKey()
 	if err != nil {
@@ -47,6 +47,18 @@ func mustTestSigner(t *testing.T) signer.EVMSigner {
 		t.Fatalf("NewSecp256k1Signer: %v", err)
 	}
 	return s
+}
+
+type storageSignerOnly struct {
+	inner signer.StorageSigner
+}
+
+var _ signer.StorageSigner = (*storageSignerOnly)(nil)
+
+func (s *storageSignerOnly) EVMAddress() common.Address { return s.inner.EVMAddress() }
+
+func (s *storageSignerOnly) SignHash(hash []byte) ([]byte, error) {
+	return s.inner.SignHash(hash)
 }
 
 func recoverRawTypedDataSigner(t *testing.T, domain apitypes.TypedDataDomain, primaryType string, message apitypes.TypedDataMessage, signature []byte) common.Address {

@@ -39,9 +39,11 @@ Common setup options:
 - `WithPrivateKeyHex` / `WithPrivateKey`: configure the root payer and
   transaction signer.
 - `WithStorageSigner`: delegate Storage EIP-712 signing to an authorized
-  `*signer.Secp256k1Signer`. Call `client.SessionKey().Login(...)` or
-  `LoginWithOptions(...)` for its address before the first storage write;
-  client construction does not check authorization.
+  `signer.StorageSigner`. This can be a `*signer.Secp256k1Signer`, a KMS/HSM
+  integration, a remote signer, or a decorator. Call
+  `client.SessionKey().Login(...)` or `LoginWithOptions(...)` for its address
+  before the first storage write; client construction does not check
+  authorization.
 - `WithRPCURL` / `WithEthClient`: configure chain access.
 - `WithMaxMulticallCalls`: limit dynamic Multicall3 requests.
 - `WithSource`: namespace datasets for this application.
@@ -53,6 +55,11 @@ Common setup options:
 operator approvals, nonce management, and direct storage termination continue
 to use the root private key. Direct termination includes `TerminateDataSet` and
 `TerminateService` with `SkipProvider` enabled.
+
+A custom Storage signer receives a pre-computed 32-byte digest and cannot
+inspect the original EIP-712 message. Use a dedicated authorization key and
+restrict the signing endpoint to trusted callers; do not expose it as a general
+signing service.
 
 ## Upload And Download
 

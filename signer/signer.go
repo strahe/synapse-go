@@ -30,6 +30,14 @@ type EVMSigner interface {
 	Transactor(chainID *big.Int) (*bind.TransactOpts, error)
 }
 
+// StorageSigner signs Storage EIP-712 authorizations without requiring native
+// Filecoin signing or Ethereum transaction submission. EVMAddress must return
+// the address derived from the key used by HashSigner.
+type StorageSigner interface {
+	EVMAddress() common.Address
+	HashSigner
+}
+
 // AsEVM checks whether a Signer can also sign EVM transactions.
 // Returns nil, false for key types that don't support EVM (e.g., BLS).
 func AsEVM(s Signer) (EVMSigner, bool) {

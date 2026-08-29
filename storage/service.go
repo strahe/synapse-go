@@ -97,7 +97,7 @@ type Service struct {
 	providers    ProviderResolver
 	payments     PaymentStateReader
 	epochs       EpochReader
-	signer       signer.EVMSigner
+	signer       signer.StorageSigner
 	chainID      types.ChainID
 	recordKeeper common.Address
 	paymentToken common.Address
@@ -222,14 +222,16 @@ type Options struct {
 
 	// Signer signs EIP-712 authorizations for manager-level provider-relayed
 	// termination. It may differ from PayerAddress when the payer has authorized
-	// a delegated signer. A typed-nil value is treated as nil.
-	Signer       signer.EVMSigner
+	// a delegated signer. It is independent from the signer attached to contexts
+	// returned by Resolver. A typed-nil value is treated as nil.
+	Signer       signer.StorageSigner
 	ChainID      types.ChainID
 	RecordKeeper common.Address
 
 	// PayerAddress is the payer/client identity used by manager-level helpers
 	// and validated against every StorageContext. It may differ from Signer.
-	// When zero, New derives it from a non-nil Signer.
+	// When zero, New derives it from a non-nil Signer. Set it explicitly when a
+	// delegated Signer authorizes operations for a different payer.
 	PayerAddress common.Address
 }
 

@@ -28,7 +28,10 @@ type Secp256k1Signer struct {
 	ethAddr  common.Address
 }
 
-var _ EVMSigner = (*Secp256k1Signer)(nil)
+var (
+	_ EVMSigner     = (*Secp256k1Signer)(nil)
+	_ StorageSigner = (*Secp256k1Signer)(nil)
+)
 
 // NewSecp256k1Signer creates a dual-protocol signer from a go-ethereum ECDSA
 // private key. The key is deep-copied so the signer owns an independent
@@ -127,11 +130,9 @@ func cloneSecp256k1PrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) 
 // SignHash signs a pre-computed 32-byte hash using the secp256k1 key.
 // Returns 65-byte R‖S‖V signature.
 //
-// This method is intentionally not part of the [EVMSigner] interface: raw
-// hash signing bypasses domain separation and is reserved for internal SDK
-// use. Callers outside of internal packages should use the helper
-// [SignHash] (which performs an interface-assertion) or one of the
-// higher-level signing APIs.
+// SignHash implements [HashSigner]. Raw hash signing bypasses domain
+// separation, so callers should prefer a higher-level API that constructs the
+// message and use a dedicated key or access policy for this capability.
 func (s *Secp256k1Signer) SignHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, fmt.Errorf("signer.SignHash: hash must be 32 bytes, got %d", len(hash))

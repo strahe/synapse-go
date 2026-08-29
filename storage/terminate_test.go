@@ -19,6 +19,7 @@ import (
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/pdp"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -386,7 +387,10 @@ func TestService_TerminateService_DerivesPayerAddress(t *testing.T) {
 }
 
 func TestService_TerminateService_ProviderRelay(t *testing.T) {
-	storageSigner := mustTestSigner(t)
+	storageSigner := &storageSignerOnly{inner: mustTestSigner(t)}
+	if _, ok := any(storageSigner).(signer.EVMSigner); ok {
+		t.Fatal("storage-only signer unexpectedly implements EVMSigner")
+	}
 	payer := testPayer()
 	dataSetID := types.NewBigInt(7)
 	txHash := common.HexToHash("0x1234")

@@ -39,7 +39,7 @@ type Client struct {
 	ethClient              *ethclient.Client
 	ownsClient             bool
 	evmSigner              signer.EVMSigner
-	storageSigner          signer.EVMSigner
+	storageSigner          signer.StorageSigner
 	selectedChain          chain.Chain
 	addresses              ResolvedAddresses
 	nonces                 *txutil.NonceManager
@@ -68,7 +68,7 @@ type Client struct {
 type clientConfig struct {
 	privateKey             *ecdsa.PrivateKey
 	privateKeyHex          string
-	storageSigner          signer.EVMSigner
+	storageSigner          signer.StorageSigner
 	rpcURL                 string
 	ethClient              *ethclient.Client
 	chain                  *chain.Chain
@@ -105,10 +105,11 @@ func WithPrivateKeyHex(hex string) ClientOption {
 //
 // Before the first storage write, authorize the signer's address by calling
 // Login or LoginWithOptions on [Client.SessionKey]. [New] does not query or
-// validate on-chain authorization. A direct [signer.Secp256k1Signer] is
-// recommended; wrapped or decorated signers that do not implement raw hash
-// signing are unsupported. A nil or typed-nil signer uses the root signer.
-func WithStorageSigner(storageSigner signer.EVMSigner) ClientOption {
+// validate on-chain authorization. [signer.Secp256k1Signer], KMS/HSM-backed
+// implementations, remote signers, and decorators are supported when they
+// implement [signer.StorageSigner]. A nil or typed-nil signer uses the root
+// signer.
+func WithStorageSigner(storageSigner signer.StorageSigner) ClientOption {
 	return func(cfg *clientConfig) { cfg.storageSigner = storageSigner }
 }
 

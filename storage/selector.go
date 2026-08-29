@@ -138,7 +138,9 @@ type ContextFactory func(Provider, ContextFactoryOptions) (*ProviderContext, err
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
-	Payer      common.Address // EVM address of the paying account
+	// Payer is the EVM address assigned to contexts created by this resolver.
+	// Set it to the paying account, not a delegated Storage signer address.
+	Payer      common.Address
 	SPRegistry PDPProviderSource
 	// Endorsements is required only when automatic upload selection uses its
 	// default endorsed-primary policy. It may be nil when callers always set

@@ -11,7 +11,6 @@ import (
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
-	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -167,7 +166,7 @@ func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, 
 		return nil, fmt.Errorf("%s: create PDP client: %w", op, err)
 	}
 	extraData, err := signTerminateServiceExtraData(func(hash []byte) ([]byte, error) {
-		return signer.SignHash(s.signer, hash)
+		return s.signer.SignHash(hash)
 	}, s.chainID, s.recordKeeper, dataSetID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
@@ -290,9 +289,6 @@ func signTerminateServiceExtraData(signHash func([]byte) ([]byte, error), chainI
 	domain := ityped.NewDomain(chainID.BigInt(), recordKeeper)
 	sig, err := ityped.SignTerminateService(signHash, domain, dataSetID.Big())
 	if err != nil {
-		if errors.Is(err, signer.ErrUnsupportedSigner) {
-			return nil, fmt.Errorf("wrapped/decorated EVMSigner values are unsupported: %w", err)
-		}
 		return nil, fmt.Errorf("sign terminate service: %w", err)
 	}
 	extraData, err := encodeSignatureExtraData(signatureBytes(sig))
