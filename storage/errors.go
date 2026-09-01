@@ -33,11 +33,6 @@ var ErrClosed = lifecycle.ErrClosed
 // only matches genuine caller-supplied validation failures.
 var ErrInvalidArgument = errors.New("storage: invalid argument")
 
-// ErrBatchPieceDeletionNotSupported is returned when an injected PDP provider
-// client only supports single-piece deletion and a batch contains multiple
-// unique piece IDs.
-var ErrBatchPieceDeletionNotSupported = errors.New("storage: PDP provider client does not support batch piece deletion")
-
 // ErrNoHealthyProviders is returned when every eligible automatically selected
 // provider fails its PDP health check.
 var ErrNoHealthyProviders = errors.New("storage: no healthy providers")

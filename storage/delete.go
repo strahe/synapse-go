@@ -226,15 +226,7 @@ func (c *DataSetContext) snapshotDeletePieceTarget(op string) (deletePieceTarget
 	}, nil
 }
 
-type batchPieceDeletionClient interface {
-	SchedulePieceDeletions(context.Context, sdktypes.BigInt, []sdktypes.BigInt, []byte) (common.Hash, error)
-}
-
 func (c *DataSetContext) schedulePieceDeletionsByID(ctx context.Context, op string, target deletePieceTarget, pieceIDs []sdktypes.BigInt) (*sdktypes.WriteResult, error) {
-	batchClient, supportsBatch := c.core.client.(batchPieceDeletionClient)
-	if len(pieceIDs) > 1 && !supportsBatch {
-		return nil, fmt.Errorf("%s: %w", op, ErrBatchPieceDeletionNotSupported)
-	}
 	typedPieceIDs := make([]*big.Int, len(pieceIDs))
 	for i, pieceID := range pieceIDs {
 		typedPieceIDs[i] = pieceID.Big()
@@ -255,12 +247,7 @@ func (c *DataSetContext) schedulePieceDeletionsByID(ctx context.Context, op stri
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	var txHash common.Hash
-	if supportsBatch {
-		txHash, err = batchClient.SchedulePieceDeletions(ctx, target.dataSetID, pieceIDs, extraData)
-	} else if len(pieceIDs) == 1 {
-		txHash, err = c.core.client.SchedulePieceDeletion(ctx, target.dataSetID, pieceIDs[0], extraData)
-	}
+	txHash, err := c.core.client.SchedulePieceDeletions(ctx, target.dataSetID, pieceIDs, extraData)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
