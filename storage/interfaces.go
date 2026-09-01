@@ -14,11 +14,14 @@ import (
 
 // PDPVerifierReader is the read-only PDPVerifier surface required by
 // [DataSetContext] for piece lifecycle queries (scheduled removals, id lookup,
-// next challenge epoch) and proving-window calculations. Implementations
-// convert between [sdktypes.BigInt] / [cid.Cid] and the abigen-native types
+// next challenge epoch) and proving-window calculations. The supported
+// implementation is the PDPVerifier adapter assembled by the root SDK client;
+// user-defined implementations are not compatibility targets. The adapter
+// converts between [sdktypes.BigInt] / [cid.Cid] and the abigen-native types
 // (`*big.Int`, `pdpverifier.CidsCid`).
 type PDPVerifierReader interface {
 	FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error)
+	FindPieceIDsByCIDs(ctx context.Context, dataSetID sdktypes.BigInt, pieceCIDs []cid.Cid) ([][]sdktypes.BigInt, error)
 	GetScheduledRemovals(ctx context.Context, dataSetID sdktypes.BigInt) ([]sdktypes.BigInt, error)
 	GetNextChallengeEpoch(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 	BlockNumber(ctx context.Context) (uint64, error)

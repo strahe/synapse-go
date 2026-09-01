@@ -128,8 +128,10 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [PDPProviderClient] is an SDK assembly interface. Its supported implementation
-// is [pdp.Client]; user-defined implementations are not compatibility targets.
+// [PDPProviderClient] and [PDPVerifierReader] are SDK assembly interfaces. Their
+// supported implementations are [pdp.Client] and the PDPVerifier adapter
+// assembled by the root SDK client; user-defined implementations are not
+// compatibility targets.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner

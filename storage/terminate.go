@@ -201,14 +201,9 @@ func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, 
 	return terminateResultFromStatus(dataSetID, status), nil
 }
 
-type providerTerminateClient interface {
-	TerminateService(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
-	WaitForTerminateService(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
-}
-
 type providerTerminateTarget struct {
 	dataSetID     types.BigInt
-	client        providerTerminateClient
+	client        PDPProviderClient
 	signHash      func([]byte) ([]byte, error)
 	chainID       types.ChainID
 	recordKeeper  common.Address
@@ -222,10 +217,6 @@ func (c *DataSetContext) snapshotProviderTerminateTarget(op string) (providerTer
 	if c.core.signer == nil {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
-	client, ok := c.core.client.(providerTerminateClient)
-	if !ok {
-		return providerTerminateTarget{}, fmt.Errorf("%s: %w: PDP client does not support termination", op, ErrUninitialized)
-	}
 	if !c.core.chainID.IsValid() {
 		return providerTerminateTarget{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
@@ -234,7 +225,7 @@ func (c *DataSetContext) snapshotProviderTerminateTarget(op string) (providerTer
 	}
 	return providerTerminateTarget{
 		dataSetID:     c.ref.DataSetID(),
-		client:        client,
+		client:        c.core.client,
 		signHash:      c.core.signHashFunc(),
 		chainID:       c.core.chainID,
 		recordKeeper:  c.core.recordKeeper,

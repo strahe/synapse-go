@@ -72,10 +72,6 @@ func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs 
 	return c.schedulePieceDeletionsByID(ctx, op, target, pieceIDs)
 }
 
-type batchPieceIDResolver interface {
-	FindPieceIDsByCIDs(context.Context, sdktypes.BigInt, []cid.Cid) ([][]sdktypes.BigInt, error)
-}
-
 func (c *DataSetContext) resolveDeletePieceIDs(
 	ctx context.Context,
 	op string,
@@ -83,12 +79,12 @@ func (c *DataSetContext) resolveDeletePieceIDs(
 	normalizedCIDs []normalizedDeletePieceCID,
 ) ([]sdktypes.BigInt, error) {
 	var batchErr error
-	if resolver, ok := c.core.pdpCaller.(batchPieceIDResolver); ok && len(normalizedCIDs) > 1 {
+	if len(normalizedCIDs) > 1 {
 		pieceCIDs := make([]cid.Cid, len(normalizedCIDs))
 		for i, item := range normalizedCIDs {
 			pieceCIDs[i] = item.pieceCID
 		}
-		matches, err := resolver.FindPieceIDsByCIDs(ctx, dataSetID, pieceCIDs)
+		matches, err := c.core.pdpCaller.FindPieceIDsByCIDs(ctx, dataSetID, pieceCIDs)
 		if err == nil && len(matches) == len(normalizedCIDs) {
 			return firstDeletePieceIDMatches(op, normalizedCIDs, matches)
 		}

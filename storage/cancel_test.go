@@ -98,6 +98,11 @@ func (ctxAwarePDPReader) FindPieceIdsByCid(ctx context.Context, _ types.BigInt, 
 	return nil, ctx.Err()
 }
 
+func (ctxAwarePDPReader) FindPieceIDsByCIDs(ctx context.Context, _ types.BigInt, _ []cid.Cid) ([][]types.BigInt, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (ctxAwarePDPReader) GetNextChallengeEpoch(ctx context.Context, _ types.BigInt) (*big.Int, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()

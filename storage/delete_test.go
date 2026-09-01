@@ -21,6 +21,14 @@ func mustDeleteContext(t *testing.T, client PDPProviderClient, opts ...ContextOp
 	return mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(77), types.NewBigInt(3)), opts...)
 }
 
+func singlePieceID(t *testing.T, pieceIDs []types.BigInt) types.BigInt {
+	t.Helper()
+	if len(pieceIDs) != 1 {
+		t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
+	}
+	return pieceIDs[0]
+}
+
 func TestContext_DeletePiece_DeletesFirstCIDMatch(t *testing.T) {
 	info := mustPieceInfo(t)
 	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(42), types.NewBigInt(99)}}
@@ -28,11 +36,8 @@ func TestContext_DeletePiece_DeletesFirstCIDMatch(t *testing.T) {
 	var gotExtraData []byte
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, dsID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
 			gotDataSetID = dsID
-			gotPieceID = pieceIDs[0]
+			gotPieceID = singlePieceID(t, pieceIDs)
 			gotExtraData = extraData
 			return common.HexToHash("0xabc123"), nil
 		},
@@ -66,9 +71,7 @@ func TestContext_DeletePiece_UsesSnapshotDataSetID(t *testing.T) {
 	var gotDataSetID types.BigInt
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, dsID types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
+			singlePieceID(t, pieceIDs)
 			gotDataSetID = dsID
 			return common.HexToHash("0xabc123"), nil
 		},
@@ -95,11 +98,8 @@ func TestContext_DeletePieceByID_Success(t *testing.T) {
 	var gotExtraData []byte
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, dsID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
 			gotDataSetID = dsID
-			gotPieceID = pieceIDs[0]
+			gotPieceID = singlePieceID(t, pieceIDs)
 			gotExtraData = extraData
 			return common.HexToHash("0xabc123"), nil
 		},
@@ -129,9 +129,7 @@ func TestContext_DeletePieceByID_UsesSnapshotDataSetID(t *testing.T) {
 	var gotDataSetID types.BigInt
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, dsID types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
+			singlePieceID(t, pieceIDs)
 			gotDataSetID = dsID
 			return common.HexToHash("0xabc123"), nil
 		},
@@ -153,10 +151,7 @@ func TestContext_DeletePieceByID_AllowsZeroPieceID(t *testing.T) {
 	var gotPieceID types.BigInt
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
-			gotPieceID = pieceIDs[0]
+			gotPieceID = singlePieceID(t, pieceIDs)
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
@@ -480,10 +475,7 @@ func TestContext_DeletePieceByID_DoesNotCallDataSetValidator(t *testing.T) {
 	validator := &fakeDataSetValidator{err: want}
 	fake := &fakePDPProviderClient{
 		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
-			if len(pieceIDs) != 1 {
-				t.Fatalf("pieceIDs=%v want one ID", pieceIDs)
-			}
-			gotPieceID = pieceIDs[0]
+			gotPieceID = singlePieceID(t, pieceIDs)
 			return common.HexToHash("0xabc123"), nil
 		},
 	}
@@ -618,6 +610,14 @@ type batchCIDResultPDPReader struct {
 
 func (r *cidResultPDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, pieceCID cid.Cid, _, _ uint64) ([]types.BigInt, error) {
 	return r.results[pieceCID.KeyString()], nil
+}
+
+func (r *cidResultPDPReader) FindPieceIDsByCIDs(_ context.Context, _ types.BigInt, pieceCIDs []cid.Cid) ([][]types.BigInt, error) {
+	results := make([][]types.BigInt, len(pieceCIDs))
+	for i, pieceCID := range pieceCIDs {
+		results[i] = r.results[pieceCID.KeyString()]
+	}
+	return results, nil
 }
 
 func (r *batchCIDResultPDPReader) FindPieceIDsByCIDs(_ context.Context, dataSetID types.BigInt, pieceCIDs []cid.Cid) ([][]types.BigInt, error) {
