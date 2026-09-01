@@ -35,6 +35,10 @@ func (f *fakePDPReader) FindPieceIdsByCid(_ context.Context, _ types.BigInt, _ c
 	return f.findIDs, f.findErr
 }
 
+func (f *fakePDPReader) FindPieceIDsByCIDs(context.Context, types.BigInt, []cid.Cid) ([][]types.BigInt, error) {
+	return nil, errors.New("unexpected FindPieceIDsByCIDs")
+}
+
 func (f *fakePDPReader) GetNextChallengeEpoch(_ context.Context, _ types.BigInt) (*big.Int, error) {
 	return f.nextChallenge, f.nextChallengeErr
 }

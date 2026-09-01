@@ -58,7 +58,8 @@ const (
 )
 
 // PDPProviderClient is the provider HTTP API surface required by storage contexts.
-// It is injectable for tests and alternate provider clients.
+// The supported implementation is [pdp.Client]. User-defined implementations are
+// not compatibility targets.
 type PDPProviderClient interface {
 	UploadPieceStreaming(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
@@ -73,7 +74,9 @@ type PDPProviderClient interface {
 	CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	GetCreateDataSetAndAddPiecesStatus(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error)
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
-	SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error)
+	SchedulePieceDeletions(ctx context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error)
+	TerminateService(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
+	WaitForTerminateService(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
 }
 
 // Provider holds the on-chain identity of a storage provider.
@@ -244,7 +247,8 @@ func WithLogger(logger *slog.Logger) ContextOption {
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.
 // Required by [DataSetContext.GetScheduledRemovals],
-// [DataSetContext.PieceStatus], and [DataSetContext.DeletePiece].
+// [DataSetContext.PieceStatus], [DataSetContext.DeletePiece], and
+// [DataSetContext.DeletePieces].
 func WithPDPVerifierReader(r PDPVerifierReader) ContextOption {
 	return func(c *contextCore) { c.pdpCaller = normalizeOptional(r) }
 }

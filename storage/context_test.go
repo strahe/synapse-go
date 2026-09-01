@@ -191,7 +191,7 @@ type fakePDPProviderClient struct {
 	createAndAddFn        func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error)
 	getCreateAndAddFn     func(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error)
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
-	scheduleDeletionFn    func(context.Context, types.BigInt, types.BigInt, []byte) (common.Hash, error)
+	scheduleDeletionsFn   func(context.Context, types.BigInt, []types.BigInt, []byte) (common.Hash, error)
 	terminateServiceFn    func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
 	waitTerminateFn       func(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
 }
@@ -331,11 +331,11 @@ func (f *fakePDPProviderClient) WaitForCreateDataSetAndAddPieces(ctx context.Con
 	return f.waitForCreateAndAddFn(ctx, statusURL, pollInterval)
 }
 
-func (f *fakePDPProviderClient) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
-	if f.scheduleDeletionFn == nil {
-		return common.Hash{}, errors.New("unexpected SchedulePieceDeletion")
+func (f *fakePDPProviderClient) SchedulePieceDeletions(ctx context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error) {
+	if f.scheduleDeletionsFn == nil {
+		return common.Hash{}, errors.New("unexpected SchedulePieceDeletions")
 	}
-	return f.scheduleDeletionFn(ctx, dataSetID, pieceID, extraData)
+	return f.scheduleDeletionsFn(ctx, dataSetID, pieceIDs, extraData)
 }
 
 func (f *fakePDPProviderClient) TerminateService(ctx context.Context, req pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error) {

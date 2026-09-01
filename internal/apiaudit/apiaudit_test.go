@@ -163,6 +163,7 @@ import (
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 
 	synapse "github.com/strahe/synapse-go"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/storage"
@@ -186,10 +187,6 @@ func (s *kmsStorageSigner) SignHash(hash []byte) ([]byte, error) {
 	return ethcrypto.Sign(hash, s.key)
 }
 
-type unusedPDPClient struct {
-	storage.PDPProviderClient
-}
-
 func TestStorageSignerContract(t *testing.T) {
 	key, err := ethcrypto.GenerateKey()
 	if err != nil {
@@ -205,6 +202,10 @@ func TestStorageSignerContract(t *testing.T) {
 
 	_ = synapse.WithStorageSigner(kms)
 	_ = storage.Options{Signer: kms}
+	pdpClient, err := pdp.New("https://pdp.example.com")
+	if err != nil {
+		t.Fatalf("pdp.New: %v", err)
+	}
 
 	ctx, err := storage.NewProviderContext(
 		storage.Provider{
@@ -213,7 +214,7 @@ func TestStorageSignerContract(t *testing.T) {
 			ServiceProvider: common.HexToAddress("0x1001"),
 			Payee:           common.HexToAddress("0x1002"),
 		},
-		&unusedPDPClient{},
+		pdpClient,
 		kms,
 		storage.WithPayer(common.HexToAddress("0x2001")),
 		storage.WithChainID(types.ChainID(314159)),
