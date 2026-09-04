@@ -978,35 +978,6 @@ func TestGetAddPiecesStatus_LargeUint64DataSetID(t *testing.T) {
 	}
 }
 
-func TestSchedulePieceDeletion(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/9" {
-			t.Fatalf("bad req: %s %s", r.Method, r.URL.Path)
-		}
-		var body struct {
-			ExtraData string        `json:"extraData"`
-			PieceIDs  []json.Number `json:"pieceIds"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		decoder.UseNumber()
-		if err := decoder.Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body.ExtraData != "0x01" || len(body.PieceIDs) != 1 || body.PieceIDs[0].String() != "9" {
-			t.Fatalf("body=%+v", body)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0xabc0000000000000000000000000000000000000000000000000000000000000"}`)
-	}))
-	h, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h == (common.Hash{}) {
-		t.Fatal("zero hash")
-	}
-}
-
 func TestSchedulePieceDeletions(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/9" {

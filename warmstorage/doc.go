@@ -9,9 +9,8 @@
 // Key operations: data set management (including [Service.TerminateDataSet]
 // for direct FWSS teardown), constant-cost active-piece presence checks through
 // [Service.HasActivePieces], cursor-based exact counts through
-// [Service.GetActivePieceCount], PriceList reads, approved-provider reads, and
-// provider allocation. [Service.GetServicePrice] remains as a compatibility
-// view; [Service.GetPriceList] is the canonical pricing entry point.
+// [Service.GetActivePieceCount], [Service.GetPriceList], approved-provider
+// reads, and provider allocation.
 //
 // The root synapse Client wires WarmStorage together with the other
 // write-capable services so transaction nonce allocation is coordinated for

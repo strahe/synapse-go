@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/strahe/synapse-go/chain"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
@@ -96,8 +97,9 @@ func TestFund_StandaloneApprovalLockupPeriodFallback(t *testing.T) {
 	if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
 		t.Fatalf("Fund: %v", err)
 	}
-	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(LockupPeriodEpochs) != 0 {
-		t.Fatalf("maxLockupPeriod=%s want %s", got, LockupPeriodEpochs)
+	want := big.NewInt(chain.EpochsPerMonth)
+	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(want) != 0 {
+		t.Fatalf("maxLockupPeriod=%s want %s", got, want)
 	}
 }
 

@@ -696,20 +696,6 @@ func (c *DataSetContext) CDNEnabled() bool {
 	return c.core.withCDN
 }
 
-// WithCDN reports whether CDN services are enabled for this context.
-//
-// Deprecated: use CDNEnabled.
-func (c *ProviderContext) WithCDN() bool {
-	return c.CDNEnabled()
-}
-
-// WithCDN reports whether CDN services are enabled for this context.
-//
-// Deprecated: use CDNEnabled.
-func (c *DataSetContext) WithCDN() bool {
-	return c.CDNEnabled()
-}
-
 func (c *contextCore) pieceURLFor(pieceCID cid.Cid) string {
 	base, err := url.Parse(c.provider.ServiceURL)
 	if err != nil {

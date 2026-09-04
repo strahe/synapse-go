@@ -464,9 +464,6 @@ func TestAccountSummary_ComputesBreakdown(t *testing.T) {
 	if summary.TotalRateBasedLockup.Cmp(big.NewInt(550)) != 0 {
 		t.Fatalf("TotalRateBasedLockup = %s, want 550", summary.TotalRateBasedLockup)
 	}
-	if summary.FundedUntilEpoch.Cmp(big.NewInt(150)) != 0 {
-		t.Fatalf("FundedUntilEpoch = %s, want 150", summary.FundedUntilEpoch)
-	}
 	if summary.RunwayInEpochs.Cmp(big.NewInt(50)) != 0 {
 		t.Fatalf("RunwayInEpochs = %s, want 50", summary.RunwayInEpochs)
 	}

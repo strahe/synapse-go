@@ -38,19 +38,6 @@ func TestIntegration_WarmStorage(t *testing.T) {
 		t.Fatal("PDPVerifierAddress is zero on calibration")
 	}
 
-	price, err := ws.GetServicePrice(ctx)
-	if err != nil {
-		t.Fatalf("GetServicePrice: %v", err)
-	}
-	if price.PricePerTiBPerMonthNoCDN == nil || price.PricePerTiBPerMonthNoCDN.Sign() <= 0 {
-		t.Errorf("PricePerTiBPerMonthNoCDN should be > 0, got %v", price.PricePerTiBPerMonthNoCDN)
-	}
-	if price.EpochsPerMonth == nil || price.EpochsPerMonth.Sign() <= 0 {
-		t.Errorf("EpochsPerMonth should be > 0, got %v", price.EpochsPerMonth)
-	}
-	if (price.TokenAddress == common.Address{}) {
-		t.Error("TokenAddress is zero")
-	}
 	priceList, err := ws.GetPriceList(ctx)
 	if err != nil {
 		t.Fatalf("GetPriceList: %v", err)
@@ -58,8 +45,8 @@ func TestIntegration_WarmStorage(t *testing.T) {
 	if priceList == nil {
 		t.Fatal("GetPriceList returned nil")
 	}
-	if priceList.Token != price.TokenAddress {
-		t.Errorf("GetPriceList token = %s, GetServicePrice token = %s", priceList.Token, price.TokenAddress)
+	if priceList.Token == (common.Address{}) {
+		t.Error("GetPriceList token is zero")
 	}
 	if priceList.Rates.StoragePerTiBPerMonth == nil || priceList.Rates.StoragePerTiBPerMonth.Sign() <= 0 {
 		t.Errorf("GetPriceList storage rate should be > 0, got %v", priceList.Rates.StoragePerTiBPerMonth)

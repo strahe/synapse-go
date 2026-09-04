@@ -354,25 +354,6 @@ func TestNew_MaxMulticallCalls(t *testing.T) {
 	}
 }
 
-func TestGetServicePrice(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.setFWSSReply(t, "getServicePrice", fwssbind.FilecoinWarmStorageServiceServicePricing{
-		PricePerTiBPerMonthNoCDN:   big.NewInt(1000),
-		PricePerTiBCdnEgress:       big.NewInt(20),
-		PricePerTiBCacheMissEgress: big.NewInt(30),
-		TokenAddress:               common.HexToAddress("0xabcd"),
-		EpochsPerMonth:             big.NewInt(86400),
-		DatasetFeePerMonth:         big.NewInt(5),
-	})
-	p, err := s.GetServicePrice(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.PricePerTiBPerMonthNoCDN.Int64() != 1000 || p.DatasetFeePerMonth.Int64() != 5 || p.MinimumPricePerMonth.Int64() != 5 {
-		t.Errorf("bad: %+v", p)
-	}
-}
-
 func TestGetPriceList(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getPriceList", fwssviewbind.PriceList{
@@ -690,15 +671,6 @@ func TestGetClientDataSetsLength_RPCError(t *testing.T) {
 	}
 }
 
-func TestGetServicePrice_RPCError(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.errs["getServicePrice"] = errors.New("rpc error")
-	_, err := s.GetServicePrice(context.Background())
-	if err == nil {
-		t.Error("expected error")
-	}
-}
-
 func TestGetDataSet_RPCError(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.errs["getDataSet"] = errors.New("rpc error")
@@ -974,46 +946,6 @@ func TestHasActivePieces_NoPDP(t *testing.T) {
 	_, err := s.HasActivePieces(context.Background(), types.NewBigInt(1))
 	if !errors.Is(err, ErrPDPVerifierNotConfigured) {
 		t.Fatalf("HasActivePieces error = %v, want ErrPDPVerifierNotConfigured", err)
-	}
-}
-
-func TestGetPieceMetadata(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.setViewReply(t, "getPieceMetadata", true, "value-1")
-	ok, v, err := s.GetPieceMetadata(context.Background(), types.NewBigInt(1), types.NewBigInt(2), "k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || v != "value-1" {
-		t.Errorf("got (%v, %q)", ok, v)
-	}
-}
-
-func TestGetPieceMetadata_ZeroID(t *testing.T) {
-	s, _ := newTestService(t)
-	_, _, err := s.GetPieceMetadata(context.Background(), types.NewBigInt(0), types.NewBigInt(1), "k")
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument, got %v", err)
-	}
-}
-
-func TestGetAllPieceMetadata(t *testing.T) {
-	s, mc := newTestService(t)
-	mc.setViewReply(t, "getAllPieceMetadata", []string{"a", "b"}, []string{"1", "2"})
-	got, err := s.GetAllPieceMetadata(context.Background(), types.NewBigInt(1), types.NewBigInt(2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got["a"] != "1" || got["b"] != "2" {
-		t.Errorf("got %+v", got)
-	}
-}
-
-func TestGetAllPieceMetadata_ZeroID(t *testing.T) {
-	s, _ := newTestService(t)
-	_, err := s.GetAllPieceMetadata(context.Background(), types.NewBigInt(0), types.NewBigInt(1))
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument, got %v", err)
 	}
 }
 

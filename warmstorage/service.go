@@ -187,47 +187,6 @@ func (s *Service) ViewAddress() common.Address { return s.viewAddr }
 // the Service was constructed without a PDPVerifier.
 func (s *Service) PDPVerifierAddress() common.Address { return s.pdpVerifierAdr }
 
-// ServicePrice is the legacy FWSS pricing view. All amounts are in base units
-// of the payment token.
-//
-// Deprecated: Use PriceList returned by GetPriceList. ServicePrice omits
-// one-time fees and lockup parameters required for current cost calculations.
-type ServicePrice struct {
-	PricePerTiBPerMonthNoCDN   *big.Int
-	PricePerTiBCdnEgress       *big.Int
-	PricePerTiBCacheMissEgress *big.Int
-	TokenAddress               common.Address // EVM address of the payment token
-	EpochsPerMonth             *big.Int       // Filecoin epochs per billing month
-	DatasetFeePerMonth         *big.Int
-	// MinimumPricePerMonth is kept as a source-compatibility alias for
-	// DatasetFeePerMonth.
-	//
-	// Deprecated: Use DatasetFeePerMonth.
-	MinimumPricePerMonth *big.Int
-}
-
-// GetServicePrice returns the legacy current pricing parameters.
-//
-// Deprecated: Use GetPriceList.
-func (s *Service) GetServicePrice(ctx context.Context) (*ServicePrice, error) {
-	if err := s.checkInit(); err != nil {
-		return nil, err
-	}
-	p, err := s.fwssBind.GetServicePrice(&bind.CallOpts{Context: ctx})
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetServicePrice: %w", err)
-	}
-	return &ServicePrice{
-		PricePerTiBPerMonthNoCDN:   p.PricePerTiBPerMonthNoCDN,
-		PricePerTiBCdnEgress:       p.PricePerTiBCdnEgress,
-		PricePerTiBCacheMissEgress: p.PricePerTiBCacheMissEgress,
-		TokenAddress:               p.TokenAddress,
-		EpochsPerMonth:             p.EpochsPerMonth,
-		DatasetFeePerMonth:         p.DatasetFeePerMonth,
-		MinimumPricePerMonth:       p.DatasetFeePerMonth,
-	}, nil
-}
-
 // PriceList is the canonical warm-storage pricing view. All amounts are in
 // base units of the payment token.
 type PriceList struct {

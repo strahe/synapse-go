@@ -9,15 +9,11 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
-// LockupPeriodEpochs is the fallback client-operator max lockup period granted
-// when Fund auto-approves the WarmStorage operator.
-//
-// Deprecated: Fund uses ApprovalLockupPeriod when configured and only falls
-// back to this constant for standalone services without a price-list reader.
-var LockupPeriodEpochs = big.NewInt(30 * 2880)
+const defaultApprovalLockupPeriodEpochs int64 = chain.EpochsPerMonth
 
 // maxUint256 is the ERC-2612-style "unlimited" allowance used by Fund.
 var maxUint256 = func() *big.Int {
@@ -153,7 +149,10 @@ func (s *Service) isFwssMaxApproved(ctx context.Context, requiredLockupPeriod *b
 	if approval.LockupAllowance == nil || approval.LockupAllowance.Cmp(halfMax) < 0 {
 		return false, nil
 	}
-	required := copyBigOrFallback(requiredLockupPeriod, LockupPeriodEpochs)
+	required := defaultApprovalLockupPeriod()
+	if requiredLockupPeriod != nil {
+		required.Set(requiredLockupPeriod)
+	}
 	if approval.MaxLockupPeriod == nil || approval.MaxLockupPeriod.Cmp(required) < 0 {
 		return false, nil
 	}
@@ -177,15 +176,9 @@ func (s *Service) resolveFundApprovalLockupPeriod(ctx context.Context, cfg write
 		}
 		return new(big.Int).Set(period), nil
 	}
-	return new(big.Int).Set(LockupPeriodEpochs), nil
+	return defaultApprovalLockupPeriod(), nil
 }
 
-func copyBigOrFallback(v, fallback *big.Int) *big.Int {
-	if v != nil {
-		return new(big.Int).Set(v)
-	}
-	if fallback != nil {
-		return new(big.Int).Set(fallback)
-	}
-	return new(big.Int)
+func defaultApprovalLockupPeriod() *big.Int {
+	return big.NewInt(defaultApprovalLockupPeriodEpochs)
 }

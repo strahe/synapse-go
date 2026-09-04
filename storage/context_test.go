@@ -422,8 +422,8 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	if logged.ServiceURL() != testProvider().ServiceURL || dataSetLogged.ServiceURL() != testProvider().ServiceURL {
 		t.Fatalf("ServiceURL provider=%q data-set=%q", logged.ServiceURL(), dataSetLogged.ServiceURL())
 	}
-	if !logged.CDNEnabled() || !dataSetLogged.CDNEnabled() || !logged.WithCDN() || !dataSetLogged.WithCDN() {
-		t.Fatal("CDNEnabled/WithCDN mismatch")
+	if !logged.CDNEnabled() || !dataSetLogged.CDNEnabled() {
+		t.Fatal("CDNEnabled should expose the configured CDN flag")
 	}
 	if dataSetLogged.GetProviderInfo().ServiceURL != testProvider().ServiceURL {
 		t.Fatalf("GetProviderInfo=%+v", dataSetLogged.GetProviderInfo())
