@@ -21,21 +21,6 @@ func TestIntegration_Costs(t *testing.T) {
 	client := integrationtest.NewDefaultClient(t, ctx)
 	c := client.Costs()
 
-	// GetServicePrice: must agree with warmstorage.GetServicePrice for the
-	// same block (they share the same view binding under the hood).
-	p1, err := c.GetServicePrice(ctx)
-	if err != nil {
-		t.Fatalf("costs.GetServicePrice: %v", err)
-	}
-	p2, err := client.WarmStorage().GetServicePrice(ctx)
-	if err != nil {
-		t.Fatalf("warmstorage.GetServicePrice: %v", err)
-	}
-	if p1.PricePerTiBPerMonthNoCDN.Cmp(p2.PricePerTiBPerMonthNoCDN) != 0 {
-		t.Errorf("GetServicePrice divergence: costs=%v warmstorage=%v",
-			p1.PricePerTiBPerMonthNoCDN, p2.PricePerTiBPerMonthNoCDN)
-	}
-
 	priceList, err := c.GetPriceList(ctx)
 	if err != nil {
 		t.Fatalf("costs.GetPriceList: %v", err)
@@ -54,15 +39,6 @@ func TestIntegration_Costs(t *testing.T) {
 		priceList.Rates.StoragePerTiBPerMonth.Cmp(warmStoragePriceList.Rates.StoragePerTiBPerMonth) != 0 ||
 		priceList.Fees.CreateDataSetFee.Cmp(warmStoragePriceList.Fees.CreateDataSetFee) != 0 {
 		t.Fatalf("GetPriceList divergence: costs=%+v warmstorage=%+v", priceList, warmStoragePriceList)
-	}
-
-	summary, err := c.GetAccountSummary(ctx, client.Address())
-	if err != nil {
-		t.Fatalf("costs.GetAccountSummary: %v", err)
-	}
-	if summary == nil || summary.Funds == nil || summary.AvailableFunds == nil || summary.Debt == nil ||
-		summary.CurrentEpoch == nil || summary.CurrentEpoch.Sign() <= 0 {
-		t.Fatalf("GetAccountSummary returned incomplete values: %+v", summary)
 	}
 
 	// CalculateMultiContextCosts across two prospective contexts (one new,

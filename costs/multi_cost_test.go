@@ -13,7 +13,7 @@ import (
 
 func TestCalculateMultiContextCosts_ReadyWhenFunded(t *testing.T) {
 	svc := buildSvc(t,
-		&mockWS{price: defaultPrice()},
+		&mockWS{},
 		&mockPay{
 			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
@@ -46,7 +46,7 @@ func TestCalculateMultiContextCosts_ReadyWhenFunded(t *testing.T) {
 
 func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	svc := buildSvc(t,
-		&mockWS{price: defaultPrice()},
+		&mockWS{},
 		&mockPay{
 			account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
 			approval: maxApproval(),
@@ -249,7 +249,7 @@ func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
 }
 
 func TestCalculateMultiContextCosts_EmptyRefs(t *testing.T) {
-	svc := buildSvc(t, &mockWS{price: defaultPrice()}, &mockPay{})
+	svc := buildSvc(t, &mockWS{}, &mockPay{})
 	if _, err := svc.CalculateMultiContextCosts(
 		context.Background(), common.Address{}, bi(1024), nil, nil,
 	); err == nil {

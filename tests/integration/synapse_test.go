@@ -692,7 +692,7 @@ func TestIntegration(t *testing.T) {
 		// Piece may not be immediately available after upload; retry with backoff.
 		var downloaded []byte
 		var lastErr error
-		for attempt := 0; attempt < 5; attempt++ {
+		for attempt := range 5 {
 			if attempt > 0 {
 				delay := 30 * time.Second
 				t.Logf("download attempt %d failed, retrying in %s: %v", attempt, delay, lastErr)
@@ -1385,24 +1385,6 @@ func TestIntegration(t *testing.T) {
 		if count == nil || count.Sign() < 0 {
 			t.Errorf("active piece count invalid: %v", count)
 		}
-
-		// PieceID 0 is always queryable. "label" is not a key we set on
-		// upload, so (exists, value) must be (false, "") — assert both.
-		exists, value, err := ws.GetPieceMetadata(cctx, uploadedDataSetID, types.NewBigInt(0), "label")
-		if err != nil {
-			t.Fatalf("GetPieceMetadata(0,label): %v", err)
-		}
-		if exists || value != "" {
-			t.Errorf("GetPieceMetadata(0,label): want (false, \"\"), got (%v, %q)", exists, value)
-		}
-		all, err := ws.GetAllPieceMetadata(cctx, uploadedDataSetID, types.NewBigInt(0))
-		if err != nil {
-			t.Fatalf("GetAllPieceMetadata(0): %v", err)
-		}
-		if all == nil {
-			t.Errorf("GetAllPieceMetadata(0) returned nil map")
-		}
-		t.Logf("piece 0 metadata keys: %d", len(all))
 	})
 
 	// --- PaymentsRails: rail read methods + Settle on the upload's PDP rail. ---

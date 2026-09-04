@@ -108,11 +108,10 @@ func (s *Service) accountStateAt(ctx context.Context, token, owner common.Addres
 }
 
 func summarizeAccount(account *AccountState, fixedLockup, currentEpoch *big.Int) *AccountSummary {
-	funds, lockupCurrent, lockupRate, lockupLastSettledAt := accountStateParts(account)
+	funds, _, lockupRate, _ := accountStateParts(account)
 	current := copyBigOrZero(currentEpoch)
 	fixed := copyBigOrZero(fixedLockup)
 
-	fundedUntil := fundedUntilEpoch(funds, lockupCurrent, lockupRate, lockupLastSettledAt)
 	resolved := account.ResolveAt(current)
 	debt := account.DebtAt(current)
 
@@ -134,7 +133,6 @@ func summarizeAccount(account *AccountState, fixedLockup, currentEpoch *big.Int)
 		TotalLockup:           totalLockup,
 		TotalFixedLockup:      fixed,
 		TotalRateBasedLockup:  rateBased,
-		FundedUntilEpoch:      fundedUntil,
 		RunwayInEpochs:        resolved.RunwayInEpochs,
 		GrossCoverageInEpochs: resolved.GrossCoverageInEpochs,
 		CurrentEpoch:          current,

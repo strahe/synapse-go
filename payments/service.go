@@ -88,7 +88,7 @@ type Options struct {
 	// may be nil when the Service is used for reads only.
 	Signer signer.EVMSigner
 	// ApprovalLockupPeriod reads the default WarmStorage approval lockup
-	// period. Optional; Fund falls back to LockupPeriodEpochs when omitted.
+	// period. Optional; Fund falls back to one Filecoin month when omitted.
 	ApprovalLockupPeriod ApprovalLockupPeriodReader
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger

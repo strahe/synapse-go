@@ -25,18 +25,13 @@ type WarmStorageReader interface {
 	GetPriceList(ctx context.Context) (*warmstorage.PriceList, error)
 }
 
-//nolint:staticcheck // Compatibility surface for the deprecated ServicePrice API.
-type legacyServicePriceReader interface {
-	GetServicePrice(ctx context.Context) (*warmstorage.ServicePrice, error)
-}
-
 // PaymentsReader is the subset of payments.Service used by costs.
 type PaymentsReader interface {
 	AccountInfo(ctx context.Context, token, owner common.Address) (*payments.AccountState, error)
 	ServiceApproval(ctx context.Context, token, client, operator common.Address) (*payments.OperatorApproval, error)
 }
 
-// Service computes upload costs and account summaries for the FWSS ecosystem.
+// Service computes upload costs for the FWSS ecosystem.
 // All methods are safe for concurrent use.
 type Service struct {
 	c         chain.Chain
@@ -121,20 +116,6 @@ func New(opts Options) (*Service, error) {
 		logger:    opts.Logger,
 		lifecycle: ifaceutil.NormalizeNil(opts.Lifecycle),
 	}, nil
-}
-
-// GetServicePrice delegates to the warmstorage service.
-//
-// Deprecated: Use GetPriceList.
-func (s *Service) GetServicePrice(ctx context.Context) (*warmstorage.ServicePrice, error) {
-	if err := s.checkInit(); err != nil {
-		return nil, err
-	}
-	reader, ok := s.ws.(legacyServicePriceReader)
-	if !ok {
-		return nil, fmt.Errorf("costs.GetServicePrice: warmstorage reader does not support legacy GetServicePrice")
-	}
-	return reader.GetServicePrice(ctx)
 }
 
 // GetPriceList delegates to the warmstorage service.
@@ -292,52 +273,6 @@ func (s *Service) GetUploadCosts(
 		RequiredLockupPeriod: requiredLockupPeriod,
 		NeedsFWSSMaxApproval: needsApproval,
 		Ready:                ready,
-	}, nil
-}
-
-// GetAccountSummary returns a payment health snapshot for the given owner.
-//
-// Deprecated: Use payments.Service.AccountSummary for payment account state.
-// This method is kept for compatibility.
-func (s *Service) GetAccountSummary(ctx context.Context, owner common.Address) (*AccountSummary, error) {
-	if err := s.checkInit(); err != nil {
-		return nil, err
-	}
-	account, err := s.pay.AccountInfo(ctx, s.usdfc, owner)
-	if err != nil {
-		return nil, fmt.Errorf("costs.GetAccountSummary: %w", err)
-	}
-
-	currentEpoch, err := s.currentEpoch(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("costs.GetAccountSummary: %w", err)
-	}
-	resolved := account.ResolveAt(currentEpoch)
-	debt := account.DebtAt(currentEpoch)
-	avail := resolved.AvailableFunds
-
-	funds := new(big.Int)
-	if account.Funds != nil {
-		funds.Set(account.Funds)
-	}
-
-	rate := account.LockupRate
-	if rate == nil {
-		rate = new(big.Int)
-	}
-
-	ratePerMonth := new(big.Int).Mul(rate, big.NewInt(chain.EpochsPerMonth))
-
-	return &AccountSummary{
-		Funds:                 funds,
-		AvailableFunds:        avail,
-		Debt:                  debt,
-		LockupRatePerEpoch:    rate,
-		LockupRatePerMonth:    ratePerMonth,
-		FundedUntilEpoch:      account.FundedUntilEpoch,
-		RunwayInEpochs:        resolved.RunwayInEpochs,
-		GrossCoverageInEpochs: resolved.GrossCoverageInEpochs,
-		CurrentEpoch:          currentEpoch,
 	}, nil
 }
 

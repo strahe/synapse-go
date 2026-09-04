@@ -820,9 +820,6 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	if _, err := client.Payments().Balance(ctx, addr, addr); !errors.Is(err, ErrClosed) {
 		t.Errorf("Payments.Balance: got %v, want ErrClosed", err)
 	}
-	if _, err := client.WarmStorage().GetServicePrice(ctx); !errors.Is(err, ErrClosed) { //nolint:staticcheck // Deprecated compatibility method must honor Close.
-		t.Errorf("WarmStorage.GetServicePrice: got %v, want ErrClosed", err)
-	}
 	if _, err := client.WarmStorage().GetPriceList(ctx); !errors.Is(err, ErrClosed) {
 		t.Errorf("WarmStorage.GetPriceList: got %v, want ErrClosed", err)
 	}
@@ -837,9 +834,6 @@ func TestClose_AllServicesReturnErrClosed(t *testing.T) {
 	}
 	if _, err := client.SessionKey().Login(ctx, addr, nil); !errors.Is(err, ErrClosed) {
 		t.Errorf("SessionKey.Login: got %v, want ErrClosed", err)
-	}
-	if _, err := client.Costs().GetServicePrice(ctx); !errors.Is(err, ErrClosed) { //nolint:staticcheck // Deprecated compatibility method must honor Close.
-		t.Errorf("Costs.GetServicePrice: got %v, want ErrClosed", err)
 	}
 	if _, err := client.Costs().GetPriceList(ctx); !errors.Is(err, ErrClosed) {
 		t.Errorf("Costs.GetPriceList: got %v, want ErrClosed", err)

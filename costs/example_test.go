@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/costs"
 )
 
-// Example demonstrates fetching an account summary via costs.Service. In
+// Example demonstrates estimating upload costs via costs.Service. In
 // practice a Service is obtained from [synapse.Client.Costs].
 //
 // [synapse.Client.Costs]: https://pkg.go.dev/github.com/strahe/synapse-go#Client.Costs
@@ -17,11 +18,12 @@ func Example() {
 	var svc *costs.Service // obtained from synapse.Client.Costs()
 
 	ctx := context.Background()
-	owner := common.HexToAddress("0x...")
+	payer := common.HexToAddress("0x...")
+	dataSize := big.NewInt(1 << 30)
 
-	summary, err := svc.GetAccountSummary(ctx, owner) //nolint:staticcheck // compatibility example for legacy costs callers
+	quote, err := svc.GetUploadCosts(ctx, payer, dataSize, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(summary.AvailableFunds)
+	fmt.Println(quote.Rate.RatePerMonth)
 }

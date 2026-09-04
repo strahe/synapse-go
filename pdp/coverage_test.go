@@ -417,24 +417,14 @@ func TestWaitForPiecesAdded_ContextCancelled(t *testing.T) {
 	}
 }
 
-// ---------- SchedulePieceDeletion edge cases ----------
+// ---------- SchedulePieceDeletions edge cases ----------
 
-func TestSchedulePieceDeletion_EmptyExtraData(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not be called")
-	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), nil)
-	if err == nil || !strings.Contains(err.Error(), "empty extraData") {
-		t.Errorf("want empty extraData error, got %v", err)
-	}
-}
-
-func TestSchedulePieceDeletion_ZeroTxHash(t *testing.T) {
+func TestSchedulePieceDeletions_ZeroTxHash(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
+	_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(9)}, []byte{1})
 	if err == nil || !strings.Contains(err.Error(), "zero txHash") {
 		t.Errorf("want zero txHash error, got %v", err)
 	}
@@ -533,11 +523,11 @@ func makeBigInts(count int) []types.BigInt {
 	return ids
 }
 
-func TestSchedulePieceDeletion_ServerError(t *testing.T) {
+func TestSchedulePieceDeletions_ServerError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	_, err := c.SchedulePieceDeletion(context.Background(), types.NewBigInt(5), types.NewBigInt(9), []byte{1})
+	_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(9)}, []byte{1})
 	if err == nil {
 		t.Error("expected server error")
 	}

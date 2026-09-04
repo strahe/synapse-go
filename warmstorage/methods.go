@@ -185,50 +185,6 @@ func (s *Service) HasActivePieces(ctx context.Context, dataSetID sdktypes.BigInt
 	return leafCount.Sign() > 0, nil
 }
 
-// GetPieceMetadata returns the (exists, value) pair for (dataSetID, pieceID, key).
-//
-// Deprecated: FWSS piece metadata getters are being removed. Read metadata
-// from PieceAdded events or an indexer instead.
-func (s *Service) GetPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt, key string) (bool, string, error) {
-	if err := s.checkInit(); err != nil {
-		return false, "", err
-	}
-	if dataSetID.IsZero() {
-		return false, "", fmt.Errorf("warmstorage.GetPieceMetadata: %w: zero dataSetID", ErrInvalidArgument)
-	}
-	v, err := s.viewBind.GetPieceMetadata(&bind.CallOpts{Context: ctx}, dataSetID.Big(), pieceID.Big(), key)
-	if err != nil {
-		return false, "", fmt.Errorf("warmstorage.GetPieceMetadata: %w", err)
-	}
-	return v.Exists, v.Value, nil
-}
-
-// GetAllPieceMetadata returns a key/value map of all metadata for a
-// specific (dataSetID, pieceID) pair.
-//
-// Deprecated: FWSS piece metadata getters are being removed. Read metadata
-// from PieceAdded events or an indexer instead.
-func (s *Service) GetAllPieceMetadata(ctx context.Context, dataSetID, pieceID sdktypes.BigInt) (map[string]string, error) {
-	if err := s.checkInit(); err != nil {
-		return nil, err
-	}
-	if dataSetID.IsZero() {
-		return nil, fmt.Errorf("warmstorage.GetAllPieceMetadata: %w: zero dataSetID", ErrInvalidArgument)
-	}
-	raw, err := s.viewBind.GetAllPieceMetadata(&bind.CallOpts{Context: ctx}, dataSetID.Big(), pieceID.Big())
-	if err != nil {
-		return nil, fmt.Errorf("warmstorage.GetAllPieceMetadata: %w", err)
-	}
-	if len(raw.Keys) != len(raw.Values) {
-		return nil, fmt.Errorf("warmstorage.GetAllPieceMetadata: mismatched keys (%d) and values (%d)", len(raw.Keys), len(raw.Values))
-	}
-	out := make(map[string]string, len(raw.Keys))
-	for i, k := range raw.Keys {
-		out[k] = raw.Values[i]
-	}
-	return out, nil
-}
-
 // GetOwner returns the current owner of the FWSS contract.
 func (s *Service) GetOwner(ctx context.Context) (common.Address, error) {
 	if err := s.checkInit(); err != nil {

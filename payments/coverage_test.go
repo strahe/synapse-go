@@ -283,10 +283,11 @@ func TestIsFwssMaxApproved_AllApproved(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
 	s.usdfcToken = tokenAddr
+	lockupPeriod := defaultApprovalLockupPeriod()
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
-		true, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
+		true, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), lockupPeriod,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
+	ok, err := s.isFwssMaxApproved(context.Background(), lockupPeriod)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -299,10 +300,11 @@ func TestIsFwssMaxApproved_Unapproved(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
 	s.usdfcToken = tokenAddr
+	lockupPeriod := defaultApprovalLockupPeriod()
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
-		false, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
+		false, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), lockupPeriod,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
+	ok, err := s.isFwssMaxApproved(context.Background(), lockupPeriod)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -315,10 +317,11 @@ func TestIsFwssMaxApproved_RateTooLow(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
 	s.usdfcToken = tokenAddr
+	lockupPeriod := defaultApprovalLockupPeriod()
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
-		true, big.NewInt(1), maxUint256, big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
+		true, big.NewInt(1), maxUint256, big.NewInt(0), big.NewInt(0), lockupPeriod,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
+	ok, err := s.isFwssMaxApproved(context.Background(), lockupPeriod)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -333,10 +336,11 @@ func TestIsFwssMaxApproved_LockupTooLow(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
 	s.usdfcToken = tokenAddr
+	lockupPeriod := defaultApprovalLockupPeriod()
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
-		true, maxUint256, big.NewInt(1), big.NewInt(0), big.NewInt(0), LockupPeriodEpochs,
+		true, maxUint256, big.NewInt(1), big.NewInt(0), big.NewInt(0), lockupPeriod,
 	)
-	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
+	ok, err := s.isFwssMaxApproved(context.Background(), lockupPeriod)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
@@ -346,20 +350,21 @@ func TestIsFwssMaxApproved_LockupTooLow(t *testing.T) {
 }
 
 // TestIsFwssMaxApproved_MaxLockupPeriodTooShort covers the
-// MaxLockupPeriod < LockupPeriodEpochs branch (payments/fund.go:149).
+// MaxLockupPeriod shorter than the requested period branch.
 func TestIsFwssMaxApproved_MaxLockupPeriodTooShort(t *testing.T) {
 	s, mb := newTestService(t)
 	s.warmStorage = operatorAddr
 	s.usdfcToken = tokenAddr
+	lockupPeriod := defaultApprovalLockupPeriod()
 	mb.setFilPayReply(t, filPayAddr, "operatorApprovals",
 		true, maxUint256, maxUint256, big.NewInt(0), big.NewInt(0), big.NewInt(0),
 	)
-	ok, err := s.isFwssMaxApproved(context.Background(), LockupPeriodEpochs)
+	ok, err := s.isFwssMaxApproved(context.Background(), lockupPeriod)
 	if err != nil {
 		t.Fatalf("isFwssMaxApproved: %v", err)
 	}
 	if ok {
-		t.Fatal("expected false when MaxLockupPeriod < LockupPeriodEpochs")
+		t.Fatal("expected false when MaxLockupPeriod is shorter than requested")
 	}
 }
 

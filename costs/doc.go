@@ -11,9 +11,6 @@
 //     upload contexts (one new + N existing data sets); used by the storage
 //     manager's Prepare flow.
 //
-// Payment account summary moved to `payments.Service.AccountSummary`. The
-// older [Service.GetAccountSummary] method remains for compatibility.
-//
 // # Glossary
 //
 // Epoch — Filecoin block interval (30 seconds on mainnet and calibration).
@@ -33,9 +30,8 @@
 // It is separate from one-time operation fees.
 //
 // Lockup — funds reserved on the FilecoinPay contract to guarantee a
-// stream of payments. `LockupRatePerEpoch` is the per-epoch drain rate;
-// `FundedUntilEpoch` is the epoch at which existing funds are exhausted
-// at that rate.
+// stream of payments. Upload cost calculations include any additional lockup
+// required by the new data and report the resulting deposit requirement.
 //
 // # Stability
 //

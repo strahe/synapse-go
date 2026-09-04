@@ -62,11 +62,6 @@ type AccountSummary struct {
 	// TotalRateBasedLockup is TotalLockup minus TotalFixedLockup, floored at
 	// zero, in base units of the configured USDFC token.
 	TotalRateBasedLockup *big.Int
-	// FundedUntilEpoch is the legacy absolute epoch at which unreserved funds
-	// are exhausted at the current lockup rate.
-	//
-	// Deprecated: Use RunwayInEpochs for account health decisions.
-	FundedUntilEpoch *big.Int
 	// RunwayInEpochs is the number of epochs from CurrentEpoch until the
 	// account enters deficit. It is maxUint256 when LockupRatePerEpoch is zero.
 	RunwayInEpochs *big.Int

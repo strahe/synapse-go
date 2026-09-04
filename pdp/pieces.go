@@ -259,13 +259,6 @@ func isTooManyPiecesQueuedResponse(err error) bool {
 		strings.Contains(strings.ToLower(httpErr.Body), "scheduled removals queued")
 }
 
-// SchedulePieceDeletion issues a single-piece deletion request.
-//
-// Deprecated: use [Client.SchedulePieceDeletions].
-func (c *Client) SchedulePieceDeletion(ctx context.Context, dataSetID, pieceID types.BigInt, extraData []byte) (common.Hash, error) {
-	return c.SchedulePieceDeletions(ctx, dataSetID, []types.BigInt{pieceID}, extraData)
-}
-
 func validateDeletePieceIDs(op string, pieceIDs []types.BigInt) ([]uint64, error) {
 	if len(pieceIDs) == 0 {
 		return nil, fmt.Errorf("%s: no pieces provided", op)

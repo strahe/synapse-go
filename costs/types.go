@@ -83,16 +83,3 @@ type DepositCalculation struct {
 	// IsNewDataSet is true when creating a fresh dataset.
 	IsNewDataSet bool
 }
-
-// AccountSummary is the snapshot of an account's payment state.
-type AccountSummary struct {
-	Funds                 *big.Int
-	AvailableFunds        *big.Int
-	Debt                  *big.Int
-	LockupRatePerEpoch    *big.Int
-	LockupRatePerMonth    *big.Int
-	FundedUntilEpoch      *big.Int
-	RunwayInEpochs        *big.Int
-	GrossCoverageInEpochs *big.Int
-	CurrentEpoch          *big.Int
-}
