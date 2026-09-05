@@ -23,35 +23,44 @@ func (p Permission) Hex() string {
 // String implements fmt.Stringer and returns the same as Hex.
 func (p Permission) String() string { return p.Hex() }
 
-// CreateDataSetPermission authorises session keys to create new datasets.
+var (
+	createDataSetPermission         = mustPermission("25ebf20299107c91b4624d5bac3a16d32cabf0db23b450ee09ab7732983b1dc9")
+	addPiecesPermission             = mustPermission("954bdc254591a7eab1b73f03842464d9283a08352772737094d710a4428fd183")
+	schedulePieceRemovalsPermission = mustPermission("5415701e313bb627e755b16924727217bb356574fe20e7061442c200b0822b22")
+	terminateServicePermission      = mustPermission("522bd88a11de1cdc6574394dde7a21ae488ff13e16e7408d0ea721dd8479dffc")
+)
+
+// CreateDataSetPermission returns the permission to create new datasets.
 //
 // encodeType: "CreateDataSet(uint256 clientDataSetId,address payee,MetadataEntry[] metadata)MetadataEntry(string key,string value)"
-var CreateDataSetPermission = mustPermission("25ebf20299107c91b4624d5bac3a16d32cabf0db23b450ee09ab7732983b1dc9")
+func CreateDataSetPermission() Permission { return createDataSetPermission }
 
-// AddPiecesPermission authorises session keys to add pieces to a dataset.
+// AddPiecesPermission returns the permission to add pieces to a dataset.
 //
 // encodeType: "AddPieces(uint256 clientDataSetId,uint256 nonce,Cid[] pieceData,PieceMetadata[] pieceMetadata)Cid(bytes data)MetadataEntry(string key,string value)PieceMetadata(uint256 pieceIndex,MetadataEntry[] metadata)"
-var AddPiecesPermission = mustPermission("954bdc254591a7eab1b73f03842464d9283a08352772737094d710a4428fd183")
+func AddPiecesPermission() Permission { return addPiecesPermission }
 
-// SchedulePieceRemovalsPermission authorises session keys to schedule
-// piece removals from a dataset.
+// SchedulePieceRemovalsPermission returns the permission to schedule piece
+// removals from a dataset.
 //
 // encodeType: "SchedulePieceRemovals(uint256 clientDataSetId,uint256[] pieceIds)"
-var SchedulePieceRemovalsPermission = mustPermission("5415701e313bb627e755b16924727217bb356574fe20e7061442c200b0822b22")
+func SchedulePieceRemovalsPermission() Permission { return schedulePieceRemovalsPermission }
 
-// TerminateServicePermission authorises session keys to terminate a service.
+// TerminateServicePermission returns the permission to terminate a service.
 //
 // encodeType: "TerminateService(uint256 dataSetId)"
-var TerminateServicePermission = mustPermission("522bd88a11de1cdc6574394dde7a21ae488ff13e16e7408d0ea721dd8479dffc")
+func TerminateServicePermission() Permission { return terminateServicePermission }
 
-// DefaultFWSSPermissions contains all four standard FWSS permissions.
-// This is the default set used by Login when no explicit permissions
-// are provided.
-var DefaultFWSSPermissions = []Permission{
-	CreateDataSetPermission,
-	AddPiecesPermission,
-	SchedulePieceRemovalsPermission,
-	TerminateServicePermission,
+// DefaultFWSSPermissions returns an independent slice of the four standard
+// FWSS permissions, ordered as create dataset, add pieces, schedule removals,
+// and terminate service. Modifying it does not change future defaults.
+func DefaultFWSSPermissions() []Permission {
+	return []Permission{
+		CreateDataSetPermission(),
+		AddPiecesPermission(),
+		SchedulePieceRemovalsPermission(),
+		TerminateServicePermission(),
+	}
 }
 
 // Expirations maps each Permission to its expiry timestamp (Unix epoch
@@ -62,10 +71,10 @@ type Expirations map[Permission]uint64
 // default FWSS permissions, each with a zero (expired) expiry.
 func DefaultEmptyExpirations() Expirations {
 	return Expirations{
-		CreateDataSetPermission:         0,
-		AddPiecesPermission:             0,
-		SchedulePieceRemovalsPermission: 0,
-		TerminateServicePermission:      0,
+		CreateDataSetPermission():         0,
+		AddPiecesPermission():             0,
+		SchedulePieceRemovalsPermission(): 0,
+		TerminateServicePermission():      0,
 	}
 }
 
@@ -73,13 +82,13 @@ func DefaultEmptyExpirations() Expirations {
 // permission. Unknown permissions return false and should be rendered by hash.
 func PermissionName(p Permission) (string, bool) {
 	switch p {
-	case CreateDataSetPermission:
+	case CreateDataSetPermission():
 		return "CreateDataSet", true
-	case AddPiecesPermission:
+	case AddPiecesPermission():
 		return "AddPieces", true
-	case SchedulePieceRemovalsPermission:
+	case SchedulePieceRemovalsPermission():
 		return "SchedulePieceRemovals", true
-	case TerminateServicePermission:
+	case TerminateServicePermission():
 		return "TerminateService", true
 	default:
 		return "", false
@@ -104,7 +113,7 @@ func PermissionFromEncodeType(encodeType string) Permission {
 func mustPermission(hexStr string) Permission {
 	b, err := hex.DecodeString(hexStr)
 	if err != nil || len(b) != 32 {
-		panic(fmt.Sprintf("invalid permission hex: %s", hexStr)) //nolint:forbidigo // package-level Permission constants are decoded at init from compile-time-constant strings
+		panic(fmt.Sprintf("invalid permission hex: %s", hexStr)) //nolint:forbidigo // permission hashes are decoded at init from fixed hex strings
 	}
 	var p Permission
 	copy(p[:], b)

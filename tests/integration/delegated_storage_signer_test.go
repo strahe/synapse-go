@@ -226,8 +226,8 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 	}
 
 	permissions := []sessionkey.Permission{
-		sessionkey.CreateDataSetPermission,
-		sessionkey.AddPiecesPermission,
+		sessionkey.CreateDataSetPermission(),
+		sessionkey.AddPiecesPermission(),
 	}
 	login, err := client.SessionKey().LoginWithOptions(
 		ctx,
