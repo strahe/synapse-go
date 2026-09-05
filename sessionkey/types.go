@@ -10,7 +10,7 @@ import (
 // LoginOptions configures a Login or LoginAndFund call. All fields are
 // optional; nil or zero values cause sensible defaults to be applied.
 type LoginOptions struct {
-	// Permissions to authorise. Nil defaults to DefaultFWSSPermissions;
+	// Permissions to authorise. Nil uses a fresh [DefaultFWSSPermissions] slice;
 	// an explicit empty slice authorises no permissions.
 	Permissions []Permission
 	// ExpiresAt is the Unix timestamp (seconds) when the session key
@@ -24,7 +24,7 @@ type LoginOptions struct {
 
 // RevokeOptions configures a Revoke call.
 type RevokeOptions struct {
-	// Permissions to revoke. Nil defaults to DefaultFWSSPermissions;
+	// Permissions to revoke. Nil uses a fresh [DefaultFWSSPermissions] slice;
 	// an explicit empty slice revokes no permissions.
 	Permissions []Permission
 	// Origin is an application identifier stored on-chain. Defaults to
@@ -32,7 +32,8 @@ type RevokeOptions struct {
 	Origin string
 }
 
-// WriteResult is kept as an alias for backwards compatibility.
+// WriteResult is a convenience re-export of [types.WriteResult].
+// The two names refer to the same type and are interchangeable.
 type WriteResult = sdktypes.WriteResult
 
 // SessionKey represents a session key with its current authorization state.

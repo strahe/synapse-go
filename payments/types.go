@@ -169,7 +169,8 @@ type OperatorApproval struct {
 	MaxLockupPeriod *big.Int // maximum lockup period allowed (in epochs)
 }
 
-// WriteResult is kept as an alias for backwards compatibility.
+// WriteResult is a convenience re-export of [types.WriteResult].
+// The two names refer to the same type and are interchangeable.
 type WriteResult = sdktypes.WriteResult
 
 // ZeroAddress is a convenience alias for common.Address{} used to indicate

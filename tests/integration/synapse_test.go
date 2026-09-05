@@ -878,7 +878,7 @@ func TestIntegration(t *testing.T) {
 
 		// Verify the session key is authorized.
 		expiry, err := client.SessionKey().AuthorizationExpiry(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission(),
 		)
 		if err != nil {
 			t.Fatalf("AuthorizationExpiry: %v", err)
@@ -890,7 +890,7 @@ func TestIntegration(t *testing.T) {
 
 		// Verify not expired.
 		isExpired, err := client.SessionKey().IsExpired(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission(),
 		)
 		if err != nil {
 			t.Fatalf("IsExpired (before revoke): %v", err)
@@ -913,7 +913,7 @@ func TestIntegration(t *testing.T) {
 
 		// Verify the session key is now expired.
 		isExpiredAfter, err := client.SessionKey().IsExpired(
-			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission,
+			cctx, addr, sessionKeyAddr, sessionkey.CreateDataSetPermission(),
 		)
 		if err != nil {
 			t.Fatalf("IsExpired (after revoke): %v", err)

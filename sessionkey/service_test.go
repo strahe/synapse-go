@@ -356,11 +356,27 @@ func TestNew_MaxMulticallCalls(t *testing.T) {
 // Login tests
 // ---------------------------------------------------------------------------
 
+func assertStandardFWSSPermissions(t *testing.T, got [][32]byte) {
+	t.Helper()
+	expected := expectedFWSSPermissions()
+	if len(got) != len(expected) {
+		t.Fatalf("permissions count = %d, want %d", len(got), len(expected))
+	}
+	for i, p := range got {
+		if Permission(p) != expected[i] {
+			t.Errorf("permission[%d] = %s, want %s", i, Permission(p).Hex(), expected[i].Hex())
+		}
+	}
+}
+
 func TestLogin_DefaultParams(t *testing.T) {
 	mb := newMockBackend(t)
 	sig := newTestSigner(t)
 	svc := newTestService(t, mb, sig)
 	sessionKey := common.HexToAddress("0xDEAD")
+
+	permissions := DefaultFWSSPermissions()
+	clear(permissions)
 
 	before := time.Now().Unix()
 	res, err := svc.Login(context.Background(), sessionKey)
@@ -407,14 +423,7 @@ func TestLogin_DefaultParams(t *testing.T) {
 
 	// Check default permissions (4 FWSS permissions, deduplicated).
 	gotPerms := args[2].([][32]byte)
-	if len(gotPerms) != len(DefaultFWSSPermissions) {
-		t.Fatalf("permissions count = %d, want %d", len(gotPerms), len(DefaultFWSSPermissions))
-	}
-	for i, p := range gotPerms {
-		if Permission(p) != DefaultFWSSPermissions[i] {
-			t.Errorf("permission[%d] mismatch", i)
-		}
-	}
+	assertStandardFWSSPermissions(t, gotPerms)
 
 	gotOrigin := args[3].(string)
 	if gotOrigin != "synapse" {
@@ -428,7 +437,7 @@ func TestLoginWithOptions_CustomOverrides(t *testing.T) {
 	svc := newTestService(t, mb, sig)
 
 	customExpiry := uint64(2000000000)
-	customPerms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	customPerms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	customOrigin := "my-app"
 	sessionKey := common.HexToAddress("0xBEEF")
 
@@ -468,10 +477,10 @@ func TestLogin_DedupPermissions(t *testing.T) {
 
 	// Deliberately pass duplicates.
 	duped := []Permission{
-		CreateDataSetPermission,
-		AddPiecesPermission,
-		CreateDataSetPermission, // duplicate
-		AddPiecesPermission,     // duplicate
+		CreateDataSetPermission(),
+		AddPiecesPermission(),
+		CreateDataSetPermission(), // duplicate
+		AddPiecesPermission(),     // duplicate
 	}
 	_, err := svc.LoginWithOptions(context.Background(), common.HexToAddress("0xBEEF"), &LoginOptions{
 		Permissions: duped,
@@ -532,6 +541,9 @@ func TestLoginAndFund_PayableValue(t *testing.T) {
 	value := big.NewInt(1_000_000_000_000_000_000) // 1 FIL
 	sessionKey := common.HexToAddress("0xCAFE")
 
+	permissions := DefaultFWSSPermissions()
+	clear(permissions)
+
 	_, err := svc.LoginAndFund(context.Background(), sessionKey, value)
 	if err != nil {
 		t.Fatal(err)
@@ -547,6 +559,11 @@ func TestLoginAndFund_PayableValue(t *testing.T) {
 	if method.Name != "loginAndFund" {
 		t.Errorf("expected loginAndFund, got %s", method.Name)
 	}
+	args, err := method.Inputs.Unpack(tx.Data()[4:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStandardFWSSPermissions(t, args[2].([][32]byte))
 }
 
 func TestLoginAndFund_NilValue(t *testing.T) {
@@ -580,6 +597,9 @@ func TestRevoke_DefaultParams(t *testing.T) {
 	sig := newTestSigner(t)
 	svc := newTestService(t, mb, sig)
 
+	permissions := DefaultFWSSPermissions()
+	clear(permissions)
+
 	sessionKey := common.HexToAddress("0xDEAD")
 	_, err := svc.Revoke(context.Background(), sessionKey)
 	if err != nil {
@@ -596,9 +616,7 @@ func TestRevoke_DefaultParams(t *testing.T) {
 	args, _ := method.Inputs.Unpack(tx.Data()[4:])
 	// args: signer, permissions, origin
 	gotPerms := args[1].([][32]byte)
-	if len(gotPerms) != len(DefaultFWSSPermissions) {
-		t.Errorf("permissions count = %d, want %d", len(gotPerms), len(DefaultFWSSPermissions))
-	}
+	assertStandardFWSSPermissions(t, gotPerms)
 
 	gotOrigin := args[2].(string)
 	if gotOrigin != "synapse" {
@@ -613,7 +631,7 @@ func TestRevokeWithOptions_CustomParams(t *testing.T) {
 
 	sessionKey := common.HexToAddress("0xBEEF")
 	_, err := svc.RevokeWithOptions(context.Background(), sessionKey, &RevokeOptions{
-		Permissions: []Permission{CreateDataSetPermission},
+		Permissions: []Permission{CreateDataSetPermission()},
 		Origin:      "my-app",
 	})
 	if err != nil {
@@ -628,7 +646,7 @@ func TestRevokeWithOptions_CustomParams(t *testing.T) {
 	if len(gotPerms) != 1 {
 		t.Fatalf("got %d perms, want 1", len(gotPerms))
 	}
-	if Permission(gotPerms[0]) != CreateDataSetPermission {
+	if Permission(gotPerms[0]) != CreateDataSetPermission() {
 		t.Error("wrong permission")
 	}
 
@@ -653,7 +671,7 @@ func TestAuthorizationExpiry_Success(t *testing.T) {
 	root := common.HexToAddress("0xAAAA")
 	sessionKey := common.HexToAddress("0xBBBB")
 
-	got, err := svc.AuthorizationExpiry(context.Background(), root, sessionKey, CreateDataSetPermission)
+	got, err := svc.AuthorizationExpiry(context.Background(), root, sessionKey, CreateDataSetPermission())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +692,7 @@ func TestAuthorizationExpiry_Uint64Overflow(t *testing.T) {
 	_, err := svc.AuthorizationExpiry(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
-		CreateDataSetPermission,
+		CreateDataSetPermission(),
 	)
 	if err == nil {
 		t.Fatal("expected overflow error")
@@ -717,7 +735,7 @@ func TestIsExpired_True(t *testing.T) {
 	expired, err := svc.IsExpired(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
-		CreateDataSetPermission,
+		CreateDataSetPermission(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -738,7 +756,7 @@ func TestIsExpired_False(t *testing.T) {
 	expired, err := svc.IsExpired(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
-		CreateDataSetPermission,
+		CreateDataSetPermission(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -758,7 +776,7 @@ func TestIsExpired_ZeroMeansExpired(t *testing.T) {
 	expired, err := svc.IsExpired(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
-		CreateDataSetPermission,
+		CreateDataSetPermission(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -783,7 +801,7 @@ func TestGetExpirations_Sequential(t *testing.T) {
 	expected := uint64(1800000000)
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(expected))
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	expirations, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -804,6 +822,9 @@ func TestGetExpirations_DefaultPermissions(t *testing.T) {
 	sig := newTestSigner(t)
 	svc := newTestService(t, mb, sig)
 
+	permissions := DefaultFWSSPermissions()
+	clear(permissions)
+
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(9999))
 
 	expirations, err := svc.GetExpirations(context.Background(),
@@ -814,8 +835,14 @@ func TestGetExpirations_DefaultPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(expirations) != len(DefaultFWSSPermissions) {
-		t.Fatalf("expected %d entries, got %d", len(DefaultFWSSPermissions), len(expirations))
+	expected := expectedFWSSPermissions()
+	if len(expirations) != len(expected) {
+		t.Fatalf("expected %d entries, got %d", len(expected), len(expirations))
+	}
+	for _, permission := range expected {
+		if expiry, ok := expirations[permission]; !ok || expiry != 9999 {
+			t.Errorf("expiry for %s = (%d, %v), want (9999, true)", permission.Hex(), expiry, ok)
+		}
 	}
 }
 
@@ -851,7 +878,7 @@ func TestGetExpirations_Batch_Success(t *testing.T) {
 	// Set per-permission expiries so we can verify differentiated results.
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(1800000001))
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	expirations, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -874,7 +901,7 @@ func TestGetExpirations_Batch_AllSuccess(t *testing.T) {
 
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(2000000000))
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	expirations, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -933,7 +960,7 @@ func TestGetExpirations_Batch_PartialFailure(t *testing.T) {
 		return mb.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
 	}
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	expirations, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -945,17 +972,17 @@ func TestGetExpirations_Batch_PartialFailure(t *testing.T) {
 	if !errors.Is(err, errBatchPartial) {
 		t.Fatalf("errors.Is(err, errBatchPartial)=false; err=%v", err)
 	}
-	if !strings.Contains(err.Error(), AddPiecesPermission.String()) {
+	if !strings.Contains(err.Error(), AddPiecesPermission().String()) {
 		t.Fatalf("partial-failure error missing permission name; err=%v", err)
 	}
 
 	// First permission should have the expiry from the successful sub-call.
-	if expirations[CreateDataSetPermission] != 2000000000 {
-		t.Errorf("CreateDataSet: got %d, want 2000000000", expirations[CreateDataSetPermission])
+	if expirations[CreateDataSetPermission()] != 2000000000 {
+		t.Errorf("CreateDataSet: got %d, want 2000000000", expirations[CreateDataSetPermission()])
 	}
 	// Second permission should retain zero and be surfaced in the joined error.
-	if expirations[AddPiecesPermission] != 0 {
-		t.Errorf("AddPieces: got %d, want 0 (failed sub-call)", expirations[AddPiecesPermission])
+	if expirations[AddPiecesPermission()] != 0 {
+		t.Errorf("AddPieces: got %d, want 0 (failed sub-call)", expirations[AddPiecesPermission()])
 	}
 }
 
@@ -971,7 +998,7 @@ func TestGetExpirations_ChunksAndPreservesResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(2000000000))
-	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+	permissions := []Permission{CreateDataSetPermission(), AddPiecesPermission(), TerminateServicePermission()}
 
 	expirations, err := svc.GetExpirations(
 		context.Background(),
@@ -1036,7 +1063,7 @@ func TestGetExpirations_ChunkedPartialFailure(t *testing.T) {
 		}
 		return mb.multicallABI.Methods["aggregate3"].Outputs.Pack([]result3{result})
 	}
-	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+	permissions := []Permission{CreateDataSetPermission(), AddPiecesPermission(), TerminateServicePermission()}
 
 	expirations, err := svc.GetExpirations(
 		context.Background(),
@@ -1050,9 +1077,9 @@ func TestGetExpirations_ChunkedPartialFailure(t *testing.T) {
 	if batchCalls != 3 {
 		t.Fatalf("multicall count = %d, want 3", batchCalls)
 	}
-	if expirations[CreateDataSetPermission] != 2000000000 ||
-		expirations[AddPiecesPermission] != 0 ||
-		expirations[TerminateServicePermission] != 2000000000 {
+	if expirations[CreateDataSetPermission()] != 2000000000 ||
+		expirations[AddPiecesPermission()] != 0 ||
+		expirations[TerminateServicePermission()] != 2000000000 {
 		t.Fatalf("expirations = %+v, want success/failure/success", expirations)
 	}
 }
@@ -1079,7 +1106,7 @@ func TestGetExpirations_ChunkFailureFallsBackToAllSequential(t *testing.T) {
 		defer mb.mu.Unlock()
 		return mb.handleMulticall(data)
 	}
-	permissions := []Permission{CreateDataSetPermission, AddPiecesPermission, TerminateServicePermission}
+	permissions := []Permission{CreateDataSetPermission(), AddPiecesPermission(), TerminateServicePermission()}
 
 	expirations, err := svc.GetExpirations(
 		context.Background(),
@@ -1110,7 +1137,7 @@ func TestGetExpirations_Batch_Fails_FallsBackToSequential(t *testing.T) {
 
 	mb.setReply(t, testRegistryAddr, "authorizationExpiry", new(big.Int).SetUint64(1700000000))
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	expirations, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -1136,18 +1163,18 @@ func TestSessionKey_HasPermission(t *testing.T) {
 		Address:     common.HexToAddress("0xBBBB"),
 		RootAddress: common.HexToAddress("0xAAAA"),
 		Expirations: Expirations{
-			CreateDataSetPermission: uint64(now.Add(1 * time.Hour).Unix()),
-			AddPiecesPermission:     uint64(now.Add(-1 * time.Hour).Unix()), // expired
+			CreateDataSetPermission(): uint64(now.Add(1 * time.Hour).Unix()),
+			AddPiecesPermission():     uint64(now.Add(-1 * time.Hour).Unix()), // expired
 		},
 	}
 
-	if !sk.HasPermission(CreateDataSetPermission) {
+	if !sk.HasPermission(CreateDataSetPermission()) {
 		t.Error("expected HasPermission=true for future expiry")
 	}
-	if sk.HasPermission(AddPiecesPermission) {
+	if sk.HasPermission(AddPiecesPermission()) {
 		t.Error("expected HasPermission=false for past expiry")
 	}
-	if sk.HasPermission(TerminateServicePermission) {
+	if sk.HasPermission(TerminateServicePermission()) {
 		t.Error("expected HasPermission=false for missing permission")
 	}
 }
@@ -1156,17 +1183,17 @@ func TestSessionKey_HasPermissionAt(t *testing.T) {
 	expiry := uint64(2000000000)
 	sk := SessionKey{
 		Expirations: Expirations{
-			CreateDataSetPermission: expiry,
+			CreateDataSetPermission(): expiry,
 		},
 	}
 
 	before := time.Unix(1999999999, 0)
 	after := time.Unix(2000000001, 0)
 
-	if !sk.HasPermissionAt(before, CreateDataSetPermission) {
+	if !sk.HasPermissionAt(before, CreateDataSetPermission()) {
 		t.Error("expected true before expiry")
 	}
-	if sk.HasPermissionAt(after, CreateDataSetPermission) {
+	if sk.HasPermissionAt(after, CreateDataSetPermission()) {
 		t.Error("expected false after expiry")
 	}
 }
@@ -1175,15 +1202,15 @@ func TestSessionKey_HasPermissions(t *testing.T) {
 	future := uint64(time.Now().Add(1 * time.Hour).Unix())
 	sk := SessionKey{
 		Expirations: Expirations{
-			CreateDataSetPermission: future,
-			AddPiecesPermission:     future,
+			CreateDataSetPermission(): future,
+			AddPiecesPermission():     future,
 		},
 	}
 
-	if !sk.HasPermissions([]Permission{CreateDataSetPermission, AddPiecesPermission}) {
+	if !sk.HasPermissions([]Permission{CreateDataSetPermission(), AddPiecesPermission()}) {
 		t.Error("expected HasPermissions=true")
 	}
-	if sk.HasPermissions([]Permission{CreateDataSetPermission, TerminateServicePermission}) {
+	if sk.HasPermissions([]Permission{CreateDataSetPermission(), TerminateServicePermission()}) {
 		t.Error("expected HasPermissions=false when one permission missing")
 	}
 }
@@ -1194,24 +1221,24 @@ func TestSessionKey_HasPermissions(t *testing.T) {
 
 func TestDedup(t *testing.T) {
 	input := []Permission{
-		CreateDataSetPermission,
-		AddPiecesPermission,
-		CreateDataSetPermission,
-		TerminateServicePermission,
-		AddPiecesPermission,
+		CreateDataSetPermission(),
+		AddPiecesPermission(),
+		CreateDataSetPermission(),
+		TerminateServicePermission(),
+		AddPiecesPermission(),
 	}
 	got := dedup(input)
 	if len(got) != 3 {
 		t.Fatalf("expected 3, got %d", len(got))
 	}
 	// Check order preserved.
-	if Permission(got[0]) != CreateDataSetPermission {
+	if Permission(got[0]) != CreateDataSetPermission() {
 		t.Error("first should be CreateDataSet")
 	}
-	if Permission(got[1]) != AddPiecesPermission {
+	if Permission(got[1]) != AddPiecesPermission() {
 		t.Error("second should be AddPieces")
 	}
-	if Permission(got[2]) != TerminateServicePermission {
+	if Permission(got[2]) != TerminateServicePermission() {
 		t.Error("third should be TerminateService")
 	}
 }
@@ -1253,8 +1280,8 @@ func TestResolveLoginOptions_Defaults(t *testing.T) {
 	lo := resolveLoginOptions(nil)
 	after := time.Now().Unix()
 
-	if len(lo.Permissions) != len(DefaultFWSSPermissions) {
-		t.Errorf("permissions count = %d, want %d", len(lo.Permissions), len(DefaultFWSSPermissions))
+	if len(lo.Permissions) != len(DefaultFWSSPermissions()) {
+		t.Errorf("permissions count = %d, want %d", len(lo.Permissions), len(DefaultFWSSPermissions()))
 	}
 	if lo.ExpiresAt < uint64(before)+3600 || lo.ExpiresAt > uint64(after)+3600 {
 		t.Errorf("expiry %d out of range", lo.ExpiresAt)
@@ -1277,8 +1304,8 @@ func TestResolveLoginOptions_ExplicitEmptyPermissions(t *testing.T) {
 func TestResolveRevokeOptions_Defaults(t *testing.T) {
 	ro := resolveRevokeOptions(nil)
 
-	if len(ro.Permissions) != len(DefaultFWSSPermissions) {
-		t.Errorf("permissions count = %d, want %d", len(ro.Permissions), len(DefaultFWSSPermissions))
+	if len(ro.Permissions) != len(DefaultFWSSPermissions()) {
+		t.Errorf("permissions count = %d, want %d", len(ro.Permissions), len(DefaultFWSSPermissions()))
 	}
 	if ro.Origin != "synapse" {
 		t.Errorf("origin = %q, want %q", ro.Origin, "synapse")
@@ -1516,8 +1543,8 @@ func TestRevokeWithOptions_NilOptions(t *testing.T) {
 	args, _ := regABI.Methods["revoke"].Inputs.Unpack(tx.Data()[4:])
 
 	gotPerms := args[1].([][32]byte)
-	if len(gotPerms) != len(DefaultFWSSPermissions) {
-		t.Errorf("permissions count = %d, want %d", len(gotPerms), len(DefaultFWSSPermissions))
+	if len(gotPerms) != len(DefaultFWSSPermissions()) {
+		t.Errorf("permissions count = %d, want %d", len(gotPerms), len(DefaultFWSSPermissions()))
 	}
 	gotOrigin := args[2].(string)
 	if gotOrigin != "synapse" {
@@ -1592,14 +1619,14 @@ func TestLogWarn_WithLogger(t *testing.T) {
 
 func TestSessionKey_HasPermissionAt_NilReceiver(t *testing.T) {
 	var sk *SessionKey
-	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission) {
+	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission()) {
 		t.Error("expected false for nil receiver")
 	}
 }
 
 func TestSessionKey_HasPermissionAt_NilExpirations(t *testing.T) {
 	sk := &SessionKey{}
-	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission) {
+	if sk.HasPermissionAt(time.Now(), CreateDataSetPermission()) {
 		t.Error("expected false for nil expirations")
 	}
 }
@@ -1651,7 +1678,7 @@ func TestGetExpirations_Batch_UnpackFailure_ReturnsPartialError(t *testing.T) {
 		return mb.multicallABI.Methods["aggregate3"].Outputs.Pack(results)
 	}
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	exps, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -1663,11 +1690,11 @@ func TestGetExpirations_Batch_UnpackFailure_ReturnsPartialError(t *testing.T) {
 	if !errors.Is(err, errBatchPartial) {
 		t.Fatalf("errors.Is(err, errBatchPartial)=false; err=%v", err)
 	}
-	if exps[CreateDataSetPermission] != 42 {
-		t.Errorf("CreateDataSet: got %d, want 42 (partial success)", exps[CreateDataSetPermission])
+	if exps[CreateDataSetPermission()] != 42 {
+		t.Errorf("CreateDataSet: got %d, want 42 (partial success)", exps[CreateDataSetPermission()])
 	}
-	if exps[AddPiecesPermission] != 0 {
-		t.Errorf("AddPieces: got %d, want 0 (decode failed)", exps[AddPiecesPermission])
+	if exps[AddPiecesPermission()] != 0 {
+		t.Errorf("AddPieces: got %d, want 0 (decode failed)", exps[AddPiecesPermission()])
 	}
 }
 
@@ -1685,7 +1712,7 @@ func TestGetExpirations_Sequential_PartialFailure_Joins(t *testing.T) {
 	// Make the registry call error every time → every sequential call fails.
 	mb.errs[testRegistryAddr.Hex()+":authorizationExpiry"] = errors.New("boom: registry unavailable")
 
-	perms := []Permission{CreateDataSetPermission, AddPiecesPermission}
+	perms := []Permission{CreateDataSetPermission(), AddPiecesPermission()}
 	exps, err := svc.GetExpirations(context.Background(),
 		common.HexToAddress("0xAAAA"),
 		common.HexToAddress("0xBBBB"),
@@ -1695,8 +1722,8 @@ func TestGetExpirations_Sequential_PartialFailure_Joins(t *testing.T) {
 		t.Fatal("expected aggregate error, got nil")
 	}
 	// The aggregated error must mention both permissions.
-	if !strings.Contains(err.Error(), CreateDataSetPermission.String()) ||
-		!strings.Contains(err.Error(), AddPiecesPermission.String()) {
+	if !strings.Contains(err.Error(), CreateDataSetPermission().String()) ||
+		!strings.Contains(err.Error(), AddPiecesPermission().String()) {
 		t.Fatalf("aggregated error missing permission names; err=%v", err)
 	}
 	// Partial result should still be a non-nil map with zero values.

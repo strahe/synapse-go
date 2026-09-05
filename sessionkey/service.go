@@ -144,7 +144,7 @@ func (s *Service) RegistryAddress() common.Address { return s.registryAddr }
 // ---------- write operations ----------
 
 // Login authorises the given session key address with default options
-// (DefaultFWSSPermissions, 1 hour expiry, origin "synapse").
+// ([DefaultFWSSPermissions], 1 hour expiry, origin "synapse").
 func (s *Service) Login(ctx context.Context, sessionKeyAddr common.Address, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -311,6 +311,8 @@ func authorizationExpired(exp, now uint64) bool {
 //
 // GetExpirations returns the best-effort partial [Expirations] together
 // with [errors.Join] of every per-permission lookup error.
+// Nil permissions use [DefaultFWSSPermissions]; an explicit empty slice
+// queries no permissions.
 // Expiry values of 0 mean "not authorized" or "revoked" — these are valid
 // state, not errors, and are not reflected in the returned error.
 //
@@ -324,7 +326,7 @@ func (s *Service) GetExpirations(ctx context.Context, rootAddr, sessionKeyAddr c
 		return Expirations{}, err
 	}
 	if permissions == nil {
-		permissions = DefaultFWSSPermissions
+		permissions = DefaultFWSSPermissions()
 	}
 
 	result := make(Expirations, len(permissions))
@@ -507,7 +509,7 @@ func resolveLoginOptions(opts *LoginOptions) LoginOptions {
 		lo = *opts
 	}
 	if lo.Permissions == nil {
-		lo.Permissions = DefaultFWSSPermissions
+		lo.Permissions = DefaultFWSSPermissions()
 	}
 	if lo.ExpiresAt == 0 {
 		lo.ExpiresAt = uint64(time.Now().Unix()) + 3600
@@ -524,7 +526,7 @@ func resolveRevokeOptions(opts *RevokeOptions) RevokeOptions {
 		ro = *opts
 	}
 	if ro.Permissions == nil {
-		ro.Permissions = DefaultFWSSPermissions
+		ro.Permissions = DefaultFWSSPermissions()
 	}
 	if ro.Origin == "" {
 		ro.Origin = "synapse"

@@ -50,8 +50,8 @@ func TestIntegration_SessionKey(t *testing.T) {
 		// authorization bounded without an extra cleanup transaction.
 		expiresAt := uint64(time.Now().Add(10 * time.Minute).Unix())
 		perms := []sessionkey.Permission{
-			sessionkey.CreateDataSetPermission,
-			sessionkey.AddPiecesPermission,
+			sessionkey.CreateDataSetPermission(),
+			sessionkey.AddPiecesPermission(),
 		}
 
 		res, err := sk.LoginWithOptions(ctx, skAddr, &sessionkey.LoginOptions{
@@ -91,17 +91,17 @@ func TestIntegration_SessionKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetExpirations(default): %v", err)
 		}
-		if defaultExps[sessionkey.TerminateServicePermission] != 0 {
+		if defaultExps[sessionkey.TerminateServicePermission()] != 0 {
 			t.Errorf("TerminateService expiry = %d, want 0 (not authorised)",
-				defaultExps[sessionkey.TerminateServicePermission])
+				defaultExps[sessionkey.TerminateServicePermission()])
 		}
-		if defaultExps[sessionkey.CreateDataSetPermission] == 0 {
+		if defaultExps[sessionkey.CreateDataSetPermission()] == 0 {
 			t.Error("CreateDataSet expiry = 0, want > 0 after login")
 		}
 
 		// RevokeWithOptions for just the AddPieces permission.
 		revRes, err := sk.RevokeWithOptions(ctx, skAddr, &sessionkey.RevokeOptions{
-			Permissions: []sessionkey.Permission{sessionkey.AddPiecesPermission},
+			Permissions: []sessionkey.Permission{sessionkey.AddPiecesPermission()},
 			Origin:      "integration-test",
 		}, sessionkey.WithWait(txWait))
 		if err != nil {
@@ -113,14 +113,14 @@ func TestIntegration_SessionKey(t *testing.T) {
 		t.Logf("RevokeWithOptions tx=%s", revRes.Hash)
 
 		// AddPieces should now be expired, CreateDataSet still active.
-		expiredAddPieces, err := sk.IsExpired(ctx, rootAddr, skAddr, sessionkey.AddPiecesPermission)
+		expiredAddPieces, err := sk.IsExpired(ctx, rootAddr, skAddr, sessionkey.AddPiecesPermission())
 		if err != nil {
 			t.Fatalf("IsExpired(AddPieces): %v", err)
 		}
 		if !expiredAddPieces {
 			t.Error("AddPieces should be expired after partial revoke")
 		}
-		exp, err := sk.AuthorizationExpiry(ctx, rootAddr, skAddr, sessionkey.CreateDataSetPermission)
+		exp, err := sk.AuthorizationExpiry(ctx, rootAddr, skAddr, sessionkey.CreateDataSetPermission())
 		if err != nil {
 			t.Fatalf("AuthorizationExpiry(CreateDataSet): %v", err)
 		}
@@ -163,7 +163,7 @@ func TestIntegration_SessionKey(t *testing.T) {
 		skAddr2 := crypto.PubkeyToAddress(skPriv2.PublicKey)
 
 		res2, err := sk.LoginAndFundWithOptions(ctx, skAddr2, one, &sessionkey.LoginOptions{
-			Permissions: []sessionkey.Permission{sessionkey.CreateDataSetPermission},
+			Permissions: []sessionkey.Permission{sessionkey.CreateDataSetPermission()},
 			ExpiresAt:   uint64(time.Now().Add(10 * time.Minute).Unix()),
 			Origin:      "integration-test",
 		}, sessionkey.WithWait(txWait))
@@ -175,7 +175,7 @@ func TestIntegration_SessionKey(t *testing.T) {
 		}
 
 		// Only CreateDataSet should be authorised.
-		expAdd, err := sk.AuthorizationExpiry(ctx, rootAddr, skAddr2, sessionkey.AddPiecesPermission)
+		expAdd, err := sk.AuthorizationExpiry(ctx, rootAddr, skAddr2, sessionkey.AddPiecesPermission())
 		if err != nil {
 			t.Fatalf("AuthorizationExpiry(AddPieces): %v", err)
 		}

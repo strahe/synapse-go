@@ -22,8 +22,8 @@ func Example() {
 	sk := common.HexToAddress("0x...")
 
 	perms := []sessionkey.Permission{
-		sessionkey.AddPiecesPermission,
-		sessionkey.TerminateServicePermission,
+		sessionkey.AddPiecesPermission(),
+		sessionkey.TerminateServicePermission(),
 	}
 	exp, err := svc.GetExpirations(ctx, root, sk, perms)
 	for p, epoch := range exp {
