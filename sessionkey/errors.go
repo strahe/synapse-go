@@ -10,8 +10,8 @@ import (
 // ErrTxFailed reports that a transaction was mined but reverted on-chain.
 // Use errors.Is to match errors returned by state-changing calls.
 //
-// This is an alias of types.ErrTxFailed kept for backwards compatibility;
-// callers can match either interchangeably.
+// This is a convenience re-export of [types.ErrTxFailed]; the two values
+// are the same sentinel and can be matched interchangeably.
 var ErrTxFailed = types.ErrTxFailed
 
 // ErrUninitialized is returned when a method is invoked on a zero-value

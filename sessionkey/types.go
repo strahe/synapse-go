@@ -32,7 +32,8 @@ type RevokeOptions struct {
 	Origin string
 }
 
-// WriteResult is kept as an alias for backwards compatibility.
+// WriteResult is a convenience re-export of [types.WriteResult].
+// The two names refer to the same type and are interchangeable.
 type WriteResult = sdktypes.WriteResult
 
 // SessionKey represents a session key with its current authorization state.

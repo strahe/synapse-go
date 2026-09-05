@@ -76,7 +76,8 @@ type ProviderRegistrationInfo struct {
 	Capabilities map[string]string
 }
 
-// WriteResult is kept as an alias for backwards compatibility.
+// WriteResult is a convenience re-export of [types.WriteResult].
+// The two names refer to the same type and are interchangeable.
 type WriteResult = types.WriteResult
 
 // PDPProvider is a provider record together with its decoded PDP offering.
