@@ -245,6 +245,53 @@ func TestStorageSignerContract(t *testing.T) {
 }
 `)
 
+	writeFile(t, filepath.Join(dir, "data_set_details_test.go"), `package apiconfigtest
+
+import (
+	"context"
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/storage"
+)
+
+type partialDataSetFinder struct{}
+
+func (partialDataSetFinder) FindDataSets(context.Context, common.Address, bool) ([]*storage.DataSetDetails, error) {
+	return []*storage.DataSetDetails{{IsLive: true, IsManaged: true}}, nil
+}
+
+func TestDataSetDetailsPromotedZeroFields(t *testing.T) {
+	service, err := storage.New(storage.Options{
+		PayerAddress:  common.HexToAddress("0x1001"),
+		DataSetFinder: partialDataSetFinder{},
+	})
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+
+	dataSets, err := service.FindDataSets(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("FindDataSets: %v", err)
+	}
+	if len(dataSets) != 1 || dataSets[0] == nil {
+		t.Fatalf("FindDataSets returned %#v, want one non-nil record", dataSets)
+	}
+
+	details := dataSets[0]
+	if !details.DataSetID.IsZero() {
+		t.Fatalf("DataSetID=%s want zero", details.DataSetID)
+	}
+	if !details.ProviderID.IsZero() {
+		t.Fatalf("ProviderID=%s want zero", details.ProviderID)
+	}
+	if details.PDPEndEpoch != 0 {
+		t.Fatalf("PDPEndEpoch=%d want zero", details.PDPEndEpoch)
+	}
+}
+`)
+
 	cmd := exec.Command("go", "test", "-mod=mod", ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

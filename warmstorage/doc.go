@@ -12,6 +12,12 @@
 // [Service.GetActivePieceCount], [Service.GetPriceList], approved-provider
 // reads, and provider allocation.
 //
+// [EnhancedDataSetInfo] exposes its embedded [DataSetInfo] fields directly.
+// Reading a promoted field from a zero EnhancedDataSetInfo does not panic;
+// each field retains its ordinary zero value, including nil pointer and map
+// fields. Callers should check identifiers when they require a complete
+// on-chain identity.
+//
 // The root synapse Client wires WarmStorage together with the other
 // write-capable services so transaction nonce allocation is coordinated for
 // a shared signer. Standalone services create their own nonce coordinator

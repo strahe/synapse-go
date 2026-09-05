@@ -38,10 +38,12 @@ type PDPConfig struct {
 	InitChallengeWindowStart *big.Int
 }
 
-// EnhancedDataSetInfo extends DataSetInfo with pdpverifier-derived
-// liveness metadata. Returned by GetClientDataSetsWithDetails.
+// EnhancedDataSetInfo extends DataSetInfo with pdpverifier-derived liveness
+// metadata. It embeds the base record by value, so promoted DataSetInfo fields
+// can be read from a zero value without dereferencing a nil embedded pointer.
+// Returned by GetClientDataSetsWithDetails.
 type EnhancedDataSetInfo struct {
-	*DataSetInfo
+	DataSetInfo
 	PDPVerifierDataSetID sdktypes.BigInt
 	IsLive               bool
 	IsManaged            bool
@@ -462,7 +464,7 @@ func (s *Service) GetClientDataSetsWithDetails(ctx context.Context, payer common
 		}
 		_, withCDN := state.metadata["withCDN"]
 		out = append(out, &EnhancedDataSetInfo{
-			DataSetInfo:          state.info,
+			DataSetInfo:          *state.info,
 			PDPVerifierDataSetID: state.info.DataSetID,
 			IsLive:               state.isLive,
 			IsManaged:            state.isManaged,

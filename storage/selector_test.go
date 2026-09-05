@@ -52,21 +52,21 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
 				Metadata:        map[string]string{"source": "app", "withCDN": ""},
 			},
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: false,
 				Metadata:        map[string]string{"source": "other"},
 			},
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 7},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -292,7 +292,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 				testPDPProvider(testID(3), "https://sp-3.example.com"),
 			},
 			detailedDataSets: []*warmstorage.EnhancedDataSetInfo{{
-				DataSetInfo: &warmstorage.DataSetInfo{
+				DataSetInfo: warmstorage.DataSetInfo{
 					DataSetID:  testID(22),
 					ProviderID: testID(2),
 				},
@@ -864,7 +864,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectSkipsUnusableDetailedDat
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          false,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -897,14 +897,14 @@ func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSn
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
 				Metadata:        map[string]string{"source": "app"},
 			},
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -931,22 +931,30 @@ func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSn
 func TestSelectMatchingDetailedDataSet_PrefersActiveThenLowestID(t *testing.T) {
 	providerID := testID(1)
 	dataSetID, clientDataSetID, metadata := selectMatchingDetailedDataSet(providerID, []*warmstorage.EnhancedDataSetInfo{
+		nil,
+		{},
 		{
-			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(1), ProviderID: providerID, ClientDataSetID: testID(101)},
+			DataSetInfo: warmstorage.DataSetInfo{ProviderID: providerID},
+			IsLive:      true,
+			IsManaged:   true,
+			Metadata:    map[string]string{"source": "app"},
+		},
+		{
+			DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(1), ProviderID: providerID, ClientDataSetID: testID(101)},
 			IsLive:          true,
 			IsManaged:       true,
 			HasActivePieces: false,
 			Metadata:        map[string]string{"source": "app"},
 		},
 		{
-			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(3), ProviderID: providerID, ClientDataSetID: testID(103)},
+			DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(3), ProviderID: providerID, ClientDataSetID: testID(103)},
 			IsLive:          true,
 			IsManaged:       true,
 			HasActivePieces: true,
 			Metadata:        map[string]string{"source": "app"},
 		},
 		{
-			DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(2), ProviderID: providerID, ClientDataSetID: testID(102)},
+			DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(2), ProviderID: providerID, ClientDataSetID: testID(102)},
 			IsLive:          true,
 			IsManaged:       true,
 			HasActivePieces: true,
@@ -973,7 +981,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -1145,7 +1153,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRequestsOnlyManagedDetai
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -1377,10 +1385,6 @@ func (f *fakeEnhancedDataSetCatalog) GetClientDataSetsWithDetails(_ context.Cont
 			continue
 		}
 		cloned := *dataSet
-		if dataSet.DataSetInfo != nil {
-			base := *dataSet.DataSetInfo
-			cloned.DataSetInfo = &base
-		}
 		cloned.Metadata = cloneStringMap(dataSet.Metadata)
 		out = append(out, &cloned)
 	}
@@ -1568,7 +1572,7 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), PDPEndEpoch: 0, ClientDataSetID: clientDataSetID},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -1619,11 +1623,11 @@ func TestDetailedCandidateProvidersOnlyIncludesSelectableProviders(t *testing.T)
 	}
 	got := detailedCandidateProviders([]*warmstorage.EnhancedDataSetInfo{
 		nil,
-		{DataSetInfo: nil},
-		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(10), ProviderID: testID(0)}},
-		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1)}},
-		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1)}},
-		{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: testID(22), ProviderID: testID(2)}},
+		{},
+		{DataSetInfo: warmstorage.DataSetInfo{DataSetID: testID(10), ProviderID: testID(0)}},
+		{DataSetInfo: warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1)}},
+		{DataSetInfo: warmstorage.DataSetInfo{DataSetID: testID(12), ProviderID: testID(1)}},
+		{DataSetInfo: warmstorage.DataSetInfo{DataSetID: testID(22), ProviderID: testID(2)}},
 	}, selectable)
 	providerDataSets := got[testIDKey(1)]
 	if len(providerDataSets) != 2 {
@@ -1706,7 +1710,7 @@ func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *test
 		},
 		detailedDataSets: []*warmstorage.EnhancedDataSetInfo{
 			{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 0},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(21), ProviderID: testID(2), PDPEndEpoch: 0},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
@@ -1869,7 +1873,7 @@ func TestServiceResolverReturnsConcreteContextKinds(t *testing.T) {
 			approvedProviderIDs: []types.BigInt{testID(1)},
 			activeProviders:     []spregistry.PDPProvider{testPDPProvider(testID(1), "https://sp-1.example.com")},
 			detailedDataSets: []*warmstorage.EnhancedDataSetInfo{{
-				DataSetInfo:     &warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)},
+				DataSetInfo:     warmstorage.DataSetInfo{DataSetID: testID(11), ProviderID: testID(1), ClientDataSetID: testID(101)},
 				IsLive:          true,
 				IsManaged:       true,
 				HasActivePieces: true,
