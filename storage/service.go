@@ -16,6 +16,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
+	"github.com/strahe/synapse-go/internal/safehttp"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
@@ -239,7 +240,7 @@ type Options struct {
 // New creates a Service from the given Options.
 func New(opts Options) (*Service, error) {
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = newSafeHTTPClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
+		opts.HTTPClient = safehttp.NewClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
 	}
 	if opts.MaxSecondaryAttempts <= 0 {
 		opts.MaxSecondaryAttempts = maxSecondaryAttemptsDefault

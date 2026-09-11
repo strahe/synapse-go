@@ -8,6 +8,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/safehttp"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
@@ -83,7 +84,7 @@ func (e *InsufficientUploadContextsError) Is(target error) bool {
 // unspecified address and the Service was constructed without
 // Options.AllowPrivateNetworks. It prevents SDK callers from being used as
 // SSRF egress against internal networks.
-var ErrPrivateNetwork = errors.New("storage: private / local network address disallowed")
+var ErrPrivateNetwork = safehttp.ErrPrivateNetwork
 
 // ErrUnsupportedScheme is returned when the URL passed to Service.Download
 // uses a scheme other than http or https.

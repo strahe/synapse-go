@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/safehttp"
 )
 
 // ErrClosed is returned by service methods invoked after the owning
@@ -15,3 +16,8 @@ var ErrClosed = lifecycle.ErrClosed
 // ErrInvalidArgument is returned when a public root-package function receives
 // a nil, zero, or otherwise invalid caller-supplied argument.
 var ErrInvalidArgument = errors.New("synapse: invalid argument")
+
+// ErrPrivateNetwork is returned when a root-managed HTTP client refuses to
+// dial a private, local, multicast, unspecified, or reserved address. The
+// Storage service exports the same sentinel as [storage.ErrPrivateNetwork].
+var ErrPrivateNetwork = safehttp.ErrPrivateNetwork

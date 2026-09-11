@@ -916,6 +916,12 @@ func TestWithHTTPClient_Nil(t *testing.T) {
 	if c.httpClient == nil {
 		t.Error("nil client should keep default")
 	}
+	if c.httpClient.Timeout != DefaultHTTPTimeout {
+		t.Errorf("default timeout = %v, want %v", c.httpClient.Timeout, DefaultHTTPTimeout)
+	}
+	if c.httpClient.Transport != nil {
+		t.Errorf("default Transport = %T, want nil", c.httpClient.Transport)
+	}
 }
 
 // ---------- CreateDataSetAndAddPieces server error ----------

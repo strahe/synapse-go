@@ -1,13 +1,21 @@
-package storage
+// Package safehttp builds HTTP clients that reject private and reserved
+// network destinations.
+package safehttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"time"
 )
+
+// ErrPrivateNetwork is returned when a guarded client refuses to dial a
+// private, local, multicast, unspecified, or reserved network address.
+// Its text preserves the established storage.ErrPrivateNetwork error string.
+var ErrPrivateNetwork = errors.New("storage: private / local network address disallowed")
 
 var forbiddenFetchPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -32,14 +40,11 @@ var forbiddenFetchPrefixes = []netip.Prefix{
 
 var nat64WellKnownPrefix = netip.MustParsePrefix("64:ff9b::/96")
 
-// newSafeHTTPClient returns an *http.Client whose transport refuses to dial
-// local, private, multicast, unspecified, or reserved addresses. This is the
-// default for Service.httpClient when neither a custom HTTPClient nor
-// AllowPrivateNetworks=true is supplied to prevent SSRF via Service.Download
-// URL-based calls. Environment-variable proxies are intentionally disabled:
-// callers that need an explicit proxy must supply HTTPClient and provide
-// equivalent SSRF safeguards themselves.
-func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
+// NewClient returns an HTTP client whose transport resolves each target once
+// and dials the accepted IP directly. Environment-variable proxies are
+// disabled. When allowPrivate is false, private and reserved destinations are
+// rejected with ErrPrivateNetwork.
+func NewClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	base := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -59,24 +64,19 @@ func newSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	}
 }
 
-// safeDialContext returns a DialContext that resolves the target host and,
-// when allowPrivate is false, rejects any IP in local, private, multicast,
-// unspecified, or reserved ranges. Resolution is performed once and the
-// resolved IP is dialed directly, eliminating the DNS-rebinding window between
-// check and connect.
-func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+func safeDialContext(base *net.Dialer, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		// If the host is already an IP literal, validate it directly.
 		if ip := net.ParseIP(host); ip != nil {
 			if !allowPrivate && isPrivateAddress(ip) {
 				return nil, fmt.Errorf("%w: %s", ErrPrivateNetwork, ip)
 			}
 			return base.DialContext(ctx, network, addr)
 		}
+
 		ips, err := base.Resolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, err
@@ -89,12 +89,12 @@ func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Conte
 				}
 				continue
 			}
-			conn, derr := base.DialContext(ctx, network, net.JoinHostPort(ipa.IP.String(), port))
-			if derr == nil {
+			conn, dialErr := base.DialContext(ctx, network, net.JoinHostPort(ipa.IP.String(), port))
+			if dialErr == nil {
 				return conn, nil
 			}
 			if firstErr == nil {
-				firstErr = derr
+				firstErr = dialErr
 			}
 		}
 		if firstErr == nil {
@@ -104,9 +104,6 @@ func safeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Conte
 	}
 }
 
-// isPrivateAddress returns true for IPs that should never be dialed from
-// SDK-initiated downloads of remote provider URLs: loopback, link-local,
-// RFC1918 / ULA, multicast, unspecified, and selected special-use prefixes.
 func isPrivateAddress(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -115,8 +112,7 @@ func isPrivateAddress(ip net.IP) bool {
 	if !ok {
 		return true
 	}
-	addr = addr.Unmap()
-	return isForbiddenFetchAddr(addr)
+	return isForbiddenFetchAddr(addr.Unmap())
 }
 
 func isForbiddenFetchAddr(addr netip.Addr) bool {
@@ -125,8 +121,8 @@ func isForbiddenFetchAddr(addr netip.Addr) bool {
 		return true
 	}
 	if nat64WellKnownPrefix.Contains(addr) {
-		b := addr.As16()
-		if isForbiddenFetchAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})) {
+		bits := addr.As16()
+		if isForbiddenFetchAddr(netip.AddrFrom4([4]byte{bits[12], bits[13], bits[14], bits[15]})) {
 			return true
 		}
 	}

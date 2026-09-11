@@ -1745,8 +1745,8 @@ func TestNew_ZeroOptions(t *testing.T) {
 	if s.httpClient == nil {
 		t.Fatal("default HTTPClient should be installed")
 	}
-	if s.httpClient.Timeout == 0 {
-		t.Fatal("default HTTP client must have a non-zero timeout")
+	if s.httpClient.Timeout != defaultDownloadTimeout {
+		t.Fatalf("default HTTP client timeout = %v, want %v", s.httpClient.Timeout, defaultDownloadTimeout)
 	}
 	if s.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
 		t.Fatalf("maxSecondaryAttempts = %d, want default %d", s.maxSecondaryAttempts, maxSecondaryAttemptsDefault)

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -31,6 +32,7 @@ import (
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/testutil"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/spregistry"
@@ -64,6 +66,18 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+type closeTrackingTransport struct {
+	closeCalls atomic.Int32
+}
+
+func (*closeTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unexpected HTTP request")
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closeCalls.Add(1)
 }
 
 type contractCallerFunc func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
@@ -911,7 +925,8 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	key := testKey(t)
 	seenRequests := map[string]bool{}
 	var retryRequests atomic.Int32
-	hc := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	const customTimeout = 37 * time.Second
+	hc := &http.Client{Timeout: customTimeout, Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		seenRequests[req.URL.Host+req.URL.Path] = true
 		status := http.StatusOK
 		var body io.ReadCloser = http.NoBody
@@ -936,6 +951,18 @@ func TestNew_WithHTTPClient(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
+	if client.ownedHTTPClient != nil {
+		t.Fatal("caller-provided HTTP client must not be owned")
+	}
+	if got := client.serviceHTTPClient(pdp.DefaultHTTPTimeout); got != hc {
+		t.Fatal("PDP did not receive the caller-provided HTTP client verbatim")
+	}
+	if got := client.serviceHTTPClient(0); got != hc {
+		t.Fatal("FilBeam did not receive the caller-provided HTTP client verbatim")
+	}
+	if got := client.storageHTTPClient(); got != hc {
+		t.Fatal("Storage did not receive the caller-provided HTTP client verbatim")
+	}
 
 	providerClient, err := client.newPDPClient("https://provider.example")
 	if err != nil {
@@ -965,6 +992,9 @@ func TestNew_WithHTTPClient(t *testing.T) {
 	}
 	if client.Storage() == nil {
 		t.Fatal("Storage() returned nil")
+	}
+	if hc.Timeout != customTimeout {
+		t.Fatalf("custom HTTP client timeout = %v, want %v", hc.Timeout, customTimeout)
 	}
 }
 
@@ -1471,6 +1501,151 @@ func makeLoopbackDownloadClient(t *testing.T, opts ...ClientOption) (*Client, fu
 	return client, cleanup
 }
 
+func TestRootManagedHTTPClientConfiguration(t *testing.T) {
+	client, cleanup := makeLoopbackDownloadClient(t)
+	defer cleanup()
+
+	if client.ownedHTTPClient == nil || client.httpClient != client.ownedHTTPClient {
+		t.Fatal("root-managed base HTTP client was not retained for cleanup")
+	}
+	if client.httpClient.Timeout != 0 {
+		t.Fatalf("base HTTP client timeout = %v, want 0", client.httpClient.Timeout)
+	}
+
+	pdpClient := client.serviceHTTPClient(pdp.DefaultHTTPTimeout)
+	filbeamClient := client.serviceHTTPClient(0)
+	if pdpClient == client.httpClient || filbeamClient == client.httpClient || pdpClient == filbeamClient {
+		t.Fatal("root-managed service HTTP clients must be separate shallow copies")
+	}
+	if pdpClient.Timeout != pdp.DefaultHTTPTimeout {
+		t.Fatalf("PDP HTTP timeout = %v, want %v", pdpClient.Timeout, pdp.DefaultHTTPTimeout)
+	}
+	if filbeamClient.Timeout != 0 {
+		t.Fatalf("FilBeam HTTP timeout = %v, want 0", filbeamClient.Timeout)
+	}
+	if pdpClient.Transport == nil || pdpClient.Transport != filbeamClient.Transport {
+		t.Fatal("PDP and FilBeam must share the root-managed safe transport")
+	}
+	if got := client.storageHTTPClient(); got != nil {
+		t.Fatalf("Storage HTTP client = %p, want nil so Storage retains its 24-hour default", got)
+	}
+}
+
+func TestRootManagedHTTPClientsRejectLoopback(t *testing.T) {
+	var requests atomic.Int32
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, "curio-pdp")
+	}))
+	defer loopback.Close()
+
+	client, cleanup := makeLoopbackDownloadClient(t)
+	defer cleanup()
+
+	providerClient, err := client.newPDPClient(loopback.URL, pdp.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("newPDPClient: %v", err)
+	}
+	if err := providerClient.Ping(context.Background()); !errors.Is(err, ErrPrivateNetwork) {
+		t.Fatalf("PDP Ping error = %v, want ErrPrivateNetwork", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, loopback.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := client.serviceHTTPClient(0).Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrPrivateNetwork) {
+		t.Fatalf("FilBeam HTTP error = %v, want ErrPrivateNetwork", err)
+	}
+	if !errors.Is(err, storage.ErrPrivateNetwork) {
+		t.Fatalf("FilBeam HTTP error = %v, want storage.ErrPrivateNetwork alias", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("loopback server received %d requests, want 0", got)
+	}
+}
+
+func TestRootManagedHTTPClientsAllowLoopbackWhenEnabled(t *testing.T) {
+	var requests atomic.Int32
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path == "/pdp/ping" {
+			_, _ = io.WriteString(w, "curio-pdp")
+			return
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer loopback.Close()
+
+	client, cleanup := makeLoopbackDownloadClient(t, WithAllowPrivateNetworks(true))
+	defer cleanup()
+
+	providerClient, err := client.newPDPClient(loopback.URL, pdp.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("newPDPClient: %v", err)
+	}
+	if err := providerClient.Ping(context.Background()); err != nil {
+		t.Fatalf("PDP Ping: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, loopback.URL+"/filbeam", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := client.serviceHTTPClient(0).Do(req)
+	if err != nil {
+		t.Fatalf("FilBeam HTTP GET: %v", err)
+	}
+	_, readErr := io.Copy(io.Discard, resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read FilBeam response: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close FilBeam response: %v", closeErr)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("loopback server received %d requests, want 2", got)
+	}
+}
+
+func TestClose_HTTPClientOwnership(t *testing.T) {
+	t.Run("root managed", func(t *testing.T) {
+		client, cleanup := makeLoopbackDownloadClient(t)
+		defer cleanup()
+		tracker := &closeTrackingTransport{}
+		client.ownedHTTPClient.Transport = tracker
+
+		if err := client.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := client.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+		if got := tracker.closeCalls.Load(); got != 1 {
+			t.Fatalf("CloseIdleConnections calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("caller provided", func(t *testing.T) {
+		tracker := &closeTrackingTransport{}
+		custom := &http.Client{Transport: tracker}
+		client, cleanup := makeLoopbackDownloadClient(t, WithHTTPClient(custom))
+		defer cleanup()
+
+		if err := client.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if got := tracker.closeCalls.Load(); got != 0 {
+			t.Fatalf("CloseIdleConnections calls = %d, want 0", got)
+		}
+	})
+}
+
 // TestWithAllowPrivateNetworks_DefaultRejectsLoopback verifies that a root
 // client built without WithAllowPrivateNetworks rejects downloads from
 // loopback addresses with ErrPrivateNetwork.
@@ -1493,8 +1668,11 @@ func TestWithAllowPrivateNetworks_DefaultRejectsLoopback(t *testing.T) {
 	if dlErr == nil {
 		t.Fatal("expected ErrPrivateNetwork, got nil")
 	}
+	if !errors.Is(dlErr, ErrPrivateNetwork) {
+		t.Fatalf("expected root ErrPrivateNetwork, got: %v", dlErr)
+	}
 	if !errors.Is(dlErr, storage.ErrPrivateNetwork) {
-		t.Fatalf("expected ErrPrivateNetwork, got: %v", dlErr)
+		t.Fatalf("expected storage.ErrPrivateNetwork alias, got: %v", dlErr)
 	}
 }
 
