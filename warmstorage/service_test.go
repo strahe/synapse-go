@@ -518,6 +518,35 @@ func TestFindDataSetByClientDataSetIDReturnsMatchingRecord(t *testing.T) {
 	}
 }
 
+func TestFindDataSetByClientDataSetIDDecodesPackedAddPiecesNonce(t *testing.T) {
+	s, mc := newTestService(t)
+	payer := common.HexToAddress("0x33")
+	clientDataSetID := types.NewBigInt(7)
+	dataSetID := types.NewBigInt(42)
+	view := dataSetInfoView(42)
+	view.Payer = payer
+	view.ClientDataSetId = clientDataSetID.Big()
+	packed := new(big.Int).Lsh(big.NewInt(5), 128)
+	packed.Or(packed, dataSetID.Big())
+	mc.setViewReply(t, "clientNonces", packed)
+	mc.setViewReply(t, "getDataSet", view)
+
+	got, err := s.FindDataSetByClientDataSetID(context.Background(), payer, clientDataSetID)
+	if err != nil {
+		t.Fatalf("FindDataSetByClientDataSetID: %v", err)
+	}
+	if got == nil || !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("record=%+v want dataSetID %s", got, dataSetID.String())
+	}
+	inputs, err := mc.viewABI.Methods["getDataSet"].Inputs.Unpack(mc.lastIn["getDataSet"][4:])
+	if err != nil {
+		t.Fatalf("unpack getDataSet input: %v", err)
+	}
+	if inputs[0].(*big.Int).Cmp(dataSetID.Big()) != 0 {
+		t.Fatalf("getDataSet input=%s want %s", inputs[0], dataSetID.String())
+	}
+}
+
 func TestFindDataSetByClientDataSetIDMappingZeroIsNotFound(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "clientNonces", big.NewInt(0))
@@ -624,6 +653,51 @@ func TestFindDataSetByClientDataSetIDChangedMappingIsNotFound(t *testing.T) {
 	}
 }
 
+func TestFindDataSetByClientDataSetIDConfirmsTransientMissingRecord(t *testing.T) {
+	s, mc := newTestService(t)
+	payer := common.HexToAddress("0x33")
+	clientDataSetID := types.NewBigInt(7)
+	dataSetID := types.NewBigInt(42)
+	view := dataSetInfoView(42)
+	view.Payer = payer
+	view.ClientDataSetId = clientDataSetID.Big()
+	nonceCalls := 0
+	mc.handlers["clientNonces"] = func([]byte) ([]byte, error) {
+		nonceCalls++
+		packed := new(big.Int).Lsh(big.NewInt(int64(4+nonceCalls)), 128)
+		packed.Or(packed, dataSetID.Big())
+		return mc.viewABI.Methods["clientNonces"].Outputs.Pack(packed)
+	}
+	// Model replicas at different heights: a standalone record read would
+	// miss, while the atomic confirmation sees the mapping and record together.
+	inConfirmation := false
+	mc.handlers["getDataSet"] = func([]byte) ([]byte, error) {
+		if !inConfirmation {
+			return mc.viewABI.Methods["getDataSet"].Outputs.Pack(dataSetInfoView(0))
+		}
+		return mc.viewABI.Methods["getDataSet"].Outputs.Pack(view)
+	}
+	mc.multicallFn = func(data []byte) ([]byte, error) {
+		inConfirmation = true
+		defer func() { inConfirmation = false }()
+		return mc.handleMulticall(data)
+	}
+
+	got, err := s.FindDataSetByClientDataSetID(context.Background(), payer, clientDataSetID)
+	if err != nil {
+		t.Fatalf("FindDataSetByClientDataSetID: %v", err)
+	}
+	if got == nil || !got.DataSetID.Equal(dataSetID) {
+		t.Fatalf("record=%+v want dataSetID %s", got, dataSetID.String())
+	}
+	if nonceCalls != 2 {
+		t.Fatalf("clientNonces calls=%d want initial read plus confirmation", nonceCalls)
+	}
+	if !slices.Equal(mc.multicallSizes, []int{2}) {
+		t.Fatalf("multicall sizes=%v want one atomic two-call confirmation", mc.multicallSizes)
+	}
+}
+
 func TestFindDataSetByClientDataSetIDPropagatesReadErrors(t *testing.T) {
 	payer := common.HexToAddress("0x33")
 	clientDataSetID := types.NewBigInt(7)
@@ -640,7 +714,7 @@ func TestFindDataSetByClientDataSetIDPropagatesReadErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "data set read",
+			name: "data set correlation read",
 			setup: func(t *testing.T, mc *mockCaller) {
 				mc.setViewReply(t, "clientNonces", dataSetID.Big())
 				mc.errs["getDataSet"] = readErr
