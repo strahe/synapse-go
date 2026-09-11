@@ -204,10 +204,11 @@ type Options struct {
 	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
 	DataSetSizeReader DataSetSizeReader
 
-	// FWSSDataSetReader is used by explicit data-set resolution to read the
-	// on-chain ClientDataSetID
-	// and to equip returned contexts with upload-time ended-dataset
-	// checks. When nil, those safety nets are skipped.
+	// FWSSDataSetReader reads the on-chain ClientDataSetID during explicit
+	// data-set resolution and checks existing data sets before uploads. A custom
+	// context resolver must separately pass the same reader to its contexts to
+	// support ProviderContext.FindDataSetByClientDataSetID. When nil, the
+	// service-level reads are unavailable.
 	FWSSDataSetReader FWSSDataSetReader
 
 	// ProviderResolver resolves provider endpoints for manager-level

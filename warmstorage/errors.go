@@ -15,6 +15,11 @@ import (
 // results.
 var ErrNotFound = errors.New("warmstorage: not found")
 
+// ErrDataSetCorrelationConflict is returned when a client data-set ID has
+// been consumed on-chain but does not resolve to a matching data-set record.
+// The ID must not be reused.
+var ErrDataSetCorrelationConflict = errors.New("warmstorage: data set correlation conflict")
+
 // ErrUninitialized is returned when a method is invoked on a zero-value
 // Service (one that was not constructed via [New]).
 var ErrUninitialized = errors.New("warmstorage: service not initialized; use warmstorage.New")

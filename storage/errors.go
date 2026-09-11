@@ -50,6 +50,11 @@ var ErrNoEndorsedProvider = errors.New("storage: no eligible endorsed provider")
 // longer live. It aliases the canonical warmstorage sentinel.
 var ErrDataSetUnavailable = warmstorage.ErrDataSetUnavailable
 
+// ErrDataSetCorrelationConflict is a convenience re-export of
+// [warmstorage.ErrDataSetCorrelationConflict]. Both values match
+// interchangeably with errors.Is.
+var ErrDataSetCorrelationConflict = warmstorage.ErrDataSetCorrelationConflict
+
 // ErrInsufficientUploadContexts is matched by
 // [InsufficientUploadContextsError] when selection found at least one, but
 // fewer than the requested number of upload targets.

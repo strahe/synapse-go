@@ -148,6 +148,9 @@ func TestCrossPackageErrorAliases(t *testing.T) {
 	if reflect.ValueOf(ErrDataSetUnavailable) != reflect.ValueOf(warmstorage.ErrDataSetUnavailable) {
 		t.Fatal("ErrDataSetUnavailable is not the warmstorage sentinel")
 	}
+	if reflect.ValueOf(ErrDataSetCorrelationConflict) != reflect.ValueOf(warmstorage.ErrDataSetCorrelationConflict) {
+		t.Fatal("ErrDataSetCorrelationConflict is not the warmstorage sentinel")
+	}
 }
 
 func TestDataSetPDPPaymentTerminatedError_DoesNotMatchInvalidArgument(t *testing.T) {

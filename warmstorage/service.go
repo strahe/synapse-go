@@ -2,6 +2,7 @@ package warmstorage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -360,6 +361,111 @@ func (s *Service) GetDataSet(ctx context.Context, dataSetID types.BigInt) (*Data
 		return nil, fmt.Errorf("warmstorage.GetDataSet: %w", err)
 	}
 	return info, nil
+}
+
+// FindDataSetByClientDataSetID resolves a caller-owned client data-set ID to
+// its current on-chain data-set record. ErrNotFound means no stable mapping is
+// visible in the queried chain state. ErrDataSetCorrelationConflict means the
+// ID was consumed but does not resolve to a matching record, so callers must
+// not reuse it. Client data-set IDs share their payer-scoped namespace with
+// add-pieces nonces and remain consumed after data-set deletion.
+//
+// A successful result reports current chain visibility only. It does not
+// establish transaction finality or confirm that pieces from a combined
+// create-and-add request were added.
+func (s *Service) FindDataSetByClientDataSetID(
+	ctx context.Context,
+	payer common.Address,
+	clientDataSetID types.BigInt,
+) (*DataSetInfo, error) {
+	const op = "warmstorage.FindDataSetByClientDataSetID"
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if payer == (common.Address{}) {
+		return nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
+	}
+
+	dataSetID, err := s.clientNonceValue(ctx, payer, clientDataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read client nonce: %w", op, err)
+	}
+	if dataSetID.IsZero() {
+		return nil, fmt.Errorf("%s: %w", op, ErrNotFound)
+	}
+
+	info, err := s.GetDataSet(ctx, dataSetID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, s.confirmDataSetCorrelation(
+				ctx,
+				payer,
+				clientDataSetID,
+				dataSetID,
+				fmt.Sprintf("data set %s is missing", dataSetID.String()),
+			)
+		}
+		return nil, fmt.Errorf("%s: get data set %s: %w", op, dataSetID.String(), err)
+	}
+	if info == nil {
+		return nil, s.confirmDataSetCorrelation(
+			ctx,
+			payer,
+			clientDataSetID,
+			dataSetID,
+			fmt.Sprintf("data set %s returned no record", dataSetID.String()),
+		)
+	}
+
+	var mismatch string
+	switch {
+	case !info.DataSetID.Equal(dataSetID):
+		mismatch = fmt.Sprintf("record dataSetID %s does not match mapped ID %s", info.DataSetID.String(), dataSetID.String())
+	case info.Payer != payer:
+		mismatch = fmt.Sprintf("record payer %s does not match %s", info.Payer.Hex(), payer.Hex())
+	case !info.ClientDataSetID.Equal(clientDataSetID):
+		mismatch = fmt.Sprintf(
+			"record clientDataSetID %s does not match %s",
+			info.ClientDataSetID.String(),
+			clientDataSetID.String(),
+		)
+	case info.ProviderID.IsZero():
+		mismatch = "record has zero providerID"
+	}
+	if mismatch != "" {
+		return nil, s.confirmDataSetCorrelation(ctx, payer, clientDataSetID, dataSetID, mismatch)
+	}
+	return info, nil
+}
+
+func (s *Service) clientNonceValue(
+	ctx context.Context,
+	payer common.Address,
+	clientDataSetID types.BigInt,
+) (types.BigInt, error) {
+	raw, err := s.viewBind.ClientNonces(&bind.CallOpts{Context: ctx}, payer, clientDataSetID.Big())
+	if err != nil {
+		return types.BigInt{}, err
+	}
+	return idconv.FromBig("ClientNonce", raw)
+}
+
+func (s *Service) confirmDataSetCorrelation(
+	ctx context.Context,
+	payer common.Address,
+	clientDataSetID types.BigInt,
+	dataSetID types.BigInt,
+	detail string,
+) error {
+	const op = "warmstorage.FindDataSetByClientDataSetID"
+	current, err := s.clientNonceValue(ctx, payer, clientDataSetID)
+	if err != nil {
+		return fmt.Errorf("%s: confirm client nonce: %w", op, err)
+	}
+	if !current.Equal(dataSetID) {
+		return fmt.Errorf("%s: %w", op, ErrNotFound)
+	}
+	return fmt.Errorf("%s: %w: %s", op, ErrDataSetCorrelationConflict, detail)
 }
 
 // GetClientDataSets returns one page of data sets owned by payer. opts.Limit
