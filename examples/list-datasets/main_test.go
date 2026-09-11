@@ -34,7 +34,7 @@ func TestRunListPrintsStorageInfoAndDatasets(t *testing.T) {
 		},
 		dataSets: []*storage.DataSetDetails{
 			{
-				DataSetInfo: &warmstorage.DataSetInfo{
+				DataSetInfo: warmstorage.DataSetInfo{
 					DataSetID:  types.NewBigInt(10),
 					ProviderID: types.NewBigInt(20),
 					Payer:      payer,
@@ -79,8 +79,8 @@ func TestRunListFiltersByDataSetID(t *testing.T) {
 	fake := &fakeDatasetReader{
 		info: &storage.StorageInfo{},
 		dataSets: []*storage.DataSetDetails{
-			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(1)}},
-			{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(2)}},
+			{DataSetInfo: warmstorage.DataSetInfo{DataSetID: types.NewBigInt(1)}},
+			{DataSetInfo: warmstorage.DataSetInfo{DataSetID: types.NewBigInt(2)}},
 		},
 	}
 	var stdout bytes.Buffer

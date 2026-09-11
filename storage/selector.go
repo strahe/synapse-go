@@ -1064,7 +1064,7 @@ func selectableProviderSet(providers []spregistry.PDPProvider, approvedSet map[s
 func detailedCandidateProviders(dataSets []*warmstorage.EnhancedDataSetInfo, selectableProviders map[string]struct{}) map[string][]*warmstorage.EnhancedDataSetInfo {
 	out := make(map[string][]*warmstorage.EnhancedDataSetInfo, min(len(dataSets), len(selectableProviders)))
 	for _, dataSet := range dataSets {
-		if dataSet == nil || dataSet.DataSetInfo == nil {
+		if dataSet == nil {
 			continue
 		}
 		if dataSet.ProviderID.IsZero() {
@@ -1083,7 +1083,7 @@ func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstor
 	var best *warmstorage.EnhancedDataSetInfo
 	var bestHasPieces bool
 	for _, dataSet := range dataSets {
-		if dataSet == nil || dataSet.DataSetInfo == nil {
+		if dataSet == nil {
 			continue
 		}
 		if dataSet.DataSetID.IsZero() || !dataSet.ProviderID.Equal(providerID) {

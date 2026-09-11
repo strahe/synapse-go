@@ -25,6 +25,11 @@
 // DataSetContext, and [ProviderContext.ForDataSet]. Construct it with
 // [NewDataSetRef]; its zero value is invalid.
 //
+// [DataSetDetails] exposes its base data-set fields directly. Reading a
+// promoted field from a zero DataSetDetails does not panic; each field retains
+// its ordinary zero value, including nil pointer and map fields. Check
+// DataSetID and ProviderID when a complete identity is required.
+//
 // Persistent data-set references, context identities, and create/commit
 // lifecycle values use strict lowerCamel JSON field names. Alternate
 // capitalization, unknown or duplicate fields, and incomplete objects are

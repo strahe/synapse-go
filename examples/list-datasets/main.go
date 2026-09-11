@@ -132,7 +132,7 @@ func printStorageInfo(stdout io.Writer, info *storage.StorageInfo) error {
 
 func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetDetails) error {
 	prefix := fmt.Sprintf("dataset.%d", index)
-	if dataSet == nil || dataSet.DataSetInfo == nil {
+	if dataSet == nil {
 		return exampleutil.WriteKV(stdout, prefix, "<nil>")
 	}
 	if err := exampleutil.WriteKV(stdout, prefix+".dataSetID", dataSet.DataSetID); err != nil {
@@ -162,7 +162,7 @@ func printDataSet(stdout io.Writer, index int, dataSet *storage.DataSetDetails) 
 func filterDataSets(dataSets []*storage.DataSetDetails, id types.BigInt) []*storage.DataSetDetails {
 	out := make([]*storage.DataSetDetails, 0, len(dataSets))
 	for _, dataSet := range dataSets {
-		if dataSet == nil || dataSet.DataSetInfo == nil {
+		if dataSet == nil {
 			continue
 		}
 		if dataSet.DataSetID.Equal(id) {

@@ -76,7 +76,7 @@ func (c *managerCostCalculator) CalculateMultiContextCosts(
 func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	defaultPayer := common.HexToAddress("0x1001")
 	override := common.HexToAddress("0x2002")
-	wantSets := []*DataSetDetails{{DataSetInfo: &warmstorage.DataSetInfo{DataSetID: types.NewBigInt(7)}}}
+	wantSets := []*DataSetDetails{{DataSetInfo: warmstorage.DataSetInfo{DataSetID: types.NewBigInt(7)}}}
 	wantInfo := &StorageInfo{}
 	wantWrite := &types.WriteResult{Hash: common.HexToHash("0x1234")}
 	wantCosts := &MultiContextCosts{RatePerEpoch: big.NewInt(3)}
