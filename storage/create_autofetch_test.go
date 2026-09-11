@@ -4,21 +4,43 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
 type fakeFWSSDataSetReader struct {
-	calls   int
-	gotID   types.BigInt
-	info    *warmstorage.DataSetInfo
-	infoErr error
+	calls              int
+	gotID              types.BigInt
+	info               *warmstorage.DataSetInfo
+	infoErr            error
+	findCalls          int
+	gotPayer           common.Address
+	gotClientDataSetID types.BigInt
+	findInfo           *warmstorage.DataSetInfo
+	findErr            error
+	findFn             func(context.Context, common.Address, types.BigInt) (*warmstorage.DataSetInfo, error)
 }
 
 func (f *fakeFWSSDataSetReader) GetDataSet(_ context.Context, id types.BigInt) (*warmstorage.DataSetInfo, error) {
 	f.calls++
 	f.gotID = id
 	return f.info, f.infoErr
+}
+
+func (f *fakeFWSSDataSetReader) FindDataSetByClientDataSetID(
+	ctx context.Context,
+	payer common.Address,
+	clientDataSetID types.BigInt,
+) (*warmstorage.DataSetInfo, error) {
+	f.findCalls++
+	f.gotPayer = payer
+	f.gotClientDataSetID = clientDataSetID
+	if f.findFn != nil {
+		return f.findFn(ctx, payer, clientDataSetID)
+	}
+	return f.findInfo, f.findErr
 }
 
 func TestValidateUploadContextsWritable_DoesNotMutateImmutableTarget(t *testing.T) {

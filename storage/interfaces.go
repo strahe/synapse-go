@@ -51,13 +51,15 @@ type DataSetDetailsCatalog interface {
 	GetClientDataSetsWithDetails(ctx context.Context, payer common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error)
 }
 
-// FWSSDataSetReader reads an existing data set's on-chain record from the
-// FWSSView contract. Resolvers use it before construction to obtain complete
-// immutable targets; upload paths use it to reject ended existing data sets
-// before sending bytes to a provider. Satisfied by *warmstorage.Service (see
-// GetDataSet).
+// FWSSDataSetReader reads data-set records from the FWSSView contract.
+// Resolvers use it before construction to obtain complete immutable targets;
+// upload paths use it to reject ended existing data sets before sending bytes
+// to a provider; ProviderContext uses it to recover creation by caller-owned
+// client data-set ID. The implementation must target the same chain and record
+// keeper configured on the context. Satisfied by *warmstorage.Service.
 type FWSSDataSetReader interface {
 	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
+	FindDataSetByClientDataSetID(ctx context.Context, payer common.Address, clientDataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }
 
 // ProviderResolver resolves a storage provider by provider ID.

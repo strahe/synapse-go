@@ -536,6 +536,14 @@ func (f fakeTerminationDataSetReader) GetDataSet(context.Context, types.BigInt) 
 	return f.info, nil
 }
 
+func (f fakeTerminationDataSetReader) FindDataSetByClientDataSetID(
+	context.Context,
+	common.Address,
+	types.BigInt,
+) (*warmstorage.DataSetInfo, error) {
+	return nil, errors.New("unexpected FindDataSetByClientDataSetID")
+}
+
 type fakeTerminationProviderResolver struct {
 	called   bool
 	provider *Provider

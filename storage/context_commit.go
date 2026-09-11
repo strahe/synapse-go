@@ -91,6 +91,9 @@ func (c *contextCore) submitCommit(
 	ref *DataSetRef,
 	req CommitRequest,
 ) (*CommitSubmission, error) {
+	if ref != nil && req.ClientDataSetID != nil {
+		return nil, fmt.Errorf("%s: %w: ClientDataSetID is only valid when creating a data set", op, ErrInvalidArgument)
+	}
 	pieceCIDs, err := validateCommitRequest(op, req)
 	if err != nil {
 		return nil, err
@@ -102,7 +105,7 @@ func (c *contextCore) submitCommit(
 	extraData := append([]byte(nil), req.ExtraData...)
 	var clientDataSetID *types.BigInt
 	if len(extraData) == 0 {
-		extraData, clientDataSetID, err = c.presignForCommit(ctx, op, ref, req.Pieces)
+		extraData, clientDataSetID, err = c.presignForCommit(ctx, op, ref, req.Pieces, req.ClientDataSetID)
 		if err != nil {
 			return nil, err
 		}
@@ -113,6 +116,15 @@ func (c *contextCore) submitCommit(
 		clientDataSetID, err = decodeCreateAndAddIdentity(op, extraData, c.payer)
 		if err != nil {
 			return nil, err
+		}
+		if req.ClientDataSetID != nil && !req.ClientDataSetID.Equal(*clientDataSetID) {
+			return nil, fmt.Errorf(
+				"%s: %w: ClientDataSetID %s does not match create-and-add extraData ID %s",
+				op,
+				ErrInvalidArgument,
+				req.ClientDataSetID.String(),
+				clientDataSetID.String(),
+			)
 		}
 	}
 

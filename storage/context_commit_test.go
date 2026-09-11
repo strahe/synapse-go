@@ -276,8 +276,9 @@ func TestCreateAndAddExternalExtraDataExtractsIdentityBeforeNetwork(t *testing.T
 	}
 	ctx := mustWritableProviderContext(t, client)
 	submission, err := ctx.SubmitCommit(context.Background(), CommitRequest{
-		Pieces:    []PieceInput{{PieceCID: pieceCID}},
-		ExtraData: extraData,
+		Pieces:          []PieceInput{{PieceCID: pieceCID}},
+		ExtraData:       extraData,
+		ClientDataSetID: &clientDataSetID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +288,19 @@ func TestCreateAndAddExternalExtraDataExtractsIdentityBeforeNetwork(t *testing.T
 	}
 	if submission.DataSet != nil || submission.Kind != CommitKindCreateAndAdd {
 		t.Fatalf("submission=%+v", submission)
+	}
+
+	conflictingClientDataSetID := types.NewBigInt(1)
+	_, err = ctx.SubmitCommit(context.Background(), CommitRequest{
+		Pieces:          []PieceInput{{PieceCID: pieceCID}},
+		ExtraData:       extraData,
+		ClientDataSetID: &conflictingClientDataSetID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("clientDataSetID mismatch error=%v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("clientDataSetID mismatch reached network: createCalls=%d", createCalls)
 	}
 
 	mismatched := mustWritableProviderContext(t, client, WithPayer(common.HexToAddress("0x9999")))
@@ -299,6 +313,35 @@ func TestCreateAndAddExternalExtraDataExtractsIdentityBeforeNetwork(t *testing.T
 	}
 	if createCalls != 1 {
 		t.Fatalf("payer mismatch reached network: createCalls=%d", createCalls)
+	}
+}
+
+func TestDataSetContextSubmitCommitRejectsClientDataSetIDBeforeNetwork(t *testing.T) {
+	pieceCID := mustPieceInfo(t).CIDv2
+	clientDataSetID := types.NewBigInt(7)
+	addCalls := 0
+	client := &fakePDPProviderClient{
+		addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+			addCalls++
+			return nil, errors.New("unexpected add")
+		},
+	}
+	ctx := mustWritableDataSetContext(
+		t,
+		client,
+		testDataSetRef(types.NewBigInt(42), types.NewBigInt(9)),
+	)
+
+	_, err := ctx.SubmitCommit(context.Background(), CommitRequest{
+		Pieces:          []PieceInput{{PieceCID: pieceCID}},
+		ExtraData:       []byte{1},
+		ClientDataSetID: &clientDataSetID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "only valid when creating") {
+		t.Fatalf("error=%v want ClientDataSetID ErrInvalidArgument", err)
+	}
+	if addCalls != 0 {
+		t.Fatalf("addCalls=%d want 0", addCalls)
 	}
 }
 

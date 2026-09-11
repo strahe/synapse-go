@@ -115,8 +115,15 @@ type PullResult struct {
 
 // CommitRequest triggers on-chain registration of pieces for one provider.
 type CommitRequest struct {
-	Pieces    []PieceInput
-	ExtraData []byte // EIP-712 signed payload; nil for the primary (create-or-add path)
+	Pieces []PieceInput
+	// ExtraData is an EIP-712 signed payload. Leave it nil to let a
+	// ProviderContext sign a create-and-add request.
+	ExtraData []byte
+	// ClientDataSetID is the caller-owned uint256 used when a ProviderContext
+	// creates a data set. Nil generates a random ID. When ExtraData is set,
+	// the value must match the ID embedded in its create payload.
+	// DataSetContext commits must leave this nil.
+	ClientDataSetID *types.BigInt
 	// OnSubmitted is invoked with the original transaction hash immediately
 	// after the provider returns a valid submission handle, before confirmation.
 	// It may be nil. Direct Commit calls do not recover callback panics.
@@ -182,6 +189,11 @@ type CommitResult struct {
 
 // CreateDataSetOptions configures [ProviderContext.CreateDataSet].
 type CreateDataSetOptions struct {
+	// ClientDataSetID is the caller-owned uint256 included in the create
+	// authorization. Nil generates a random ID. Persist a caller-supplied value
+	// before calling CreateDataSet when recovery from an ambiguous provider
+	// response is required.
+	ClientDataSetID *types.BigInt
 	// OnSubmitted is invoked after the create transaction is submitted and
 	// before waiting for confirmation. It may be nil.
 	OnSubmitted func(CreateDataSetSubmission)

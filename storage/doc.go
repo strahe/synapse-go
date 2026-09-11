@@ -100,6 +100,35 @@
 //
 // # Submission recovery
 //
+// When creation must remain recoverable even if the provider receives the
+// request but its HTTP response is lost, choose and persist a client data-set
+// ID before submitting. Persist the provider ID and context identity beside
+// it, then rebuild the same ProviderContext before looking up the result:
+//
+//	clientDataSetID := types.NewBigInt(123)
+//	providerID := providerContext.ProviderID()
+//	identity := providerContext.ContextIdentity()
+//	// Persist clientDataSetID, providerID, and identity before this call.
+//	_, err := providerContext.CreateDataSet(ctx, &CreateDataSetOptions{
+//		ClientDataSetID: &clientDataSetID,
+//	})
+//	// After an ambiguous error, rebuild the same provider context and poll:
+//	ref, found, err := freshProviderContext.FindDataSetByClientDataSetID(ctx, clientDataSetID)
+//
+// A create-and-add request uses [CommitRequest.ClientDataSetID] in the same
+// way. Persist the operation kind and piece CIDs as application state too,
+// because finding the data set does not prove that its pieces were added.
+// A false found result means the matching data set is not visible in the
+// current chain state; it is not evidence that the provider rejected the
+// request. Applications own polling and deadline policy.
+//
+// A nil ClientDataSetID preserves the default random-ID behavior, but an ID
+// generated inside a request cannot be recovered if the provider handle is
+// lost. Client data-set IDs and add-pieces nonces share a payer-scoped on-chain
+// namespace. Never reuse a consumed value, including after data-set deletion.
+// The ID is a correlation key, not an HTTP idempotency key; create POSTs are
+// sent once and are not automatically retried.
+//
 // [ProviderContext.CreateDataSet] leaves its receiver unbound. Persist the
 // [CreateDataSetSubmission] received through [CreateDataSetOptions.OnSubmitted]
 // when confirmation must survive a restart. A fresh ProviderContext for the
@@ -133,10 +162,10 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [PDPProviderClient] and [PDPVerifierReader] are SDK assembly interfaces. Their
-// supported implementations are [pdp.Client] and the PDPVerifier adapter
-// assembled by the root SDK client; user-defined implementations are not
-// compatibility targets.
+// [PDPProviderClient], [PDPVerifierReader], and [FWSSDataSetReader] are SDK
+// assembly interfaces. Their supported implementations are [pdp.Client] and
+// the adapters assembled by the root SDK client; user-defined implementations
+// are not compatibility targets.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner

@@ -264,8 +264,9 @@ func WithFWSSTerminator(t FWSSTerminator) ContextOption {
 	return func(c *contextCore) { c.fwssTerminator = normalizeOptional(t) }
 }
 
-// WithFWSSDataSetReader injects the reader used before uploads to reject
-// existing data sets whose PDP payment rail has ended.
+// WithFWSSDataSetReader injects the reader used to recover caller-identified
+// data-set creation and to reject ended data sets before uploads. The reader
+// must use the context's chain and record keeper.
 func WithFWSSDataSetReader(r FWSSDataSetReader) ContextOption {
 	return func(c *contextCore) { c.dataSetReader = normalizeOptional(r) }
 }
@@ -375,17 +376,23 @@ func detectSize(r io.Reader, pc cid.Cid) int64 {
 
 // PresignForCommit signs a create-and-add payload for a new data set.
 func (c *ProviderContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
-	extraData, _, err := c.core.presignForCommit(ctx, "storage.ProviderContext.PresignForCommit", nil, pieces)
+	extraData, _, err := c.core.presignForCommit(ctx, "storage.ProviderContext.PresignForCommit", nil, pieces, nil)
 	return extraData, err
 }
 
 // PresignForCommit signs an add-pieces payload for the bound data set.
 func (c *DataSetContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
-	extraData, _, err := c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces)
+	extraData, _, err := c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces, nil)
 	return extraData, err
 }
 
-func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *DataSetRef, pieces []PieceInput) ([]byte, *types.BigInt, error) {
+func (c *contextCore) presignForCommit(
+	ctx context.Context,
+	op string,
+	ref *DataSetRef,
+	pieces []PieceInput,
+	requestedClientDataSetID *types.BigInt,
+) ([]byte, *types.BigInt, error) {
 	pieceCIDs, err := validateCommitPieces(op, pieces)
 	if err != nil {
 		return nil, nil, err
@@ -418,6 +425,9 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 	domain := ityped.NewDomain(c.chainID.BigInt(), c.recordKeeper)
 
 	if ref != nil {
+		if requestedClientDataSetID != nil {
+			return nil, nil, fmt.Errorf("%s: %w: ClientDataSetID is only valid when creating a data set", op, ErrInvalidArgument)
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", op, err)
 		}
@@ -433,7 +443,7 @@ func (c *contextCore) presignForCommit(ctx context.Context, op string, ref *Data
 		return extraData, nil, err
 	}
 
-	clientDataSetID, err := randomClientDataSetID()
+	clientDataSetID, err := clientDataSetIDOrRandom(requestedClientDataSetID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
@@ -825,6 +835,13 @@ func randomClientDataSetID() (types.BigInt, error) {
 		return types.BigInt{}, fmt.Errorf("read random clientDataSetID: %w", err)
 	}
 	return id, nil
+}
+
+func clientDataSetIDOrRandom(requested *types.BigInt) (types.BigInt, error) {
+	if requested != nil {
+		return requested.Copy(), nil
+	}
+	return randomClientDataSetID()
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

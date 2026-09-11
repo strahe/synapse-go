@@ -28,6 +28,9 @@
 //
 //   - ErrNotFound: returned when a queried record (e.g. data set) does not
 //     exist. Getter methods document which lookups can produce this.
+//   - ErrDataSetCorrelationConflict: returned when a payer-scoped client
+//     data-set ID is consumed but does not resolve to the expected data-set
+//     record. The ID must not be reused.
 //   - ErrInvalidArgument: returned when required arguments are nil, zero,
 //     or otherwise malformed.
 //   - ErrPDPVerifierNotConfigured: returned when a PDPVerifier-dependent read
