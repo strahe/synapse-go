@@ -79,11 +79,11 @@ func (e *InsufficientUploadContextsError) Is(target error) bool {
 	return target == ErrInsufficientUploadContexts
 }
 
-// ErrPrivateNetwork is returned by Service.Download when the target URL
-// resolves to a loopback / link-local / RFC1918 / ULA / multicast /
-// unspecified address and the Service was constructed without
-// Options.AllowPrivateNetworks. It prevents SDK callers from being used as
-// SSRF egress against internal networks.
+// ErrPrivateNetwork is returned by URL-based downloads and manager-level
+// provider PDP requests when the built-in HTTP client resolves the target to a
+// loopback / link-local / RFC1918 / ULA / multicast / unspecified address and
+// the Service was constructed without Options.AllowPrivateNetworks. It prevents
+// SDK callers from being used as SSRF egress against internal networks.
 var ErrPrivateNetwork = safehttp.ErrPrivateNetwork
 
 // ErrUnsupportedScheme is returned when the URL passed to Service.Download

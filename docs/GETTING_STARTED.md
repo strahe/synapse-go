@@ -52,15 +52,12 @@ Common setup options:
   PDP, FilBeam, and URL downloads.
 - `Close`: release SDK-owned network clients.
 
-Without `WithHTTPClient`, provider PDP requests, FilBeam requests, and URL
-downloads reject private, local, multicast, unspecified, and reserved
-destinations. Match failures with
-`errors.Is(err, synapse.ErrPrivateNetwork)`. This safeguard does not apply to
-`WithRPCURL` or `WithEthClient`; a local JSON-RPC endpoint does not require
-`WithAllowPrivateNetworks(true)`. Enable that option only for trusted private
-provider, FilBeam, or download infrastructure. Environment-variable proxies
-remain disabled. A custom `WithHTTPClient` bypasses these safeguards and
-remains owned by the caller.
+By default, provider PDP, FilBeam, and URL requests reject private or reserved
+destinations; match rejections with
+`errors.Is(err, synapse.ErrPrivateNetwork)`. Use
+`WithAllowPrivateNetworks(true)` only for trusted private infrastructure. These
+safeguards do not apply to Ethereum JSON-RPC configured with `WithRPCURL` or
+`WithEthClient`; a custom `WithHTTPClient` replaces them.
 
 `WithStorageSigner` does not change `Client.Address()` or the payer. Payments,
 operator approvals, nonce management, and direct storage termination continue
