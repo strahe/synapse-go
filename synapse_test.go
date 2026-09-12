@@ -1531,7 +1531,7 @@ func TestRootManagedHTTPClientConfiguration(t *testing.T) {
 	}
 }
 
-func TestRootManagedHTTPClientsRejectLoopback(t *testing.T) {
+func TestRootManagedHTTPClientRejectsLoopback(t *testing.T) {
 	var requests atomic.Int32
 	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -1559,17 +1559,17 @@ func TestRootManagedHTTPClientsRejectLoopback(t *testing.T) {
 		_ = resp.Body.Close()
 	}
 	if !errors.Is(err, ErrPrivateNetwork) {
-		t.Fatalf("FilBeam HTTP error = %v, want ErrPrivateNetwork", err)
+		t.Fatalf("root-managed HTTP error = %v, want ErrPrivateNetwork", err)
 	}
 	if !errors.Is(err, storage.ErrPrivateNetwork) {
-		t.Fatalf("FilBeam HTTP error = %v, want storage.ErrPrivateNetwork alias", err)
+		t.Fatalf("root-managed HTTP error = %v, want storage.ErrPrivateNetwork alias", err)
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("loopback server received %d requests, want 0", got)
 	}
 }
 
-func TestRootManagedHTTPClientsAllowLoopbackWhenEnabled(t *testing.T) {
+func TestRootManagedHTTPClientAllowsLoopbackWhenEnabled(t *testing.T) {
 	var requests atomic.Int32
 	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -1592,13 +1592,13 @@ func TestRootManagedHTTPClientsAllowLoopbackWhenEnabled(t *testing.T) {
 		t.Fatalf("PDP Ping: %v", err)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, loopback.URL+"/filbeam", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, loopback.URL+"/shared", nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext: %v", err)
 	}
 	resp, err := client.serviceHTTPClient(0).Do(req)
 	if err != nil {
-		t.Fatalf("FilBeam HTTP GET: %v", err)
+		t.Fatalf("root-managed HTTP GET: %v", err)
 	}
 	_, readErr := io.Copy(io.Discard, resp.Body)
 	closeErr := resp.Body.Close()
@@ -1710,8 +1710,8 @@ func TestWithAllowPrivateNetworks_TrueAllowsLoopback(t *testing.T) {
 // TestWithAllowPrivateNetworks_WithHTTPClientWins verifies that when
 // WithHTTPClient is supplied, the custom client's transport governs SSRF
 // policy regardless of the WithAllowPrivateNetworks value — the bool has
-// no effect because storage.Options.AllowPrivateNetworks is only consulted
-// when the SDK builds its own safe HTTP client (i.e. when HTTPClient is nil).
+// no effect because the SDK only installs its safe transport when HTTPClient
+// is nil.
 func TestWithAllowPrivateNetworks_WithHTTPClientWins(t *testing.T) {
 	data := bytes.Repeat([]byte("cust"), 128)
 	info, err := piece.CalculateFromBytes(data)

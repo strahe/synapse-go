@@ -8,10 +8,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type closeTrackingConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeTrackingConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
 
 func TestIsPrivateAddress(t *testing.T) {
 	tests := []struct {
@@ -85,6 +97,51 @@ func TestNewClientConfiguration(t *testing.T) {
 		if transport.DialContext == nil {
 			t.Fatalf("allowPrivate=%v: DialContext must be configured", allowPrivate)
 		}
+	}
+}
+
+func TestDialResolvedContextFallsBackAndClosesLoser(t *testing.T) {
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	loser := &closeTrackingConn{Conn: left, closed: make(chan struct{})}
+	started := make(chan string, 3)
+	dial := func(ctx context.Context, _, addr string) (net.Conn, error) {
+		started <- addr
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if net.ParseIP(host).To4() == nil {
+			<-ctx.Done()
+			return loser, nil
+		}
+		conn, peer := net.Pipe()
+		_ = peer.Close()
+		return conn, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := dialResolvedContext(ctx, "tcp", "443", []net.IPAddr{
+		{IP: net.ParseIP("2606:4700:4700::1111")},
+		{IP: net.ParseIP("2001:4860:4860::8888")},
+		{IP: net.ParseIP("8.8.8.8")},
+	}, 5*time.Millisecond, dial)
+	if err != nil {
+		t.Fatalf("dialResolvedContext: %v", err)
+	}
+	_ = conn.Close()
+
+	if got := <-started; got != "[2606:4700:4700::1111]:443" {
+		t.Fatalf("first address = %q, want first IPv6 address", got)
+	}
+	if got := <-started; got != "8.8.8.8:443" {
+		t.Fatalf("fallback address = %q, want interleaved IPv4 address", got)
+	}
+	select {
+	case <-loser.closed:
+	case <-time.After(time.Second):
+		t.Fatal("losing connection was not canceled and closed")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,16 +14,33 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 
+	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 )
 
-func TestNewClientDefaultsAllowPrivateNetworkDownloads(t *testing.T) {
+func TestNewClientRejectsPrivateNetworkDownloadsByDefault(t *testing.T) {
+	t.Setenv(EnvRPCURL, fakeChainRPCServer(t).URL)
+	client := NewClient(t, context.Background(), generateTestPrivateKeyHex(t))
+
+	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte("private-network"), 32))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	download := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer download.Close()
+	_, err = client.Storage().Download(context.Background(), info.CIDv2, &storage.DownloadOptions{URL: download.URL})
+	if !errors.Is(err, synapse.ErrPrivateNetwork) {
+		t.Fatalf("Download error = %v, want ErrPrivateNetwork", err)
+	}
+}
+
+func TestNewClientAllowsPrivateNetworkDownloadsWhenEnabled(t *testing.T) {
 	t.Setenv(EnvRPCURL, fakeChainRPCServer(t).URL)
 
-	client := NewClient(t, context.Background(), generateTestPrivateKeyHex(t))
+	client := NewClient(t, context.Background(), generateTestPrivateKeyHex(t), synapse.WithAllowPrivateNetworks(true))
 
 	data := bytes.Repeat([]byte("private-network"), 32)
 	info, err := piece.CalculateFromBytes(data)

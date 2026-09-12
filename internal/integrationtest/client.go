@@ -7,19 +7,16 @@ import (
 	synapse "github.com/strahe/synapse-go"
 )
 
-// NewClient builds a synapse.Client using the supplied private key hex
-// and the shared RPC URL. Integration clients default to allowing private /
-// local network downloads so local proxy environments can exercise retrieval
-// flows. The SDK's public default remains private-network rejection.
-//
-// The client is automatically closed via t.Cleanup; a failed dial is reported
-// with t.Fatalf so callers can treat the returned value as non-nil.
+// NewClient builds a synapse.Client using the supplied private key hex and the
+// shared RPC URL. The client keeps the SDK's default private-network protection
+// unless opts include synapse.WithAllowPrivateNetworks(true). It is automatically
+// closed via t.Cleanup; a failed dial is reported with t.Fatalf so callers can
+// treat the returned value as non-nil.
 func NewClient(t *testing.T, ctx context.Context, privateKeyHex string, opts ...synapse.ClientOption) *synapse.Client {
 	t.Helper()
 	clientOpts := []synapse.ClientOption{
 		synapse.WithPrivateKeyHex(privateKeyHex),
 		synapse.WithRPCURL(RPCURL()),
-		synapse.WithAllowPrivateNetworks(true),
 	}
 	clientOpts = append(clientOpts, opts...)
 	client, err := synapse.New(ctx, clientOpts...)

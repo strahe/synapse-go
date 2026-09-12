@@ -1748,6 +1748,18 @@ func TestNew_ZeroOptions(t *testing.T) {
 	if s.httpClient.Timeout != defaultDownloadTimeout {
 		t.Fatalf("default HTTP client timeout = %v, want %v", s.httpClient.Timeout, defaultDownloadTimeout)
 	}
+	if s.providerHTTPClient == nil {
+		t.Fatal("default provider HTTP client should be installed")
+	}
+	if s.providerHTTPClient == s.httpClient {
+		t.Fatal("download and provider HTTP clients must keep separate timeout policies")
+	}
+	if s.providerHTTPClient.Timeout != pdp.DefaultHTTPTimeout {
+		t.Fatalf("default provider HTTP client timeout = %v, want %v", s.providerHTTPClient.Timeout, pdp.DefaultHTTPTimeout)
+	}
+	if s.providerHTTPClient.Transport != s.httpClient.Transport {
+		t.Fatal("download and provider HTTP clients must share the safe transport")
+	}
 	if s.maxSecondaryAttempts != maxSecondaryAttemptsDefault {
 		t.Fatalf("maxSecondaryAttempts = %d, want default %d", s.maxSecondaryAttempts, maxSecondaryAttemptsDefault)
 	}
@@ -1777,6 +1789,9 @@ func TestNew_ExplicitHTTPClient(t *testing.T) {
 	}
 	if s.httpClient != custom {
 		t.Fatal("caller-supplied HTTPClient should be kept")
+	}
+	if s.providerHTTPClient != custom {
+		t.Fatal("caller-supplied HTTPClient should be used unchanged for provider requests")
 	}
 }
 

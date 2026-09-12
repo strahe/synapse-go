@@ -439,7 +439,7 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 		LockupLastSettledAt: new(big.Int),
 	}}
 	mgr := mustNewService(t, Options{
-		HTTPClient: server.Client(),
+		AllowPrivateNetworks: true,
 		FWSSDataSetReader: fakeTerminationDataSetReader{info: &warmstorage.DataSetInfo{
 			DataSetID:  dataSetID,
 			ProviderID: provider.ID,
@@ -454,6 +454,9 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 		ChainID:            types.ChainID(314159),
 		RecordKeeper:       testRecordKeeper(),
 	})
+	// A deliberately unusable download timeout proves provider control calls use
+	// the separate 30-second client rather than the long-running download client.
+	mgr.httpClient.Timeout = time.Nanosecond
 
 	var submitted common.Hash
 	res, err := mgr.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{

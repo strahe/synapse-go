@@ -17,6 +17,7 @@ import (
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/safehttp"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
@@ -78,6 +79,7 @@ type Service struct {
 	contextResolver      ContextResolver
 	contextSelector      ContextSelector
 	httpClient           *http.Client
+	providerHTTPClient   *http.Client
 	source               string
 	defaultWithCDN       bool
 	maxSecondaryAttempts int
@@ -125,15 +127,14 @@ type Options struct {
 	// Resolver also implements ContextSelector, New reuses Resolver.
 	ContextSelector ContextSelector
 
-	// HTTPClient is used for URL-based downloads. nil installs a client with
-	// a 24-hour timeout — long enough for multi-GiB transfers over typical
-	// storage networks while preventing indefinite hangs. The default client
-	// also disables environment-variable proxies to avoid proxy-assisted SSRF
-	// bypass. When set, the SDK's built-in SSRF protection is bypassed
-	// entirely: the provided Transport is responsible for implementing
-	// equivalent safeguards (private-network rejection, DNS-rebind close
-	// window, redirect filtering). AllowPrivateNetworks has no effect in this
-	// case.
+	// HTTPClient is used for URL-based downloads and manager-level provider PDP
+	// control requests. nil installs clients sharing a safe transport: downloads
+	// use a 24-hour timeout for large transfers, while PDP control requests use
+	// [pdp.DefaultHTTPTimeout]. The default transport disables environment-variable
+	// proxies to avoid proxy-assisted SSRF bypass. When set, the SDK's built-in
+	// SSRF protection is bypassed entirely: the provided client is used unchanged
+	// and is responsible for equivalent safeguards, redirect policy, and timeouts.
+	// AllowPrivateNetworks has no effect in this case.
 	HTTPClient *http.Client
 
 	// Source is the application identifier for dataset namespace isolation.
@@ -157,12 +158,11 @@ type Options struct {
 	CommitConcurrency int
 
 	// AllowPrivateNetworks disables the default SSRF protection applied to
-	// URL-based Service.Download calls. When false (the default), the
-	// built-in HTTP client refuses to dial local, private, multicast,
-	// unspecified, or otherwise reserved address ranges and returns
-	// ErrPrivateNetwork.
-	// Set to true only when you knowingly need to download from a private
-	// network (e.g. in-cluster storage). Ignored when HTTPClient is set.
+	// URL-based Service.Download calls and manager-level provider PDP requests.
+	// When false (the default), the built-in HTTP transport refuses to dial local,
+	// private, multicast, unspecified, or otherwise reserved address ranges and
+	// returns ErrPrivateNetwork. Set to true only for trusted private download or
+	// provider infrastructure. Ignored when HTTPClient is set.
 	AllowPrivateNetworks bool
 
 	// DownloadMaxBytes caps the number of bytes a single URL-based
@@ -239,8 +239,12 @@ type Options struct {
 
 // New creates a Service from the given Options.
 func New(opts Options) (*Service, error) {
+	providerHTTPClient := opts.HTTPClient
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = safehttp.NewClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
+		providerClient := *opts.HTTPClient
+		providerClient.Timeout = pdp.DefaultHTTPTimeout
+		providerHTTPClient = &providerClient
 	}
 	if opts.MaxSecondaryAttempts <= 0 {
 		opts.MaxSecondaryAttempts = maxSecondaryAttemptsDefault
@@ -280,6 +284,7 @@ func New(opts Options) (*Service, error) {
 		contextResolver:      contextResolver,
 		contextSelector:      contextSelector,
 		httpClient:           opts.HTTPClient,
+		providerHTTPClient:   providerHTTPClient,
 		source:               opts.Source,
 		defaultWithCDN:       opts.DefaultWithCDN,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,

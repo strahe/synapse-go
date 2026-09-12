@@ -10,9 +10,11 @@ export SYNAPSE_RPC_URL=https://api.calibration.node.glif.io/rpc/v1
 export SYNAPSE_CHAIN=calibration
 ```
 
-Examples default to allowing private / local network downloads so local proxy
-environments can run retrieval flows. The SDK's normal client default still
-rejects private-network downloads unless callers explicitly opt in.
+Examples use the SDK's default private-network protection. If a trusted private
+provider or download endpoint is required, pass
+`synapse.WithAllowPrivateNetworks(true)` explicitly. This disables
+private-network rejection for provider PDP, FilBeam, and URL downloads on the
+same client.
 
 ## Quickstart
 

@@ -163,8 +163,8 @@ func WithLogger(l *slog.Logger) ClientOption {
 //
 //   - filbeam.Service (stats API and CDN downloads)
 //   - storage.Service (URL-based downloads via Service.HTTPClient)
-//   - provider HTTP clients constructed by the storage resolver for upload,
-//     pull, and provider RPC calls
+//   - provider HTTP clients used for upload, pull, provider RPC calls, and
+//     manager-level relayed termination
 //
 // Services communicating over Ethereum JSON-RPC (payments, sessionkey,
 // warmstorage, spregistry, costs) reuse the chain client instead and are not
