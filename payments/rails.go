@@ -38,11 +38,16 @@ type RailListItem struct {
 	EndEpoch     *big.Int
 }
 
-// RailPage is one page of rails plus pagination cursors.
+// RailPage is one page of rails plus pagination cursors. A page can contain
+// fewer rails than the requested limit because finalized slots are skipped.
 type RailPage struct {
-	Rails      []RailListItem
+	Rails []RailListItem
+	// NextOffset is the continuation offset returned by the contract.
+	// There are more slots when NextOffset < Total. Check IsUint64 before
+	// converting it to ListOptions.Offset, or use IterateAllRailsAsPayer/Payee.
 	NextOffset *big.Int
-	Total      *big.Int
+	// Total is the number of underlying rail slots, including finalized slots.
+	Total *big.Int
 }
 
 // GetRail returns the full view of a single rail by id.
@@ -73,57 +78,21 @@ func (s *Service) GetRail(ctx context.Context, railID sdktypes.BigInt) (*RailVie
 	}, nil
 }
 
-// ListOption tunes paginated list calls.
-type ListOption func(*listConfig)
-
-type listConfig struct {
-	offset *big.Int
-	limit  *big.Int
+// GetRailsAsPayer reads one page of rails charging payer for token.
+// opts.Limit must be > 0 and bounds the slots examined, not the number of
+// returned rails. Use IterateAllRailsAsPayer for unbounded traversal.
+func (s *Service) GetRailsAsPayer(ctx context.Context, payer, token common.Address, opts sdktypes.ListOptions) (*RailPage, error) {
+	return s.listRails(ctx, payer, token, true, new(big.Int).SetUint64(opts.Offset), opts.Limit)
 }
 
-// WithListOffset sets the starting offset for paginated results.
-func WithListOffset(offset *big.Int) ListOption {
-	return func(c *listConfig) {
-		if offset != nil {
-			c.offset = new(big.Int).Set(offset)
-		}
-	}
+// GetRailsAsPayee reads one page of rails paying payee in token.
+// opts.Limit must be > 0 and bounds the slots examined, not the number of
+// returned rails. Use IterateAllRailsAsPayee for unbounded traversal.
+func (s *Service) GetRailsAsPayee(ctx context.Context, payee, token common.Address, opts sdktypes.ListOptions) (*RailPage, error) {
+	return s.listRails(ctx, payee, token, false, new(big.Int).SetUint64(opts.Offset), opts.Limit)
 }
 
-// WithListLimit caps the number of results returned in one page.
-// limit == 0 requests all remaining rails; negative values are ignored.
-func WithListLimit(limit *big.Int) ListOption {
-	return func(c *listConfig) {
-		if limit != nil && limit.Sign() >= 0 {
-			c.limit = new(big.Int).Set(limit)
-		}
-	}
-}
-
-func resolveListConfig(opts []ListOption) listConfig {
-	cfg := listConfig{
-		offset: big.NewInt(0),
-		limit:  big.NewInt(0),
-	}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	return cfg
-}
-
-// GetRailsAsPayer lists rails where `payer` is the account being charged
-// for `token`. Callers may paginate with WithListOffset / WithListLimit.
-func (s *Service) GetRailsAsPayer(ctx context.Context, payer, token common.Address, opts ...ListOption) (*RailPage, error) {
-	return s.listRails(ctx, payer, token, true, opts)
-}
-
-// GetRailsAsPayee lists rails where `payee` is the account being paid
-// on `token`. Callers may paginate with WithListOffset / WithListLimit.
-func (s *Service) GetRailsAsPayee(ctx context.Context, payee, token common.Address, opts ...ListOption) (*RailPage, error) {
-	return s.listRails(ctx, payee, token, false, opts)
-}
-
-func (s *Service) listRails(ctx context.Context, account, token common.Address, asPayer bool, opts []ListOption) (*RailPage, error) {
+func (s *Service) listRails(ctx context.Context, account, token common.Address, asPayer bool, offset *big.Int, limit uint64) (*RailPage, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -137,13 +106,16 @@ func (s *Service) listRails(ctx context.Context, account, token common.Address, 
 	if (token == common.Address{}) {
 		return nil, invalidZeroAddressError("payments."+method, "token")
 	}
-	cfg := resolveListConfig(opts)
+	if err := (sdktypes.ListOptions{Limit: limit}).Validate(); err != nil {
+		return nil, fmt.Errorf("payments.%s: %w: %w", method, ErrInvalidArgument, err)
+	}
 	call := &bind.CallOpts{Context: ctx}
+	limitBig := new(big.Int).SetUint64(limit)
 
 	var nextOffset, total *big.Int
 	items := []RailListItem{}
 	if asPayer {
-		out, err := s.filPayCall.GetRailsForPayerAndToken(call, account, token, cfg.offset, cfg.limit)
+		out, err := s.filPayCall.GetRailsForPayerAndToken(call, account, token, offset, limitBig)
 		if err != nil {
 			return nil, fmt.Errorf("payments.%s: %w", method, err)
 		}
@@ -160,7 +132,7 @@ func (s *Service) listRails(ctx context.Context, account, token common.Address, 
 			})
 		}
 	} else {
-		out, err := s.filPayCall.GetRailsForPayeeAndToken(call, account, token, cfg.offset, cfg.limit)
+		out, err := s.filPayCall.GetRailsForPayeeAndToken(call, account, token, offset, limitBig)
 		if err != nil {
 			return nil, fmt.Errorf("payments.%s: %w", method, err)
 		}

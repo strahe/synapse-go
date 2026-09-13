@@ -13,6 +13,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/types"
 )
 
 // TestIntegration_Payments covers payment reads and account writes not already
@@ -58,14 +59,14 @@ func TestIntegration_Payments(t *testing.T) {
 
 	// GetRailsAsPayer — should succeed even if zero rails.
 	addrs := client.ResolvedAddresses()
-	page, err := p.GetRailsAsPayer(ctx, client.Address(), addrs.USDFC)
+	page, err := p.GetRailsAsPayer(ctx, client.Address(), addrs.USDFC, types.ListOptions{Limit: 100})
 	if err != nil {
 		t.Fatalf("GetRailsAsPayer: %v", err)
 	}
 	if page == nil {
 		t.Fatal("GetRailsAsPayer returned nil page")
 	}
-	t.Logf("rails-as-payer: count=%d", len(page.Rails))
+	t.Logf("rails-as-payer first page: count=%d", len(page.Rails))
 
 	fixed, err := p.TotalAccountFixedLockup(ctx, client.Address())
 	if err != nil {

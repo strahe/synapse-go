@@ -185,12 +185,13 @@ func TestSettleAuto_NoSignerFailsBeforeFetchingRail(t *testing.T) {
 	}
 }
 
-func TestGetRailsAsPayer_DefaultLimitUsesAllRemaining(t *testing.T) {
+func TestGetRailsAsPayer_ExplicitPageOptions(t *testing.T) {
 	s, mb := newTestService(t)
 	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{}, big.NewInt(0), big.NewInt(0))
 
-	if _, err := s.GetRailsAsPayer(context.Background(), otherAddr, tokenAddr); err != nil {
-		t.Fatalf("GetRailsAsPayer default: %v", err)
+	opts := sdktypes.ListOptions{Offset: ^uint64(0), Limit: ^uint64(0)}
+	if _, err := s.GetRailsAsPayer(context.Background(), otherAddr, tokenAddr, opts); err != nil {
+		t.Fatalf("GetRailsAsPayer: %v", err)
 	}
 
 	mth := mb.filPayABI.Methods["getRailsForPayerAndToken"]
@@ -198,28 +199,33 @@ func TestGetRailsAsPayer_DefaultLimitUsesAllRemaining(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unpack call args: %v", err)
 	}
-	limit := args[3].(*big.Int)
-	if limit.Sign() != 0 {
-		t.Fatalf("default limit = %s, want 0", limit)
+	for i, want := range []uint64{opts.Offset, opts.Limit} {
+		if got := args[i+2].(*big.Int); got.Cmp(new(big.Int).SetUint64(want)) != 0 {
+			t.Fatalf("offset/limit arg %d = %s, want %d", i, got, want)
+		}
 	}
 }
 
-func TestGetRailsAsPayer_WithListLimitZeroPreservesZero(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{}, big.NewInt(0), big.NewInt(0))
-
-	if _, err := s.GetRailsAsPayer(context.Background(), otherAddr, tokenAddr, WithListLimit(big.NewInt(0))); err != nil {
-		t.Fatalf("GetRailsAsPayer limit=0: %v", err)
-	}
-
-	mth := mb.filPayABI.Methods["getRailsForPayerAndToken"]
-	args, err := mth.Inputs.Unpack(mb.lastIn[filPayAddr.Hex()+":getRailsForPayerAndToken"][4:])
-	if err != nil {
-		t.Fatalf("unpack call args: %v", err)
-	}
-	limit := args[3].(*big.Int)
-	if limit.Sign() != 0 {
-		t.Fatalf("explicit zero limit = %s, want 0", limit)
+func TestGetRails_ZeroLimitRejectedBeforeRPC(t *testing.T) {
+	for _, asPayer := range []bool{true, false} {
+		name := "payee"
+		if asPayer {
+			name = "payer"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			list := s.GetRailsAsPayee
+			if asPayer {
+				list = s.GetRailsAsPayer
+			}
+			_, err := list(context.Background(), otherAddr, tokenAddr, sdktypes.ListOptions{})
+			if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, sdktypes.ErrInvalidListOptions) {
+				t.Fatalf("zero limit err=%v, want ErrInvalidArgument and ErrInvalidListOptions", err)
+			}
+			if len(mb.lastIn) != 0 {
+				t.Fatalf("zero limit made RPC calls: %v", mb.lastIn)
+			}
+		})
 	}
 }
 
