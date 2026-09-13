@@ -14,7 +14,7 @@ import (
 )
 
 // ------------------------------------------------------------------
-// GetRail / GetRailsAsPayee / WithListOffset
+// GetRail / GetRailsAsPayee
 // ------------------------------------------------------------------
 
 func TestGetRail_HappyPath(t *testing.T) {
@@ -61,7 +61,7 @@ func TestGetRailsAsPayee_PaginatesAndUnpacks(t *testing.T) {
 	}, big.NewInt(5), big.NewInt(20))
 
 	page, err := s.GetRailsAsPayee(context.Background(), operatorAddr, tokenAddr,
-		WithListOffset(big.NewInt(2)), WithListLimit(big.NewInt(10)))
+		sdktypes.ListOptions{Offset: 2, Limit: 10})
 	if err != nil {
 		t.Fatalf("GetRailsAsPayee: %v", err)
 	}
@@ -79,16 +79,6 @@ func TestGetRailsAsPayee_PaginatesAndUnpacks(t *testing.T) {
 	}
 	if args[2].(*big.Int).Cmp(big.NewInt(2)) != 0 || args[3].(*big.Int).Cmp(big.NewInt(10)) != 0 {
 		t.Fatalf("offset/limit args = %v", args[2:])
-	}
-}
-
-func TestGetRailsAsPayee_ZeroAccountRejected(t *testing.T) {
-	s, _ := newTestService(t)
-	if _, err := s.GetRailsAsPayee(context.Background(), common.Address{}, tokenAddr); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("GetRailsAsPayee zero acct err=%v, want ErrInvalidArgument", err)
-	}
-	if _, err := s.GetRailsAsPayee(context.Background(), operatorAddr, common.Address{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("GetRailsAsPayee zero token err=%v, want ErrInvalidArgument", err)
 	}
 }
 

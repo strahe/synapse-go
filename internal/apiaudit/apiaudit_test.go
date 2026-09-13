@@ -96,6 +96,9 @@ func TestExternalModuleCanConfigureServiceOptions(t *testing.T) {
 
 import (
 	"context"
+	"iter"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
@@ -106,6 +109,15 @@ import (
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
+
+type paymentRailsReader interface {
+	GetRailsAsPayer(context.Context, common.Address, common.Address, types.ListOptions) (*payments.RailPage, error)
+	GetRailsAsPayee(context.Context, common.Address, common.Address, types.ListOptions) (*payments.RailPage, error)
+	IterateAllRailsAsPayer(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
+	IterateAllRailsAsPayee(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
+}
+
+var _ paymentRailsReader = (*payments.Service)(nil)
 
 type nonceManager struct{}
 

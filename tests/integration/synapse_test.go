@@ -1403,11 +1403,11 @@ func TestIntegration(t *testing.T) {
 				t.Fatal("GetRail returned nil")
 			}
 			t.Logf("rail %s: token=%s payer=%s payee=%s", uploadedRailID, rv.Token, rv.From, rv.To)
-			page, err := client.Payments().GetRailsAsPayee(cctx, rv.To, usdfc)
+			page, err := client.Payments().GetRailsAsPayee(cctx, rv.To, usdfc, types.ListOptions{Limit: 100})
 			if err != nil {
 				t.Fatalf("GetRailsAsPayee: %v", err)
 			}
-			t.Logf("payee %s has %d rails (USDFC)", rv.To, len(page.Rails))
+			t.Logf("payee %s first page contains %d rails (USDFC)", rv.To, len(page.Rails))
 		})
 
 		t.Run("GetSettlementAmounts", func(t *testing.T) {
