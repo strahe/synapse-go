@@ -192,7 +192,8 @@ type Options struct {
 	// StorageInfoReader backs Service.GetStorageInfo. Optional.
 	StorageInfoReader StorageInfoReader
 
-	// DataSetTerminator backs Service.TerminateDataSet. Optional.
+	// DataSetTerminator backs Service.TerminateService with SkipProvider enabled.
+	// Optional; the built-in implementation is *warmstorage.Service.
 	DataSetTerminator FWSSTerminator
 
 	// CostCalculator backs Service.CalculateMultiContextCosts and the

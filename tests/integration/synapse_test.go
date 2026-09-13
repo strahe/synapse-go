@@ -330,9 +330,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 			defer cancel()
 
 			t.Logf("start CDNContextDownload cleanup TerminateDataSet(%s)", cleanupDataSetID)
-			termRes, err := client.Storage().TerminateDataSet(cctx, cleanupDataSetID, &storage.TerminateDataSetOptions{
-				WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
-			})
+			termRes, err := client.WarmStorage().TerminateDataSet(cctx, cleanupDataSetID, warmstorage.WithWait(txWaitTimeout))
 			if err != nil {
 				t.Logf("cleanup TerminateDataSet(%s): %v", cleanupDataSetID, err)
 				return
@@ -404,9 +402,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		t.Logf("CDN context download verified through FilBeam: cid=%s dataset=%s", result.PieceCID, result.Copies[0].DataSetID)
 
 		t.Logf("start CDNContextDownload TerminateDataSet(%s)", cleanupDataSetID)
-		termRes, err := client.Storage().TerminateDataSet(cctx, cleanupDataSetID, &storage.TerminateDataSetOptions{
-			WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(txWaitTimeout)},
-		})
+		termRes, err := client.WarmStorage().TerminateDataSet(cctx, cleanupDataSetID, warmstorage.WithWait(txWaitTimeout))
 		if err != nil {
 			t.Fatalf("TerminateDataSet(%s): %v", cleanupDataSetID, err)
 		}

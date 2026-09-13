@@ -84,32 +84,54 @@ func TestWriteMethods_UseBackendPendingNonce(t *testing.T) {
 }
 
 func TestTerminateDataSet_BroadcastsAndWaits(t *testing.T) {
-	svc, backend := newWriteTestService(t)
-	backend.receiptFn = func(_ context.Context, hash common.Hash) (*coretypes.Receipt, error) {
-		return &coretypes.Receipt{
-			Status:      coretypes.ReceiptStatusSuccessful,
-			TxHash:      hash,
-			BlockNumber: big.NewInt(5),
-		}, nil
+	tests := []struct {
+		name string
+		opts []WriteOption
+		wait bool
+	}{
+		{"default broadcast only", nil, false},
+		{"zero wait", []WriteOption{WithWait(0)}, false},
+		{"negative wait", []WriteOption{WithWait(-time.Second)}, false},
+		{"positive wait", []WriteOption{WithWait(time.Second)}, true},
 	}
-
-	res, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(23), WithWait(time.Second))
-	if err != nil {
-		t.Fatalf("TerminateDataSet: %v", err)
-	}
-	if res == nil || res.Receipt == nil || res.Receipt.Status != coretypes.ReceiptStatusSuccessful {
-		t.Fatalf("TerminateDataSet result = %+v", res)
-	}
-	if len(backend.sent) != 1 {
-		t.Fatalf("sent tx count = %d, want 1", len(backend.sent))
-	}
-	method := backend.fwssABI.Methods["terminateService"]
-	args, err := method.Inputs.Unpack(backend.sent[0].Data()[4:])
-	if err != nil {
-		t.Fatalf("unpack calldata: %v", err)
-	}
-	if got := args[0].(*big.Int); got.Cmp(big.NewInt(23)) != 0 {
-		t.Fatalf("dataSetID = %s, want 23", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, backend := newWriteTestService(t)
+			receiptCalls := 0
+			backend.receiptFn = func(_ context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+				receiptCalls++
+				return &coretypes.Receipt{
+					Status:      coretypes.ReceiptStatusSuccessful,
+					TxHash:      hash,
+					BlockNumber: big.NewInt(5),
+				}, nil
+			}
+			res, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(23), tt.opts...)
+			if err != nil {
+				t.Fatalf("TerminateDataSet: %v", err)
+			}
+			if len(backend.sent) != 1 {
+				t.Fatalf("sent tx count = %d, want 1", len(backend.sent))
+			}
+			if res == nil || res.Hash != backend.sent[0].Hash() {
+				t.Fatalf("TerminateDataSet result = %+v, want submission hash %s", res, backend.sent[0].Hash())
+			}
+			if tt.wait {
+				if res.Receipt == nil || res.Receipt.Status != coretypes.ReceiptStatusSuccessful || res.Receipt.TxHash != res.Hash {
+					t.Fatalf("TerminateDataSet receipt = %+v, want confirmed transaction %s", res.Receipt, res.Hash)
+				}
+			} else if res.Receipt != nil || receiptCalls != 0 {
+				t.Fatalf("broadcast-only receipt = %+v, receipt lookups = %d, want no receipt polling", res.Receipt, receiptCalls)
+			}
+			method := backend.fwssABI.Methods["terminateService"]
+			args, err := method.Inputs.Unpack(backend.sent[0].Data()[4:])
+			if err != nil {
+				t.Fatalf("unpack calldata: %v", err)
+			}
+			if got := args[0].(*big.Int); got.Cmp(big.NewInt(23)) != 0 {
+				t.Fatalf("dataSetID = %s, want 23", got)
+			}
+		})
 	}
 }
 
@@ -182,7 +204,7 @@ func TestFinalize_WithConfirmationsAndFailedReceipt(t *testing.T) {
 		if !errors.Is(err, txutil.ErrTxFailed) {
 			t.Fatalf("error = %v, want ErrTxFailed", err)
 		}
-		if res == nil || res.Receipt == nil || res.Receipt.Status != coretypes.ReceiptStatusFailed {
+		if res == nil || res.Hash != tx.Hash() || res.Receipt == nil || res.Receipt.Status != coretypes.ReceiptStatusFailed {
 			t.Fatalf("failed result = %+v", res)
 		}
 	})

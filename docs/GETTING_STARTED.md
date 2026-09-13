@@ -61,8 +61,8 @@ safeguards do not apply to Ethereum JSON-RPC configured with `WithRPCURL` or
 
 `WithStorageSigner` does not change `Client.Address()` or the payer. Payments,
 operator approvals, nonce management, and direct storage termination continue
-to use the root private key. Direct termination includes `TerminateDataSet` and
-`TerminateService` with `SkipProvider` enabled.
+to use the root private key. Direct termination uses `Storage().TerminateService`
+with `SkipProvider` enabled or `WarmStorage().TerminateDataSet`.
 
 A custom Storage signer receives a pre-computed 32-byte digest and cannot
 inspect the original EIP-712 message. Use a dedicated authorization key and
@@ -392,12 +392,56 @@ Common management calls:
 - `DataSetContext.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
   `DeletePieceByID` when available, because repeated uploads can share a CID.
 - `DataSetContext.TerminateService` / `Service.TerminateService`: terminate service
-  through the provider by default; use `SkipProvider` for direct FWSS fallback.
-- `DataSetContext.Terminate` / `Service.TerminateDataSet`: legacy direct FWSS
-  termination write.
+  and wait for confirmation. The provider relays by default; set `SkipProvider`
+  to submit directly through FWSS.
+- `WarmStorage().TerminateDataSet`: submit directly and obtain a raw `WriteResult`.
 
 Termination and removal are storage lifecycle actions. Treat them as
 application-level destructive operations and gate them accordingly.
+
+### Terminating A Service
+
+`Storage().TerminateService` and `DataSetContext.TerminateService` wait for
+confirmation and return the dataset ID, available transaction hashes, and
+`EndEpoch`. Provider-relayed termination takes effect immediately and requires
+the payer's account to cover settlement in full. The provider pays gas and charges
+a fee; a settlement failure does not automatically switch to direct submission.
+
+Set `SkipProvider: true` to submit from the root wallet without provider
+cooperation. Service and payments continue until `EndEpoch`. Confirmation does
+not mean that this epoch has arrived or that the provider has deleted the
+remaining on-chain dataset state.
+
+```go
+termination, err := client.Storage().TerminateService(ctx, dataSetID, &storage.TerminateServiceOptions{
+	SkipProvider:      true,
+	DirectWaitTimeout: 3 * time.Minute,
+})
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println("service ends at epoch:", termination.EndEpoch)
+```
+
+Direct termination always waits for a receipt. `DirectWaitTimeout` overrides
+`warmstorage.WithWait` in `WriteOptions`; a non-positive timeout selects the
+five-minute default. Its `OnSubmitted` callback runs only after a receipt is
+obtained successfully. A waiting error returns no partial high-level result and
+does not prove that the transaction was never broadcast; do not blindly resubmit.
+
+Use `client.WarmStorage().TerminateDataSet(ctx, dataSetID, ...)` when you need
+broadcast-only submission or a raw receipt. By default, or with a zero/negative
+`warmstorage.WithWait`, it returns the submission hash without waiting. A positive
+`WithWait` obtains a receipt and preserves the submission hash on waiting errors;
+a failed transaction also returns its receipt. Check a non-nil `WriteResult`
+alongside the error when tracking an already submitted transaction.
+
+When replacing `DataSetContext.Terminate` or `Service.TerminateDataSet`, choose
+the high-level direct call only if you need the confirmed termination outcome.
+Map a positive `WithWait(d)` to `DirectWaitTimeout: d` and retain other applicable
+write options. Calls that do not wait, inspect raw receipts, or use a submission
+hash or failed receipt on errors must use `WarmStorage().TerminateDataSet` with
+their original options instead.
 
 ## Services
 

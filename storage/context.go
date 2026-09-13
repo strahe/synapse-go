@@ -121,7 +121,7 @@ type contextCore struct {
 
 	// Optional read/write collaborators used by lifecycle methods that read
 	// PDP/FWSS state (GetScheduledRemovals, PieceStatus, DeletePiece by CID,
-	// Upload or Commit to an existing data set, Terminate).
+	// Upload or Commit to an existing data set, TerminateService).
 	// All are nil by default; methods that require one return a descriptive
 	// error when it is unset. Upload and Commit validate existing data sets
 	// when a validator is configured.
@@ -259,7 +259,8 @@ func WithPDPConfigReader(r PDPConfigReader) ContextOption {
 	return func(c *contextCore) { c.pdpConfig = normalizeOptional(r) }
 }
 
-// WithFWSSTerminator injects the terminator used by [DataSetContext.Terminate].
+// WithFWSSTerminator injects the direct transaction dependency used by
+// [DataSetContext.TerminateService] when SkipProvider is enabled.
 func WithFWSSTerminator(t FWSSTerminator) ContextOption {
 	return func(c *contextCore) { c.fwssTerminator = normalizeOptional(t) }
 }

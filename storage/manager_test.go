@@ -37,19 +37,6 @@ func (r *managerStorageInfoReader) GetStorageInfo(_ context.Context, client comm
 	return r.result, r.err
 }
 
-type managerTerminator struct {
-	dataSetID types.BigInt
-	optCount  int
-	result    *types.WriteResult
-	err       error
-}
-
-func (t *managerTerminator) TerminateDataSet(_ context.Context, dataSetID types.BigInt, opts ...warmstorage.WriteOption) (*types.WriteResult, error) {
-	t.dataSetID = dataSetID
-	t.optCount = len(opts)
-	return t.result, t.err
-}
-
 type managerCostCalculator struct {
 	payer  common.Address
 	size   *big.Int
@@ -78,17 +65,14 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	override := common.HexToAddress("0x2002")
 	wantSets := []*DataSetDetails{{DataSetInfo: warmstorage.DataSetInfo{DataSetID: types.NewBigInt(7)}}}
 	wantInfo := &StorageInfo{}
-	wantWrite := &types.WriteResult{Hash: common.HexToHash("0x1234")}
 	wantCosts := &MultiContextCosts{RatePerEpoch: big.NewInt(3)}
 	finder := &managerDataSetFinder{result: wantSets}
 	info := &managerStorageInfoReader{result: wantInfo}
-	terminator := &managerTerminator{result: wantWrite}
 	calculator := &managerCostCalculator{result: wantCosts}
 	svc, err := New(Options{
 		PayerAddress:      defaultPayer,
 		DataSetFinder:     finder,
 		StorageInfoReader: info,
-		DataSetTerminator: terminator,
 		CostCalculator:    calculator,
 	})
 	if err != nil {
@@ -106,14 +90,6 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	gotInfo, err := svc.GetStorageInfo(context.Background(), &GetStorageInfoOptions{Client: override})
 	if err != nil || gotInfo != wantInfo || info.client != override {
 		t.Fatalf("GetStorageInfo = %+v, %v; client=%s", gotInfo, err, info.client)
-	}
-
-	dataSetID := types.NewBigInt(9)
-	gotWrite, err := svc.TerminateDataSet(context.Background(), dataSetID, &TerminateDataSetOptions{
-		WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(0)},
-	})
-	if err != nil || gotWrite != wantWrite || !terminator.dataSetID.Equal(dataSetID) || terminator.optCount != 1 {
-		t.Fatalf("TerminateDataSet = %+v, %v; forwarded id=%s opts=%d", gotWrite, err, terminator.dataSetID, terminator.optCount)
 	}
 
 	refs := []ContextCostRef{{Provider: testProvider()}}
@@ -142,10 +118,6 @@ func TestServiceManagerFacades_ValidateConfiguration(t *testing.T) {
 	}{
 		{"FindDataSets", func() error { _, err := svc.FindDataSets(context.Background(), nil); return err }, ErrUninitialized},
 		{"GetStorageInfo", func() error { _, err := svc.GetStorageInfo(context.Background(), nil); return err }, ErrUninitialized},
-		{"TerminateDataSet", func() error {
-			_, err := svc.TerminateDataSet(context.Background(), types.NewBigInt(1), nil)
-			return err
-		}, ErrUninitialized},
 		{"CalculateMultiContextCosts", func() error {
 			_, err := svc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
@@ -166,7 +138,6 @@ func TestServiceManagerFacades_ValidateArguments(t *testing.T) {
 	svc, err := New(Options{
 		DataSetFinder:     &managerDataSetFinder{},
 		StorageInfoReader: &managerStorageInfoReader{},
-		DataSetTerminator: &managerTerminator{},
 		CostCalculator:    calculator,
 	})
 	if err != nil {
@@ -174,9 +145,6 @@ func TestServiceManagerFacades_ValidateArguments(t *testing.T) {
 	}
 	if _, err := svc.FindDataSets(context.Background(), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("FindDataSets error = %v, want ErrInvalidArgument", err)
-	}
-	if _, err := svc.TerminateDataSet(context.Background(), types.NewBigInt(0), nil); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("TerminateDataSet error = %v, want ErrInvalidArgument", err)
 	}
 	if _, err := svc.CalculateMultiContextCosts(context.Background(), 1, nil, MultiCostOptions{}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(empty refs) error = %v, want ErrInvalidArgument", err)

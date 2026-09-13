@@ -15,6 +15,10 @@ import (
 
 // TerminateDataSet terminates the FWSS-managed payment rails for the
 // given data set. It maps to FWSS.terminateService(uint256).
+// By default it returns after broadcast with the submission hash and no receipt.
+// A positive WithWait waits for a receipt; waiting errors retain the submission
+// hash in the returned WriteResult, and a failed transaction also retains its
+// receipt. Confirmation does not wait for service expiry or data-set cleanup.
 func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
