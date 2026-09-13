@@ -131,21 +131,13 @@ func activitySelectionFixture(providerID types.BigInt, dataSetIDs []types.BigInt
 	return fixture
 }
 
-func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt, requireWritable bool) ([]StorageContext, error) {
+func resolveActivityProvider(t *testing.T, resolver *ServiceResolver, providerID types.BigInt) ([]StorageContext, error) {
 	t.Helper()
-	opts := &UploadOptions{
+	opts := SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	}
-	var (
-		contexts []StorageContext
-		err      error
-	)
-	if requireWritable {
-		contexts, _, err = resolver.resolveWritableUploadContexts(context.Background(), opts)
-	} else {
-		contexts, _, err = resolver.ResolveUploadContexts(context.Background(), opts)
-	}
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +190,7 @@ func TestServiceResolverProviderIDActivitySelection(t *testing.T) {
 			}
 			resolver := newActivityServiceResolver(t, catalog, nil)
 
-			contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+			contexts, err := resolveActivityProvider(t, resolver, providerID)
 			if err != nil {
 				t.Fatalf("ResolveUploadContexts: %v", err)
 			}
@@ -232,7 +224,7 @@ func TestServiceResolverProviderIDActivitySelectionFallsBackWithoutPDPVerifier(t
 		t.Fatal("NewServiceResolver enabled active-piece reads without a configured PDPVerifier")
 	}
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -257,7 +249,7 @@ func TestServiceResolverProviderIDActivitySelectionSlidesPastFirstWindow(t *test
 	catalog.activeByID[testIDKey(25)] = true
 	resolver := newActivityServiceResolver(t, catalog, nil)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -273,7 +265,7 @@ func TestServiceResolverProviderIDActivitySelectionSkipsMismatchedMetadata(t *te
 	catalog.activeByID[testIDKey(2)] = true
 	resolver := newActivityServiceResolver(t, catalog, nil)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -292,7 +284,7 @@ func TestServiceResolverProviderIDActivitySelectionCreatesNewWhenMetadataDoesNot
 	catalog := newActivityDataSetCatalog(fixture)
 	resolver := newActivityServiceResolver(t, catalog, nil)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -361,7 +353,7 @@ func TestServiceResolverProviderIDActivitySelectionSortsFullBigInts(t *testing.T
 	catalog.activeByID[idconv.Key(newer)] = true
 	resolver := newActivityServiceResolver(t, catalog, nil)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, false)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -381,9 +373,9 @@ func TestServiceResolverProviderIDActivitySelectionSkipsNonWritableCandidates(t 
 	validator := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
 	resolver := newActivityServiceResolver(t, catalog, validator)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, true)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if err != nil {
-		t.Fatalf("resolveWritableUploadContexts: %v", err)
+		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
 	requireSelectedDataSet(t, contexts, testID(2))
 	calls := catalog.activityCallIDs()
@@ -404,7 +396,7 @@ func TestServiceResolverProviderIDActivitySelectionPropagatesUnknownValidationEr
 	validator := &fakeEnhancedDataSetCatalog{fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture}}
 	resolver := newActivityServiceResolver(t, catalog, validator)
 
-	contexts, err := resolveActivityProvider(t, resolver, providerID, true)
+	contexts, err := resolveActivityProvider(t, resolver, providerID)
 	if contexts != nil || !errors.Is(err, want) {
 		t.Fatalf("contexts=%v error=%v, want propagated validation error", contexts, err)
 	}
@@ -418,7 +410,7 @@ type activityResolveOutcome struct {
 func resolveActivityProviderAsync(ctx context.Context, resolver *ServiceResolver, providerID types.BigInt) <-chan activityResolveOutcome {
 	done := make(chan activityResolveOutcome, 1)
 	go func() {
-		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{
+		contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{
 			Copies:          1,
 			DataSetMetadata: map[string]string{"source": "app"},
 		})

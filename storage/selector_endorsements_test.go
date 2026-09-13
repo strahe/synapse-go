@@ -25,7 +25,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 2})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -62,7 +62,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 2})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 				testPDPProvider(testID(1), "https://sp-1.example.com"),
 			},
 		})
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, ErrNoEndorsedProvider) {
 			t.Fatalf("error = %v, want ErrNoEndorsedProvider", err)
 		}
@@ -103,7 +103,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 				testPDPProvider(testID(2), "https://sp-2.example.com"),
 			},
 		})
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, ErrNoEndorsedProvider) {
 			t.Fatalf("error = %v, want ErrNoEndorsedProvider", err)
 		}
@@ -114,7 +114,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 			endorsedProviderIDs: []types.BigInt{testID(2)},
 			endorsementsSet:     true,
 		})
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, ErrNoEndorsedProvider) {
 			t.Fatalf("error = %v, want ErrNoEndorsedProvider", err)
 		}
@@ -137,7 +137,7 @@ func TestServiceResolverEndorsedPrimary(t *testing.T) {
 				return nil
 			},
 		})
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, ErrNoEndorsedProvider) || !errors.Is(err, want) {
 			t.Fatalf("error = %v, want ErrNoEndorsedProvider and probe cause", err)
 		}
@@ -169,7 +169,7 @@ func TestServiceResolverEndorsementConfiguration(t *testing.T) {
 
 	t.Run("default requires configured source", func(t *testing.T) {
 		resolver := newResolver(t, nil)
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, ErrEndorsementsNotConfigured) || !errors.Is(err, spregistry.ErrEndorsementsNotConfigured) {
 			t.Fatalf("error = %v, want shared ErrEndorsementsNotConfigured", err)
 		}
@@ -179,7 +179,7 @@ func TestServiceResolverEndorsementConfiguration(t *testing.T) {
 		want := errors.New("endorsement RPC failed")
 		source := &fakeEndorsedProviderSource{fixture: serviceResolverFixture{endorsementsErr: want}}
 		resolver := newResolver(t, source)
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if !errors.Is(err, want) {
 			t.Fatalf("error = %v, want wrapped query failure", err)
 		}
@@ -189,7 +189,7 @@ func TestServiceResolverEndorsementConfiguration(t *testing.T) {
 		var calls atomic.Int32
 		source := &fakeEndorsedProviderSource{fixture: serviceResolverFixture{endorsementCalls: &calls}}
 		resolver := newResolver(t, source)
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 			Copies:                 1,
 			AllowUnendorsedPrimary: true,
 		})
@@ -207,6 +207,25 @@ func TestServiceResolverEndorsementConfiguration(t *testing.T) {
 		resolver := newResolver(t, source)
 		if _, err := resolver.SelectProviderContext(context.Background(), SelectProviderContextOptions{}); err != nil {
 			t.Fatalf("SelectProviderContext: %v", err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("endorsement calls = %d, want 0", calls.Load())
+		}
+	})
+
+	t.Run("replacement skips query and may select endorsed provider", func(t *testing.T) {
+		var calls atomic.Int32
+		source := &fakeEndorsedProviderSource{fixture: serviceResolverFixture{
+			endorsedProviderIDs: []types.BigInt{testID(1)},
+			endorsementCalls:    &calls,
+		}}
+		resolver := newResolver(t, source)
+		replacement, err := resolver.SelectReplacement(context.Background(), SelectProviderContextOptions{})
+		if err != nil {
+			t.Fatalf("SelectReplacement: %v", err)
+		}
+		if !replacement.ProviderID().Equal(testID(1)) {
+			t.Fatalf("replacement provider = %s, want endorsed provider 1", replacement.ProviderID())
 		}
 		if calls.Load() != 0 {
 			t.Fatalf("endorsement calls = %d, want 0", calls.Load())

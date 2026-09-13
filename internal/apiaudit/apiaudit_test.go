@@ -157,10 +157,43 @@ var (
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}
+	_ = storage.UploadToContextsOptions{}
+	_ = storage.ContextUploadOptions{}
 	_ = storage.SelectUploadContextsOptions{AllowUnendorsedPrimary: true}
 	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
 	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
 	_ *storage.DataSetDetails
+)
+`)
+
+	writeFile(t, filepath.Join(dir, "storage_upload_contract_test.go"), `package apiconfigtest
+
+import (
+	"context"
+	"io"
+
+	"github.com/strahe/synapse-go/storage"
+)
+
+type uploadResolver struct{}
+
+func (uploadResolver) ResolveUploadContexts(context.Context, storage.SelectUploadContextsOptions) ([]storage.StorageContext, error) {
+	return nil, nil
+}
+
+func (uploadResolver) SelectReplacement(context.Context, storage.SelectProviderContextOptions) (storage.StorageContext, error) {
+	return nil, nil
+}
+
+var (
+	_ storage.UploadResolver = uploadResolver{}
+	_                        = storage.Options{Resolver: uploadResolver{}}
+
+	_ func(*storage.Service, context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error) = (*storage.Service).Upload
+	_ func(*storage.Service, context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error) = (*storage.Service).UploadToContexts
+	_ func(storage.StorageContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = storage.StorageContext.Upload
+	_ func(*storage.ProviderContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.ProviderContext).Upload
+	_ func(*storage.DataSetContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.DataSetContext).Upload
 )
 `)
 

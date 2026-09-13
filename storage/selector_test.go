@@ -79,16 +79,13 @@ func TestServiceResolverResolveUploadContexts_AutoSelectsApprovedProvidersAndReu
 	})
 
 	withCDN := true
-	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          2,
 		DataSetMetadata: map[string]string{"source": "app"},
 		WithCDN:         &withCDN,
 	})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if explicit {
-		t.Fatal("explicit=true want false")
 	}
 	if len(contexts) != 2 {
 		t.Fatalf("contexts len=%d want 2", len(contexts))
@@ -160,10 +157,9 @@ func TestServiceResolverSelectReplacement_ExcludesUsedProviders(t *testing.T) {
 		},
 	})
 
-	replacement, err := resolver.SelectReplacement(context.Background(), map[string]types.BigInt{
-		testIDKey(1): testID(1),
-		testIDKey(2): testID(2),
-	}, &UploadOptions{})
+	replacement, err := resolver.SelectReplacement(context.Background(), SelectProviderContextOptions{
+		ExcludeProviderIDs: []types.BigInt{testID(1), testID(2)},
+	})
 	if err != nil {
 		t.Fatalf("SelectReplacement: %v", err)
 	}
@@ -211,15 +207,12 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 			Copies:                 2,
 			AllowUnendorsedPrimary: true,
 		})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
-		}
-		if explicit {
-			t.Fatal("explicit=true want false")
 		}
 		got := contextsToFake(t, contexts)
 		if len(got) != 2 || !got[0].ProviderID().Equal(testID(2)) || !got[1].ProviderID().Equal(testID(3)) {
@@ -255,7 +248,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 2})
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 2})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -274,7 +267,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: -1})
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: -1})
 		if !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("ResolveUploadContexts error=%v want ErrInvalidArgument", err)
 		}
@@ -314,7 +307,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -336,7 +329,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 			Copies:                 2,
 			AllowUnendorsedPrimary: true,
 		})
@@ -357,7 +350,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 			Copies:                 1,
 			ExcludeProviderIDs:     []types.BigInt{providerID},
 			AllowUnendorsedPrimary: true,
@@ -390,7 +383,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 			},
 		})
 
-		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -443,7 +436,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckConcurrencyIsBounded(t 
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 			Copies:                 candidateCount,
 			AllowUnendorsedPrimary: true,
 		})
@@ -518,7 +511,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckCancelsSpeculativeProbe
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+	contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -584,7 +577,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckStopsAtSelectionFrontie
 	resultCh := make(chan result, 1)
 	ctx := t.Context()
 	go func() {
-		contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 		resultCh <- result{contexts: contexts, err: err}
 	}()
 
@@ -632,7 +625,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckHonorsParentCancellatio
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 		errCh <- err
 	}()
 	<-started
@@ -668,7 +661,7 @@ func TestServiceResolverResolveUploadContexts_HealthCheckHonorsShorterParentDead
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{Copies: 1})
+		_, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{Copies: 1})
 		errCh <- err
 	}()
 	select {
@@ -722,7 +715,7 @@ func TestServiceResolverResolveUploadContexts_DefaultProviderPing(t *testing.T) 
 		defer provider.Close()
 
 		resolver := newResolver(t, []spregistry.PDPProvider{testPDPProvider(testID(1), provider.URL)})
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -752,7 +745,7 @@ func TestServiceResolverResolveUploadContexts_DefaultProviderPing(t *testing.T) 
 			testPDPProvider(testID(1), rejected.URL),
 			testPDPProvider(testID(2), healthy.URL),
 		})
-		contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+		contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 		if err != nil {
 			t.Fatalf("ResolveUploadContexts: %v", err)
 		}
@@ -795,7 +788,7 @@ func TestServiceResolverSelectReplacement_RejectsNilContextFactoryResult(t *test
 		},
 	})
 
-	_, err := resolver.SelectReplacement(context.Background(), nil, &UploadOptions{})
+	_, err := resolver.SelectReplacement(context.Background(), SelectProviderContextOptions{})
 	if err == nil {
 		t.Fatal("SelectReplacement returned nil error; want nil context factory error")
 	}
@@ -876,7 +869,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectSkipsUnusableDetailedDat
 		},
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -889,7 +882,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectSkipsUnusableDetailedDat
 	}
 }
 
-func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSnapshot(t *testing.T) {
+func TestServiceResolverResolveUploadContexts_AutoSelectTrustsDetailedSnapshot(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1)},
 		activeProviders: []spregistry.PDPProvider{
@@ -915,12 +908,12 @@ func TestServiceResolverResolveWritableUploadContexts_AutoSelectTrustsDetailedSn
 		validatorErr:     errors.New("validator must not run"),
 	})
 
-	contexts, _, err := resolver.resolveWritableUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
 	if err != nil {
-		t.Fatalf("resolveWritableUploadContexts: %v", err)
+		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
 	got := contextsToFake(t, contexts)
 	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(11)) {
@@ -1008,7 +1001,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRetriesRetryableDetailEn
 		t.Fatalf("NewServiceResolver: %v", err)
 	}
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -1074,7 +1067,7 @@ func TestServiceResolverResolveUploadContexts_FallsBackAfterUnavailableDetails(t
 		validatorErr:     warmstorage.ErrDataSetUnavailable,
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -1101,7 +1094,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectWithoutDetailsDoesNotReu
 		},
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -1131,7 +1124,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectTreatsUnconfiguredPDPVer
 		validatorErr:     warmstorage.ErrPDPVerifierNotConfigured,
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -1163,7 +1156,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectRequestsOnlyManagedDetai
 		dataSetDetailsOnlyManaged: &onlyManaged,
 	})
 
-	if _, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1}); err != nil {
+	if _, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1}); err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
 	if onlyManaged == nil || !*onlyManaged {
@@ -1181,7 +1174,7 @@ func TestServiceResolverResolveUploadContexts_AutoSelectReturnsDetailEnrichmentF
 		dataSetDetailsErr: want,
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 	if contexts != nil || !errors.Is(err, want) {
 		t.Fatalf("ResolveUploadContexts=(%v, %v) want nil result wrapping detail error", contexts, err)
 	}
@@ -1209,7 +1202,7 @@ func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t 
 		t.Fatalf("NewServiceResolver: %v", err)
 	}
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -1581,7 +1574,7 @@ func TestServiceResolverResolveUploadContexts_CarriesClientDataSetID(t *testing.
 		},
 	})
 
-	contexts, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
 	}
@@ -1650,40 +1643,6 @@ func TestDetailedCandidateProvidersOnlyIncludesSelectableProviders(t *testing.T)
 	}
 }
 
-func TestWithCopies(t *testing.T) {
-	// nil opts
-	got := withCopies(nil, 3)
-	if got == nil || got.Copies != 3 {
-		t.Fatalf("nil opts: got=%+v want Copies=3", got)
-	}
-
-	// non-nil opts with all fields
-	orig := &UploadOptions{
-		Copies:             1,
-		PieceMetadata:      map[string]string{"pk": "pv"},
-		DataSetMetadata:    map[string]string{"dk": "dv"},
-		ExcludeProviderIDs: []types.BigInt{testID(3)},
-	}
-	cloned := withCopies(orig, 5)
-	if cloned.Copies != 5 {
-		t.Fatalf("Copies=%d want 5", cloned.Copies)
-	}
-	// Original must be unmodified
-	if orig.Copies != 1 {
-		t.Fatal("original was mutated")
-	}
-	// Cloned maps must be independent
-	cloned.PieceMetadata["pk"] = "changed"
-	if orig.PieceMetadata["pk"] != "pv" {
-		t.Fatal("PieceMetadata clone mutated original")
-	}
-	// Cloned slices must be independent
-	cloned.ExcludeProviderIDs[0] = testID(99)
-	if !orig.ExcludeProviderIDs[0].Equal(testID(3)) {
-		t.Fatal("ExcludeProviderIDs clone mutated original")
-	}
-}
-
 func TestSelectReplacement_ErrorFromAutoSelect(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1)},
@@ -1693,15 +1652,15 @@ func TestSelectReplacement_ErrorFromAutoSelect(t *testing.T) {
 	})
 
 	// Exclude all providers → should fail
-	_, err := resolver.SelectReplacement(context.Background(), map[string]types.BigInt{
-		testIDKey(1): testID(1),
-	}, &UploadOptions{})
+	_, err := resolver.SelectReplacement(context.Background(), SelectProviderContextOptions{
+		ExcludeProviderIDs: []types.BigInt{testID(1)},
+	})
 	if err == nil {
 		t.Fatal("expected error when all providers excluded")
 	}
 }
 
-func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *testing.T) {
+func TestServiceResolverSelectReplacement_TrustsDetailedSnapshot(t *testing.T) {
 	resolver := newTestServiceResolver(t, serviceResolverFixture{
 		approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
 		activeProviders: []spregistry.PDPProvider{
@@ -1721,11 +1680,11 @@ func TestServiceResolverSelectWritableReplacement_TrustsDetailedSnapshot(t *test
 		validatorErr:     errors.New("not writable"),
 	})
 
-	replacement, err := resolver.selectWritableReplacement(context.Background(), map[string]types.BigInt{
-		testIDKey(1): testID(1),
-	}, &UploadOptions{})
+	replacement, err := resolver.SelectReplacement(context.Background(), SelectProviderContextOptions{
+		ExcludeProviderIDs: []types.BigInt{testID(1)},
+	})
 	if err != nil {
-		t.Fatalf("selectWritableReplacement: %v", err)
+		t.Fatalf("SelectReplacement: %v", err)
 	}
 	ref, ok := replacement.DataSetRef()
 	if !replacement.ProviderID().Equal(testID(2)) || !ok || !ref.DataSetID().Equal(testID(21)) {
@@ -1938,12 +1897,9 @@ func TestServiceResolverResolveUploadContexts_AutoSelectTraversesPagedApprovedPr
 		requirePositiveListLimit: true,
 	})
 
-	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{Copies: 1})
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if explicit {
-		t.Fatal("explicit=true want false")
 	}
 	got := contextsToFake(t, contexts)
 	if len(got) != 1 {

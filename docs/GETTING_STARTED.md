@@ -232,7 +232,7 @@ result, err := client.Storage().UploadToContexts(
     ctx,
     file,
     selection.Contexts,
-    &storage.UploadOptions{
+    &storage.UploadToContextsOptions{
         PieceMetadata: map[string]string{"name": "payload.bin"},
     },
 )
@@ -311,7 +311,7 @@ if err != nil {
     return err
 }
 
-result, err := dataSetCtx.Upload(ctx, file, &storage.UploadOptions{
+result, err := dataSetCtx.Upload(ctx, file, &storage.ContextUploadOptions{
     PieceMetadata: map[string]string{"name": "payload.bin"},
 })
 if err != nil {

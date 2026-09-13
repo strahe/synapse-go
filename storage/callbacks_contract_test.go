@@ -396,7 +396,7 @@ func TestContextUpload_CallbackPanicsAreRecoveredWithNilLogger(t *testing.T) {
 		panic("callback failed")
 	}
 
-	result, err := ctx.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{
+	result, err := ctx.Upload(context.Background(), bytes.NewReader(data), &ContextUploadOptions{
 		OnProgress: func(int64) {
 			panicCallback()
 		},
@@ -504,7 +504,7 @@ func TestContextUpload_Callbacks(t *testing.T) {
 		piecesConfirmedPieces   []ConfirmedPiece
 	)
 
-	opts := &UploadOptions{
+	opts := &ContextUploadOptions{
 		OnStored: func(providerID types.BigInt, pieceCID cid.Cid) {
 			storedProviderID = providerID
 			storedPieceCID = pieceCID
@@ -601,7 +601,7 @@ func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	}
 
 	var confirmed []ConfirmedPiece
-	opts := &UploadOptions{
+	opts := &ContextUploadOptions{
 		OnPiecesConfirmed: func(_, _ types.BigInt, pieces []ConfirmedPiece) {
 			confirmed = append([]ConfirmedPiece(nil), pieces...)
 		},

@@ -90,15 +90,12 @@ func TestServiceResolver_MetadataFetchStopsAtFirstWritableMatch(t *testing.T) {
 	}
 	resolver := newTrackingMetadataResolver(t, fixture, catalog)
 
-	contexts, explicit, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
 	if err != nil {
 		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if explicit {
-		t.Fatal("explicit=true want false")
 	}
 	got := contextsToFake(t, contexts)
 	if len(got) != 1 || dataSetIDOf(got[0]) == nil || !dataSetIDOf(got[0]).Equal(testID(1)) {
@@ -133,7 +130,7 @@ func TestServiceResolver_MetadataFetchUsesCallerContextBudget(t *testing.T) {
 	deadline := time.Now().Add(time.Minute)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	contexts, _, err := resolver.ResolveUploadContexts(ctx, &UploadOptions{
+	contexts, err := resolver.ResolveUploadContexts(ctx, SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app"},
 	})
@@ -179,7 +176,7 @@ func TestServiceResolver_MetadataFetchErrorRejectsReuse(t *testing.T) {
 	}
 	resolver := newTrackingMetadataResolver(t, fixture, catalog)
 
-	_, _, err := resolver.ResolveUploadContexts(context.Background(), &UploadOptions{
+	_, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{
 		Copies:          1,
 		DataSetMetadata: map[string]string{"source": "app", "env": "prod"},
 	})

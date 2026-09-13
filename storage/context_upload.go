@@ -6,13 +6,13 @@ import (
 	"io"
 )
 
-// Upload stores a single copy and commits it to a new data set.
-func (c *ProviderContext) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+// Upload stores a single copy and commits it to a new data set. opts may be nil.
+func (c *ProviderContext) Upload(ctx context.Context, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
 	return c.core.upload(ctx, "storage.ProviderContext.Upload", nil, r, opts)
 }
 
-// Upload stores a single copy and commits it to the bound data set.
-func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
+// Upload stores a single copy and commits it to the bound data set. opts may be nil.
+func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
 	return c.core.upload(ctx, "storage.DataSetContext.Upload", &c.ref, r, opts)
 }
 
@@ -21,31 +21,27 @@ func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *UploadOp
 // and returns the canonical UploadResult shape used elsewhere in the SDK.
 //
 // opts may be nil. PieceCID, OnProgress, PieceMetadata, OnStored,
-// OnPiecesAdded, and OnPiecesConfirmed are honoured when present. Target
-// selection fields and secondary-copy callbacks are rejected.
+// OnPiecesAdded, and OnPiecesConfirmed are honoured when present.
 //
 // Lifecycle callbacks fired (when opts provides them):
 //   - OnProgress during the store upload stream
 //   - OnStored after Store succeeds
 //   - OnPiecesAdded when the commit transaction is submitted
 //   - OnPiecesConfirmed after commit is confirmed
-func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
-	if err := validateContextUploadOptions(opts); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
+func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
-	opts = newUploadCallbackGuard(c.logger).wrapUploadOptions(cloneUploadOptions(opts))
+	uploadOpts := newUploadCallbackGuard(c.logger).wrapUploadOptions(uploadOptionsFromContext(opts))
 
 	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
 		return nil, err
 	}
 
 	storeOpts := &StoreOptions{}
-	if opts != nil {
-		storeOpts.PieceCID = opts.PieceCID
-		storeOpts.OnProgress = opts.OnProgress
+	if uploadOpts != nil {
+		storeOpts.PieceCID = uploadOpts.PieceCID
+		storeOpts.OnProgress = uploadOpts.OnProgress
 	}
 	storeResult, err := c.store(ctx, op, r, storeOpts)
 	if err != nil {
@@ -56,21 +52,21 @@ func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r 
 		}
 	}
 
-	if opts != nil && opts.OnStored != nil {
-		opts.OnStored(copyBigInt(c.provider.ID), storeResult.PieceCID)
+	if uploadOpts != nil && uploadOpts.OnStored != nil {
+		uploadOpts.OnStored(copyBigInt(c.provider.ID), storeResult.PieceCID)
 	}
 
 	pieceInputs := []PieceInput{{
 		PieceCID:      storeResult.PieceCID,
-		PieceMetadata: cloneMetadata(opts),
+		PieceMetadata: cloneMetadata(uploadOpts),
 	}}
 
 	var onSubmitted func(string)
-	if opts != nil && opts.OnPiecesAdded != nil {
+	if uploadOpts != nil && uploadOpts.OnPiecesAdded != nil {
 		pieceCID := storeResult.PieceCID
 		providerID := copyBigInt(c.provider.ID)
 		onSubmitted = func(txHash string) {
-			opts.OnPiecesAdded(txHash, providerID, []SubmittedPiece{{PieceCID: pieceCID}})
+			uploadOpts.OnPiecesAdded(txHash, providerID, []SubmittedPiece{{PieceCID: pieceCID}})
 		}
 	}
 
@@ -87,12 +83,12 @@ func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r 
 		return nil, fmt.Errorf("%s: commit returned no piece IDs", op)
 	}
 
-	if opts != nil && opts.OnPiecesConfirmed != nil {
+	if uploadOpts != nil && uploadOpts.OnPiecesConfirmed != nil {
 		confirmed := make([]ConfirmedPiece, len(commit.PieceIDs))
 		for i, id := range commit.PieceIDs {
 			confirmed[i] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
 		}
-		opts.OnPiecesConfirmed(commit.DataSet.DataSetID(), copyBigInt(c.provider.ID), confirmed)
+		uploadOpts.OnPiecesConfirmed(commit.DataSet.DataSetID(), copyBigInt(c.provider.ID), confirmed)
 	}
 
 	copies := []CopyResult{{

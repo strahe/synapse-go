@@ -122,7 +122,7 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				},
 			}, nil
 		},
-		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
@@ -131,7 +131,7 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				t.Fatal("uploaded payload mismatch")
 			}
 			if opts != nil {
-				t.Fatalf("UploadOptions=%#v want nil", opts)
+				t.Fatalf("UploadToContextsOptions=%#v want nil", opts)
 			}
 			if len(contexts) != len(selectedContexts) || &contexts[0] != &selectedContexts[0] {
 				t.Fatalf("contexts=%d want %d", len(contexts), len(selectedContexts))
@@ -237,7 +237,7 @@ func TestDownloadAndVerifyRetriesTransientDownload(t *testing.T) {
 type fakeQuickstartStorage struct {
 	selectFn   func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	prepareFn  func(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	uploadFn   func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
+	uploadFn   func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error)
 	downloadFn func(context.Context, cid.Cid, *storage.DownloadOptions) (io.ReadCloser, error)
 }
 
@@ -248,7 +248,7 @@ func (f *fakeQuickstartStorage) Prepare(ctx context.Context, opts *storage.Prepa
 	return f.prepareFn(ctx, opts)
 }
 
-func (f *fakeQuickstartStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+func (f *fakeQuickstartStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 	if f.uploadFn == nil {
 		return nil, errors.New("unexpected UploadToContexts call")
 	}
