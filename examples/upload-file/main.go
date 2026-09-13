@@ -140,7 +140,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 	}
 
 	var callbackErr error
-	result, err := svc.UploadToContexts(ctx, file, selection.Contexts, &storage.UploadOptions{
+	result, err := svc.UploadToContexts(ctx, file, selection.Contexts, &storage.UploadToContextsOptions{
 		PieceMetadata: cfg.PieceMetadata.Map(),
 		OnProgress: func(uploaded int64) {
 			if uploaded == info.Size() && callbackErr == nil {
@@ -165,7 +165,7 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 type uploadStorage interface {
 	SelectUploadContexts(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
+	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error)
 }
 
 type storageWorkflow struct {
@@ -180,7 +180,7 @@ func (w storageWorkflow) Prepare(ctx context.Context, opts *storage.PrepareOptio
 	return w.svc.Prepare(ctx, opts)
 }
 
-func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 	return w.svc.UploadToContexts(ctx, r, contexts, opts)
 }
 

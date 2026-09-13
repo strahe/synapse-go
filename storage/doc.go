@@ -78,7 +78,7 @@
 // [Service.Upload] automatically selects targets and performs store, pull, and
 // commit. Copies must be explicitly positive. If fewer targets are available,
 // the upload continues with those targets and reports the requested and actual
-// copy counts through [UploadResult].
+// copy counts through [UploadResult]. Configure this path with [UploadOptions].
 //
 // For an exact preflight and upload, use the same context instances throughout:
 //
@@ -90,8 +90,11 @@
 //     [Service.UploadToContexts].
 //
 // UploadToContexts does not select replacements. The first context stores the
-// reader; later contexts pull from it. Service.Upload retains automatic
-// replacement for failed secondary copies.
+// reader; later contexts pull from it. Configure this path with
+// [UploadToContextsOptions]. Service.Upload retains automatic replacement for
+// failed secondary copies. Direct [ProviderContext.Upload],
+// [DataSetContext.Upload], and [StorageContext.Upload] calls store one copy and
+// accept [ContextUploadOptions].
 //
 // Contexts carry an immutable [ContextIdentity] containing payer, chain, and
 // record-keeper identities. Service validates this identity before cost

@@ -90,7 +90,7 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 				},
 			}, nil
 		},
-		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+		uploadFn: func(_ context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
@@ -194,7 +194,7 @@ func TestRunUploadRejectsDirectoryBeforePreparing(t *testing.T) {
 type fakeUploadStorage struct {
 	selectFn  func(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	prepareFn func(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	uploadFn  func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
+	uploadFn  func(context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error)
 }
 
 func (f *fakeUploadStorage) SelectUploadContexts(ctx context.Context, opts storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
@@ -205,6 +205,6 @@ func (f *fakeUploadStorage) Prepare(ctx context.Context, opts *storage.PrepareOp
 	return f.prepareFn(ctx, opts)
 }
 
-func (f *fakeUploadStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+func (f *fakeUploadStorage) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 	return f.uploadFn(ctx, r, contexts, opts)
 }

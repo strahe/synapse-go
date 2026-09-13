@@ -637,6 +637,9 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	if !got.Copies[1].ProviderID.Equal(replacement.id) {
 		t.Fatalf("replacement provider=%s want %s", got.Copies[1].ProviderID.String(), replacement.id.String())
 	}
+	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0].Explicit {
+		t.Fatalf("automatic upload failures=%+v want one non-explicit attempt", got.FailedAttempts)
+	}
 }
 
 func TestServiceUploadReplacementRejectsInvalidTargets(t *testing.T) {
@@ -940,21 +943,24 @@ func TestManagerUpload_ReplacementReaderFailureAdvancesToNextProvider(t *testing
 }
 
 type fakeResolver struct {
-	contexts         []StorageContext
-	explicit         bool
-	replacements     []StorageContext
-	replacementCalls int
-	captureFn        func(*UploadOptions)
+	contexts             []StorageContext
+	replacements         []StorageContext
+	replacementCalls     int
+	captureFn            func(SelectUploadContextsOptions)
+	replacementCaptureFn func(SelectProviderContextOptions)
 }
 
-func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts *UploadOptions) ([]StorageContext, bool, error) {
+func (r *fakeResolver) ResolveUploadContexts(_ context.Context, opts SelectUploadContextsOptions) ([]StorageContext, error) {
 	if r.captureFn != nil {
 		r.captureFn(opts)
 	}
-	return r.contexts, r.explicit, nil
+	return r.contexts, nil
 }
 
-func (r *fakeResolver) SelectReplacement(_ context.Context, _ map[string]types.BigInt, _ *UploadOptions) (StorageContext, error) {
+func (r *fakeResolver) SelectReplacement(_ context.Context, opts SelectProviderContextOptions) (StorageContext, error) {
+	if r.replacementCaptureFn != nil {
+		r.replacementCaptureFn(opts)
+	}
 	r.replacementCalls++
 	if len(r.replacements) == 0 {
 		return nil, errors.New("no replacement")
@@ -1032,7 +1038,7 @@ func (c *fakeUploadContext) Commit(ctx context.Context, req CommitRequest) (*Com
 	return c.commitFn(ctx, req)
 }
 
-func (c *fakeUploadContext) Upload(context.Context, io.Reader, *UploadOptions) (*UploadResult, error) {
+func (c *fakeUploadContext) Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error) {
 	return nil, errors.New("unexpected Upload")
 }
 
@@ -1070,33 +1076,6 @@ func TestServiceUploadToContextsValidatesBeforeReading(t *testing.T) {
 			result, err := svc.UploadToContexts(context.Background(), reader, contexts, nil)
 			if result != nil || !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
-			}
-			if reader.reads != 0 {
-				t.Fatalf("reader reads=%d want 0", reader.reads)
-			}
-		})
-	}
-}
-
-func TestServiceUploadToContextsRejectsSelectionOptionsBeforeReading(t *testing.T) {
-	withCDN := true
-	tests := map[string]*UploadOptions{
-		"Copies":                 {Copies: 1},
-		"ExcludeProviderIDs":     {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
-		"DataSetMetadata":        {DataSetMetadata: map[string]string{"source": "app"}},
-		"WithCDN":                {WithCDN: &withCDN},
-		"AllowUnendorsedPrimary": {AllowUnendorsedPrimary: true},
-	}
-	for name, opts := range tests {
-		t.Run(name, func(t *testing.T) {
-			reader := &readCountingReader{}
-			svc := mustNewService(t, Options{})
-			result, err := svc.UploadToContexts(context.Background(), reader, []StorageContext{&fakeUploadContext{id: types.NewBigInt(1)}}, opts)
-			if result != nil || !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
-			}
-			if !strings.Contains(err.Error(), "explicit-context uploads") {
-				t.Fatalf("error=%q want explicit-context uploads", err)
 			}
 			if reader.reads != 0 {
 				t.Fatalf("reader reads=%d want 0", reader.reads)
@@ -1145,32 +1124,6 @@ func TestServiceUploadRejectsInvalidResolverTargetsBeforeReading(t *testing.T) {
 			reader := &readCountingReader{}
 			svc := mustNewService(t, Options{Resolver: &fakeResolver{contexts: tt.contexts}})
 			result, err := svc.Upload(context.Background(), reader, tt.opts)
-			if result != nil || !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
-			}
-			if reader.reads != 0 {
-				t.Fatalf("reader reads=%d want 0", reader.reads)
-			}
-		})
-	}
-}
-
-func TestContextUploadRejectsMultiTargetOptionsBeforeReading(t *testing.T) {
-	withCDN := true
-	tests := map[string]*UploadOptions{
-		"Copies":             {Copies: 1},
-		"ExcludeProviderIDs": {ExcludeProviderIDs: []types.BigInt{types.NewBigInt(2)}},
-		"DataSetMetadata":    {DataSetMetadata: map[string]string{"source": "app"}},
-		"WithCDN":            {WithCDN: &withCDN},
-		"OnCopyComplete":     {OnCopyComplete: func(types.BigInt, cid.Cid) {}},
-		"OnCopyFailed":       {OnCopyFailed: func(types.BigInt, cid.Cid, error) {}},
-		"OnPullProgress":     {OnPullProgress: func(types.BigInt, cid.Cid, PullStatus) {}},
-	}
-	storageCtx := mustProviderContext(t, &fakePDPProviderClient{})
-	for name, opts := range tests {
-		t.Run(name, func(t *testing.T) {
-			reader := &readCountingReader{}
-			result, err := storageCtx.Upload(context.Background(), reader, opts)
 			if result != nil || !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
 			}
@@ -1269,6 +1222,9 @@ func TestManagerUpload_NilPullResultNoNilDeref(t *testing.T) {
 	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0].Stage != CopyStagePull {
 		t.Fatalf("expected one pull failure, got %+v", got.FailedAttempts)
 	}
+	if !got.FailedAttempts[0].Explicit {
+		t.Fatal("UploadToContexts failure must be explicit")
+	}
 }
 
 // TestManagerUpload_PresignFailureUsesPresignStage proves that a presign
@@ -1302,7 +1258,7 @@ func TestManagerUpload_PresignFailureUsesPresignStage(t *testing.T) {
 	mgr := mustNewService(t, Options{})
 
 	copyFailedCalled := false
-	got, err := mgr.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{primary, secondary}, &UploadOptions{
+	got, err := mgr.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{primary, secondary}, &UploadToContextsOptions{
 		OnCopyFailed: func(types.BigInt, cid.Cid, error) {
 			copyFailedCalled = true
 		},
@@ -1835,11 +1791,11 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 		},
 	}
 
-	var capturedOpts *UploadOptions
+	var capturedOpts *SelectUploadContextsOptions
 	resolver := &fakeResolver{
 		contexts: []StorageContext{primary},
-		captureFn: func(opts *UploadOptions) {
-			capturedOpts = opts
+		captureFn: func(opts SelectUploadContextsOptions) {
+			capturedOpts = &opts
 		},
 	}
 
@@ -1853,6 +1809,143 @@ func TestManagerUpload_SourceInjectedIntoMetadata(t *testing.T) {
 	}
 	if capturedOpts.DataSetMetadata["source"] != "test-app" {
 		t.Fatalf("source=%q want test-app", capturedOpts.DataSetMetadata["source"])
+	}
+}
+
+func TestServiceUploadResolverOptionsAreIsolated(t *testing.T) {
+	data := bytes.Repeat([]byte("isolated"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(1),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece",
+		storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{
+				DataSet: testCommitDataSetRef(1, 11),
+				PieceIDs: []types.BigInt{
+					types.NewBigInt(101),
+				},
+			}, nil
+		},
+	}
+	failedSecondary := &fakeUploadContext{
+		id:       types.NewBigInt(2),
+		endpoint: "https://secondary.example.com",
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+	wrongIdentity := serviceTestIdentity()
+	wrongIdentity.ChainID = types.ChainID(1)
+	invalidReplacement := &fakeUploadContext{
+		id:       types.NewBigInt(4),
+		identity: &wrongIdentity,
+	}
+	replacement := &fakeUploadContext{
+		id:       types.NewBigInt(3),
+		endpoint: "https://replacement.example.com",
+		presignFn: func(_ context.Context, pieces []PieceInput) ([]byte, error) {
+			if len(pieces) != 1 || pieces[0].PieceMetadata["piece"] != "original" {
+				t.Fatalf("replacement piece metadata=%v want original snapshot", pieces)
+			}
+			return []byte{0x02}, nil
+		},
+		pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+			return &PullResult{
+				Status: PullStatusComplete,
+				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+			}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{
+				DataSet: testCommitDataSetRef(3, 33),
+				PieceIDs: []types.BigInt{
+					types.NewBigInt(303),
+				},
+			}, nil
+		},
+	}
+
+	withCDN := true
+	opts := &UploadOptions{
+		Copies:             2,
+		PieceMetadata:      map[string]string{"piece": "original"},
+		DataSetMetadata:    map[string]string{"dataset": "original"},
+		ExcludeProviderIDs: []types.BigInt{types.NewBigInt(9), types.NewBigInt(9)},
+		WithCDN:            &withCDN,
+	}
+
+	assertReplacementOptions := func(got SelectProviderContextOptions, wantIDs []types.BigInt) {
+		t.Helper()
+		if got.DataSetMetadata["dataset"] != "original" || got.DataSetMetadata["source"] != "isolation-test" {
+			t.Fatalf("replacement metadata=%v want original snapshot", got.DataSetMetadata)
+		}
+		if got.WithCDN == nil || !*got.WithCDN {
+			t.Fatalf("replacement WithCDN=%v want true", got.WithCDN)
+		}
+		if len(got.ExcludeProviderIDs) != len(wantIDs) {
+			t.Fatalf("replacement excludes=%v want providers %v", got.ExcludeProviderIDs, wantIDs)
+		}
+		for _, want := range wantIDs {
+			if !slices.ContainsFunc(got.ExcludeProviderIDs, want.Equal) {
+				t.Fatalf("replacement excludes=%v missing provider %s", got.ExcludeProviderIDs, want)
+			}
+		}
+	}
+
+	replacementSnapshots := 0
+	resolver := &fakeResolver{
+		contexts:     []StorageContext{primary, failedSecondary},
+		replacements: []StorageContext{invalidReplacement, replacement},
+		captureFn: func(got SelectUploadContextsOptions) {
+			if got.DataSetMetadata["dataset"] != "original" || got.DataSetMetadata["source"] != "isolation-test" ||
+				len(got.ExcludeProviderIDs) != 2 ||
+				!got.ExcludeProviderIDs[0].Equal(types.NewBigInt(9)) || got.WithCDN == nil || !*got.WithCDN {
+				t.Fatalf("initial resolver options=%+v want caller snapshot", got)
+			}
+			got.DataSetMetadata["dataset"] = "mutated"
+			got.ExcludeProviderIDs[0] = types.NewBigInt(99)
+			*got.WithCDN = false
+		},
+		replacementCaptureFn: func(got SelectProviderContextOptions) {
+			wantIDs := []types.BigInt{types.NewBigInt(1), types.NewBigInt(2), types.NewBigInt(9)}
+			if replacementSnapshots > 0 {
+				wantIDs = append(wantIDs, types.NewBigInt(4))
+			}
+			assertReplacementOptions(got, wantIDs)
+			replacementSnapshots++
+			got.DataSetMetadata["dataset"] = "mutated"
+			got.ExcludeProviderIDs[0] = types.NewBigInt(99)
+			*got.WithCDN = false
+		},
+	}
+
+	svc := mustNewService(t, Options{
+		Resolver:             resolver,
+		MaxSecondaryAttempts: 3,
+		Source:               "isolation-test",
+	})
+	result, err := svc.Upload(context.Background(), bytes.NewReader(data), opts)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if !result.Complete || replacementSnapshots != 2 {
+		t.Fatalf("complete=%t replacement snapshots=%d want true, 2", result.Complete, replacementSnapshots)
+	}
+	if opts.PieceMetadata["piece"] != "original" || opts.DataSetMetadata["dataset"] != "original" ||
+		len(opts.ExcludeProviderIDs) != 2 || !opts.ExcludeProviderIDs[0].Equal(types.NewBigInt(9)) ||
+		!opts.ExcludeProviderIDs[1].Equal(types.NewBigInt(9)) || !withCDN {
+		t.Fatalf("caller options mutated: %+v", opts)
 	}
 }
 

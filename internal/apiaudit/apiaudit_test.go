@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -156,10 +157,43 @@ var (
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}
+	_ = storage.UploadToContextsOptions{}
+	_ = storage.ContextUploadOptions{}
 	_ = storage.SelectUploadContextsOptions{AllowUnendorsedPrimary: true}
 	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
 	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
 	_ *storage.DataSetDetails
+)
+`)
+
+	writeFile(t, filepath.Join(dir, "storage_upload_contract_test.go"), `package apiconfigtest
+
+import (
+	"context"
+	"io"
+
+	"github.com/strahe/synapse-go/storage"
+)
+
+type uploadResolver struct{}
+
+func (uploadResolver) ResolveUploadContexts(context.Context, storage.SelectUploadContextsOptions) ([]storage.StorageContext, error) {
+	return nil, nil
+}
+
+func (uploadResolver) SelectReplacement(context.Context, storage.SelectProviderContextOptions) (storage.StorageContext, error) {
+	return nil, nil
+}
+
+var (
+	_ storage.UploadResolver = uploadResolver{}
+	_                        = storage.Options{Resolver: uploadResolver{}}
+
+	_ func(*storage.Service, context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error) = (*storage.Service).Upload
+	_ func(*storage.Service, context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error) = (*storage.Service).UploadToContexts
+	_ func(storage.StorageContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = storage.StorageContext.Upload
+	_ func(*storage.ProviderContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.ProviderContext).Upload
+	_ func(*storage.DataSetContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.DataSetContext).Upload
 )
 `)
 
@@ -545,24 +579,24 @@ func findInternalType(typ types.Type) string {
 	seen := make(map[types.Type]bool)
 	var visit func(types.Type) string
 	visitList := func(list *types.TypeList) string {
-		for i := range list.Len() {
-			if internalPath := visit(list.At(i)); internalPath != "" {
+		for typ := range list.Types() {
+			if internalPath := visit(typ); internalPath != "" {
 				return internalPath
 			}
 		}
 		return ""
 	}
 	visitTuple := func(tuple *types.Tuple) string {
-		for i := range tuple.Len() {
-			if internalPath := visit(tuple.At(i).Type()); internalPath != "" {
+		for variable := range tuple.Variables() {
+			if internalPath := visit(variable.Type()); internalPath != "" {
 				return internalPath
 			}
 		}
 		return ""
 	}
 	visitTypeParams := func(list *types.TypeParamList) string {
-		for i := range list.Len() {
-			if internalPath := visit(list.At(i).Constraint()); internalPath != "" {
+		for param := range list.TypeParams() {
+			if internalPath := visit(param.Constraint()); internalPath != "" {
 				return internalPath
 			}
 		}
@@ -610,8 +644,7 @@ func findInternalType(typ types.Type) string {
 			}
 			return visitTuple(current.Results())
 		case *types.Struct:
-			for i := range current.NumFields() {
-				field := current.Field(i)
+			for field := range current.Fields() {
 				if field.Exported() || field.Embedded() {
 					if internalPath := visit(field.Type()); internalPath != "" {
 						return internalPath
@@ -619,21 +652,21 @@ func findInternalType(typ types.Type) string {
 				}
 			}
 		case *types.Interface:
-			for i := range current.NumExplicitMethods() {
-				if internalPath := visit(current.ExplicitMethod(i).Type()); internalPath != "" {
+			for method := range current.ExplicitMethods() {
+				if internalPath := visit(method.Type()); internalPath != "" {
 					return internalPath
 				}
 			}
-			for i := range current.NumEmbeddeds() {
-				if internalPath := visit(current.EmbeddedType(i)); internalPath != "" {
+			for typ := range current.EmbeddedTypes() {
+				if internalPath := visit(typ); internalPath != "" {
 					return internalPath
 				}
 			}
 		case *types.TypeParam:
 			return visit(current.Constraint())
 		case *types.Union:
-			for i := range current.Len() {
-				if internalPath := visit(current.Term(i).Type()); internalPath != "" {
+			for term := range current.Terms() {
+				if internalPath := visit(term.Type()); internalPath != "" {
 					return internalPath
 				}
 			}
@@ -652,12 +685,7 @@ func isModuleInternalPath(importPath string) bool {
 	if relative == importPath {
 		return false
 	}
-	for _, segment := range strings.Split(relative, "/") {
-		if segment == "internal" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(relative, "/"), "internal")
 }
 
 func isClientSelector(expr ast.Expr, field string) bool {

@@ -170,7 +170,7 @@ func runQuickstart(ctx context.Context, cfg quickstartConfig, svc quickstartStor
 type quickstartStorage interface {
 	SelectUploadContexts(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error)
 	Prepare(context.Context, *storage.PrepareOptions) (*storage.PrepareResult, error)
-	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadOptions) (*storage.UploadResult, error)
+	UploadToContexts(context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error)
 	Download(context.Context, cid.Cid, *storage.DownloadOptions) (io.ReadCloser, error)
 }
 
@@ -186,7 +186,7 @@ func (w storageWorkflow) SelectUploadContexts(ctx context.Context, opts storage.
 	return w.svc.SelectUploadContexts(ctx, opts)
 }
 
-func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadOptions) (*storage.UploadResult, error) {
+func (w storageWorkflow) UploadToContexts(ctx context.Context, r io.Reader, contexts []storage.StorageContext, opts *storage.UploadToContextsOptions) (*storage.UploadResult, error) {
 	return w.svc.UploadToContexts(ctx, r, contexts, opts)
 }
 

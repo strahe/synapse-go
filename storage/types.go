@@ -313,32 +313,26 @@ func (r *UploadResult) PartialSuccess() bool {
 	return !r.Complete && len(r.Copies) > 0
 }
 
-// UploadOptions configures upload operations. Service.Upload requires Copies
-// and accepts target-selection fields. Service.UploadToContexts rejects target
-// selection fields. ProviderContext.Upload and DataSetContext.Upload also
-// reject callbacks that only apply to secondary copies.
+// UploadOptions configures [Service.Upload]. Copies must be positive.
 //
-// Some lifecycle callbacks may be invoked from internal orchestration
-// goroutines. Callers that share mutable state across callbacks must keep their
-// handlers concurrency-safe. Service.Upload, ProviderContext.Upload, and
-// DataSetContext.Upload recover and ignore callback panics; when a logger is
-// configured, the first panic per callback name in an upload logs a warning.
-// This recovery does not apply to direct StoreOptions, PullRequest, or
-// CommitRequest hooks.
+// Lifecycle callbacks may be invoked from internal orchestration goroutines.
+// Handlers that share mutable state must be concurrency-safe. Callback panics
+// are recovered and ignored; when a logger is configured, the first panic per
+// callback name in an upload logs a warning. This recovery does not apply to
+// direct StoreOptions, PullRequest, or CommitRequest hooks.
 type UploadOptions struct {
-	// Copies is the number of provider copies to store. Service.Upload requires
-	// a positive value. Explicit-context upload methods do not accept it.
+	// Copies is the number of provider copies to store. It must be positive.
 	Copies int
 	// PieceMetadata is stored with each piece on-chain.
 	PieceMetadata map[string]string
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
-	// ExcludeProviderIDs skips these providers only during auto-selection.
+	// ExcludeProviderIDs skips these providers during automatic selection and
+	// replacement.
 	ExcludeProviderIDs []types.BigInt
 	// AllowUnendorsedPrimary relaxes automatic primary selection to the complete
 	// approved-provider pool and skips the endorsement query. The zero value keeps
-	// strict endorsed-primary selection. Explicit-context upload methods reject
-	// true because they do not perform provider selection.
+	// strict endorsed-primary selection.
 	AllowUnendorsedPrimary bool
 	// WithCDN is tri-state: nil inherits the Client-level default
 	// configured via synapse.WithCDN; non-nil explicitly overrides
@@ -382,4 +376,74 @@ type UploadOptions struct {
 	// OnPullProgress is invoked for each piece status update during a
 	// secondary-provider pull. It may be nil.
 	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
+}
+
+// UploadToContextsOptions configures [Service.UploadToContexts]. The target
+// contexts and their primary-to-secondary order are supplied separately.
+//
+// Lifecycle callbacks may be invoked from internal orchestration goroutines.
+// Handlers that share mutable state must be concurrency-safe. Callback panics
+// are recovered and ignored; when a logger is configured, the first panic per
+// callback name in an upload logs a warning. This recovery does not apply to
+// direct StoreOptions, PullRequest, or CommitRequest hooks.
+type UploadToContextsOptions struct {
+	// PieceMetadata is stored with each piece on-chain.
+	PieceMetadata map[string]string
+	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
+	// When set, the primary provider client skips inline commP calculation;
+	// the server still verifies the uploaded bytes match this value.
+	PieceCID cid.Cid
+	// OnProgress is invoked after each non-empty Read from the upload reader,
+	// with the cumulative bytes sent to the primary provider so far. It may be nil.
+	OnProgress func(bytesUploaded int64)
+	// OnStored is invoked once the primary provider has confirmed storage of
+	// the piece. It may be nil.
+	OnStored func(providerID types.BigInt, pieceCID cid.Cid)
+	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
+	// submitted for a provider, carrying the transaction hash and submitted pieces.
+	// Different providers may invoke it concurrently. It may be nil.
+	OnPiecesAdded func(txHash string, providerID types.BigInt, pieces []SubmittedPiece)
+	// OnPiecesConfirmed is invoked after AddPieces is confirmed for a provider,
+	// carrying the assigned on-chain IDs. It may be nil.
+	OnPiecesConfirmed func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece)
+	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
+	// completes successfully. It is not fired for the primary. It may be nil.
+	OnCopyComplete func(providerID types.BigInt, pieceCID cid.Cid)
+	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy attempt
+	// fails. Presign and commit failures are reported through FailedAttempts.
+	// It may be nil.
+	OnCopyFailed func(providerID types.BigInt, pieceCID cid.Cid, err error)
+	// OnPullProgress is invoked for each piece status update during a
+	// secondary-provider pull. It may be nil.
+	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
+}
+
+// ContextUploadOptions configures [ProviderContext.Upload],
+// [DataSetContext.Upload], and [StorageContext.Upload]. Context uploads store
+// and commit one copy and do not perform provider selection or secondary pulls.
+//
+// Callbacks may be invoked from internal goroutines. Handlers that share
+// mutable state must be concurrency-safe.
+// Callback panics are recovered and ignored; when a logger is configured, the
+// first panic per callback name in an upload logs a warning. This recovery does
+// not apply to direct StoreOptions or CommitRequest hooks.
+type ContextUploadOptions struct {
+	// PieceMetadata is stored with the piece on-chain.
+	PieceMetadata map[string]string
+	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
+	// When set, the provider client skips inline commP calculation; the server
+	// still verifies the uploaded bytes match this value.
+	PieceCID cid.Cid
+	// OnProgress is invoked after each non-empty Read from the upload reader,
+	// with the cumulative bytes sent to the provider so far. It may be nil.
+	OnProgress func(bytesUploaded int64)
+	// OnStored is invoked once the provider has confirmed storage of the piece.
+	// It may be nil.
+	OnStored func(providerID types.BigInt, pieceCID cid.Cid)
+	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
+	// submitted, carrying the transaction hash and submitted pieces. It may be nil.
+	OnPiecesAdded func(txHash string, providerID types.BigInt, pieces []SubmittedPiece)
+	// OnPiecesConfirmed is invoked after AddPieces is confirmed, carrying the
+	// assigned on-chain IDs. It may be nil.
+	OnPiecesConfirmed func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece)
 }

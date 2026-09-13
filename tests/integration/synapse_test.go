@@ -169,9 +169,9 @@ func hasFilBeamMethod(requests []recordedFilBeamRequest, method string) bool {
 	return false
 }
 
-func tracedContextUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
+func tracedContextUploadOptions(t *testing.T, label string, opts *storage.ContextUploadOptions) *storage.ContextUploadOptions {
 	t.Helper()
-	cloned := &storage.UploadOptions{}
+	cloned := &storage.ContextUploadOptions{}
 	if opts != nil {
 		v := *opts
 		cloned = &v
@@ -206,7 +206,20 @@ func tracedContextUploadOptions(t *testing.T, label string, opts *storage.Upload
 
 func tracedUploadOptions(t *testing.T, label string, opts *storage.UploadOptions) *storage.UploadOptions {
 	t.Helper()
-	cloned := tracedContextUploadOptions(t, label, opts)
+	cloned := &storage.UploadOptions{}
+	if opts != nil {
+		v := *opts
+		cloned = &v
+	}
+
+	lifecycle := tracedContextUploadOptions(t, label, &storage.ContextUploadOptions{
+		OnStored:          cloned.OnStored,
+		OnPiecesAdded:     cloned.OnPiecesAdded,
+		OnPiecesConfirmed: cloned.OnPiecesConfirmed,
+	})
+	cloned.OnStored = lifecycle.OnStored
+	cloned.OnPiecesAdded = lifecycle.OnPiecesAdded
+	cloned.OnPiecesConfirmed = lifecycle.OnPiecesConfirmed
 
 	prevCopyComplete := cloned.OnCopyComplete
 	cloned.OnCopyComplete = func(providerID types.BigInt, pieceCID cid.Cid) {

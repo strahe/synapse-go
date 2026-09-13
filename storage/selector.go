@@ -329,13 +329,13 @@ func (r *ServiceResolver) SelectProviderContext(ctx context.Context, opts Select
 		DataSetMetadata:    cloneStringMap(opts.DataSetMetadata),
 		WithCDN:            copyBoolPtr(opts.WithCDN),
 	}
-	selections, err := r.selectWithRetry(ctx, &UploadOptions{
+	selections, err := r.selectWithRetry(ctx, SelectUploadContextsOptions{
 		Copies:                 1,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
 		AllowUnendorsedPrimary: true,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
-	}, nil, false)
+	}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -361,13 +361,7 @@ func (r *ServiceResolver) SelectUploadContexts(ctx context.Context, opts SelectU
 	if opts.Copies <= 0 {
 		return nil, fmt.Errorf("%s: %w: Copies must be greater than zero", op, ErrInvalidArgument)
 	}
-	selections, err := r.selectWithRetry(ctx, &UploadOptions{
-		Copies:                 opts.Copies,
-		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
-		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
-		WithCDN:                copyBoolPtr(opts.WithCDN),
-	}, nil, true)
+	selections, err := r.selectWithRetry(ctx, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -386,45 +380,31 @@ func (r *ServiceResolver) SelectUploadContexts(ctx context.Context, opts SelectU
 	return result, nil
 }
 
-// ResolveUploadContexts adapts automatic upload options to context selection.
-func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts *UploadOptions) ([]StorageContext, bool, error) {
-	if opts == nil || opts.Copies <= 0 {
-		return nil, false, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
+// ResolveUploadContexts selects contexts for an automatic upload.
+func (r *ServiceResolver) ResolveUploadContexts(ctx context.Context, opts SelectUploadContextsOptions) ([]StorageContext, error) {
+	if opts.Copies <= 0 {
+		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
 	}
-	selection, err := r.SelectUploadContexts(ctx, SelectUploadContextsOptions{
-		Copies:                 opts.Copies,
+	selection, err := r.SelectUploadContexts(ctx, opts)
+	if err != nil && !errors.Is(err, ErrInsufficientUploadContexts) {
+		return nil, err
+	}
+	return selection.Contexts, nil
+}
+
+// SelectReplacement selects one writable provider from the complete approved
+// pool. Endorsement is not required, but endorsed providers remain eligible.
+// ExcludeProviderIDs must include all providers already attempted by the upload.
+func (r *ServiceResolver) SelectReplacement(ctx context.Context, opts SelectProviderContextOptions) (StorageContext, error) {
+	const op = "storage.ServiceResolver.SelectReplacement"
+	selectionOpts := SelectUploadContextsOptions{
+		Copies:                 1,
 		ExcludeProviderIDs:     cloneBigIntSlice(opts.ExcludeProviderIDs),
 		DataSetMetadata:        cloneStringMap(opts.DataSetMetadata),
-		AllowUnendorsedPrimary: opts.AllowUnendorsedPrimary,
+		AllowUnendorsedPrimary: true,
 		WithCDN:                copyBoolPtr(opts.WithCDN),
-	})
-	if err != nil && !errors.Is(err, ErrInsufficientUploadContexts) {
-		return nil, false, err
 	}
-	return selection.Contexts, false, nil
-}
-
-func (r *ServiceResolver) resolveWritableUploadContexts(ctx context.Context, opts *UploadOptions) ([]StorageContext, bool, error) {
-	return r.ResolveUploadContexts(ctx, opts)
-}
-
-// SelectReplacement selects one writable provider not already used.
-func (r *ServiceResolver) SelectReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions) (StorageContext, error) {
-	return r.selectReplacement(ctx, usedProviders, opts)
-}
-
-func (r *ServiceResolver) selectWritableReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions) (StorageContext, error) {
-	return r.selectReplacement(ctx, usedProviders, opts)
-}
-
-func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders map[string]types.BigInt, opts *UploadOptions) (StorageContext, error) {
-	const op = "storage.ServiceResolver.SelectReplacement"
-	if opts == nil {
-		return nil, fmt.Errorf("%s: %w: nil upload options", op, ErrInvalidArgument)
-	}
-	selectionOpts := withCopies(opts, 1)
-	selectionOpts.AllowUnendorsedPrimary = true
-	selections, err := r.selectWithRetry(ctx, selectionOpts, usedProviders, true)
+	selections, err := r.selectWithRetry(ctx, selectionOpts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -438,9 +418,9 @@ func (r *ServiceResolver) selectReplacement(ctx context.Context, usedProviders m
 	return contexts[0], nil
 }
 
-func (r *ServiceResolver) selectWithRetry(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, reuseDataSets bool) ([]resolvedUploadContext, error) {
+func (r *ServiceResolver) selectWithRetry(ctx context.Context, opts SelectUploadContextsOptions, reuseDataSets bool) ([]resolvedUploadContext, error) {
 	return retry.Do(ctx, func(ctx context.Context) ([]resolvedUploadContext, error) {
-		return r.autoSelect(ctx, opts, extraExcludes, reuseDataSets)
+		return r.autoSelect(ctx, opts, reuseDataSets)
 	},
 		retry.WithMaxRetries(3),
 		retry.WithInitialDelay(selectorRetryInitialDelay),
@@ -492,7 +472,7 @@ func (r *ServiceResolver) buildStorageContexts(op string, selections []resolvedU
 	return contexts, nil
 }
 
-func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, extraExcludes map[string]types.BigInt, reuseDataSets bool) ([]resolvedUploadContext, error) {
+func (r *ServiceResolver) autoSelect(ctx context.Context, opts SelectUploadContextsOptions, reuseDataSets bool) ([]resolvedUploadContext, error) {
 	count := opts.Copies
 	if count <= 0 {
 		return nil, fmt.Errorf("storage.ServiceResolver.SelectUploadContexts: %w: Copies must be greater than zero", ErrInvalidArgument)
@@ -525,7 +505,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts *UploadOptions, e
 		}
 		return nil, errors.New("storage.ServiceResolver.ResolveUploadContexts: no approved providers")
 	}
-	excludeIDs := appendExcludedIDs(opts.ExcludeProviderIDs, extraExcludes)
+	excludeIDs := cloneBigIntSlice(opts.ExcludeProviderIDs)
 	providers, err := r.spRegistry.SelectActivePDPProviders(ctx, spregistry.ProviderFilter{ExcludeIDs: excludeIDs})
 	if err != nil {
 		return nil, fmt.Errorf("storage.ServiceResolver.ResolveUploadContexts: select active PDP providers: %w", err)
@@ -1182,7 +1162,7 @@ func metadataMatches(dataSetMetadata, requestedMetadata map[string]string) bool 
 	return true
 }
 
-func dataSetMetadataFromOptions(opts *UploadOptions) map[string]string {
+func dataSetMetadataFromOptions(opts SelectUploadContextsOptions) map[string]string {
 	metadata := cloneStringMap(opts.DataSetMetadata)
 	if opts.WithCDN != nil && *opts.WithCDN {
 		if metadata == nil {
@@ -1191,40 +1171,6 @@ func dataSetMetadataFromOptions(opts *UploadOptions) map[string]string {
 		metadata["withCDN"] = ""
 	}
 	return metadata
-}
-
-func withCopies(opts *UploadOptions, copies int) *UploadOptions {
-	if opts == nil {
-		return &UploadOptions{Copies: copies}
-	}
-	cloned := *opts
-	cloned.Copies = copies
-	if len(opts.PieceMetadata) != 0 {
-		cloned.PieceMetadata = cloneStringMap(opts.PieceMetadata)
-	}
-	if len(opts.DataSetMetadata) != 0 {
-		cloned.DataSetMetadata = cloneStringMap(opts.DataSetMetadata)
-	}
-	if len(opts.ExcludeProviderIDs) != 0 {
-		cloned.ExcludeProviderIDs = cloneBigIntSlice(opts.ExcludeProviderIDs)
-	}
-	return &cloned
-}
-
-func appendExcludedIDs(excluded []types.BigInt, extra map[string]types.BigInt) []types.BigInt {
-	out := append([]types.BigInt(nil), excluded...)
-	seen := make(map[string]struct{}, len(out))
-	for _, id := range out {
-		seen[idconv.Key(id)] = struct{}{}
-	}
-	for key, id := range extra {
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 func dedupeIDs(values []types.BigInt) []types.BigInt {

@@ -18,15 +18,15 @@ import (
 // without setting up real provider plumbing.
 type ctxAwareResolver struct{}
 
-func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ *UploadOptions) ([]StorageContext, bool, error) {
+func (ctxAwareResolver) ResolveUploadContexts(ctx context.Context, _ SelectUploadContextsOptions) ([]StorageContext, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	<-ctx.Done()
-	return nil, false, ctx.Err()
+	return nil, ctx.Err()
 }
 
-func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ map[string]types.BigInt, _ *UploadOptions) (StorageContext, error) {
+func (ctxAwareResolver) SelectReplacement(ctx context.Context, _ SelectProviderContextOptions) (StorageContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
