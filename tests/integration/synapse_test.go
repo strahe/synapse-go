@@ -237,7 +237,6 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 	client, err := synapse.New(ctx,
 		synapse.WithPrivateKeyHex(integrationtest.RequirePrivateKey(t)),
 		synapse.WithRPCURL(integrationtest.RPCURL()),
-		synapse.WithAllowPrivateNetworks(true),
 		synapse.WithHTTPClient(httpClient),
 		synapse.WithCDN(true),
 	)

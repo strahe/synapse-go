@@ -323,15 +323,16 @@ func TestRootServiceWiringSharesRuntimeState(t *testing.T) {
 	}
 
 	type expectation struct {
-		nonce     bool
-		lifecycle bool
+		nonce             bool
+		lifecycle         bool
+		rootHTTPClientArg string
 	}
 	expected := map[string]expectation{
 		"warmstorage": {nonce: true, lifecycle: true},
 		"spregistry":  {nonce: true, lifecycle: true},
 		"payments":    {nonce: true, lifecycle: true},
 		"sessionkey":  {nonce: true, lifecycle: true},
-		"filbeam":     {lifecycle: true},
+		"filbeam":     {lifecycle: true, rootHTTPClientArg: "0"},
 		"costs":       {lifecycle: true},
 		"storage":     {lifecycle: true},
 	}
@@ -372,6 +373,9 @@ func TestRootServiceWiringSharesRuntimeState(t *testing.T) {
 		}
 		if want.lifecycle && !isClientSelector(fields["Lifecycle"], "lifecycle") {
 			t.Errorf("%s.Options.Lifecycle must be c.lifecycle", packageName.Name)
+		}
+		if want.rootHTTPClientArg != "" && !isClientMethodCall(fields["HTTPClient"], "serviceHTTPClient", want.rootHTTPClientArg) {
+			t.Errorf("%s.Options.HTTPClient must be c.serviceHTTPClient(%s)", packageName.Name, want.rootHTTPClientArg)
 		}
 		return true
 	})
@@ -651,4 +655,21 @@ func isClientSelector(expr ast.Expr, field string) bool {
 	}
 	receiver, ok := selector.X.(*ast.Ident)
 	return ok && receiver.Name == "c"
+}
+
+func isClientMethodCall(expr ast.Expr, method, argument string) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != method {
+		return false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok || receiver.Name != "c" {
+		return false
+	}
+	literal, ok := call.Args[0].(*ast.BasicLit)
+	return ok && literal.Kind == token.INT && literal.Value == argument
 }

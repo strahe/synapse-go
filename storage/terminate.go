@@ -161,7 +161,7 @@ func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, 
 	if err != nil {
 		return nil, fmt.Errorf("%s: ResolveProvider: %w", op, err)
 	}
-	client, err := pdp.New(provider.ServiceURL, pdp.WithHTTPClient(s.httpClient), pdp.WithLogger(s.logger))
+	client, err := pdp.New(provider.ServiceURL, pdp.WithHTTPClient(s.providerHTTPClient), pdp.WithLogger(s.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%s: create PDP client: %w", op, err)
 	}

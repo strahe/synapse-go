@@ -48,8 +48,16 @@ Common setup options:
 - `WithMaxMulticallCalls`: limit dynamic Multicall3 requests.
 - `WithSource`: namespace datasets for this application.
 - `WithCDN`: set the client default for CDN-backed storage.
-- `WithAllowPrivateNetworks`: opt into private-network URL downloads.
+- `WithAllowPrivateNetworks`: opt into private-network access for provider
+  PDP, FilBeam, and URL downloads.
 - `Close`: release SDK-owned network clients.
+
+By default, provider PDP, FilBeam, and URL requests reject private or reserved
+destinations; match rejections with
+`errors.Is(err, synapse.ErrPrivateNetwork)`. Use
+`WithAllowPrivateNetworks(true)` only for trusted private infrastructure. These
+safeguards do not apply to Ethereum JSON-RPC configured with `WithRPCURL` or
+`WithEthClient`; a custom `WithHTTPClient` replaces them.
 
 `WithStorageSigner` does not change `Client.Address()` or the payer. Payments,
 operator approvals, nonce management, and direct storage termination continue
@@ -122,11 +130,9 @@ The download reader validates the PieceCID at EOF. Always check the final
 Use `DownloadOptions{Context: storageCtx}` or `storageCtx.Download` when you
 want to read from a specific provider context. Context downloads stop at the
 raw payload size encoded in PieceCIDv2; a larger response returns
-`storage.ErrMaxBytesExceeded`. URL downloads reject private network addresses
-by default; enable `WithAllowPrivateNetworks(true)` only for trusted
-infrastructure. The top-level client leaves URL downloads uncapped. Standalone
-`storage.Service` users can set `storage.Options.DownloadMaxBytes`; exceeding
-it returns the same error.
+`storage.ErrMaxBytesExceeded`. The top-level client leaves URL downloads
+uncapped. Standalone `storage.Service` users can set
+`storage.Options.DownloadMaxBytes`; exceeding it returns the same error.
 
 ## Upload Controls
 

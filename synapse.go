@@ -21,6 +21,7 @@ import (
 	"github.com/strahe/synapse-go/internal/adapters"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
 	"github.com/strahe/synapse-go/internal/lifecycle"
+	"github.com/strahe/synapse-go/internal/safehttp"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/sessionkey"
@@ -45,6 +46,7 @@ type Client struct {
 	nonces                 *txutil.NonceManager
 	logger                 *slog.Logger
 	httpClient             *http.Client
+	ownedHTTPClient        *http.Client
 	source                 string
 	withCDN                bool
 	filbeamRetrievalDomain string
@@ -161,15 +163,22 @@ func WithLogger(l *slog.Logger) ClientOption {
 //
 //   - filbeam.Service (stats API and CDN downloads)
 //   - storage.Service (URL-based downloads via Service.HTTPClient)
-//   - provider HTTP clients constructed by the storage resolver for upload,
-//     pull, and provider RPC calls
+//   - provider HTTP clients used for upload, pull, provider RPC calls, and
+//     manager-level relayed termination
 //
 // Services communicating over Ethereum JSON-RPC (payments, sessionkey,
 // warmstorage, spregistry, costs) reuse the chain client instead and are not
-// affected by this option. If nil, storage.Service URL downloads use the
-// built-in safe HTTP client, filbeam.Service uses http.DefaultClient, and
-// provider PDP clients use the pdp package default client. The filbeam and PDP
-// defaults do not install SSRF guards.
+// affected by this option.
+//
+// If nil, the root client installs HTTP clients that reject private and
+// reserved network destinations with [ErrPrivateNetwork] and do not use
+// environment-variable proxies. PDP control requests keep their 30-second
+// timeout, FilBeam keeps no client-wide timeout, and Storage URL downloads
+// keep their 24-hour timeout.
+//
+// A non-nil client is passed through unchanged. Its transport is responsible
+// for SSRF protection, proxy policy, redirects, and timeouts. [Client.Close]
+// does not close a caller-provided client.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.httpClient = c }
 }
@@ -203,19 +212,21 @@ func WithFilBeamRetrievalDomain(domain string) ClientOption {
 	return func(cfg *clientConfig) { cfg.filbeamRetrievalDomain = domain }
 }
 
-// WithAllowPrivateNetworks disables the built-in SSRF guard for
-// URL-based [storage.Service.Download] calls. When false (the default),
-// the storage service refuses to dial local, private, multicast,
-// unspecified, or otherwise reserved address ranges, returning
-// [storage.ErrPrivateNetwork].
+// WithAllowPrivateNetworks disables the built-in SSRF guard for root-managed
+// provider PDP requests, FilBeam requests, and URL-based
+// [storage.Service.Download] calls. When false (the default), these clients
+// refuse to dial local, private, multicast, unspecified, or otherwise reserved
+// address ranges, returning [ErrPrivateNetwork].
 //
 // Set to true only when you knowingly need to fetch content from a
 // private network (e.g. in-cluster storage nodes). This is an explicit
 // SSRF opt-in for trusted private infrastructure; do not enable it for
 // untrusted user-supplied URLs.
 //
-// This option has no effect when [WithHTTPClient] is also provided:
-// the custom client's transport is responsible for any SSRF safeguards.
+// Root-managed clients continue to ignore environment-variable proxies when
+// this option is true. This option has no effect when [WithHTTPClient] is also
+// provided: the custom client's transport is responsible for any SSRF
+// safeguards.
 func WithAllowPrivateNetworks(allow bool) ClientOption {
 	return func(cfg *clientConfig) { cfg.allowPrivateNetworks = allow }
 }
@@ -273,8 +284,9 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 
 // Close releases resources held by the Client. If the ethclient was
 // created internally (via [WithRPCURL]), it is closed. User-provided
-// clients (via [WithEthClient]) are left open. Safe to call concurrently
-// or multiple times.
+// clients (via [WithEthClient] or [WithHTTPClient]) are left open. Idle
+// connections belonging to the root-managed HTTP transport are closed. Safe
+// to call concurrently or multiple times.
 //
 // After Close returns, the Client and all services obtained from it must
 // not be used.
@@ -285,6 +297,9 @@ func (c *Client) Close() error {
 		}
 		if c.ownsClient && c.ethClient != nil {
 			c.ethClient.Close()
+		}
+		if c.ownedHTTPClient != nil {
+			c.ownedHTTPClient.CloseIdleConnections()
 		}
 	})
 	return nil
@@ -407,6 +422,12 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		storageSigner = evmSigner
 	}
 	nonces := txutil.NewNonceManager(ec, evmSigner.EVMAddress())
+	httpClient := cfg.httpClient
+	var ownedHTTPClient *http.Client
+	if httpClient == nil {
+		httpClient = safehttp.NewClient(0, cfg.allowPrivateNetworks)
+		ownedHTTPClient = httpClient
+	}
 
 	c := &Client{
 		ethClient:              ec,
@@ -417,7 +438,8 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		addresses:              addresses,
 		nonces:                 nonces,
 		logger:                 cfg.logger,
-		httpClient:             cfg.httpClient,
+		httpClient:             httpClient,
+		ownedHTTPClient:        ownedHTTPClient,
 		source:                 cfg.source,
 		withCDN:                cfg.withCDN,
 		filbeamRetrievalDomain: cfg.filbeamRetrievalDomain,
@@ -426,6 +448,9 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		lifecycle:              lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {
+		if c.ownedHTTPClient != nil {
+			c.ownedHTTPClient.CloseIdleConnections()
+		}
 		return nil, err
 	}
 	return c, nil

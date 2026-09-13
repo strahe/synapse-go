@@ -32,6 +32,15 @@
 // services. Read-only callers can use [ResolveAddresses] directly without a
 // private key.
 //
+// # HTTP security
+//
+// HTTP clients assembled by [New] reject private and reserved network
+// destinations by default. Match rejected requests with [ErrPrivateNetwork].
+// Use [WithAllowPrivateNetworks] only for trusted private infrastructure.
+// Supplying [WithHTTPClient] replaces these safeguards with the caller's
+// transport policy. These root-client defaults do not change standalone
+// [pdp.New] or [filbeam.New] clients.
+//
 // Lower-level packages ([chain], [signer], [piece], [storage], [payments], etc.)
 // can still be used independently without the root client.
 //

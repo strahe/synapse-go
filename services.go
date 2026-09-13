@@ -3,6 +3,8 @@ package synapse
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -18,6 +20,28 @@ import (
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
+
+// serviceHTTPClient preserves a caller-provided client exactly. For the
+// root-managed client, it returns a shallow copy with the requested timeout so
+// services can share one guarded transport without sharing timeout policy.
+func (c *Client) serviceHTTPClient(timeout time.Duration) *http.Client {
+	if c == nil || c.httpClient == nil {
+		return nil
+	}
+	if c.ownedHTTPClient == nil {
+		return c.httpClient
+	}
+	client := *c.httpClient
+	client.Timeout = timeout
+	return &client
+}
+
+func (c *Client) storageHTTPClient() *http.Client {
+	if c.ownedHTTPClient != nil {
+		return nil
+	}
+	return c.httpClient
+}
 
 // initServices initialises all sub-services eagerly. It is called once by
 // New() before the Client is returned to the caller, so every getter is a
@@ -94,7 +118,7 @@ func (c *Client) initServices() error {
 
 	fb, err := filbeam.New(filbeam.Options{
 		Chain:           c.selectedChain,
-		HTTPClient:      c.httpClient,
+		HTTPClient:      c.serviceHTTPClient(0),
 		RetrievalDomain: c.filbeamRetrievalDomain,
 		Logger:          c.logger,
 		Lifecycle:       c.lifecycle,
@@ -175,7 +199,7 @@ func (c *Client) initServices() error {
 	}
 	storageOpts := storage.Options{
 		Resolver:             resolver,
-		HTTPClient:           c.httpClient,
+		HTTPClient:           c.storageHTTPClient(),
 		Source:               c.source,
 		DefaultWithCDN:       c.withCDN,
 		AllowPrivateNetworks: c.allowPrivateNetworks,
@@ -213,8 +237,8 @@ func (c *Client) newPDPClient(serviceURL string, opts ...pdp.Option) (*pdp.Clien
 	if c.logger != nil {
 		pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
 	}
-	if c.httpClient != nil {
-		pdpOpts = append(pdpOpts, pdp.WithHTTPClient(c.httpClient))
+	if httpClient := c.serviceHTTPClient(pdp.DefaultHTTPTimeout); httpClient != nil {
+		pdpOpts = append(pdpOpts, pdp.WithHTTPClient(httpClient))
 	}
 	pdpOpts = append(pdpOpts, opts...)
 	return pdp.New(serviceURL, pdpOpts...)
