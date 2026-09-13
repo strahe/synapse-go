@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
@@ -76,13 +78,167 @@ func TestContext_TerminateService_SkipProviderPropagatesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	callbackCalled := false
 	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{
 		SkipProvider: true,
-		OnSubmitted:  func(common.Hash) { callbackCalled = true },
 	})
-	if !errors.Is(err, want) || res != nil || callbackCalled {
-		t.Fatalf("TerminateService = %+v, %v; callback called=%v, want nil result and wrapped error without callback", res, err, callbackCalled)
+	if !errors.Is(err, want) || res != nil {
+		t.Fatalf("TerminateService = %+v, %v, want nil result and wrapped error", res, err)
+	}
+}
+
+type directTerminationBackend struct {
+	warmstorage.Backend
+	submitted *coretypes.Transaction
+	sendErr   error
+	receiptFn func(context.Context, common.Hash) (*coretypes.Receipt, error)
+}
+
+func (b *directTerminationBackend) PendingNonceAt(context.Context, common.Address) (uint64, error) {
+	return 0, nil
+}
+
+func (b *directTerminationBackend) SendTransaction(_ context.Context, tx *coretypes.Transaction) error {
+	if b.sendErr != nil {
+		return b.sendErr
+	}
+	b.submitted = tx
+	return nil
+}
+
+func (b *directTerminationBackend) TransactionReceipt(ctx context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+	return b.receiptFn(ctx, hash)
+}
+
+type directTerminationSigner struct{ signer.EVMSigner }
+
+func (s directTerminationSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	opts, err := s.EVMSigner.Transactor(chainID)
+	if err != nil {
+		return nil, err
+	}
+	opts.GasPrice = big.NewInt(1)
+	opts.GasLimit = 100_000
+	return opts, nil
+}
+
+func newDirectTerminationTestService(t *testing.T, backend *directTerminationBackend) *warmstorage.Service {
+	t.Helper()
+	evmSigner, ok := mustTestSigner(t).(signer.EVMSigner)
+	if !ok {
+		t.Fatal("test signer does not implement EVMSigner")
+	}
+	svc, err := warmstorage.New(warmstorage.Options{
+		Client:       backend,
+		Backend:      backend,
+		Signer:       directTerminationSigner{evmSigner},
+		ChainID:      314159,
+		FWSS:         testRecordKeeper(),
+		ViewContract: common.HexToAddress("0x2222"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
+	broadcastErr := errors.New("broadcast rejected")
+	tests := []struct {
+		name          string
+		sendErr       error
+		pending       bool
+		cancelOnHash  bool
+		writeHookOnly bool
+		receiptStatus uint64
+		wantErr       error
+	}{
+		{name: "confirmed", receiptStatus: coretypes.ReceiptStatusSuccessful},
+		{name: "write-option notification", writeHookOnly: true, receiptStatus: coretypes.ReceiptStatusSuccessful},
+		{name: "broadcast rejected", sendErr: broadcastErr, wantErr: broadcastErr},
+		{name: "receipt timeout", pending: true, wantErr: context.DeadlineExceeded},
+		{name: "canceled after submission", cancelOnHash: true, wantErr: context.Canceled},
+		{name: "reverted transaction", receiptStatus: coretypes.ReceiptStatusFailed, wantErr: types.ErrTxFailed},
+	}
+	for _, api := range []string{"service", "data set context"} {
+		t.Run(api, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					dataSetID := types.NewBigInt(7)
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					backend := &directTerminationBackend{sendErr: tt.sendErr}
+					callbackCalls := 0
+					var submitted common.Hash
+					backend.receiptFn = func(ctx context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+						if callbackCalls != 1 || submitted != hash {
+							t.Fatalf("receipt polling before submission notification: calls=%d hash=%s submitted=%s", callbackCalls, hash, submitted)
+						}
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+						if tt.pending {
+							return nil, ethereum.NotFound
+						}
+						receipt := terminateReceipt(t, dataSetID, hash, 456, 99)
+						receipt.Status = tt.receiptStatus
+						return receipt, nil
+					}
+					term := newDirectTerminationTestService(t, backend)
+					var terminate func(context.Context, *TerminateServiceOptions) (*TerminateServiceResult, error)
+					if api == "service" {
+						svc := mustNewService(t, Options{DataSetTerminator: term})
+						terminate = func(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
+							return svc.TerminateService(ctx, dataSetID, opts)
+						}
+					} else {
+						c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, nil,
+							testDataSetRef(dataSetID, types.BigInt{}), WithFWSSTerminator(term))
+						if err != nil {
+							t.Fatal(err)
+						}
+						terminate = c.TerminateService
+					}
+					onSubmitted := func(hash common.Hash) {
+						callbackCalls++
+						if backend.submitted == nil || hash != backend.submitted.Hash() {
+							t.Fatalf("callback before successful broadcast: hash=%s tx=%v", hash, backend.submitted)
+						}
+						submitted = hash
+						if tt.cancelOnHash {
+							cancel()
+						}
+					}
+					opts := &TerminateServiceOptions{
+						SkipProvider:      true,
+						DirectWaitTimeout: 25 * time.Millisecond,
+						WriteOptions: []warmstorage.WriteOption{
+							warmstorage.WithWait(0),
+							warmstorage.WithOnSubmitted(func(common.Hash) { t.Fatal("high-level OnSubmitted did not override write option") }),
+						},
+						OnSubmitted: onSubmitted,
+					}
+					if tt.writeHookOnly {
+						opts.OnSubmitted = nil
+						opts.WriteOptions = []warmstorage.WriteOption{warmstorage.WithOnSubmitted(onSubmitted)}
+					}
+					res, err := terminate(ctx, opts)
+					if tt.wantErr != nil {
+						if !errors.Is(err, tt.wantErr) || res != nil {
+							t.Fatalf("TerminateService = %+v, %v, want nil result and %v", res, err, tt.wantErr)
+						}
+					} else if err != nil || res == nil || res.TxHash == nil || *res.TxHash != submitted || res.EndEpoch != 456 {
+						t.Fatalf("TerminateService = %+v, %v, submitted=%s", res, err, submitted)
+					}
+					if tt.sendErr != nil {
+						if callbackCalls != 0 {
+							t.Fatalf("callback calls=%d after broadcast failure, want 0", callbackCalls)
+						}
+					} else if callbackCalls != 1 || submitted != backend.submitted.Hash() {
+						t.Fatalf("callback calls=%d hash=%s, want one notification for %s", callbackCalls, submitted, backend.submitted.Hash())
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -270,18 +426,11 @@ func TestContext_TerminateService_SkipProviderPreservesSubmittedAndConfirmedHash
 		t.Fatalf("NewContext: %v", err)
 	}
 
-	var submitted common.Hash
 	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{
 		SkipProvider: true,
-		OnSubmitted: func(hash common.Hash) {
-			submitted = hash
-		},
 	})
 	if err != nil {
 		t.Fatalf("TerminateService: %v", err)
-	}
-	if submitted != submittedHash {
-		t.Fatalf("submitted=%s want %s", submitted, submittedHash)
 	}
 	if !term.called || !term.gotDataSetID.Equal(dataSetID) || !res.DataSetID.Equal(dataSetID) {
 		t.Fatalf("termination target=%s result=%+v, want data set %s", term.gotDataSetID, res, dataSetID)

@@ -25,6 +25,7 @@ type TerminateServiceOptions struct {
 	SkipProvider bool
 	// WriteOptions are used only when SkipProvider is true. WithWait is
 	// overridden by DirectWaitTimeout so this path always waits for confirmation.
+	// A non-nil OnSubmitted overrides WithOnSubmitted in these options.
 	WriteOptions []warmstorage.WriteOption
 	// DirectWaitTimeout is used only when SkipProvider is true. A non-positive
 	// value selects the default five-minute wait timeout.
@@ -35,9 +36,10 @@ type TerminateServiceOptions struct {
 	ProviderWaitTimeout time.Duration
 	// PollInterval is used only for provider-relayed status polling.
 	PollInterval time.Duration
-	// OnSubmitted receives the original transaction hash when it becomes known
-	// during provider polling. On the direct path it runs only after the receipt
-	// is obtained successfully. A replacement hash is returned as ConfirmedTxHash.
+	// OnSubmitted receives the original transaction hash synchronously after
+	// direct broadcast, before receipt polling, or when first reported during
+	// provider polling. It does not indicate confirmation. Callback panics
+	// propagate to the caller. A replacement hash is returned as ConfirmedTxHash.
 	OnSubmitted func(common.Hash)
 }
 
@@ -239,15 +241,15 @@ func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTermi
 		wait = opts.DirectWaitTimeout
 	}
 	writeOpts = append(writeOpts, warmstorage.WithWait(wait))
+	if opts != nil && opts.OnSubmitted != nil {
+		writeOpts = append(writeOpts, warmstorage.WithOnSubmitted(opts.OnSubmitted))
+	}
 	res, err := terminator.TerminateDataSet(ctx, dataSetID, writeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if res == nil || res.Receipt == nil {
 		return nil, fmt.Errorf("%s: direct termination did not return a receipt", op)
-	}
-	if opts != nil && opts.OnSubmitted != nil {
-		opts.OnSubmitted(res.Hash)
 	}
 	confirmedHash := res.Receipt.TxHash
 	if confirmedHash == (common.Hash{}) {

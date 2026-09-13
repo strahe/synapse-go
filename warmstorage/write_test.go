@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,16 +19,18 @@ import (
 
 func TestTopUpCDNPaymentRails_BroadcastsExpectedCall(t *testing.T) {
 	svc, backend := newWriteTestService(t)
+	var submitted common.Hash
 	res, err := svc.TopUpCDNPaymentRails(
 		context.Background(),
 		sdktypes.NewBigInt(7),
 		big.NewInt(11),
 		big.NewInt(13),
+		WithOnSubmitted(func(hash common.Hash) { submitted = hash }),
 	)
 	if err != nil {
 		t.Fatalf("TopUpCDNPaymentRails: %v", err)
 	}
-	if len(backend.sent) != 1 || res == nil || res.Hash != backend.sent[0].Hash() {
+	if len(backend.sent) != 1 || res == nil || res.Hash != backend.sent[0].Hash() || submitted != res.Hash {
 		t.Fatalf("result=%+v sent=%d", res, len(backend.sent))
 	}
 	method := backend.fwssABI.Methods["topUpCDNPaymentRails"]
@@ -98,7 +101,12 @@ func TestTerminateDataSet_BroadcastsAndWaits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, backend := newWriteTestService(t)
 			receiptCalls := 0
+			callbackCalls := 0
+			var submitted common.Hash
 			backend.receiptFn = func(_ context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+				if callbackCalls != 1 || submitted != hash {
+					t.Fatalf("receipt polling before submission notification: calls=%d hash=%s submitted=%s", callbackCalls, hash, submitted)
+				}
 				receiptCalls++
 				return &coretypes.Receipt{
 					Status:      coretypes.ReceiptStatusSuccessful,
@@ -106,7 +114,15 @@ func TestTerminateDataSet_BroadcastsAndWaits(t *testing.T) {
 					BlockNumber: big.NewInt(5),
 				}, nil
 			}
-			res, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(23), tt.opts...)
+			opts := slices.Clone(tt.opts)
+			opts = append(opts, WithOnSubmitted(func(hash common.Hash) {
+				callbackCalls++
+				if len(backend.sent) != 1 || hash != backend.sent[0].Hash() || receiptCalls != 0 {
+					t.Fatalf("submission notification: hash=%s sent=%d receipt calls=%d", hash, len(backend.sent), receiptCalls)
+				}
+				submitted = hash
+			}))
+			res, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(23), opts...)
 			if err != nil {
 				t.Fatalf("TerminateDataSet: %v", err)
 			}
@@ -115,6 +131,9 @@ func TestTerminateDataSet_BroadcastsAndWaits(t *testing.T) {
 			}
 			if res == nil || res.Hash != backend.sent[0].Hash() {
 				t.Fatalf("TerminateDataSet result = %+v, want submission hash %s", res, backend.sent[0].Hash())
+			}
+			if callbackCalls != 1 || submitted != res.Hash {
+				t.Fatalf("submission notification: calls=%d hash=%s, want one notification for %s", callbackCalls, submitted, res.Hash)
 			}
 			if tt.wait {
 				if res.Receipt == nil || res.Receipt.Status != coretypes.ReceiptStatusSuccessful || res.Receipt.TxHash != res.Hash {
@@ -161,8 +180,12 @@ func TestTerminateDataSet_PropagatesSetupAndBroadcastErrors(t *testing.T) {
 		svc, backend := newWriteTestService(t)
 		want := errors.New("nonce unavailable")
 		backend.nonceErr = want
-		if _, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(1)); !errors.Is(err, want) {
+		callbackCalls := 0
+		if _, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(1), WithOnSubmitted(func(common.Hash) { callbackCalls++ })); !errors.Is(err, want) {
 			t.Fatalf("error = %v, want wrapped %v", err, want)
+		}
+		if callbackCalls != 0 {
+			t.Fatalf("callback calls=%d after nonce failure, want 0", callbackCalls)
 		}
 	})
 
@@ -170,10 +193,33 @@ func TestTerminateDataSet_PropagatesSetupAndBroadcastErrors(t *testing.T) {
 		svc, backend := newWriteTestService(t)
 		want := errors.New("broadcast rejected")
 		backend.sendErr = want
-		if _, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(1)); !errors.Is(err, want) {
+		callbackCalls := 0
+		if _, err := svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(1), WithOnSubmitted(func(common.Hash) { callbackCalls++ })); !errors.Is(err, want) {
 			t.Fatalf("error = %v, want wrapped %v", err, want)
 		}
+		if callbackCalls != 0 {
+			t.Fatalf("callback calls=%d after broadcast failure, want 0", callbackCalls)
+		}
 	})
+}
+
+func TestTerminateDataSet_OnSubmittedPanicPropagates(t *testing.T) {
+	svc, backend := newWriteTestService(t)
+	receiptCalls := 0
+	backend.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
+		receiptCalls++
+		return nil, errors.New("unexpected receipt polling")
+	}
+	defer func() {
+		if got := recover(); got != "callback failed" {
+			t.Fatalf("panic=%v, want callback failed", got)
+		}
+		if len(backend.sent) != 1 || receiptCalls != 0 {
+			t.Fatalf("sent=%d receipt calls=%d, want broadcast without receipt polling", len(backend.sent), receiptCalls)
+		}
+	}()
+	_, _ = svc.TerminateDataSet(context.Background(), sdktypes.NewBigInt(1), WithWait(time.Second),
+		WithOnSubmitted(func(common.Hash) { panic("callback failed") }))
 }
 
 func TestFinalize_WithConfirmationsAndFailedReceipt(t *testing.T) {

@@ -425,23 +425,26 @@ fmt.Println("service ends at epoch:", termination.EndEpoch)
 
 Direct termination always waits for a receipt. `DirectWaitTimeout` overrides
 `warmstorage.WithWait` in `WriteOptions`; a non-positive timeout selects the
-five-minute default. Its `OnSubmitted` callback runs only after a receipt is
-obtained successfully. A waiting error returns no partial high-level result and
-does not prove that the transaction was never broadcast; do not blindly resubmit.
+five-minute default. Set `OnSubmitted` to save the submission hash immediately
+after successful broadcast, before receipt polling. The callback runs
+synchronously and does not indicate confirmation. It still fires when waiting
+later fails. A waiting error returns no partial high-level result and does not
+prove that the transaction was never broadcast; do not blindly resubmit.
 
 Use `client.WarmStorage().TerminateDataSet(ctx, dataSetID, ...)` when you need
 broadcast-only submission or a raw receipt. By default, or with a zero/negative
 `warmstorage.WithWait`, it returns the submission hash without waiting. A positive
 `WithWait` obtains a receipt and preserves the submission hash on waiting errors;
 a failed transaction also returns its receipt. Check a non-nil `WriteResult`
-alongside the error when tracking an already submitted transaction.
+alongside the error when tracking an already submitted transaction. Use
+`warmstorage.WithOnSubmitted` for broadcast notification before receipt waiting.
 
 When replacing `DataSetContext.Terminate` or `Service.TerminateDataSet`, choose
 the high-level direct call only if you need the confirmed termination outcome.
 Map a positive `WithWait(d)` to `DirectWaitTimeout: d` and retain other applicable
-write options. Calls that do not wait, inspect raw receipts, or use a submission
-hash or failed receipt on errors must use `WarmStorage().TerminateDataSet` with
-their original options instead.
+write options. Calls that do not wait, inspect raw receipts, or require a
+submission hash or failed receipt in the result alongside an error must use
+`WarmStorage().TerminateDataSet` with their original options instead.
 
 ## Services
 

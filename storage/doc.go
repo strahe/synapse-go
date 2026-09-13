@@ -163,14 +163,16 @@
 // Neither path waits until EndEpoch or cleans up the remaining data-set state.
 //
 // Direct termination always waits for a receipt. DirectWaitTimeout controls
-// that wait and overrides WithWait in WriteOptions. OnSubmitted runs only after
-// the direct receipt is obtained successfully; waiting errors return no partial
-// high-level result and do not prove that the transaction was not broadcast.
+// that wait and overrides WithWait in WriteOptions. OnSubmitted reports the
+// original hash synchronously after successful direct broadcast, before receipt
+// polling. Save that hash to track the transaction if waiting later fails.
+// The callback does not indicate confirmation; waiting errors still return no
+// partial high-level result and do not prove that nothing was broadcast.
 //
-// For broadcast-only submission, raw receipts, or submission-hash recovery after
-// a waiting error, use [warmstorage.Service.TerminateDataSet], available through
-// the root client's WarmStorage method. Its default and non-positive WithWait
-// values return after broadcast. A positive WithWait waits for a receipt while
+// For broadcast-only submission, raw receipts, or partial transaction results
+// returned alongside errors, use [warmstorage.Service.TerminateDataSet], available
+// through the root client's WarmStorage method. Its default and non-positive
+// WithWait values return after broadcast. A positive WithWait waits for a receipt while
 // retaining the submission hash on waiting errors and the receipt on tx failure.
 //
 // # Downloads

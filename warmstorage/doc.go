@@ -23,6 +23,10 @@
 // a shared signer. Standalone services create their own nonce coordinator
 // when constructed with write dependencies.
 //
+// Write methods accept [WithOnSubmitted] to report successful broadcast
+// synchronously, before any receipt waiting. This notification does not indicate
+// confirmation. Waiting errors retain the submission hash in types.WriteResult.
+//
 // Errors are returned as wrapped sentinels or typed errors. Use errors.Is for
 // sentinels and errors.AsType for typed errors:
 //
