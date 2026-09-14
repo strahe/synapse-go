@@ -287,7 +287,7 @@ func TestGetUploadCosts_DepositPositive_WhenUnderfunded(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{chain.TiB}, &UploadCostOptions{IsNewDataSet: true})
+	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{chain.MaxUploadSize}, &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

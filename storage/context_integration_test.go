@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/storage"
@@ -406,7 +407,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("NewProviderContext(settlement fixture): %v", err)
 	}
 	settlementPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		PieceSizes: []uint64{1},
+		PieceSizes: []uint64{chain.MinUploadSize},
 		Contexts:   []storage.StorageContext{settlementProvider},
 	})
 	if err != nil {

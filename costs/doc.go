@@ -13,8 +13,9 @@
 //
 // # Piece sizes and existing state
 //
-// Service entry points accept a non-empty []uint64 of positive raw payload
-// sizes, replicated to each target. Added leaves are summed per piece using
+// Service entry points accept a non-empty []uint64 of raw payload sizes,
+// replicated to each target. Every size must be between chain.MinUploadSize
+// and chain.MaxUploadSize. Added leaves are summed per piece using
 // ceil(4*rawSize/127). Current and final aggregate leaf counts are converted
 // to billable bytes using floor(leaves*32*127/128) before calculating rates.
 // Leaf counts and aggregate sizes use arbitrary-precision integers.

@@ -121,32 +121,13 @@ func TestGetUploadCosts_DerivesFeesAcrossBatchBoundary(t *testing.T) {
 	}
 }
 
-func TestCostServices_ArbitraryPrecisionRate(t *testing.T) {
-	svc := buildSvc(t, &mockWS{priceList: leafAccountingPriceList()}, &mockPay{
-		account: &payments.AccountState{}, approval: maxApproval(),
-	})
-	sizes := []uint64{^uint64(0), ^uint64(0)}
-	want, ok := new(big.Int).SetString("36893488147419103294", 10)
-	if !ok {
-		t.Fatal("invalid expected rate")
-	}
-	single, err := svc.GetUploadCosts(context.Background(), common.Address{}, sizes, &UploadCostOptions{IsNewDataSet: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	multi, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, sizes, []MultiContextRef{{IsNewDataSet: true}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if single.Rate.RatePerEpoch.Cmp(want) != 0 || multi.RatePerEpoch.Cmp(want) != 0 {
-		t.Fatalf("rates=%s and %s want %s", single.Rate.RatePerEpoch, multi.RatePerEpoch, want)
-	}
-}
-
 func TestCalculateAdditionalLockupRequired_NoAddedLeaves(t *testing.T) {
 	for _, sizes := range [][]uint64{nil, {}, {0, 0}} {
 		current := bi(5)
-		got := CalculateAdditionalLockupRequired(sizes, current, leafAccountingPriceList(), nil, false, true)
+		got, err := CalculateAdditionalLockupRequired(sizes, current, leafAccountingPriceList(), nil, false, true)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got.RateDeltaPerEpoch.Sign() != 0 || got.Total.Sign() != 0 || current.Int64() != 5 {
 			t.Fatalf("zero addition lockup=%+v current leaves=%s", got, current)
 		}
@@ -184,6 +165,8 @@ func TestCostServices_RejectInvalidArgumentsBeforeReads(t *testing.T) {
 		{"nil sizes", nil, &UploadCostOptions{IsNewDataSet: true}},
 		{"empty sizes", []uint64{}, &UploadCostOptions{IsNewDataSet: true}},
 		{"zero element", []uint64{128, 0}, &UploadCostOptions{IsNewDataSet: true}},
+		{"below minimum", []uint64{chain.MinUploadSize - 1}, &UploadCostOptions{IsNewDataSet: true}},
+		{"above maximum", []uint64{chain.MaxUploadSize + 1}, &UploadCostOptions{IsNewDataSet: true}},
 		{"nil options", []uint64{128}, nil},
 		{"empty options", []uint64{128}, &UploadCostOptions{}},
 		{"negative leaves", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: bi(-1)}},
@@ -211,5 +194,23 @@ func TestCostServices_RejectInvalidArgumentsBeforeReads(t *testing.T) {
 	svc := buildSvc(t, backend, backend)
 	if _, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, []uint64{128}, nil, nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty refs: %v", err)
+	}
+}
+
+func TestCostServices_AcceptUploadSizeBounds(t *testing.T) {
+	svc := buildSvc(t, &mockWS{priceList: leafAccountingPriceList()}, &mockPay{
+		account: &payments.AccountState{}, approval: maxApproval(),
+	})
+	for _, size := range []uint64{chain.MinUploadSize, chain.MaxUploadSize} {
+		if _, err := svc.GetUploadCosts(
+			context.Background(), common.Address{}, []uint64{size}, &UploadCostOptions{IsNewDataSet: true},
+		); err != nil {
+			t.Fatalf("GetUploadCosts(%d): %v", size, err)
+		}
+		if _, err := svc.CalculateMultiContextCosts(
+			context.Background(), common.Address{}, []uint64{size}, []MultiContextRef{{IsNewDataSet: true}}, nil,
+		); err != nil {
+			t.Fatalf("CalculateMultiContextCosts(%d): %v", size, err)
+		}
 	}
 }

@@ -130,9 +130,10 @@ func (s *Service) GetPriceList(ctx context.Context) (*warmstorage.PriceList, err
 // GetUploadCosts returns cost and deposit information for an upload.
 //
 // payer is the client address. pieceSizes contains each piece's raw payload
-// size and must be non-empty with positive elements. New datasets require
-// opts.IsNewDataSet=true; existing datasets require a non-negative leaf count.
-// Nil or empty opts therefore returns ErrInvalidArgument.
+// size and must be non-empty; every size must be between chain.MinUploadSize
+// and chain.MaxUploadSize. New datasets require opts.IsNewDataSet=true;
+// existing datasets require a non-negative leaf count. Nil or empty opts
+// therefore returns ErrInvalidArgument.
 func (s *Service) GetUploadCosts(
 	ctx context.Context,
 	payer common.Address,

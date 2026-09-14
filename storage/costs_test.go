@@ -125,7 +125,7 @@ func TestServiceCalculateMultiContextCosts_IgnoresCurrentSizeForNewDataSets(t *t
 	}
 	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		[]storage.ContextCostRef{{
 			CurrentDataSetLeafCount: big.NewInt(chain.TiB),
 		}},
@@ -139,7 +139,7 @@ func TestServiceCalculateMultiContextCosts_IgnoresCurrentSizeForNewDataSets(t *t
 	expected, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
 		payer,
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		[]costs.MultiContextRef{{IsNewDataSet: true, WithCDN: false}},
 		nil,
 	)
@@ -182,7 +182,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 	}
 	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		[]storage.ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int)}},
 		storage.MultiCostOptions{BufferEpochs: &zeroBuffer},
 		common.Address{},
@@ -194,7 +194,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 	expected, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
 		payer,
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		[]costs.MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}},
 		&costs.UploadCostOptions{BufferEpochs: &zeroBuffer},
 	)
@@ -204,7 +204,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 	withDefault, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
 		payer,
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		[]costs.MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}},
 		nil,
 	)

@@ -1,6 +1,7 @@
 package costs
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/strahe/synapse-go/chain"
@@ -87,9 +88,9 @@ func CalculateUploadFees(priceList *warmstorage.PriceList, isNewDataSet bool, pi
 
 // CalculateAdditionalLockupRequired returns the incremental lockup for pieces
 // with the supplied raw payload sizes. A provided CurrentDataSetLeafCount is
-// expected to be non-negative and is ignored for a new dataset. Nil leaf count
-// and price list use zero-value defaults; empty pieceSizes and zero elements
-// add no leaves.
+// ignored for a new dataset. For an existing dataset, a negative leaf count
+// returns ErrInvalidArgument. Nil leaf count and price list use zero-value
+// defaults; empty pieceSizes and zero elements add no leaves.
 func CalculateAdditionalLockupRequired(
 	pieceSizes []uint64,
 	currentDataSetLeafCount *big.Int,
@@ -97,7 +98,13 @@ func CalculateAdditionalLockupRequired(
 	lockupPeriod *big.Int,
 	isNewDataSet bool,
 	enableCDN bool,
-) AdditionalLockup {
+) (AdditionalLockup, error) {
+	if !isNewDataSet && currentDataSetLeafCount != nil && currentDataSetLeafCount.Sign() < 0 {
+		return AdditionalLockup{}, fmt.Errorf(
+			"costs.CalculateAdditionalLockupRequired: %w: CurrentDataSetLeafCount must be non-negative",
+			ErrInvalidArgument,
+		)
+	}
 	return calculateAdditionalLockupRequired(
 		pieceSizesToLeafCount(pieceSizes),
 		currentDataSetLeafCount,
@@ -105,7 +112,7 @@ func CalculateAdditionalLockupRequired(
 		lockupPeriod,
 		isNewDataSet,
 		enableCDN,
-	)
+	), nil
 }
 
 func calculateAdditionalLockupRequired(
@@ -193,7 +200,8 @@ func calculateAdditionalLockupRequired(
 // the deposit lands before the payment rail is created so the contract cannot
 // yet drain it.
 //
-// Nil *big.Int fields are treated as zero. Negative epoch counts are clamped to zero.
+// Nil *big.Int fields are treated as zero. Negative epoch counts are clamped
+// to zero. The calculation does not modify its inputs.
 func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	additionalLockup := zeroBig(calc.AdditionalLockup)
 	fees := zeroBig(calc.Fees)

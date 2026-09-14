@@ -65,8 +65,9 @@ type MultiContextCosts struct {
 // Each ref contributes its own lockup; debt, runway and buffer are computed
 // once from the payer's account state.
 //
-// pieceSizes contains each piece's positive raw payload size, replicated to
-// every target. Only ExtraRunwayEpochs and BufferEpochs are used from opts.
+// pieceSizes contains each piece's raw payload size, replicated to every
+// target. Each size must be between chain.MinUploadSize and
+// chain.MaxUploadSize. Only ExtraRunwayEpochs and BufferEpochs are used from opts.
 // EnableCDN, IsNewDataSet, and CurrentDataSetLeafCount in opts are ignored;
 // supply the dataset state, current leaf count, and CDN setting through each ref.
 // Nil opts uses defaults; a nil BufferEpochs uses DefaultBufferEpochs.

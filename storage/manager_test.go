@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
@@ -168,6 +169,8 @@ func TestCalculateMultiContextCosts_RejectsInvalidPlansBeforeCalculator(t *testi
 		{"nil sizes", nil, []ContextCostRef{{}}, MultiCostOptions{}},
 		{"empty sizes", []uint64{}, []ContextCostRef{{}}, MultiCostOptions{}},
 		{"zero piece", []uint64{128, 0}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"below minimum", []uint64{chain.MinUploadSize - 1}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"above maximum", []uint64{chain.MaxUploadSize + 1}, []ContextCostRef{{}}, MultiCostOptions{}},
 		{"missing leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID}}, MultiCostOptions{}},
 		{"negative leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: big.NewInt(-1)}}, MultiCostOptions{}},
 		{"negative runway", []uint64{128}, []ContextCostRef{{}}, MultiCostOptions{ExtraRunwayEpochs: -1}},
@@ -181,6 +184,24 @@ func TestCalculateMultiContextCosts_RejectsInvalidPlansBeforeCalculator(t *testi
 				t.Fatalf("costs=(%v, %v), calculator input=%v", got, err, calc.pieceSizes)
 			}
 		})
+	}
+}
+
+func TestCalculateMultiContextCosts_AcceptsPieceSizeBounds(t *testing.T) {
+	calculator := &managerCostCalculator{result: &costs.MultiContextCosts{}}
+	svc, err := New(Options{CostCalculator: calculator, PayerAddress: testPayer()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []uint64{chain.MinUploadSize, chain.MaxUploadSize} {
+		if _, err := svc.CalculateMultiContextCosts(
+			context.Background(), []uint64{size}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{},
+		); err != nil {
+			t.Fatalf("CalculateMultiContextCosts(%d): %v", size, err)
+		}
+		if !slices.Equal(calculator.pieceSizes, []uint64{size}) {
+			t.Fatalf("calculator sizes=%v want [%d]", calculator.pieceSizes, size)
+		}
 	}
 }
 
@@ -201,11 +222,11 @@ func TestServiceManagerFacades_ValidateConfiguration(t *testing.T) {
 		{"FindDataSets", func() error { _, err := svc.FindDataSets(context.Background(), nil); return err }, ErrUninitialized},
 		{"GetStorageInfo", func() error { _, err := svc.GetStorageInfo(context.Background(), nil); return err }, ErrUninitialized},
 		{"CalculateMultiContextCosts", func() error {
-			_, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{1}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
+			_, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
 		}, ErrUninitialized},
 		{"CalculateMultiContextCosts typed nil", func() error {
-			_, err := typedNilSvc.CalculateMultiContextCosts(context.Background(), []uint64{1}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
+			_, err := typedNilSvc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
 		}, ErrUninitialized},
 	}
@@ -232,13 +253,13 @@ func TestServiceManagerFacades_ValidateArguments(t *testing.T) {
 	if _, err := svc.FindDataSets(context.Background(), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("FindDataSets error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{1}, nil, MultiCostOptions{}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, nil, MultiCostOptions{}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(empty refs) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{1}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{}); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(zero payer) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{1}, []ContextCostRef{{}}, MultiCostOptions{BufferEpochs: new(int64(-1))}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{BufferEpochs: new(int64(-1))}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(negative buffer) error = %v, want ErrInvalidArgument", err)
 	}
 	if calculator.pieceSizes != nil {

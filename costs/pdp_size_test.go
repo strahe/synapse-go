@@ -10,10 +10,9 @@ import (
 	"github.com/strahe/synapse-go/piece"
 )
 
-// The oracle is Cids.leafCount / leafCountToRawSize at PDP commit
-// 8f5821a76f4d6eb1ea80fab919771cfa628c4bc4, referenced by FilecoinServicesRef
-// 022171c0c38813e6f53a1b1ca3cf97ad1ed7414f's PriceListUSDFC.calculateStorageRate.
-// Recheck these vectors when the contract baseline changes.
+// The contract oracle is FilecoinServicesRef's
+// PriceListUSDFC.calculateStorageRate and its pinned Cids dependency. Recheck
+// these vectors when the contract baseline changes.
 func TestPDPSize_RealPieceCIDs(t *testing.T) {
 	for _, tc := range []struct{ raw, leaves, billed uint64 }{
 		{127, 4, 127}, {128, 5, 158}, {159, 6, 190}, {190, 6, 190},

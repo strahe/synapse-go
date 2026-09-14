@@ -1,6 +1,7 @@
 package costs
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
@@ -101,7 +102,10 @@ func TestCalculateUploadFees_UsesCreateFeeAndAddPiecesBatchBoundary(t *testing.T
 }
 
 func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) {
-	lockup := CalculateAdditionalLockupRequired(nil, nil, nil, nil, true, true)
+	lockup, err := CalculateAdditionalLockupRequired(nil, nil, nil, nil, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if lockup.RateDeltaPerEpoch.Sign() != 0 ||
 		lockup.StreamingLockup.Sign() != 0 ||
 		lockup.LifecycleLockup.Sign() != 0 ||
@@ -114,7 +118,7 @@ func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) 
 
 func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) {
 	priceList := defaultPriceList()
-	lockup := CalculateAdditionalLockupRequired(
+	lockup, err := CalculateAdditionalLockupRequired(
 		[]uint64{chain.TiB},
 		nil,
 		priceList,
@@ -122,6 +126,9 @@ func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) 
 		true,
 		true,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	wantStreaming := new(big.Int).Mul(lockup.RateDeltaPerEpoch, priceList.Lockups.DefaultLockupPeriod)
 	if lockup.StreamingLockup.Cmp(wantStreaming) != 0 {
@@ -146,7 +153,7 @@ func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) 
 
 func TestCalculateAdditionalLockupRequired_ExistingDataSetUsesRateDeltaOnly(t *testing.T) {
 	priceList := defaultPriceList()
-	lockup := CalculateAdditionalLockupRequired(
+	lockup, err := CalculateAdditionalLockupRequired(
 		[]uint64{chain.TiB},
 		bi(chain.TiB),
 		priceList,
@@ -154,11 +161,42 @@ func TestCalculateAdditionalLockupRequired_ExistingDataSetUsesRateDeltaOnly(t *t
 		false,
 		true,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if lockup.LifecycleLockup.Sign() != 0 || lockup.CDNLockup.Sign() != 0 || lockup.CacheMissLockup.Sign() != 0 {
 		t.Fatalf("existing lockup=%+v want only streaming lockup", lockup)
 	}
 	if lockup.Total.Cmp(lockup.StreamingLockup) != 0 {
 		t.Fatalf("Total=%s want StreamingLockup=%s", lockup.Total, lockup.StreamingLockup)
+	}
+}
+
+func TestCalculateAdditionalLockupRequired_RejectsNegativeExistingLeafCount(t *testing.T) {
+	lockup, err := CalculateAdditionalLockupRequired(
+		[]uint64{128},
+		bi(-1),
+		defaultPriceList(),
+		nil,
+		false,
+		false,
+	)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error=%v want ErrInvalidArgument", err)
+	}
+	if lockup != (AdditionalLockup{}) {
+		t.Fatalf("lockup=%+v want zero value", lockup)
+	}
+
+	if _, err := CalculateAdditionalLockupRequired(
+		[]uint64{128},
+		bi(-1),
+		defaultPriceList(),
+		nil,
+		true,
+		false,
+	); err != nil {
+		t.Fatalf("new dataset should ignore current leaf count: %v", err)
 	}
 }
 
@@ -173,6 +211,33 @@ func TestCalculateDepositNeeded_IncludesFees(t *testing.T) {
 	})
 	if deposit.Cmp(bi(17)) != 0 {
 		t.Fatalf("deposit=%s want 17", deposit)
+	}
+}
+
+func TestCalculateDepositNeeded_DoesNotAliasOrModifyInputs(t *testing.T) {
+	inputs := []*big.Int{bi(10), bi(7), bi(2), bi(3), bi(4), bi(5), bi(6)}
+	want := make([]*big.Int, len(inputs))
+	for i := range inputs {
+		want[i] = new(big.Int).Set(inputs[i])
+	}
+
+	deposit := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  inputs[0],
+		Fees:              inputs[1],
+		RateDelta:         inputs[2],
+		CurrentLockupRate: inputs[3],
+		Debt:              inputs[4],
+		AvailableFunds:    inputs[5],
+		RunwayInEpochs:    inputs[6],
+		ExtraRunwayEpochs: 8,
+		BufferEpochs:      9,
+	})
+	deposit.SetInt64(0)
+
+	for i := range inputs {
+		if inputs[i].Cmp(want[i]) != 0 {
+			t.Fatalf("input[%d]=%s want unchanged %s", i, inputs[i], want[i])
+		}
 	}
 }
 

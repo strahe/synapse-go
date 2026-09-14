@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/payments"
@@ -225,7 +226,7 @@ func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), identity: &identity}
 
 	result, err := svc.Prepare(context.Background(), &PrepareOptions{
-		PieceSizes: []uint64{1},
+		PieceSizes: []uint64{chain.MinUploadSize},
 		Contexts:   []StorageContext{uploadCtx},
 	})
 	if result != nil || !errors.Is(err, ErrInvalidArgument) {
@@ -270,6 +271,20 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 			name: "zero piece size without costs",
 			opts: &PrepareOptions{
 				PieceSizes: []uint64{0},
+				Contexts:   []StorageContext{uploadCtx},
+			},
+		},
+		{
+			name: "piece size below minimum",
+			opts: &PrepareOptions{
+				PieceSizes: []uint64{chain.MinUploadSize - 1},
+				Contexts:   []StorageContext{uploadCtx},
+			},
+		},
+		{
+			name: "piece size above maximum",
+			opts: &PrepareOptions{
+				PieceSizes: []uint64{chain.MaxUploadSize + 1},
 				Contexts:   []StorageContext{uploadCtx},
 			},
 		},

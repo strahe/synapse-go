@@ -157,7 +157,7 @@ var (
 	_ = costs.MultiContextRef{CurrentDataSetLeafCount: big.NewInt(0)}
 	_ func(*costs.Service, context.Context, common.Address, []uint64, *costs.UploadCostOptions) (*costs.UploadCosts, error) = (*costs.Service).GetUploadCosts
 	_ func(*costs.Service, context.Context, common.Address, []uint64, []costs.MultiContextRef, *costs.UploadCostOptions) (*costs.MultiContextCosts, error) = (*costs.Service).CalculateMultiContextCosts
-	_ func([]uint64, *big.Int, *warmstorage.PriceList, *big.Int, bool, bool) costs.AdditionalLockup = costs.CalculateAdditionalLockupRequired
+	_ func([]uint64, *big.Int, *warmstorage.PriceList, *big.Int, bool, bool) (costs.AdditionalLockup, error) = costs.CalculateAdditionalLockupRequired
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
 	_ = storage.WithFWSSTerminator(sharedTerminator)

@@ -93,11 +93,12 @@
 // [Service.CalculateMultiContextCosts] returns the estimate directly;
 // [Service.Prepare] includes it in [PrepareResult.Costs]. To use a precomputed
 // estimate, set [PrepareOptions.Costs] without any other preparation options.
-// Otherwise, supply each piece's positive raw payload size in
-// [PrepareOptions.PieceSizes]. The same plan applies to each context; piece
-// count is derived from the list. Existing contexts require
-// [Options.DataSetLeafCountReader], which the root client assembles. Standalone
-// services without that reader return [ErrUninitialized] instead of estimating
+// Otherwise, supply each piece's raw payload size in [PrepareOptions.PieceSizes].
+// Every size must be between chain.MinUploadSize and chain.MaxUploadSize. The
+// same plan applies to each context; piece count is derived from the list.
+// Existing contexts require [Options.DataSetLeafCountReader]. The root client
+// assembles it when the resolved contract topology includes PDPVerifier.
+// Services without that reader return [ErrUninitialized] instead of estimating
 // existing usage as zero. New contexts and precomputed costs do not need it.
 // Reader results must be non-nil and non-negative; zero means known empty.
 // Read errors retain their original cause and unavailable datasets retain

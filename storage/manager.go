@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 )
 
@@ -71,9 +72,10 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 }
 
 // CalculateMultiContextCosts estimates aggregate costs for the given storage
-// targets. pieceSizes contains the positive raw payload size of each piece,
-// replicated to every target. Existing refs require a non-negative leaf count.
-// A zero payer uses the configured default payer.
+// targets. pieceSizes contains the raw payload size of each piece, replicated
+// to every target. Each size must be between chain.MinUploadSize and
+// chain.MaxUploadSize. Existing refs require a non-negative leaf count. A zero
+// payer uses the configured default payer.
 func (s *Service) CalculateMultiContextCosts(ctx context.Context, pieceSizes []uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*costs.MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -134,8 +136,11 @@ func validateCostPieceSizes(pieceSizes []uint64) error {
 		return fmt.Errorf("%w: PieceSizes must not be empty", ErrInvalidArgument)
 	}
 	for i, size := range pieceSizes {
-		if size == 0 {
-			return fmt.Errorf("%w: PieceSizes[%d] must be greater than zero", ErrInvalidArgument, i)
+		if size < chain.MinUploadSize || size > chain.MaxUploadSize {
+			return fmt.Errorf(
+				"%w: PieceSizes[%d] must be between %d and %d bytes",
+				ErrInvalidArgument, i, chain.MinUploadSize, chain.MaxUploadSize,
+			)
 		}
 	}
 	return nil

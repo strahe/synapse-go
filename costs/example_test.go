@@ -18,7 +18,7 @@ func Example() {
 
 	ctx := context.Background()
 	payer := common.HexToAddress("0x...")
-	pieceSizes := []uint64{1 << 30}
+	pieceSizes := []uint64{256 << 20}
 
 	quote, err := svc.GetUploadCosts(ctx, payer, pieceSizes, &costs.UploadCostOptions{IsNewDataSet: true})
 	if err != nil {

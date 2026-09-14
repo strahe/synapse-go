@@ -56,7 +56,7 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	single, err := svc.GetUploadCosts(
 		context.Background(),
 		common.Address{},
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		&UploadCostOptions{IsNewDataSet: true},
 	)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		refs,
 		nil,
 	)

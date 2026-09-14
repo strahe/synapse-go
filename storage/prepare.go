@@ -17,8 +17,9 @@ import (
 // PrepareOptions configures Service.Prepare. Costs and context-based cost
 // calculation are mutually exclusive modes.
 type PrepareOptions struct {
-	// PieceSizes contains the positive raw payload size of each piece, copied
-	// to every context. Required when Costs is nil; must be empty otherwise.
+	// PieceSizes contains the raw payload size of each piece, copied to every
+	// context. Each size must be between chain.MinUploadSize and
+	// chain.MaxUploadSize. Required when Costs is nil; must be empty otherwise.
 	PieceSizes []uint64
 	// Contexts is the exact set of upload targets used for cost calculation.
 	// It is required when Costs is nil.

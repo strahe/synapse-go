@@ -196,9 +196,11 @@ same providers, datasets, payer, chain, and record keeper.
 Pass each piece's raw payload size in `PieceSizes`; use one element for the
 single-file upload below. Piece count is derived from the list. For multiple
 pieces, a total size and count cannot reproduce per-piece billing rounding.
-The root client reads leaf counts for existing datasets automatically.
-Standalone storage services must configure `DataSetLeafCountReader` for this
-path; precomputed `Costs` and new-dataset contexts do not require that reader.
+When the resolved contract topology includes PDPVerifier, the root client reads
+leaf counts for existing datasets automatically. Otherwise, and for standalone
+storage services, configure `DataSetLeafCountReader` for this path. Without it,
+preparing an existing dataset returns `ErrUninitialized`; precomputed `Costs`
+and new-dataset contexts do not require that reader.
 
 ```go
 withCDN := true
