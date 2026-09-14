@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
@@ -33,10 +34,24 @@ type PDPConfigReader interface {
 	GetPDPConfig(ctx context.Context) (*warmstorage.PDPConfig, error)
 }
 
+// FWSSTerminationOptions configures the direct termination dependency.
+type FWSSTerminationOptions struct {
+	// WaitTimeout is positive and requires waiting for a receipt.
+	WaitTimeout time.Duration
+	// OnSubmitted must be called synchronously once after successful broadcast,
+	// before receipt waiting, even if that wait later fails. Setup or broadcast
+	// failures must not notify. Nil leaves notification to WriteOptions.
+	OnSubmitted func(common.Hash)
+	// WriteOptions carry additional WarmStorage write settings. WaitTimeout
+	// overrides WithWait; a non-nil OnSubmitted overrides WithOnSubmitted.
+	WriteOptions []warmstorage.WriteOption
+}
+
 // FWSSTerminator terminates an on-chain data set via FWSS.TerminateService.
-// Satisfied by *warmstorage.Service (see TerminateDataSet).
+// Implementations must honor the explicit submission and receipt-wait contract
+// in FWSSTerminationOptions. The root SDK client assembles a WarmStorage adapter.
 type FWSSTerminator interface {
-	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts ...warmstorage.WriteOption) (*sdktypes.WriteResult, error)
+	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts FWSSTerminationOptions) (*sdktypes.WriteResult, error)
 }
 
 // DataSetValidator verifies that a data set is live in PDPVerifier and

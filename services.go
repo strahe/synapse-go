@@ -160,6 +160,7 @@ func (c *Client) initServices() error {
 		)
 	}
 
+	terminator := adapters.NewFWSSTerminator(ws)
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
 		Payer:        rootAddress,
 		SPRegistry:   spReg,
@@ -181,7 +182,7 @@ func (c *Client) initServices() error {
 				storage.WithLogger(c.logger),
 				storage.WithPDPVerifierReader(c.pdpReader),
 				storage.WithPDPConfigReader(ws),
-				storage.WithFWSSTerminator(ws),
+				storage.WithFWSSTerminator(terminator),
 				storage.WithFWSSDataSetReader(ws),
 				storage.WithDataSetValidator(ws),
 				storage.WithPaymentStateReader(pay, c.ethClient, c.addresses.USDFC),
@@ -208,7 +209,7 @@ func (c *Client) initServices() error {
 
 		DataSetFinder:      adapters.NewDataSetFinder(ws),
 		StorageInfoReader:  adapters.NewStorageInfoReader(ws, spReg, pay, c.addresses.USDFC, c.addresses.FWSS),
-		DataSetTerminator:  ws,
+		DataSetTerminator:  terminator,
 		FWSSDataSetReader:  ws,
 		PaymentStateReader: pay,
 		EpochReader:        c.ethClient,

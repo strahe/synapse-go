@@ -370,17 +370,6 @@ on one `ProviderContext` are independent; adds on one `DataSetContext` may run
 in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
 `PresignForCommit`, and `Commit`.
 
-### Migrating From The Previous Context API
-
-| Previous call | Replacement |
-|---------------|-------------|
-| `CreateContext(nil)` / `GetDefaultContext()` | `SelectProviderContext(...)` |
-| `CreateContext` with `ProviderID` | `NewProviderContext(...)` |
-| `CreateContext` with `DataSetID` | `NewDataSetContext(...)` |
-| `CreateContexts` for a new upload | `SelectUploadContexts(...)` |
-| `Upload` with provider or dataset IDs | construct/select contexts, then call `UploadToContexts(...)` |
-| `Prepare` without contexts | select contexts first and pass the same slice to `Prepare` |
-
 ## Discovery And Lifecycle
 
 Common management calls:
@@ -401,16 +390,9 @@ application-level destructive operations and gate them accordingly.
 
 ### Terminating A Service
 
-`Storage().TerminateService` and `DataSetContext.TerminateService` wait for
-confirmation and return the dataset ID, available transaction hashes, and
-`EndEpoch`. Provider-relayed termination takes effect immediately and requires
-the payer's account to cover settlement in full. The provider pays gas and charges
-a fee; a settlement failure does not automatically switch to direct submission.
-
-Set `SkipProvider: true` to submit from the root wallet without provider
-cooperation. Service and payments continue until `EndEpoch`. Confirmation does
-not mean that this epoch has arrived or that the provider has deleted the
-remaining on-chain dataset state.
+Termination uses provider relay by default and requires full payment-account
+settlement. To submit from the root wallet without provider cooperation, set
+`SkipProvider: true`:
 
 ```go
 termination, err := client.Storage().TerminateService(ctx, dataSetID, &storage.TerminateServiceOptions{
@@ -423,28 +405,12 @@ if err != nil {
 fmt.Println("service ends at epoch:", termination.EndEpoch)
 ```
 
-Direct termination always waits for a receipt. `DirectWaitTimeout` overrides
-`warmstorage.WithWait` in `WriteOptions`; a non-positive timeout selects the
-five-minute default. Set `OnSubmitted` to save the submission hash immediately
-after successful broadcast, before receipt polling. The callback runs
-synchronously and does not indicate confirmation. It still fires when waiting
-later fails. A waiting error returns no partial high-level result and does not
-prove that the transaction was never broadcast; do not blindly resubmit.
-
-Use `client.WarmStorage().TerminateDataSet(ctx, dataSetID, ...)` when you need
-broadcast-only submission or a raw receipt. By default, or with a zero/negative
-`warmstorage.WithWait`, it returns the submission hash without waiting. A positive
-`WithWait` obtains a receipt and preserves the submission hash on waiting errors;
-a failed transaction also returns its receipt. Check a non-nil `WriteResult`
-alongside the error when tracking an already submitted transaction. Use
-`warmstorage.WithOnSubmitted` for broadcast notification before receipt waiting.
-
-When replacing `DataSetContext.Terminate` or `Service.TerminateDataSet`, choose
-the high-level direct call only if you need the confirmed termination outcome.
-Map a positive `WithWait(d)` to `DirectWaitTimeout: d` and retain other applicable
-write options. Calls that do not wait, inspect raw receipts, or require a
-submission hash or failed receipt in the result alongside an error must use
-`WarmStorage().TerminateDataSet` with their original options instead.
+Both paths wait for confirmation. Relay ends service immediately; direct
+submission keeps service and payments active until `EndEpoch`. Confirmation
+does not mean that data has been deleted. For direct submission, use `OnSubmitted`
+to save the hash before waiting: a timeout can occur after broadcast, so do not
+blindly resubmit. Use `WarmStorage().TerminateDataSet` for broadcast-only calls
+or raw receipts; see the package API documentation for write options.
 
 ## Services
 

@@ -232,19 +232,15 @@ func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTermi
 	if terminator == nil {
 		return nil, fmt.Errorf("%s: %w: no FWSS terminator configured", op, ErrUninitialized)
 	}
-	writeOpts := []warmstorage.WriteOption(nil)
+	terminationOpts := FWSSTerminationOptions{WaitTimeout: defaultTerminateWait}
 	if opts != nil {
-		writeOpts = append(writeOpts, opts.WriteOptions...)
+		terminationOpts.WriteOptions = append([]warmstorage.WriteOption(nil), opts.WriteOptions...)
+		terminationOpts.OnSubmitted = opts.OnSubmitted
+		if opts.DirectWaitTimeout > 0 {
+			terminationOpts.WaitTimeout = opts.DirectWaitTimeout
+		}
 	}
-	wait := defaultTerminateWait
-	if opts != nil && opts.DirectWaitTimeout > 0 {
-		wait = opts.DirectWaitTimeout
-	}
-	writeOpts = append(writeOpts, warmstorage.WithWait(wait))
-	if opts != nil && opts.OnSubmitted != nil {
-		writeOpts = append(writeOpts, warmstorage.WithOnSubmitted(opts.OnSubmitted))
-	}
-	res, err := terminator.TerminateDataSet(ctx, dataSetID, writeOpts...)
+	res, err := terminator.TerminateDataSet(ctx, dataSetID, terminationOpts)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
