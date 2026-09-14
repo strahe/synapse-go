@@ -28,7 +28,6 @@ import (
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
-	"github.com/strahe/synapse-go/warmstorage"
 )
 
 const (
@@ -345,17 +344,25 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer terminateCancel()
-		terminateResult, terminateErr := client.Storage().TerminateDataSet(terminateCtx, cleanupDataSetID, &storage.TerminateDataSetOptions{
-			WriteOptions: []warmstorage.WriteOption{
-				warmstorage.WithWait(delegatedTxWaitTimeout),
-			},
+		terminateResult, terminateErr := client.Storage().TerminateService(terminateCtx, cleanupDataSetID, &storage.TerminateServiceOptions{
+			SkipProvider:      true,
+			DirectWaitTimeout: delegatedTxWaitTimeout,
 		})
 		if terminateErr != nil {
-			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s): %v", cleanupDataSetID, delegatedAddress, terminateErr)
+			t.Errorf("cleanup TerminateService(dataset=%s session=%s): %v", cleanupDataSetID, delegatedAddress, terminateErr)
 			return
 		}
-		if terminateResult == nil || terminateResult.Receipt == nil || terminateResult.Receipt.Status != 1 {
-			t.Errorf("cleanup TerminateDataSet(dataset=%s session=%s) result=%+v", cleanupDataSetID, delegatedAddress, terminateResult)
+		if terminateResult == nil || !terminateResult.DataSetID.Equal(cleanupDataSetID) || terminateResult.TxHash == nil || *terminateResult.TxHash == (common.Hash{}) || terminateResult.ConfirmedTxHash == nil || *terminateResult.ConfirmedTxHash == (common.Hash{}) || terminateResult.EndEpoch == 0 {
+			t.Errorf("cleanup TerminateService(dataset=%s session=%s) result=%+v", cleanupDataSetID, delegatedAddress, terminateResult)
+			return
+		}
+		dataSetInfo, readErr := client.WarmStorage().GetDataSet(terminateCtx, cleanupDataSetID)
+		if readErr != nil {
+			t.Errorf("cleanup GetDataSet(dataset=%s): %v", cleanupDataSetID, readErr)
+			return
+		}
+		if dataSetInfo == nil || !dataSetInfo.DataSetID.Equal(cleanupDataSetID) || dataSetInfo.PDPEndEpoch != terminateResult.EndEpoch {
+			t.Errorf("cleanup GetDataSet(dataset=%s) result=%+v, want end epoch %d", cleanupDataSetID, dataSetInfo, terminateResult.EndEpoch)
 		}
 	})
 

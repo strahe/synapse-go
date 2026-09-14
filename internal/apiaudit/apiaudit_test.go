@@ -141,9 +141,10 @@ func (endorsedProviderSource) GetEndorsedProviderIDs(context.Context) ([]types.B
 }
 
 var (
-	sharedNonce     nonceManager
-	sharedLifecycle lifecycle
-	sharedBuffer    int64
+	sharedNonce      nonceManager
+	sharedLifecycle  lifecycle
+	sharedBuffer     int64
+	sharedTerminator storage.FWSSTerminator
 
 	_ = payments.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = warmstorage.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
@@ -153,7 +154,8 @@ var (
 	_                      = costs.Options{Caller: blockNumberReader{}, Lifecycle: sharedLifecycle}
 	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer}
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
-	_ = storage.Options{Lifecycle: sharedLifecycle}
+	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
+	_ = storage.WithFWSSTerminator(sharedTerminator)
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}

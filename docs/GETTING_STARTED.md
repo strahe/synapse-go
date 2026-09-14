@@ -61,8 +61,8 @@ safeguards do not apply to Ethereum JSON-RPC configured with `WithRPCURL` or
 
 `WithStorageSigner` does not change `Client.Address()` or the payer. Payments,
 operator approvals, nonce management, and direct storage termination continue
-to use the root private key. Direct termination includes `TerminateDataSet` and
-`TerminateService` with `SkipProvider` enabled.
+to use the root private key. Direct termination uses `Storage().TerminateService`
+with `SkipProvider` enabled or `WarmStorage().TerminateDataSet`.
 
 A custom Storage signer receives a pre-computed 32-byte digest and cannot
 inspect the original EIP-712 message. Use a dedicated authorization key and
@@ -370,17 +370,6 @@ on one `ProviderContext` are independent; adds on one `DataSetContext` may run
 in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
 `PresignForCommit`, and `Commit`.
 
-### Migrating From The Previous Context API
-
-| Previous call | Replacement |
-|---------------|-------------|
-| `CreateContext(nil)` / `GetDefaultContext()` | `SelectProviderContext(...)` |
-| `CreateContext` with `ProviderID` | `NewProviderContext(...)` |
-| `CreateContext` with `DataSetID` | `NewDataSetContext(...)` |
-| `CreateContexts` for a new upload | `SelectUploadContexts(...)` |
-| `Upload` with provider or dataset IDs | construct/select contexts, then call `UploadToContexts(...)` |
-| `Prepare` without contexts | select contexts first and pass the same slice to `Prepare` |
-
 ## Discovery And Lifecycle
 
 Common management calls:
@@ -392,12 +381,36 @@ Common management calls:
 - `DataSetContext.DeletePiece`: schedule removal by piece CID convenience lookup. Prefer
   `DeletePieceByID` when available, because repeated uploads can share a CID.
 - `DataSetContext.TerminateService` / `Service.TerminateService`: terminate service
-  through the provider by default; use `SkipProvider` for direct FWSS fallback.
-- `DataSetContext.Terminate` / `Service.TerminateDataSet`: legacy direct FWSS
-  termination write.
+  and wait for confirmation. The provider relays by default; set `SkipProvider`
+  to submit directly through FWSS.
+- `WarmStorage().TerminateDataSet`: submit directly and obtain a raw `WriteResult`.
 
 Termination and removal are storage lifecycle actions. Treat them as
 application-level destructive operations and gate them accordingly.
+
+### Terminating A Service
+
+Termination uses provider relay by default and requires full payment-account
+settlement. To submit from the root wallet without provider cooperation, set
+`SkipProvider: true`:
+
+```go
+termination, err := client.Storage().TerminateService(ctx, dataSetID, &storage.TerminateServiceOptions{
+	SkipProvider:      true,
+	DirectWaitTimeout: 3 * time.Minute,
+})
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println("service ends at epoch:", termination.EndEpoch)
+```
+
+Both paths wait for confirmation. Relay ends service immediately; direct
+submission keeps service and payments active until `EndEpoch`. Confirmation
+does not mean that data has been deleted. For direct submission, use `OnSubmitted`
+to save the hash before waiting: a timeout can occur after broadcast, so do not
+blindly resubmit. Use `WarmStorage().TerminateDataSet` for broadcast-only calls
+or raw receipts; see the package API documentation for write options.
 
 ## Services
 

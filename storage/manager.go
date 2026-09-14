@@ -6,9 +6,6 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-
-	"github.com/strahe/synapse-go/types"
-	"github.com/strahe/synapse-go/warmstorage"
 )
 
 // FindDataSetsOptions configures Service.FindDataSets. A nil pointer or
@@ -69,30 +66,6 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 		client = opts.Client
 	}
 	return s.info.GetStorageInfo(ctx, client)
-}
-
-// TerminateDataSetOptions configures Service.TerminateDataSet.
-type TerminateDataSetOptions struct {
-	// WriteOptions are forwarded to warmstorage.TerminateDataSet.
-	WriteOptions []warmstorage.WriteOption
-}
-
-// TerminateDataSet terminates an FWSS-managed data set by ID.
-func (s *Service) TerminateDataSet(ctx context.Context, dataSetID types.BigInt, opts *TerminateDataSetOptions) (*types.WriteResult, error) {
-	if err := s.checkInit(); err != nil {
-		return nil, err
-	}
-	if s.terminator == nil {
-		return nil, fmt.Errorf("storage.Service.TerminateDataSet: %w: no DataSetTerminator configured", ErrUninitialized)
-	}
-	if dataSetID.IsZero() {
-		return nil, fmt.Errorf("storage.Service.TerminateDataSet: %w: zero dataSetID", ErrInvalidArgument)
-	}
-	var writeOpts []warmstorage.WriteOption
-	if opts != nil {
-		writeOpts = opts.WriteOptions
-	}
-	return s.terminator.TerminateDataSet(ctx, dataSetID, writeOpts...)
 }
 
 // CalculateMultiContextCosts fans out the cost calculation across the given

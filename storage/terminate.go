@@ -17,17 +17,18 @@ import (
 
 const defaultTerminateWait = 5 * time.Minute
 
-// TerminateServiceOptions configures provider-relayed service termination.
+// TerminateServiceOptions configures service termination and confirmation.
 type TerminateServiceOptions struct {
-	// SkipProvider uses the direct FWSS transaction path. The new
-	// TerminateService helper still waits for the receipt so it can return
-	// EndEpoch. Use DataSetContext.Terminate or Service.TerminateDataSet for the
-	// legacy hash-only direct write surface.
+	// SkipProvider submits directly through FWSS and waits for the receipt.
+	// Service and payments continue until the returned EndEpoch. By default,
+	// the provider relays an immediate termination that requires full settlement.
 	SkipProvider bool
-	// WriteOptions are used only when SkipProvider is true.
+	// WriteOptions are used only when SkipProvider is true. WithWait is
+	// overridden by DirectWaitTimeout so this path always waits for confirmation.
+	// A non-nil OnSubmitted overrides WithOnSubmitted in these options.
 	WriteOptions []warmstorage.WriteOption
-	// DirectWaitTimeout is used only when SkipProvider is true. Zero selects
-	// the default wait timeout.
+	// DirectWaitTimeout is used only when SkipProvider is true. A non-positive
+	// value selects the default five-minute wait timeout.
 	DirectWaitTimeout time.Duration
 	// ProviderWaitTimeout bounds provider relay submission plus status polling.
 	// Zero selects the default wait timeout. Negative disables the added timeout
@@ -35,40 +36,30 @@ type TerminateServiceOptions struct {
 	ProviderWaitTimeout time.Duration
 	// PollInterval is used only for provider-relayed status polling.
 	PollInterval time.Duration
-	// OnSubmitted is called when the provider's original transaction hash
-	// becomes known. A replacement-by-fee hash is returned as ConfirmedTxHash.
+	// OnSubmitted receives the original transaction hash synchronously after
+	// direct broadcast, before receipt polling, or when first reported during
+	// provider polling. It does not indicate confirmation. Callback panics
+	// propagate to the caller. A replacement hash is returned as ConfirmedTxHash.
 	OnSubmitted func(common.Hash)
 }
 
-// TerminateServiceResult is the high-level service termination result.
+// TerminateServiceResult is the confirmed service termination result.
 type TerminateServiceResult struct {
-	// TxHash is the provider's original submission hash when available.
+	// TxHash is the original submission hash when available.
 	TxHash *common.Hash
 	// ConfirmedTxHash is the hash included on chain. It may differ from TxHash
 	// after replacement-by-fee. For explorers and receipt lookups, prefer this
 	// field when non-nil and otherwise use TxHash.
 	ConfirmedTxHash *common.Hash
 	DataSetID       types.BigInt
-	EndEpoch        types.Epoch
+	// EndEpoch is when the service and its payments end, not a data deletion time.
+	EndEpoch types.Epoch
 }
 
-// Terminate schedules termination of this context's data set via the
-// FWSS terminateService entry point. On success the provider stops
-// proving the data set and all contained pieces will be removed
-// on-chain.
-//
-// opts are forwarded to warmstorage.Service.TerminateDataSet (wait /
-// confirmations / etc.).
-func (c *DataSetContext) Terminate(ctx context.Context, opts ...warmstorage.WriteOption) (*types.WriteResult, error) {
-	if c.core.fwssTerminator == nil {
-		return nil, errors.New("storage.DataSetContext.Terminate: FWSS terminator not configured")
-	}
-	return c.core.fwssTerminator.TerminateDataSet(ctx, c.ref.DataSetID(), opts...)
-}
-
-// TerminateService terminates this context's data set. By default it asks the
-// provider to relay the termination; pass SkipProvider to use the direct FWSS
-// path.
+// TerminateService requests termination of this context's service and waits
+// for confirmation. By default the provider relays the termination; set
+// SkipProvider to submit directly through FWSS. Neither path waits until
+// EndEpoch or removes the remaining on-chain data-set state.
 func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
 	const op = "storage.DataSetContext.TerminateService"
 	if opts != nil && opts.SkipProvider {
@@ -115,9 +106,10 @@ func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateSe
 	return terminateResultFromStatus(target.dataSetID, status), nil
 }
 
-// TerminateService terminates an FWSS-managed data set by ID. By default it
-// resolves the provider and asks it to relay the termination; pass
-// SkipProvider to use the direct FWSS transaction path.
+// TerminateService requests termination of an FWSS-managed service by data-set
+// ID and waits for confirmation. By default it resolves the provider and asks
+// it to relay the termination; set SkipProvider to submit directly through FWSS.
+// Neither path waits until EndEpoch or removes the remaining on-chain state.
 func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
 	const op = "storage.Service.TerminateService"
 	if err := s.checkInit(); err != nil {
@@ -240,24 +232,20 @@ func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTermi
 	if terminator == nil {
 		return nil, fmt.Errorf("%s: %w: no FWSS terminator configured", op, ErrUninitialized)
 	}
-	writeOpts := []warmstorage.WriteOption(nil)
+	terminationOpts := FWSSTerminationOptions{WaitTimeout: defaultTerminateWait}
 	if opts != nil {
-		writeOpts = append(writeOpts, opts.WriteOptions...)
+		terminationOpts.WriteOptions = append([]warmstorage.WriteOption(nil), opts.WriteOptions...)
+		terminationOpts.OnSubmitted = opts.OnSubmitted
+		if opts.DirectWaitTimeout > 0 {
+			terminationOpts.WaitTimeout = opts.DirectWaitTimeout
+		}
 	}
-	wait := defaultTerminateWait
-	if opts != nil && opts.DirectWaitTimeout > 0 {
-		wait = opts.DirectWaitTimeout
-	}
-	writeOpts = append(writeOpts, warmstorage.WithWait(wait))
-	res, err := terminator.TerminateDataSet(ctx, dataSetID, writeOpts...)
+	res, err := terminator.TerminateDataSet(ctx, dataSetID, terminationOpts)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if res == nil || res.Receipt == nil {
 		return nil, fmt.Errorf("%s: direct termination did not return a receipt", op)
-	}
-	if opts != nil && opts.OnSubmitted != nil {
-		opts.OnSubmitted(res.Hash)
 	}
 	confirmedHash := res.Receipt.TxHash
 	if confirmedHash == (common.Hash{}) {

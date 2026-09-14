@@ -630,6 +630,9 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
+	if cfg.onSubmitted != nil {
+		cfg.onSubmitted(res.Hash)
+	}
 	if cfg.waitTimeout <= 0 {
 		return res, nil
 	}

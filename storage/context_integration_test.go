@@ -87,9 +87,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			start := time.Now()
 			t.Logf("start storage staged cleanup TerminateDataSet(%s)", id)
-			_, err := sm.TerminateDataSet(cctx, id, &storage.TerminateDataSetOptions{
-				WriteOptions: []warmstorage.WriteOption{warmstorage.WithWait(contextIntegrationTxWait)},
-			})
+			_, err := client.WarmStorage().TerminateDataSet(cctx, id, warmstorage.WithWait(contextIntegrationTxWait))
 			t.Logf("done storage staged cleanup TerminateDataSet(%s) elapsed=%s", id, time.Since(start).Round(time.Second))
 			cancel()
 			if err != nil {
@@ -362,20 +360,15 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if primaryInfo.PDPRailID.IsZero() || secondaryInfo.PDPRailID.IsZero() {
 		t.Fatalf("termination rails must be non-zero: primary=%s secondary=%s", primaryInfo.PDPRailID, secondaryInfo.PDPRailID)
 	}
-	primaryDataSet, err := sm.NewDataSetContext(ctx, primaryCommit.DataSet.DataSetID(), storage.NewDataSetContextOptions{})
-	if err != nil {
-		t.Fatalf("NewDataSetContext(primary data set): %v", err)
-	}
-
 	start = time.Now()
-	t.Log("start storage staged primary DataSetContext.Terminate")
-	directTermination, err := primaryDataSet.Terminate(ctx, warmstorage.WithWait(contextIntegrationTxWait))
-	t.Logf("done storage staged primary DataSetContext.Terminate elapsed=%s", time.Since(start).Round(time.Second))
+	t.Log("start storage staged primary WarmStorage.TerminateDataSet")
+	directTermination, err := ws.TerminateDataSet(ctx, primaryCommit.DataSet.DataSetID(), warmstorage.WithWait(contextIntegrationTxWait))
+	t.Logf("done storage staged primary WarmStorage.TerminateDataSet elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
-		t.Fatalf("primary DataSetContext.Terminate: %v", err)
+		t.Fatalf("primary WarmStorage.TerminateDataSet: %v", err)
 	}
 	if directTermination == nil || directTermination.Receipt == nil || directTermination.Receipt.Status != 1 {
-		t.Fatalf("primary DataSetContext.Terminate receipt = %+v", directTermination)
+		t.Fatalf("primary WarmStorage.TerminateDataSet receipt = %+v", directTermination)
 	}
 	directEvent, err := warmstorage.ExtractPDPPaymentTerminatedEvent(directTermination.Receipt)
 	if err != nil {

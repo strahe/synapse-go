@@ -152,6 +152,31 @@
 // rejected status is returned without an error; WaitForCommit reports the same
 // terminal state as [CommitRejectedError].
 //
+// # Service termination
+//
+// [Service.TerminateService] and [DataSetContext.TerminateService] wait for
+// confirmed termination and return [TerminateServiceResult]. By default the
+// provider relays an immediate termination requiring full payment-account
+// settlement. There is no automatic fallback to direct submission. Set
+// [TerminateServiceOptions.SkipProvider] to submit through FWSS without provider
+// cooperation; the service and payments continue until the returned EndEpoch.
+// Neither path waits until EndEpoch or cleans up the remaining data-set state.
+//
+// Direct termination always waits for a receipt. DirectWaitTimeout controls
+// that wait and overrides WithWait in WriteOptions. OnSubmitted reports the
+// original hash synchronously after successful direct broadcast, before receipt
+// polling. Save that hash to track the transaction if waiting later fails.
+// The callback does not indicate confirmation; waiting errors still return no
+// partial high-level result and do not prove that nothing was broadcast.
+// Direct submission dependencies receive the callback and wait timeout
+// explicitly through [FWSSTerminationOptions].
+//
+// For broadcast-only submission, raw receipts, or partial transaction results
+// returned alongside errors, use [warmstorage.Service.TerminateDataSet], available
+// through the root client's WarmStorage method. Its default and non-positive
+// WithWait values return after broadcast. A positive WithWait waits for a receipt
+// while retaining the submission hash on waiting errors and the receipt on tx failure.
+//
 // # Downloads
 //
 // Context downloads use the PDP and optional CDN clients attached to that
@@ -165,12 +190,13 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [PDPProviderClient], [PDPVerifierReader], and [FWSSDataSetReader] are SDK
-// assembly interfaces. Their supported implementations are [pdp.Client] and
-// the adapters assembled by the root SDK client; user-defined implementations
-// are not compatibility targets.
+// [PDPProviderClient], [PDPVerifierReader], [FWSSDataSetReader], and
+// [FWSSTerminator] are SDK assembly interfaces. Their supported implementations
+// are [pdp.Client] and the adapters assembled by the root SDK client;
+// user-defined implementations are not compatibility targets.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
+// [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner
 package storage

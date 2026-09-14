@@ -26,56 +26,53 @@ import (
 
 type fakeFWSSTerminator struct {
 	gotDataSetID types.BigInt
+	gotOptions   FWSSTerminationOptions
 	res          *types.WriteResult
 	err          error
 	called       bool
+	terminateFn  func(context.Context, types.BigInt, FWSSTerminationOptions) (*types.WriteResult, error)
 }
 
-func (f *fakeFWSSTerminator) TerminateDataSet(_ context.Context, id types.BigInt, _ ...warmstorage.WriteOption) (*types.WriteResult, error) {
+func (f *fakeFWSSTerminator) TerminateDataSet(ctx context.Context, id types.BigInt, opts FWSSTerminationOptions) (*types.WriteResult, error) {
 	f.called = true
 	f.gotDataSetID = id
+	f.gotOptions = opts
+	if f.terminateFn != nil {
+		return f.terminateFn(ctx, id, opts)
+	}
 	return f.res, f.err
 }
 
-func TestContext_Terminate_NotConfigured(t *testing.T) {
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
+func TestContext_TerminateService_SkipProviderNotConfigured(t *testing.T) {
+	var typedNil *fakeFWSSTerminator
+	tests := []struct {
+		name       string
+		terminator FWSSTerminator
+	}{
+		{"nil", nil},
+		{"typed nil", typedNil},
 	}
-	if _, err := c.Terminate(context.Background()); err == nil {
-		t.Fatal("expected error when terminator not configured")
-	}
-}
-
-func TestContext_Terminate_Passthrough(t *testing.T) {
-	term := &fakeFWSSTerminator{res: &types.WriteResult{Hash: common.HexToHash("0xdead")}}
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(123), types.BigInt{}),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithFWSSTerminator(term),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-	res, err := c.Terminate(context.Background())
-	if err != nil {
-		t.Fatalf("Terminate: %v", err)
-	}
-	if !term.called || !term.gotDataSetID.Equal(types.NewBigInt(123)) {
-		t.Fatalf("terminator not invoked with expected id: called=%v id=%s", term.called, term.gotDataSetID.String())
-	}
-	if res == nil || res.Hash == (common.Hash{}) {
-		t.Fatalf("unexpected result: %+v", res)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, nil, testDataSetRef(types.NewBigInt(1), types.BigInt{}),
+				WithFWSSTerminator(tt.terminator),
+			)
+			if err != nil {
+				t.Fatalf("NewDataSetContext: %v", err)
+			}
+			if _, err := c.TerminateService(context.Background(), &TerminateServiceOptions{SkipProvider: true}); !errors.Is(err, ErrUninitialized) {
+				t.Fatalf("TerminateService error = %v, want ErrUninitialized", err)
+			}
+		})
 	}
 }
 
-func TestContext_Terminate_PropagatesError(t *testing.T) {
-	term := &fakeFWSSTerminator{err: errors.New("terminate failed")}
+func TestContext_TerminateService_SkipProviderPropagatesError(t *testing.T) {
+	want := errors.New("terminate failed")
+	term := &fakeFWSSTerminator{
+		res: &types.WriteResult{Hash: common.HexToHash("0xdead")},
+		err: want,
+	}
 	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
@@ -85,8 +82,110 @@ func TestContext_Terminate_PropagatesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
-	if _, err := c.Terminate(context.Background()); err == nil {
-		t.Fatal("expected error from terminator")
+	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{
+		SkipProvider: true,
+	})
+	if !errors.Is(err, want) || res != nil {
+		t.Fatalf("TerminateService = %+v, %v, want nil result and wrapped error", res, err)
+	}
+}
+
+func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
+	broadcastErr := errors.New("broadcast rejected")
+	tests := []struct {
+		name         string
+		sendErr      error
+		waitErr      error
+		cancelOnHash bool
+	}{
+		{name: "confirmed"},
+		{name: "broadcast rejected", sendErr: broadcastErr},
+		{name: "receipt timeout", waitErr: context.DeadlineExceeded},
+		{name: "canceled after submission", cancelOnHash: true, waitErr: context.Canceled},
+		{name: "reverted transaction", waitErr: types.ErrTxFailed},
+	}
+	for _, api := range []string{"service", "data set context"} {
+		t.Run(api, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					dataSetID := types.NewBigInt(7)
+					submittedHash := common.HexToHash("0x1234")
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					callbackCalls := 0
+					broadcast := false
+					term := &fakeFWSSTerminator{
+						terminateFn: func(ctx context.Context, id types.BigInt, opts FWSSTerminationOptions) (*types.WriteResult, error) {
+							if !id.Equal(dataSetID) || opts.WaitTimeout != 3*time.Minute || opts.OnSubmitted == nil {
+								t.Fatalf("dependency arguments: id=%s wait=%s callback=%v", id, opts.WaitTimeout, opts.OnSubmitted != nil)
+							}
+							if tt.sendErr != nil {
+								return nil, tt.sendErr
+							}
+							broadcast = true
+							opts.OnSubmitted(submittedHash)
+							if callbackCalls != 1 {
+								t.Fatalf("confirmation started before submission notification: calls=%d", callbackCalls)
+							}
+							res := &types.WriteResult{Hash: submittedHash}
+							if tt.cancelOnHash && !errors.Is(ctx.Err(), context.Canceled) {
+								t.Fatal("submission callback did not cancel the caller context")
+							}
+							if tt.waitErr != nil {
+								return res, tt.waitErr
+							}
+							res.Receipt = terminateReceipt(t, id, submittedHash, 456, 99)
+							return res, nil
+						},
+					}
+					var terminate func(context.Context, *TerminateServiceOptions) (*TerminateServiceResult, error)
+					if api == "service" {
+						svc := mustNewService(t, Options{DataSetTerminator: term})
+						terminate = func(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
+							return svc.TerminateService(ctx, dataSetID, opts)
+						}
+					} else {
+						c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, nil,
+							testDataSetRef(dataSetID, types.BigInt{}), WithFWSSTerminator(term))
+						if err != nil {
+							t.Fatal(err)
+						}
+						terminate = c.TerminateService
+					}
+					res, err := terminate(ctx, &TerminateServiceOptions{
+						SkipProvider:      true,
+						DirectWaitTimeout: 3 * time.Minute,
+						OnSubmitted: func(hash common.Hash) {
+							callbackCalls++
+							if !broadcast || hash != submittedHash {
+								t.Fatalf("callback before broadcast or wrong hash: %s", hash)
+							}
+							if tt.cancelOnHash {
+								cancel()
+							}
+						},
+					})
+					wantErr := tt.waitErr
+					if tt.sendErr != nil {
+						wantErr = tt.sendErr
+					}
+					if wantErr != nil {
+						if !errors.Is(err, wantErr) || res != nil {
+							t.Fatalf("TerminateService = %+v, %v, want nil result and %v", res, err, wantErr)
+						}
+					} else if err != nil || res == nil || res.TxHash == nil || *res.TxHash != submittedHash || res.EndEpoch != 456 {
+						t.Fatalf("TerminateService = %+v, %v", res, err)
+					}
+					wantCalls := 1
+					if tt.sendErr != nil {
+						wantCalls = 0
+					}
+					if callbackCalls != wantCalls {
+						t.Fatalf("callback calls=%d, want %d", callbackCalls, wantCalls)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -274,18 +373,14 @@ func TestContext_TerminateService_SkipProviderPreservesSubmittedAndConfirmedHash
 		t.Fatalf("NewContext: %v", err)
 	}
 
-	var submitted common.Hash
 	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{
 		SkipProvider: true,
-		OnSubmitted: func(hash common.Hash) {
-			submitted = hash
-		},
 	})
 	if err != nil {
 		t.Fatalf("TerminateService: %v", err)
 	}
-	if submitted != submittedHash {
-		t.Fatalf("submitted=%s want %s", submitted, submittedHash)
+	if !term.called || !term.gotDataSetID.Equal(dataSetID) || !res.DataSetID.Equal(dataSetID) {
+		t.Fatalf("termination target=%s result=%+v, want data set %s", term.gotDataSetID, res, dataSetID)
 	}
 	if res.TxHash == nil || *res.TxHash != submittedHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != confirmedHash || res.EndEpoch != 456 {
 		t.Fatalf("result=%+v want submitted and confirmed hashes with end epoch", res)
@@ -315,6 +410,84 @@ func TestContext_TerminateService_SkipProviderFallsBackFromZeroReceiptHash(t *te
 	}
 	if res.TxHash == nil || *res.TxHash != submittedHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != submittedHash {
 		t.Fatalf("result=%+v want submitted hash fallback", res)
+	}
+}
+
+func TestService_TerminateService_SkipProviderNeedsOnlyTerminator(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wait    time.Duration
+	}{
+		{"explicit timeout", time.Second, time.Second},
+		{"default timeout", 0, 5 * time.Minute},
+		{"negative timeout", -time.Second, 5 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataSetID := types.NewBigInt(23)
+			hash := common.HexToHash("0x1234")
+			term := &fakeFWSSTerminator{res: &types.WriteResult{
+				Hash:    hash,
+				Receipt: terminateReceipt(t, dataSetID, hash, 456, 99),
+			}}
+			svc := mustNewService(t, Options{DataSetTerminator: term})
+			res, err := svc.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{
+				SkipProvider:      true,
+				DirectWaitTimeout: tt.timeout,
+			})
+			if err != nil {
+				t.Fatalf("TerminateService: %v", err)
+			}
+			if !term.called || !term.gotDataSetID.Equal(dataSetID) || term.gotOptions.WaitTimeout != tt.wait {
+				t.Fatalf("termination target=%s called=%v wait=%s, want %s and %s wait", term.gotDataSetID, term.called, term.gotOptions.WaitTimeout, dataSetID, tt.wait)
+			}
+			if res == nil || !res.DataSetID.Equal(dataSetID) || res.EndEpoch != 456 || res.TxHash == nil || *res.TxHash != hash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != hash {
+				t.Fatalf("TerminateService result=%+v, want confirmed data set %s with end epoch 456", res, dataSetID)
+			}
+		})
+	}
+}
+
+func TestService_TerminateService_SkipProviderValidatesConfigurationAndID(t *testing.T) {
+	var typedNil *fakeFWSSTerminator
+	tests := []struct {
+		name      string
+		service   *Service
+		dataSetID types.BigInt
+		want      error
+	}{
+		{"uninitialized service", &Service{}, types.NewBigInt(1), ErrUninitialized},
+		{"nil terminator", mustNewService(t, Options{}), types.NewBigInt(1), ErrUninitialized},
+		{"typed-nil terminator", mustNewService(t, Options{DataSetTerminator: typedNil}), types.NewBigInt(1), ErrUninitialized},
+		{"zero data set ID", mustNewService(t, Options{DataSetTerminator: &fakeFWSSTerminator{}}), types.BigInt{}, ErrInvalidArgument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := tt.service.TerminateService(context.Background(), tt.dataSetID, &TerminateServiceOptions{SkipProvider: true})
+			if !errors.Is(err, tt.want) || res != nil {
+				t.Fatalf("TerminateService = %+v, %v, want nil result and %v", res, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestService_TerminateService_SkipProviderRequiresReceipt(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *types.WriteResult
+	}{
+		{"nil result", nil},
+		{"submission hash only", &types.WriteResult{Hash: common.HexToHash("0x1234")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := mustNewService(t, Options{DataSetTerminator: &fakeFWSSTerminator{res: tt.result}})
+			res, err := svc.TerminateService(context.Background(), types.NewBigInt(1), &TerminateServiceOptions{SkipProvider: true})
+			if err == nil || res != nil {
+				t.Fatalf("TerminateService = %+v, %v, want error without a confirmed result", res, err)
+			}
+		})
 	}
 }
 
@@ -485,31 +658,6 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 	recovered := recoverRawTypedDataSigner(t, domain, "TerminateService", ityped.TerminateServiceMessage(dataSetID.Big()), values[0].([]byte))
 	if recovered != storageSigner.EVMAddress() {
 		t.Fatalf("termination signer=%s want %s", recovered, storageSigner.EVMAddress())
-	}
-}
-
-func TestContext_Terminate_TypedNilTerminatorTreatedAsUnset(t *testing.T) {
-	var term *fakeFWSSTerminator
-
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(1), types.BigInt{}),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithFWSSTerminator(term),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("Terminate panicked with typed-nil terminator: %v", r)
-		}
-	}()
-
-	_, err = c.Terminate(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("err=%v want not configured", err)
 	}
 }
 

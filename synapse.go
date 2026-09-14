@@ -103,7 +103,7 @@ func WithPrivateKeyHex(hex string) ClientOption {
 // WithStorageSigner sets the signer used for Storage EIP-712 authorizations.
 // The root private key remains the payer and continues to sign transactions,
 // including payments, operator approvals, and direct storage termination via
-// TerminateDataSet or TerminateService with SkipProvider.
+// Storage().TerminateService with SkipProvider or WarmStorage().TerminateDataSet.
 //
 // Before the first storage write, authorize the signer's address by calling
 // Login or LoginWithOptions on [Client.SessionKey]. [New] does not query or
