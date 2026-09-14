@@ -101,8 +101,8 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 			}, nil
 		},
 		prepareFn: func(_ context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
-			if opts.DataSize != uint64(len(payload)) {
-				t.Fatalf("DataSize=%d want %d", opts.DataSize, len(payload))
+			if len(opts.PieceSizes) != 1 || opts.PieceSizes[0] != uint64(len(payload)) {
+				t.Fatalf("PieceSizes=%v want %d", opts.PieceSizes, len(payload))
 			}
 			if len(opts.Contexts) != quickstartCopies || &opts.Contexts[0] != &selectedContexts[0] {
 				t.Fatalf("Prepare Contexts=%d want selected contexts", len(opts.Contexts))

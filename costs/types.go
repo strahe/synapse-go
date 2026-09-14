@@ -41,7 +41,8 @@ type UploadCosts struct {
 
 // UploadCostOptions customises the GetUploadCosts calculation.
 type UploadCostOptions struct {
-	// ExtraRunwayEpochs is extra epoch runway on top of lockup. Defaults to DefaultExtraRunwayEpochs (0).
+	// ExtraRunwayEpochs is extra epoch runway on top of lockup. Defaults to 0.
+	// Negative values return ErrInvalidArgument.
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit buffer for execution latency.
 	// Nil uses DefaultBufferEpochs (5); a pointer to zero disables the buffer.
@@ -51,11 +52,9 @@ type UploadCostOptions struct {
 	EnableCDN bool
 	// IsNewDataSet must be true when creating a fresh dataset.
 	IsNewDataSet bool
-	// CurrentDataSetSizeBytes is the existing payload in the dataset (0 for new datasets).
-	CurrentDataSetSizeBytes *big.Int
-	// PieceCount is the number of pieces added by this upload. Zero defaults
-	// to one piece.
-	PieceCount *big.Int
+	// CurrentDataSetLeafCount is required and non-negative for an existing
+	// dataset. Zero means known empty. Ignored when IsNewDataSet is true.
+	CurrentDataSetLeafCount *big.Int
 }
 
 // DepositCalculation is the input to CalculateDepositNeeded.

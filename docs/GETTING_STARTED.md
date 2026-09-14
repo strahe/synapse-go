@@ -193,6 +193,13 @@ FWSS approval. Select the upload targets first, then pass the same contexts to
 `Prepare` and `UploadToContexts`. This ensures the estimate and upload use the
 same providers, datasets, payer, chain, and record keeper.
 
+Pass each piece's raw payload size in `PieceSizes`; use one element for the
+single-file upload below. Piece count is derived from the list. For multiple
+pieces, a total size and count cannot reproduce per-piece billing rounding.
+The root client reads leaf counts for existing datasets automatically.
+Standalone storage services must configure `DataSetLeafCountReader` for this
+path; precomputed `Costs` and new-dataset contexts do not require that reader.
+
 ```go
 withCDN := true
 
@@ -213,7 +220,7 @@ if selection == nil {
 }
 
 prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
-    DataSize: uint64(payloadSize),
+    PieceSizes: []uint64{uint64(payloadSize)},
     Contexts: selection.Contexts,
 })
 if err != nil {

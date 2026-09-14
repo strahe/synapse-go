@@ -120,8 +120,8 @@ func runUpload(ctx context.Context, cfg uploadConfig, svc uploadStorage, stdout 
 		return errors.New("select upload contexts: no selection returned")
 	}
 	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
-		DataSize: uint64(info.Size()),
-		Contexts: selection.Contexts,
+		PieceSizes: []uint64{uint64(info.Size())},
+		Contexts:   selection.Contexts,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)

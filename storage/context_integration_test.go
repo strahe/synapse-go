@@ -122,7 +122,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged Prepare")
 	prepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		DataSize: uint64(len(data)),
+		PieceSizes: []uint64{uint64(len(data))},
 		Contexts: []storage.StorageContext{
 			primary,
 			secondary,
@@ -267,7 +267,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged Prepare(commit)")
 	commitPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		DataSize: uint64(len(data)),
+		PieceSizes: []uint64{uint64(len(data))},
 		Contexts: []storage.StorageContext{
 			recovered,
 		},
@@ -406,8 +406,8 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("NewProviderContext(settlement fixture): %v", err)
 	}
 	settlementPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		DataSize: 1,
-		Contexts: []storage.StorageContext{settlementProvider},
+		PieceSizes: []uint64{1},
+		Contexts:   []storage.StorageContext{settlementProvider},
 	})
 	if err != nil {
 		t.Fatalf("Prepare(settlement fixture): %v", err)

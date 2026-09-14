@@ -8,7 +8,8 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// CalculateEffectiveRate computes the storage rate for the given total data size.
+// CalculateEffectiveRate computes the storage rate for the given contract
+// billable size in bytes, not the sum of raw piece payload sizes.
 // Integer division is used to match on-chain Solidity truncation.
 // If epochsPerMonth is zero or negative, chain.EpochsPerMonth is used as a safe default.
 // Nil sizeBytes, pricePerTiBPerMonth, or datasetFeePerMonth are treated as zero.
@@ -84,38 +85,57 @@ func CalculateUploadFees(priceList *warmstorage.PriceList, isNewDataSet bool, pi
 	}
 }
 
-// CalculateAdditionalLockupRequired returns the incremental lockup needed to
-// store uploadSizeBytes into a dataset that currently holds currentDataSetSizeBytes.
-// Nil dataSizeBytes, currentDataSetSizeBytes, and priceList use zero-value defaults.
+// CalculateAdditionalLockupRequired returns the incremental lockup for pieces
+// with the supplied raw payload sizes. A provided CurrentDataSetLeafCount is
+// expected to be non-negative and is ignored for a new dataset. Nil leaf count
+// and price list use zero-value defaults; empty pieceSizes and zero elements
+// add no leaves.
 func CalculateAdditionalLockupRequired(
-	dataSizeBytes *big.Int,
-	currentDataSetSizeBytes *big.Int,
+	pieceSizes []uint64,
+	currentDataSetLeafCount *big.Int,
 	priceList *warmstorage.PriceList,
 	lockupPeriod *big.Int,
 	isNewDataSet bool,
 	enableCDN bool,
 ) AdditionalLockup {
-	if dataSizeBytes == nil {
-		dataSizeBytes = new(big.Int)
+	return calculateAdditionalLockupRequired(
+		pieceSizesToLeafCount(pieceSizes),
+		currentDataSetLeafCount,
+		priceList,
+		lockupPeriod,
+		isNewDataSet,
+		enableCDN,
+	)
+}
+
+func calculateAdditionalLockupRequired(
+	addedLeaves *big.Int,
+	currentDataSetLeafCount *big.Int,
+	priceList *warmstorage.PriceList,
+	lockupPeriod *big.Int,
+	isNewDataSet bool,
+	enableCDN bool,
+) AdditionalLockup {
+	currentLeaves := new(big.Int)
+	if !isNewDataSet && currentDataSetLeafCount != nil {
+		currentLeaves.Set(currentDataSetLeafCount)
 	}
-	if currentDataSetSizeBytes == nil {
-		currentDataSetSizeBytes = new(big.Int)
-	}
+	finalLeaves := new(big.Int).Add(currentLeaves, addedLeaves)
+	finalSize := leafCountToBillableBytes(finalLeaves)
 	if priceList == nil {
 		priceList = &warmstorage.PriceList{}
 	}
 
 	var rateDelta *big.Int
-	if currentDataSetSizeBytes.Sign() > 0 && !isNewDataSet {
-		newTotalSize := new(big.Int).Add(currentDataSetSizeBytes, dataSizeBytes)
+	if currentLeaves.Sign() > 0 {
 		newRate := CalculateEffectiveRate(
-			newTotalSize,
+			finalSize,
 			priceList.Rates.StoragePerTiBPerMonth,
 			priceList.Rates.DatasetFeePerMonth,
 			chain.EpochsPerMonth,
 		)
 		currentRate := CalculateEffectiveRate(
-			currentDataSetSizeBytes,
+			leafCountToBillableBytes(currentLeaves),
 			priceList.Rates.StoragePerTiBPerMonth,
 			priceList.Rates.DatasetFeePerMonth,
 			chain.EpochsPerMonth,
@@ -126,7 +146,7 @@ func CalculateAdditionalLockupRequired(
 		}
 	} else {
 		newRate := CalculateEffectiveRate(
-			dataSizeBytes,
+			finalSize,
 			priceList.Rates.StoragePerTiBPerMonth,
 			priceList.Rates.DatasetFeePerMonth,
 			chain.EpochsPerMonth,
@@ -182,14 +202,8 @@ func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	debt := zeroBig(calc.Debt)
 	availableFunds := zeroBig(calc.AvailableFunds)
 	runwayInEpochs := zeroBig(calc.RunwayInEpochs)
-	runwayEpochs := calc.ExtraRunwayEpochs
-	if runwayEpochs < 0 {
-		runwayEpochs = 0
-	}
-	bufferEpochs := calc.BufferEpochs
-	if bufferEpochs < 0 {
-		bufferEpochs = 0
-	}
+	runwayEpochs := max(calc.ExtraRunwayEpochs, 0)
+	bufferEpochs := max(calc.BufferEpochs, 0)
 	bufferEpochsBig := big.NewInt(bufferEpochs)
 	combinedRate := new(big.Int).Add(currentLockupRate, rateDelta)
 	runway := new(big.Int).Mul(combinedRate, big.NewInt(runwayEpochs))

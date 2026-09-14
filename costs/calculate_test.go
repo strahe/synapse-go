@@ -115,7 +115,7 @@ func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) 
 func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) {
 	priceList := defaultPriceList()
 	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
+		[]uint64{chain.TiB},
 		nil,
 		priceList,
 		priceList.Lockups.DefaultLockupPeriod,
@@ -147,7 +147,7 @@ func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) 
 func TestCalculateAdditionalLockupRequired_ExistingDataSetUsesRateDeltaOnly(t *testing.T) {
 	priceList := defaultPriceList()
 	lockup := CalculateAdditionalLockupRequired(
-		bi(chain.TiB),
+		[]uint64{chain.TiB},
 		bi(chain.TiB),
 		priceList,
 		priceList.Lockups.DefaultLockupPeriod,

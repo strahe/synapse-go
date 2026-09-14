@@ -127,8 +127,8 @@ func runQuickstart(ctx context.Context, cfg quickstartConfig, svc quickstartStor
 	}
 
 	prepare, err := svc.Prepare(ctx, &storage.PrepareOptions{
-		DataSize: uint64(len(cfg.Payload)),
-		Contexts: selection.Contexts,
+		PieceSizes: []uint64{uint64(len(cfg.Payload))},
+		Contexts:   selection.Contexts,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare upload: %w", err)

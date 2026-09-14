@@ -59,6 +59,21 @@ func TestPDPVerifierReader_GetScheduledRemovals_Dedupes(t *testing.T) {
 	}
 }
 
+func TestPDPVerifierReader_GetDataSetLeafCountReturnsRawLeaves(t *testing.T) {
+	for _, count := range []int64{0, 5} {
+		backend := newStorageInfoTestCaller(t)
+		backend.setPDPReply(t, "getDataSetLeafCount", big.NewInt(count))
+		caller, err := pdpverifierbind.NewPDPVerifierCaller(common.Address{}, backend)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := (&pdpVerifierReader{caller: caller}).GetDataSetLeafCount(context.Background(), types.NewBigInt(42))
+		if err != nil || got == nil || got.Cmp(big.NewInt(count)) != 0 {
+			t.Fatalf("GetDataSetLeafCount = (%v, %v), want %d raw leaves", got, err, count)
+		}
+	}
+}
+
 func TestPDPVerifierReader_FindPieceIDsByCIDs_UsesChunkedMulticall(t *testing.T) {
 	target := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	backend := newPDPBatchTestBackend(t, target, [][]*big.Int{
@@ -186,7 +201,7 @@ func TestPDPVerifierReader_ReturnsSentinelForUnavailableDataSet(t *testing.T) {
 				t.Fatalf("NewPDPVerifierCaller: %v", err)
 			}
 
-			got, err := (&pdpVerifierReader{caller: caller}).GetDataSetSizeBytes(context.Background(), types.NewBigInt(42))
+			got, err := (&pdpVerifierReader{caller: caller}).GetDataSetLeafCount(context.Background(), types.NewBigInt(42))
 			if got != nil || !errors.Is(err, storage.ErrDataSetUnavailable) || !errors.Is(err, tt.err) {
 				t.Fatalf("dataset size=%v error=%v, want nil and unavailable sentinel", got, err)
 			}

@@ -94,20 +94,20 @@ type Service struct {
 
 	// Manager-level collaborators (all optional). When unset, the
 	// corresponding public method returns a descriptive error.
-	finder       DataSetFinder
-	info         StorageInfoReader
-	terminator   FWSSTerminator
-	costCalc     MultiCostCalculator
-	funder       PaymentsFunder
-	sizeReader   DataSetSizeReader
-	dsReader     FWSSDataSetReader
-	providers    ProviderResolver
-	payments     PaymentStateReader
-	epochs       EpochReader
-	signer       signer.StorageSigner
-	chainID      types.ChainID
-	recordKeeper common.Address
-	paymentToken common.Address
+	finder          DataSetFinder
+	info            StorageInfoReader
+	terminator      FWSSTerminator
+	costCalc        MultiCostCalculator
+	funder          PaymentsFunder
+	leafCountReader DataSetLeafCountReader
+	dsReader        FWSSDataSetReader
+	providers       ProviderResolver
+	payments        PaymentStateReader
+	epochs          EpochReader
+	signer          signer.StorageSigner
+	chainID         types.ChainID
+	recordKeeper    common.Address
+	paymentToken    common.Address
 
 	// payerAddr is the default payer used by manager-level
 	// helpers when the caller does not explicitly supply one. Zero
@@ -204,12 +204,11 @@ type Options struct {
 	// PaymentsFunder backs PrepareTransaction.Execute. Optional.
 	PaymentsFunder PaymentsFunder
 
-	// DataSetSizeReader backs the per-dataset size lookup performed by
-	// Service.Prepare for existing-dataset contexts. Optional; when
-	// nil, Prepare falls back to zero-size estimates. For
-	// accurate add-pieces pricing, wire an implementation backed by
-	// PDPVerifier.getDataSetLeafCount (leafCount * 32 bytes).
-	DataSetSizeReader DataSetSizeReader
+	// DataSetLeafCountReader backs Service.Prepare for existing-dataset
+	// contexts. Required for that calculation path; missing configuration
+	// returns ErrUninitialized. New-dataset and precomputed-cost paths do not
+	// need it. The root SDK client supplies its built-in PDPVerifier adapter.
+	DataSetLeafCountReader DataSetLeafCountReader
 
 	// FWSSDataSetReader reads the on-chain ClientDataSetID during explicit
 	// data-set resolution and checks existing data sets before uploads. A custom
@@ -303,7 +302,7 @@ func New(opts Options) (*Service, error) {
 		terminator:           normalizeOptional(opts.DataSetTerminator),
 		costCalc:             normalizeOptional(opts.CostCalculator),
 		funder:               normalizeOptional(opts.PaymentsFunder),
-		sizeReader:           normalizeOptional(opts.DataSetSizeReader),
+		leafCountReader:      normalizeOptional(opts.DataSetLeafCountReader),
 		dsReader:             normalizeOptional(opts.FWSSDataSetReader),
 		providers:            providers,
 		payments:             normalizeOptional(opts.PaymentStateReader),

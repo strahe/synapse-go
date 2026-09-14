@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -16,15 +17,12 @@ import (
 // PrepareOptions configures Service.Prepare. Costs and context-based cost
 // calculation are mutually exclusive modes.
 type PrepareOptions struct {
-	// DataSize is required when Costs is nil, and must be zero when Costs
-	// is set. It is the payload size in bytes used for cost calculation.
-	DataSize uint64
+	// PieceSizes contains the positive raw payload size of each piece, copied
+	// to every context. Required when Costs is nil; must be empty otherwise.
+	PieceSizes []uint64
 	// Contexts is the exact set of upload targets used for cost calculation.
 	// It is required when Costs is nil.
 	Contexts []StorageContext
-	// PieceCount is the number of pieces added to each context. Nil or
-	// non-positive values default to one.
-	PieceCount *big.Int
 	// Costs short-circuits cost calculation. When set, no other
 	// PrepareOptions fields are accepted.
 	Costs *costs.MultiContextCosts
@@ -64,9 +62,10 @@ type PrepareResult struct {
 }
 
 // Prepare returns the funding transaction needed, if any, to cover one upload
-// of DataSize bytes across the supplied contexts. When a DataSetSizeReader is
-// configured, unavailable existing data sets return [ErrDataSetUnavailable].
-// Without one, existing size remains a zero-size best-effort estimate.
+// of PieceSizes across the supplied contexts. Existing data sets require a
+// DataSetLeafCountReader; missing configuration returns [ErrUninitialized],
+// and unavailable data sets return [ErrDataSetUnavailable]. Precomputed Costs
+// bypasses leaf-count reads.
 func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -92,9 +91,7 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		if payer == (common.Address{}) {
 			return nil, fmt.Errorf("storage.Service.Prepare: %w: zero payer and no default payer", ErrInvalidArgument)
 		}
-		size := new(big.Int).SetUint64(opts.DataSize)
-		summary, err = s.calculateMultiContextCosts(ctx, payer, size, refs, MultiCostOptions{
-			PieceCount:        opts.PieceCount,
+		summary, err = s.calculateMultiContextCosts(ctx, payer, opts.PieceSizes, refs, MultiCostOptions{
 			ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
 			BufferEpochs:      opts.BufferEpochs,
 		})
@@ -149,10 +146,8 @@ func clonePrepareOptions(opts *PrepareOptions) *PrepareOptions {
 		return nil
 	}
 	out := *opts
-	out.Contexts = append([]StorageContext(nil), opts.Contexts...)
-	if opts.PieceCount != nil {
-		out.PieceCount = new(big.Int).Set(opts.PieceCount)
-	}
+	out.Contexts = slices.Clone(opts.Contexts)
+	out.PieceSizes = slices.Clone(opts.PieceSizes)
 	if opts.BufferEpochs != nil {
 		bufferEpochs := *opts.BufferEpochs
 		out.BufferEpochs = &bufferEpochs
@@ -174,11 +169,8 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 		if len(opts.Contexts) != 0 {
 			return fmt.Errorf("%w: Contexts cannot be set when Costs is set", ErrInvalidArgument)
 		}
-		if opts.DataSize != 0 {
-			return fmt.Errorf("%w: DataSize cannot be set when Costs is set", ErrInvalidArgument)
-		}
-		if opts.PieceCount != nil {
-			return fmt.Errorf("%w: PieceCount cannot be set when Costs is set", ErrInvalidArgument)
+		if len(opts.PieceSizes) != 0 {
+			return fmt.Errorf("%w: PieceSizes cannot be set when Costs is set", ErrInvalidArgument)
 		}
 		if opts.ExtraRunwayEpochs != 0 {
 			return fmt.Errorf("%w: ExtraRunwayEpochs cannot be set when Costs is set", ErrInvalidArgument)
@@ -188,8 +180,8 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 		}
 		return nil
 	}
-	if opts.DataSize == 0 {
-		return fmt.Errorf("%w: DataSize must be greater than zero when Costs is nil", ErrInvalidArgument)
+	if err := validateCostPieceSizes(opts.PieceSizes); err != nil {
+		return err
 	}
 	if len(opts.Contexts) == 0 {
 		return fmt.Errorf("%w: Contexts must not be empty when Costs is nil", ErrInvalidArgument)
@@ -211,18 +203,18 @@ func validatePrepareCosts(summary *costs.MultiContextCosts) error {
 }
 
 // prepareRefs builds storage cost refs from the user-supplied contexts.
-// For existing-dataset contexts, the current on-chain size is fetched in
-// parallel via [DataSetSizeReader] so the cost calculator can price
+// For existing-dataset contexts, the current on-chain leaf count is fetched in
+// parallel via [DataSetLeafCountReader] so the cost calculator can price
 // lockup against real storage usage rather than the floor rate.
 func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]ContextCostRef, error) {
 	contexts := opts.Contexts
 
 	refs := make([]ContextCostRef, len(contexts))
-	type sizeJob struct {
+	type leafCountJob struct {
 		idx int
 		id  types.BigInt
 	}
-	var jobs []sizeJob
+	var jobs []leafCountJob
 	for i, uploadCtx := range contexts {
 		refs[i] = ContextCostRef{
 			Provider: uploadCtx.GetProviderInfo(),
@@ -231,31 +223,38 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 		if dataSet, ok := uploadCtx.DataSetRef(); ok {
 			id := dataSet.DataSetID()
 			refs[i].DataSetID = &id
-			if s.sizeReader != nil {
-				jobs = append(jobs, sizeJob{idx: i, id: id})
+			if s.leafCountReader == nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: %w: no DataSetLeafCountReader configured", ErrUninitialized)
 			}
+			jobs = append(jobs, leafCountJob{idx: i, id: id})
 		}
 	}
 
 	if len(jobs) > 0 {
-		type sizeResult struct {
-			idx  int
-			size *big.Int
-			err  error
+		type leafCountResult struct {
+			idx    int
+			leaves *big.Int
+			err    error
 		}
-		results := make(chan sizeResult, len(jobs))
+		results := make(chan leafCountResult, len(jobs))
 		for _, j := range jobs {
-			go func(j sizeJob) {
-				sz, err := s.sizeReader.GetDataSetSizeBytes(ctx, j.id)
-				results <- sizeResult{idx: j.idx, size: sz, err: err}
+			go func(j leafCountJob) {
+				leaves, err := s.leafCountReader.GetDataSetLeafCount(ctx, j.id)
+				results <- leafCountResult{idx: j.idx, leaves: leaves, err: err}
 			}(j)
 		}
 		for range jobs {
 			r := <-results
 			if r.err != nil {
-				return nil, fmt.Errorf("storage.Service.Prepare: GetDataSetSizeBytes: %w", r.err)
+				return nil, fmt.Errorf("storage.Service.Prepare: GetDataSetLeafCount for data set %s: %w", refs[r.idx].DataSetID, r.err)
 			}
-			refs[r.idx].CurrentDataSetSizeBytes = r.size
+			if r.leaves == nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: reader returned nil leaf count for data set %s", refs[r.idx].DataSetID)
+			}
+			if r.leaves.Sign() < 0 {
+				return nil, fmt.Errorf("storage.Service.Prepare: reader returned negative leaf count for data set %s", refs[r.idx].DataSetID)
+			}
+			refs[r.idx].CurrentDataSetLeafCount = new(big.Int).Set(r.leaves)
 		}
 	}
 

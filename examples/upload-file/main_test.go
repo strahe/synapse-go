@@ -78,8 +78,8 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 			}, nil
 		},
 		prepareFn: func(_ context.Context, opts *storage.PrepareOptions) (*storage.PrepareResult, error) {
-			if opts.DataSize != uint64(len(data)) {
-				t.Fatalf("DataSize=%d want %d", opts.DataSize, len(data))
+			if len(opts.PieceSizes) != 1 || opts.PieceSizes[0] != uint64(len(data)) {
+				t.Fatalf("PieceSizes=%v want %d", opts.PieceSizes, len(data))
 			}
 			if len(opts.Contexts) != 2 {
 				t.Fatalf("Prepare Contexts=%d want 2", len(opts.Contexts))

@@ -110,11 +110,8 @@ type MultiCostOptions struct {
 	// per-ref `WithCDN` flag) and governs whether the CDN-fixed lockup
 	// is added for new datasets.
 	EnableCDN bool
-	// PieceCount is the number of pieces added per context. Nil or non-positive
-	// values default to one.
-	PieceCount *big.Int
 	// ExtraRunwayEpochs is additional runway (epochs) on top of the
-	// minimum lockup period. Defaults to 0 when unset.
+	// minimum lockup period. Defaults to 0. Negative values return ErrInvalidArgument.
 	ExtraRunwayEpochs int64
 	// BufferEpochs is the deposit cushion above current lockup usage to
 	// cover transaction latency. Nil uses the cost service default; a pointer
@@ -128,16 +125,16 @@ type MultiCostOptions struct {
 // [costs.Service.CalculateMultiContextCosts]: dataset state and CDN are supplied
 // through refs, not opts.
 type MultiCostCalculator interface {
-	CalculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error)
+	CalculateMultiContextCosts(ctx context.Context, payer common.Address, pieceSizes []uint64, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error)
 }
 
-// DataSetSizeReader returns the current on-chain size (bytes) of an
-// existing data set, used by Service.Prepare to price lockup
-// accurately for add-pieces scenarios. Satisfied by an adapter around
-// PDPVerifier.getDataSetLeafCount (leafCount * 32). Implementations should
-// return [ErrDataSetUnavailable] when the data set is missing or non-live.
-type DataSetSizeReader interface {
-	GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
+// DataSetLeafCountReader is the SDK assembly interface for existing data-set
+// leaf counts. The root client supplies its built-in PDPVerifier adapter.
+// User-defined implementations are not compatibility targets. A successful
+// result must be non-nil and non-negative; zero means known empty.
+// Missing or non-live data sets return [ErrDataSetUnavailable].
+type DataSetLeafCountReader interface {
+	GetDataSetLeafCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 }
 
 // PaymentsFunder tops up the Payments contract for an upload. Narrow

@@ -287,7 +287,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 	t.Log("start CDNContextDownload Prepare")
 	prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
-		DataSize:          uint64(len(data)),
+		PieceSizes:        []uint64{uint64(len(data))},
 		Contexts:          []storage.StorageContext{uploadCtx},
 		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 		BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
@@ -456,7 +456,7 @@ func TestIntegration(t *testing.T) {
 		defer cancel()
 
 		dataSize := big.NewInt(testDataSize)
-		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, dataSize, nil)
+		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{dataSize.Uint64()}, &costs.UploadCostOptions{IsNewDataSet: true})
 		if err != nil {
 			t.Fatalf("GetUploadCosts: %v", err)
 		}
@@ -510,7 +510,7 @@ func TestIntegration(t *testing.T) {
 		// Calculate deposit amount for the upload. Well-funded accounts still
 		// deposit 1 atto-USDFC so this full flow keeps direct Deposit coverage.
 		dataSize := big.NewInt(testDataSize)
-		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, dataSize,
+		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{dataSize.Uint64()},
 			&costs.UploadCostOptions{
 				ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 				BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
@@ -751,7 +751,7 @@ func TestIntegration(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 		defer cancel()
 
-		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, big.NewInt(testDataSize), &costs.UploadCostOptions{
+		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{testDataSize}, &costs.UploadCostOptions{
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			EnableCDN:         true,
@@ -1030,8 +1030,8 @@ func TestIntegration(t *testing.T) {
 			checkRead(t, "SelectUploadContexts(Prepare prerequisite)", err)
 			prep, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.PrepareResult, error) {
 				return sm.Prepare(ctx, &storage.PrepareOptions{
-					DataSize: 64 * 1024,
-					Contexts: selection.Contexts,
+					PieceSizes: []uint64{64 * 1024},
+					Contexts:   selection.Contexts,
 				})
 			})
 			checkRead(t, "Prepare", err)
@@ -1055,7 +1055,7 @@ func TestIntegration(t *testing.T) {
 				t.Fatal("StorageInfo.Providers empty")
 			}
 			mc, err := retryIntegrationRead(cctx, func(ctx context.Context) (*costs.MultiContextCosts, error) {
-				return sm.CalculateMultiContextCosts(ctx, 64*1024, []storage.ContextCostRef{
+				return sm.CalculateMultiContextCosts(ctx, []uint64{64 * 1024}, []storage.ContextCostRef{
 					{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
 				}, storage.MultiCostOptions{}, addr)
 			})
@@ -1293,7 +1293,7 @@ func TestIntegration(t *testing.T) {
 
 		t.Log("start ExistingDataSet Prepare")
 		prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
-			DataSize:          uint64(len(extraData)),
+			PieceSizes:        []uint64{uint64(len(extraData))},
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			Contexts: []storage.StorageContext{
