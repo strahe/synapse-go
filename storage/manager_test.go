@@ -97,10 +97,20 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 
 	dataSetID := types.NewBigInt(7)
 	otherDataSetID := types.NewBigInt(8)
+	activeRef := func(id *types.BigInt, leaves int64, withCDN bool) ContextCostRef {
+		return ContextCostRef{
+			DataSetID:                      id,
+			CurrentDataSetLeafCount:        big.NewInt(leaves),
+			CurrentLifecycleReserveBalance: big.NewInt(500),
+			PendingOneTimePayments:         big.NewInt(7),
+			PDPEndEpoch:                    new(types.Epoch),
+			WithCDN:                        withCDN,
+		}
+	}
 	refs := []ContextCostRef{
 		{Provider: testProvider(), CurrentDataSetLeafCount: big.NewInt(9999)},
-		{DataSetID: &dataSetID, CurrentDataSetLeafCount: big.NewInt(2048)},
-		{DataSetID: &otherDataSetID, CurrentDataSetLeafCount: big.NewInt(8192), WithCDN: true},
+		activeRef(&dataSetID, 2048, false),
+		activeRef(&otherDataSetID, 8192, true),
 	}
 	opts := MultiCostOptions{EnableCDN: true, ExtraRunwayEpochs: 7, BufferEpochs: new(int64(0))}
 	gotCosts, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{128, 190}, refs, opts, common.Address{})
@@ -120,13 +130,20 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 		t.Fatalf("new ref=%+v want new dataset without current size", calculator.refs[0])
 	}
 	for i := 1; i < len(refs); i++ {
-		if calculator.refs[i].IsNewDataSet || calculator.refs[i].CurrentDataSetLeafCount.Cmp(refs[i].CurrentDataSetLeafCount) != 0 {
-			t.Fatalf("ref[%d]=%+v want existing dataset size %s", i, calculator.refs[i], refs[i].CurrentDataSetLeafCount)
+		if calculator.refs[i].IsNewDataSet || calculator.refs[i].CurrentDataSetLeafCount.Cmp(refs[i].CurrentDataSetLeafCount) != 0 ||
+			calculator.refs[i].CurrentLifecycleReserveBalance.Cmp(refs[i].CurrentLifecycleReserveBalance) != 0 ||
+			calculator.refs[i].PendingOneTimePayments.Cmp(refs[i].PendingOneTimePayments) != 0 ||
+			calculator.refs[i].PDPEndEpoch == nil || *calculator.refs[i].PDPEndEpoch != 0 {
+			t.Fatalf("ref[%d]=%+v want complete existing data set state", i, calculator.refs[i])
 		}
 	}
 	calculator.refs[1].CurrentDataSetLeafCount.SetInt64(999)
-	if refs[1].CurrentDataSetLeafCount.Int64() != 2048 {
-		t.Fatal("forwarded leaf count aliases caller input")
+	calculator.refs[1].CurrentLifecycleReserveBalance.SetInt64(999)
+	calculator.refs[1].PendingOneTimePayments.SetInt64(999)
+	*calculator.refs[1].PDPEndEpoch = 999
+	if refs[1].CurrentDataSetLeafCount.Int64() != 2048 || refs[1].CurrentLifecycleReserveBalance.Int64() != 500 ||
+		refs[1].PendingOneTimePayments.Int64() != 7 || *refs[1].PDPEndEpoch != 0 {
+		t.Fatal("forwarded data set state aliases caller input")
 	}
 	for i, ref := range calculator.refs {
 		if !ref.WithCDN {
@@ -173,6 +190,10 @@ func TestCalculateMultiContextCosts_RejectsInvalidPlansBeforeCalculator(t *testi
 		{"above maximum", []uint64{chain.MaxUploadSize + 1}, []ContextCostRef{{}}, MultiCostOptions{}},
 		{"missing leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID}}, MultiCostOptions{}},
 		{"negative leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: big.NewInt(-1)}}, MultiCostOptions{}},
+		{"missing reserve", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int), PDPEndEpoch: new(types.Epoch)}}, MultiCostOptions{}},
+		{"negative reserve", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: big.NewInt(-1), PDPEndEpoch: new(types.Epoch)}}, MultiCostOptions{}},
+		{"negative pending", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: new(big.Int), PendingOneTimePayments: big.NewInt(-1), PDPEndEpoch: new(types.Epoch)}}, MultiCostOptions{}},
+		{"missing end epoch", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: new(big.Int)}}, MultiCostOptions{}},
 		{"negative runway", []uint64{128}, []ContextCostRef{{}}, MultiCostOptions{ExtraRunwayEpochs: -1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

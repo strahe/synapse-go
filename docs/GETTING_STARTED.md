@@ -196,11 +196,21 @@ same providers, datasets, payer, chain, and record keeper.
 Pass each piece's raw payload size in `PieceSizes`; use one element for the
 single-file upload below. Piece count is derived from the list. For multiple
 pieces, a total size and count cannot reproduce per-piece billing rounding.
-When the resolved contract topology includes PDPVerifier, the root client reads
-leaf counts for existing datasets automatically. Otherwise, and for standalone
-storage services, configure `DataSetLeafCountReader` for this path. Without it,
-preparing an existing dataset returns `ErrUninitialized`; precomputed `Costs`
-and new-dataset contexts do not require that reader.
+Cost estimates conservatively treat every piece as a separate add-pieces
+operation because the eventual transaction batches are not known yet. Actual
+fees can be lower when pieces are submitted together.
+
+For existing datasets, the root client reads both the PDP leaf count and FWSS
+lifecycle reserve state automatically. A standalone storage service must
+configure both `DataSetLeafCountReader` and `FWSSDataSetReader`; without either,
+`Prepare` returns `ErrUninitialized`. Precomputed `Costs` and new-dataset
+contexts do not use these readers.
+
+The result reports operation fees in `Fees`, but does not add them directly to
+`DepositNeeded`. FWSS pays those fees from the lifecycle reserve. The required
+deposit includes the initial reserve for new datasets in
+`Lockup.LifecycleLockup` and any conditional top-up in
+`Lockup.ReserveReplenishment`.
 
 ```go
 withCDN := true
@@ -258,7 +268,10 @@ selection length becomes `UploadResult.RequestedCopies` and no replacement
 provider is selected automatically.
 
 For read-only cost and account state, use `GetStorageInfo` or
-`CalculateMultiContextCosts`.
+`CalculateMultiContextCosts`. An existing `ContextCostRef` must include its
+current leaf count, lifecycle reserve balance, pending one-time payments when
+non-zero, and a pointer to its PDP end epoch. A non-zero end epoch is rejected
+before account or pricing reads.
 
 ## Contexts And Datasets
 

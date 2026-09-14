@@ -205,16 +205,18 @@ type Options struct {
 	PaymentsFunder PaymentsFunder
 
 	// DataSetLeafCountReader backs Service.Prepare for existing-dataset
-	// contexts. Required for that calculation path; missing configuration
-	// returns ErrUninitialized. New-dataset and precomputed-cost paths do not
-	// need it. The root SDK client supplies its built-in PDPVerifier adapter.
+	// contexts. It is required together with FWSSDataSetReader for that
+	// calculation path; missing configuration returns ErrUninitialized.
+	// New-dataset and precomputed-cost paths do not need it. The root SDK client
+	// supplies its built-in PDPVerifier adapter.
 	DataSetLeafCountReader DataSetLeafCountReader
 
-	// FWSSDataSetReader reads the on-chain ClientDataSetID during explicit
-	// data-set resolution and checks existing data sets before uploads. A custom
-	// context resolver must separately pass the same reader to its contexts to
-	// support ProviderContext.FindDataSetByClientDataSetID. When nil, the
-	// service-level reads are unavailable.
+	// FWSSDataSetReader reads existing data-set state for Prepare, reads the
+	// on-chain ClientDataSetID during explicit data-set resolution, and checks
+	// existing data sets before uploads. A custom context resolver must
+	// separately pass the same reader to its contexts to support
+	// ProviderContext.FindDataSetByClientDataSetID. When nil, these service-level
+	// reads are unavailable.
 	FWSSDataSetReader FWSSDataSetReader
 
 	// ProviderResolver resolves provider endpoints for manager-level

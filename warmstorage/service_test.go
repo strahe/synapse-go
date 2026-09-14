@@ -200,18 +200,22 @@ func packMockRevert(reason string) ([]byte, error) {
 
 func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {
 	large := new(big.Int).Lsh(big.NewInt(1), 200)
+	pending := big.NewInt(17)
+	reserve := big.NewInt(29)
 	got, err := toDataSetInfo(fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
-		DataSetId:       big.NewInt(1),
-		PdpRailId:       big.NewInt(2),
-		CacheMissRailId: big.NewInt(3),
-		CdnRailId:       big.NewInt(4),
-		Payer:           common.HexToAddress("0x1000000000000000000000000000000000000001"),
-		Payee:           common.HexToAddress("0x2000000000000000000000000000000000000002"),
-		ServiceProvider: common.HexToAddress("0x3000000000000000000000000000000000000003"),
-		CommissionBps:   big.NewInt(100),
-		ClientDataSetId: large,
-		PdpEndEpoch:     big.NewInt(0),
-		ProviderId:      big.NewInt(5),
+		DataSetId:               big.NewInt(1),
+		PdpRailId:               big.NewInt(2),
+		CacheMissRailId:         big.NewInt(3),
+		CdnRailId:               big.NewInt(4),
+		Payer:                   common.HexToAddress("0x1000000000000000000000000000000000000001"),
+		Payee:                   common.HexToAddress("0x2000000000000000000000000000000000000002"),
+		ServiceProvider:         common.HexToAddress("0x3000000000000000000000000000000000000003"),
+		CommissionBps:           big.NewInt(100),
+		ClientDataSetId:         large,
+		PdpEndEpoch:             big.NewInt(0),
+		ProviderId:              big.NewInt(5),
+		PendingOneTimePayments:  pending,
+		LifecycleReserveBalance: reserve,
 	})
 	if err != nil {
 		t.Fatalf("toDataSetInfo: %v", err)
@@ -222,6 +226,37 @@ func TestToDataSetInfo_ClientDataSetIDAllowsUint256(t *testing.T) {
 	}
 	if !got.ClientDataSetID.Equal(want) {
 		t.Fatalf("ClientDataSetID = %s, want %s", got.ClientDataSetID.String(), large.String())
+	}
+	if got.PendingOneTimePayments.Cmp(pending) != 0 || got.LifecycleReserveBalance.Cmp(reserve) != 0 {
+		t.Fatalf("lifecycle state = (%s, %s), want (%s, %s)", got.PendingOneTimePayments, got.LifecycleReserveBalance, pending, reserve)
+	}
+	pending.SetInt64(0)
+	reserve.SetInt64(0)
+	if got.PendingOneTimePayments.Int64() != 17 || got.LifecycleReserveBalance.Int64() != 29 {
+		t.Fatal("lifecycle state shares binding input storage")
+	}
+}
+
+func TestToDataSetInfo_LifecycleStatePreservesNilValues(t *testing.T) {
+	got, err := toDataSetInfo(fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{
+		DataSetId:       big.NewInt(1),
+		PdpRailId:       big.NewInt(2),
+		CacheMissRailId: big.NewInt(3),
+		CdnRailId:       big.NewInt(4),
+		CommissionBps:   new(big.Int),
+		ClientDataSetId: new(big.Int),
+		PdpEndEpoch:     new(big.Int),
+		ProviderId:      big.NewInt(5),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingOneTimePayments != nil || got.LifecycleReserveBalance != nil {
+		t.Fatalf(
+			"lifecycle state=(%v, %v) want nil values",
+			got.PendingOneTimePayments,
+			got.LifecycleReserveBalance,
+		)
 	}
 }
 
@@ -430,14 +465,15 @@ func TestGetDataSet_FoundAndMissing(t *testing.T) {
 		PdpEndEpoch:             big.NewInt(0),
 		ProviderId:              big.NewInt(9),
 		DataSetId:               big.NewInt(42),
-		PendingOneTimePayments:  big.NewInt(0),
-		LifecycleReserveBalance: big.NewInt(0),
+		PendingOneTimePayments:  big.NewInt(17),
+		LifecycleReserveBalance: big.NewInt(29),
 	})
 	got, err := s.GetDataSet(context.Background(), types.NewBigInt(42))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || !got.DataSetID.Equal(types.NewBigInt(42)) || !got.ProviderID.Equal(types.NewBigInt(9)) {
+	if got == nil || !got.DataSetID.Equal(types.NewBigInt(42)) || !got.ProviderID.Equal(types.NewBigInt(9)) ||
+		got.PendingOneTimePayments.Cmp(big.NewInt(17)) != 0 || got.LifecycleReserveBalance.Cmp(big.NewInt(29)) != 0 {
 		t.Fatalf("got=%+v", got)
 	}
 

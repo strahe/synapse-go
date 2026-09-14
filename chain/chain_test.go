@@ -122,8 +122,8 @@ func TestAddresses_StateView(t *testing.T) {
 		chain Chain
 		want  common.Address
 	}{
-		{Mainnet, common.HexToAddress("0xdDd8F083a3fe9C66547D46bee24e5AaF56BCa0ab")},
-		{Calibration, common.HexToAddress("0x9BF9e67e83EC8613883FDdDec4D3b38AEE937177")},
+		{Mainnet, common.HexToAddress("0xcf184Ab1FD8D1a563054d30Aa1fFb08136998172")},
+		{Calibration, common.HexToAddress("0x1B68d64f01bAa42014B9774605867BF4eDC0320f")},
 	}
 	for _, tt := range tests {
 		if got := tt.chain.Addresses().StateView; got != tt.want {

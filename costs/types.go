@@ -1,6 +1,11 @@
 package costs
 
-import "math/big"
+import (
+	"math/big"
+
+	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
+)
 
 // EffectiveRate is the per-epoch and per-month storage rate for a given data size.
 // RatePerEpoch uses integer division to match on-chain Solidity truncation.
@@ -17,15 +22,48 @@ type UploadFees struct {
 	Total            *big.Int
 }
 
+// LifecycleReserveCalculation is the input to
+// [CalculateLifecycleReserveFunding].
+type LifecycleReserveCalculation struct {
+	// PriceList is the canonical warm-storage price list. Nil uses zero values.
+	PriceList *warmstorage.PriceList
+	// PieceSizes contains every raw payload size in the planned upload.
+	PieceSizes []uint64
+	// IsNewDataSet is true when the upload creates a new data set.
+	IsNewDataSet bool
+	// CurrentLifecycleReserveBalance is required and non-negative for an
+	// existing data set. It is ignored for a new data set.
+	CurrentLifecycleReserveBalance *big.Int
+	// PendingOneTimePayments is the non-negative fee total already waiting to be
+	// paid from the reserve. Nil defaults to zero.
+	PendingOneTimePayments *big.Int
+}
+
+// LifecycleReserveFunding is the fixed-lockup funding required for lifecycle
+// operation fees.
+type LifecycleReserveFunding struct {
+	// InitialLockup is the reserve target locked when a new data set is created.
+	InitialLockup *big.Int
+	// ReserveReplenishment is the additional fixed lockup required while the
+	// planned operation fees are processed.
+	ReserveReplenishment *big.Int
+	// Total is InitialLockup plus ReserveReplenishment.
+	Total *big.Int
+	// FinalReserveBalance is the simulated balance after all planned fees have
+	// been processed.
+	FinalReserveBalance *big.Int
+}
+
 // AdditionalLockup is the incremental lockup required when adding data to a
 // dataset.
 type AdditionalLockup struct {
-	RateDeltaPerEpoch *big.Int
-	StreamingLockup   *big.Int
-	LifecycleLockup   *big.Int
-	CDNLockup         *big.Int
-	CacheMissLockup   *big.Int
-	Total             *big.Int
+	RateDeltaPerEpoch    *big.Int
+	StreamingLockup      *big.Int
+	LifecycleLockup      *big.Int
+	ReserveReplenishment *big.Int
+	CDNLockup            *big.Int
+	CacheMissLockup      *big.Int
+	Total                *big.Int
 }
 
 // UploadCosts is the result of GetUploadCosts.
@@ -55,14 +93,23 @@ type UploadCostOptions struct {
 	// CurrentDataSetLeafCount is required and non-negative for an existing
 	// dataset. Zero means known empty. Ignored when IsNewDataSet is true.
 	CurrentDataSetLeafCount *big.Int
+	// CurrentLifecycleReserveBalance is required and non-negative for an
+	// existing dataset. Ignored when IsNewDataSet is true.
+	CurrentLifecycleReserveBalance *big.Int
+	// PendingOneTimePayments is the non-negative operation-fee total already
+	// waiting to be paid from an existing dataset's reserve. Nil defaults to
+	// zero. Ignored when IsNewDataSet is true.
+	PendingOneTimePayments *big.Int
+	// PDPEndEpoch is required for an existing dataset. It must point to zero;
+	// a non-zero epoch means the dataset can no longer accept uploads. Ignored
+	// when IsNewDataSet is true.
+	PDPEndEpoch *types.Epoch
 }
 
 // DepositCalculation is the input to CalculateDepositNeeded.
 type DepositCalculation struct {
 	// AdditionalLockup is the incremental lockup required by the upload.
 	AdditionalLockup *big.Int
-	// Fees are one-time operation fees required by the upload.
-	Fees *big.Int
 	// RateDelta is the incremental per-epoch payment rate added by the upload.
 	RateDelta *big.Int
 	// CurrentLockupRate is the account's existing per-epoch payment rate.

@@ -17,6 +17,7 @@ import (
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/payments"
 	sdktypes "github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 type stubCostCalc struct {
@@ -52,9 +53,48 @@ type stubDataSetLeafCountReader struct {
 	calls  int
 }
 
+type parallelPrepareLeafReader struct {
+	started chan<- string
+	release <-chan struct{}
+}
+
+func (r parallelPrepareLeafReader) GetDataSetLeafCount(context.Context, sdktypes.BigInt) (*big.Int, error) {
+	r.started <- "leaf count"
+	<-r.release
+	return big.NewInt(5), nil
+}
+
+type parallelPrepareDataSetReader struct {
+	started chan<- string
+	release <-chan struct{}
+	info    *warmstorage.DataSetInfo
+}
+
+func (r parallelPrepareDataSetReader) GetDataSet(context.Context, sdktypes.BigInt) (*warmstorage.DataSetInfo, error) {
+	r.started <- "data set"
+	<-r.release
+	return r.info, nil
+}
+
+func (parallelPrepareDataSetReader) FindDataSetByClientDataSetID(
+	context.Context,
+	common.Address,
+	sdktypes.BigInt,
+) (*warmstorage.DataSetInfo, error) {
+	return nil, errors.New("unexpected FindDataSetByClientDataSetID call")
+}
+
 func (s *stubDataSetLeafCountReader) GetDataSetLeafCount(context.Context, sdktypes.BigInt) (*big.Int, error) {
 	s.calls++
 	return s.leaves, s.err
+}
+
+func activePrepareDataSetInfo(dataSetID sdktypes.BigInt) *warmstorage.DataSetInfo {
+	return &warmstorage.DataSetInfo{
+		DataSetID:               dataSetID,
+		LifecycleReserveBalance: big.NewInt(17),
+		PendingOneTimePayments:  big.NewInt(3),
+	}
 }
 
 func (s *stubFunder) FundSync(_ context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error) {
@@ -124,6 +164,7 @@ func TestPrepareRefs_LeafCountModes(t *testing.T) {
 		reader := &stubDataSetLeafCountReader{err: ErrDataSetUnavailable}
 		svc := newTestService()
 		svc.leafCountReader = reader
+		svc.dsReader = &fakeFWSSDataSetReader{info: activePrepareDataSetInfo(dataSetID)}
 		refs, err := svc.prepareRefs(context.Background(), opts)
 		if refs != nil || !errors.Is(err, ErrDataSetUnavailable) {
 			t.Fatalf("prepareRefs = (%v, %v), want unavailable sentinel", refs, err)
@@ -135,6 +176,14 @@ func TestPrepareRefs_LeafCountModes(t *testing.T) {
 
 	t.Run("unconfigured reader rejects missing state", func(t *testing.T) {
 		svc := newTestService()
+		refs, err := svc.prepareRefs(context.Background(), opts)
+		if refs != nil || !errors.Is(err, ErrUninitialized) {
+			t.Fatalf("prepareRefs = (%v, %v), want ErrUninitialized", refs, err)
+		}
+	})
+	t.Run("unconfigured FWSS reader rejects missing state", func(t *testing.T) {
+		svc := newTestService()
+		svc.leafCountReader = &stubDataSetLeafCountReader{leaves: new(big.Int)}
 		refs, err := svc.prepareRefs(context.Background(), opts)
 		if refs != nil || !errors.Is(err, ErrUninitialized) {
 			t.Fatalf("prepareRefs = (%v, %v), want ErrUninitialized", refs, err)
@@ -156,6 +205,7 @@ func TestPrepareRefs_LeafCountModes(t *testing.T) {
 			svc := newTestService()
 			reader := &stubDataSetLeafCountReader{leaves: tc.leaves, err: tc.err}
 			svc.leafCountReader = reader
+			svc.dsReader = &fakeFWSSDataSetReader{info: activePrepareDataSetInfo(dataSetID)}
 			refs, err := svc.prepareRefs(context.Background(), opts)
 			if tc.valid {
 				if err != nil || len(refs) != 1 || refs[0].CurrentDataSetLeafCount.Cmp(tc.leaves) != 0 {
@@ -177,6 +227,99 @@ func TestPrepareRefs_LeafCountModes(t *testing.T) {
 	}
 }
 
+func TestPrepareRefs_FWSSStateModes(t *testing.T) {
+	dataSetID := sdktypes.NewBigInt(10)
+	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), dataSetID: &dataSetID}
+	opts := &PrepareOptions{Contexts: []StorageContext{uploadCtx}}
+	tests := []struct {
+		name string
+		info *warmstorage.DataSetInfo
+		err  error
+	}{
+		{name: "nil response"},
+		{name: "read failure", err: context.Canceled},
+		{name: "mismatched data set", info: activePrepareDataSetInfo(sdktypes.NewBigInt(11))},
+		{name: "nil reserve", info: &warmstorage.DataSetInfo{DataSetID: dataSetID}},
+		{name: "negative reserve", info: &warmstorage.DataSetInfo{DataSetID: dataSetID, LifecycleReserveBalance: big.NewInt(-1)}},
+		{name: "negative pending", info: &warmstorage.DataSetInfo{DataSetID: dataSetID, LifecycleReserveBalance: new(big.Int), PendingOneTimePayments: big.NewInt(-1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService()
+			svc.leafCountReader = &stubDataSetLeafCountReader{leaves: new(big.Int)}
+			svc.dsReader = &fakeFWSSDataSetReader{info: tt.info, infoErr: tt.err}
+			refs, err := svc.prepareRefs(context.Background(), opts)
+			if refs != nil || err == nil || errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrUninitialized) {
+				t.Fatalf("prepareRefs = (%v, %v), want FWSS reader error", refs, err)
+			}
+			if tt.err != nil && !errors.Is(err, tt.err) {
+				t.Fatalf("lost original cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrepareRefs_ReadsLeafCountAndFWSSStateConcurrently(t *testing.T) {
+	dataSetID := sdktypes.NewBigInt(10)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	svc := newTestService()
+	svc.leafCountReader = parallelPrepareLeafReader{started: started, release: release}
+	svc.dsReader = parallelPrepareDataSetReader{
+		started: started,
+		release: release,
+		info:    activePrepareDataSetInfo(dataSetID),
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := svc.prepareRefs(context.Background(), &PrepareOptions{Contexts: []StorageContext{
+			&fakeUploadContext{id: sdktypes.NewBigInt(1), dataSetID: &dataSetID},
+		}})
+		result <- err
+	}()
+
+	seen := make(map[string]bool, 2)
+	for range 2 {
+		select {
+		case operation := <-started:
+			seen[operation] = true
+		case <-time.After(time.Second):
+			t.Fatalf("reads did not overlap; started=%v", seen)
+		}
+	}
+	close(release)
+	released = true
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if !seen["leaf count"] || !seen["data set"] {
+		t.Fatalf("started reads=%v want both leaf count and data set", seen)
+	}
+}
+
+func TestPrepareRefs_RejectsTerminatedDataSet(t *testing.T) {
+	dataSetID := sdktypes.NewBigInt(10)
+	info := activePrepareDataSetInfo(dataSetID)
+	info.PDPEndEpoch = 1234
+	svc := newTestService()
+	svc.leafCountReader = &stubDataSetLeafCountReader{leaves: new(big.Int)}
+	svc.dsReader = &fakeFWSSDataSetReader{info: info}
+
+	refs, err := svc.prepareRefs(context.Background(), &PrepareOptions{Contexts: []StorageContext{
+		&fakeUploadContext{id: sdktypes.NewBigInt(1), dataSetID: &dataSetID},
+	}})
+	if refs != nil {
+		t.Fatalf("prepareRefs returned refs: %+v", refs)
+	}
+	requireDataSetPDPPaymentTerminated(t, err, dataSetID, 1234)
+}
+
 func TestPrepare_ForwardsPiecesAndLeafCounts(t *testing.T) {
 	svc := newTestService()
 	calc := &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}, mutateInputs: true}
@@ -184,6 +327,9 @@ func TestPrepare_ForwardsPiecesAndLeafCounts(t *testing.T) {
 	reader := &stubDataSetLeafCountReader{leaves: big.NewInt(5)}
 	svc.leafCountReader = reader
 	dataSetID := sdktypes.NewBigInt(10)
+	dataSetInfo := activePrepareDataSetInfo(dataSetID)
+	dsReader := &fakeFWSSDataSetReader{info: dataSetInfo}
+	svc.dsReader = dsReader
 	opts := &PrepareOptions{
 		PieceSizes: []uint64{128, 190},
 		Contexts: []StorageContext{
@@ -196,11 +342,17 @@ func TestPrepare_ForwardsPiecesAndLeafCounts(t *testing.T) {
 	}
 	if reader.calls != 1 || !slices.Equal(calc.gotPieceSizes, []uint64{128, 190}) ||
 		len(calc.gotRefs) != 2 || !calc.gotRefs[0].IsNewDataSet || calc.gotRefs[1].IsNewDataSet ||
-		calc.gotRefs[1].CurrentDataSetLeafCount.Cmp(big.NewInt(5)) != 0 {
+		calc.gotRefs[1].CurrentDataSetLeafCount.Cmp(big.NewInt(5)) != 0 ||
+		calc.gotRefs[1].CurrentLifecycleReserveBalance.Cmp(big.NewInt(17)) != 0 ||
+		calc.gotRefs[1].PendingOneTimePayments.Cmp(big.NewInt(3)) != 0 ||
+		calc.gotRefs[1].PDPEndEpoch == nil || *calc.gotRefs[1].PDPEndEpoch != 0 || dsReader.calls != 1 {
 		t.Fatalf("incorrect preparation: pieces=%v refs=%+v reader calls=%d", calc.gotPieceSizes, calc.gotRefs, reader.calls)
 	}
 	reader.leaves.SetInt64(999)
-	if opts.PieceSizes[0] != 128 || calc.gotRefs[1].CurrentDataSetLeafCount.Int64() != 5 {
+	dataSetInfo.LifecycleReserveBalance.SetInt64(999)
+	dataSetInfo.PendingOneTimePayments.SetInt64(999)
+	if opts.PieceSizes[0] != 128 || calc.gotRefs[1].CurrentDataSetLeafCount.Int64() != 5 ||
+		calc.gotRefs[1].CurrentLifecycleReserveBalance.Int64() != 17 || calc.gotRefs[1].PendingOneTimePayments.Int64() != 3 {
 		t.Fatal("preparation did not preserve independent input state")
 	}
 }
@@ -209,10 +361,12 @@ func TestPrepare_PrecomputedCostsSkipReader(t *testing.T) {
 	svc := newTestService()
 	reader := &stubDataSetLeafCountReader{err: errors.New("must not read")}
 	svc.leafCountReader = reader
+	dsReader := &fakeFWSSDataSetReader{infoErr: errors.New("must not read")}
+	svc.dsReader = dsReader
 	for _, sizes := range [][]uint64{nil, {}} {
 		got, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &costs.MultiContextCosts{Ready: true}, PieceSizes: sizes})
-		if err != nil || got.Transaction != nil || reader.calls != 0 {
-			t.Fatalf("precomputed preparation = (%v, %v), reader calls=%d", got, err, reader.calls)
+		if err != nil || got.Transaction != nil || reader.calls != 0 || dsReader.calls != 0 {
+			t.Fatalf("precomputed preparation = (%v, %v), reader calls=(%d, %d)", got, err, reader.calls, dsReader.calls)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
+	"github.com/strahe/synapse-go/types"
 )
 
 // FindDataSetsOptions configures Service.FindDataSets. A nil pointer or
@@ -74,8 +75,9 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 // CalculateMultiContextCosts estimates aggregate costs for the given storage
 // targets. pieceSizes contains the raw payload size of each piece, replicated
 // to every target. Each size must be between chain.MinUploadSize and
-// chain.MaxUploadSize. Existing refs require a non-negative leaf count. A zero
-// payer uses the configured default payer.
+// chain.MaxUploadSize. Existing refs require a non-negative leaf count and
+// lifecycle reserve balance, plus a zero PDP end epoch. A zero payer uses the
+// configured default payer.
 func (s *Service) CalculateMultiContextCosts(ctx context.Context, pieceSizes []uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*costs.MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -93,8 +95,23 @@ func (s *Service) CalculateMultiContextCosts(ctx context.Context, pieceSizes []u
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: empty refs", ErrInvalidArgument)
 	}
 	for i, ref := range refs {
-		if ref.DataSetID != nil && (ref.CurrentDataSetLeafCount == nil || ref.CurrentDataSetLeafCount.Sign() < 0) {
+		if ref.DataSetID == nil {
+			continue
+		}
+		if ref.CurrentDataSetLeafCount == nil || ref.CurrentDataSetLeafCount.Sign() < 0 {
 			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: refs[%d] requires a non-negative CurrentDataSetLeafCount", ErrInvalidArgument, i)
+		}
+		if ref.CurrentLifecycleReserveBalance == nil || ref.CurrentLifecycleReserveBalance.Sign() < 0 {
+			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: refs[%d] requires a non-negative CurrentLifecycleReserveBalance", ErrInvalidArgument, i)
+		}
+		if ref.PendingOneTimePayments != nil && ref.PendingOneTimePayments.Sign() < 0 {
+			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: refs[%d] requires non-negative PendingOneTimePayments", ErrInvalidArgument, i)
+		}
+		if ref.PDPEndEpoch == nil {
+			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: refs[%d] requires PDPEndEpoch", ErrInvalidArgument, i)
+		}
+		if err := validateDataSetAcceptsUploads(*ref.DataSetID, *ref.PDPEndEpoch); err != nil {
+			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: refs[%d]: %w", i, err)
 		}
 	}
 	if s.costCalc == nil {
@@ -114,15 +131,29 @@ func (s *Service) calculateMultiContextCosts(ctx context.Context, payer common.A
 	for i, ref := range refs {
 		isNewDataSet := ref.DataSetID == nil
 		currentLeaves := ref.CurrentDataSetLeafCount
+		currentReserve := ref.CurrentLifecycleReserveBalance
+		pendingPayments := ref.PendingOneTimePayments
+		var pdpEndEpoch *types.Epoch
 		if isNewDataSet {
 			currentLeaves = nil
+			currentReserve = nil
+			pendingPayments = nil
 		} else if currentLeaves != nil {
 			currentLeaves = new(big.Int).Set(currentLeaves)
+			currentReserve = new(big.Int).Set(currentReserve)
+			if pendingPayments != nil {
+				pendingPayments = new(big.Int).Set(pendingPayments)
+			}
+			endEpoch := *ref.PDPEndEpoch
+			pdpEndEpoch = &endEpoch
 		}
 		costRefs[i] = costs.MultiContextRef{
-			IsNewDataSet:            isNewDataSet,
-			CurrentDataSetLeafCount: currentLeaves,
-			WithCDN:                 ref.WithCDN || opts.EnableCDN,
+			IsNewDataSet:                   isNewDataSet,
+			CurrentDataSetLeafCount:        currentLeaves,
+			CurrentLifecycleReserveBalance: currentReserve,
+			PendingOneTimePayments:         pendingPayments,
+			PDPEndEpoch:                    pdpEndEpoch,
+			WithCDN:                        ref.WithCDN || opts.EnableCDN,
 		}
 	}
 	return s.costCalc.CalculateMultiContextCosts(ctx, payer, pieceSizes, costRefs, &costs.UploadCostOptions{

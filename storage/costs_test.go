@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"slices"
 	"testing"
@@ -15,6 +16,23 @@ import (
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
+
+func activeStorageCostRef(dataSetID types.BigInt, leaves *big.Int) storage.ContextCostRef {
+	return storage.ContextCostRef{
+		DataSetID:                      &dataSetID,
+		CurrentDataSetLeafCount:        leaves,
+		CurrentLifecycleReserveBalance: big.NewInt(1_000_000),
+		PDPEndEpoch:                    new(types.Epoch),
+	}
+}
+
+func activeCostsRef(leaves *big.Int) costs.MultiContextRef {
+	return costs.MultiContextRef{
+		CurrentDataSetLeafCount:        leaves,
+		CurrentLifecycleReserveBalance: big.NewInt(1_000_000),
+		PDPEndEpoch:                    new(types.Epoch),
+	}
+}
 
 func TestServiceCalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
@@ -183,7 +201,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		[]uint64{chain.MaxUploadSize},
-		[]storage.ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: new(big.Int)}},
+		[]storage.ContextCostRef{activeStorageCostRef(dataSetID, new(big.Int))},
 		storage.MultiCostOptions{BufferEpochs: &zeroBuffer},
 		common.Address{},
 	)
@@ -195,7 +213,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 		context.Background(),
 		payer,
 		[]uint64{chain.MaxUploadSize},
-		[]costs.MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}},
+		[]costs.MultiContextRef{activeCostsRef(new(big.Int))},
 		&costs.UploadCostOptions{BufferEpochs: &zeroBuffer},
 	)
 	if err != nil {
@@ -205,7 +223,7 @@ func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testin
 		context.Background(),
 		payer,
 		[]uint64{chain.MaxUploadSize},
-		[]costs.MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}},
+		[]costs.MultiContextRef{activeCostsRef(new(big.Int))},
 		nil,
 	)
 	if err != nil {
@@ -235,6 +253,7 @@ func assertMultiContextCostsEqual(t *testing.T, actual, expected *costs.MultiCon
 		{"Lockup.RateDeltaPerEpoch", actual.Lockup.RateDeltaPerEpoch, expected.Lockup.RateDeltaPerEpoch},
 		{"Lockup.StreamingLockup", actual.Lockup.StreamingLockup, expected.Lockup.StreamingLockup},
 		{"Lockup.LifecycleLockup", actual.Lockup.LifecycleLockup, expected.Lockup.LifecycleLockup},
+		{"Lockup.ReserveReplenishment", actual.Lockup.ReserveReplenishment, expected.Lockup.ReserveReplenishment},
 		{"Lockup.CDNLockup", actual.Lockup.CDNLockup, expected.Lockup.CDNLockup},
 		{"Lockup.CacheMissLockup", actual.Lockup.CacheMissLockup, expected.Lockup.CacheMissLockup},
 		{"Lockup.Total", actual.Lockup.Total, expected.Lockup.Total},
@@ -254,6 +273,48 @@ func assertMultiContextCostsEqual(t *testing.T, actual, expected *costs.MultiCon
 	}
 	if actual.NeedsFWSSMaxApproval != expected.NeedsFWSSMaxApproval || actual.Ready != expected.Ready {
 		t.Fatalf("NeedsFWSSMaxApproval=%v Ready=%v want %v %v", actual.NeedsFWSSMaxApproval, actual.Ready, expected.NeedsFWSSMaxApproval, expected.Ready)
+	}
+}
+
+type trackingCostCalculator struct {
+	called bool
+}
+
+func (c *trackingCostCalculator) CalculateMultiContextCosts(
+	context.Context,
+	common.Address,
+	[]uint64,
+	[]costs.MultiContextRef,
+	*costs.UploadCostOptions,
+) (*costs.MultiContextCosts, error) {
+	c.called = true
+	return &costs.MultiContextCosts{}, nil
+}
+
+func TestServiceCalculateMultiContextCosts_RejectsTerminatedDataSetBeforeCostCalculation(t *testing.T) {
+	calc := &trackingCostCalculator{}
+	payer := common.HexToAddress("0x1001")
+	svc, err := storage.New(storage.Options{CostCalculator: calc, PayerAddress: payer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataSetID := types.NewBigInt(9)
+	ref := activeStorageCostRef(dataSetID, new(big.Int))
+	endEpoch := types.Epoch(1234)
+	ref.PDPEndEpoch = &endEpoch
+
+	got, err := svc.CalculateMultiContextCosts(
+		context.Background(), []uint64{chain.MinUploadSize}, []storage.ContextCostRef{ref}, storage.MultiCostOptions{}, common.Address{},
+	)
+	if got != nil {
+		t.Fatalf("CalculateMultiContextCosts returned costs: %+v", got)
+	}
+	var terminated *storage.DataSetPDPPaymentTerminatedError
+	if !errors.As(err, &terminated) || !terminated.DataSetID.Equal(dataSetID) || terminated.PDPEndEpoch != endEpoch {
+		t.Fatalf("CalculateMultiContextCosts error=%v want terminated data set %s at %d", err, dataSetID, endEpoch)
+	}
+	if calc.called {
+		t.Fatal("cost calculator was called for a terminated data set")
 	}
 }
 

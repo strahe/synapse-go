@@ -273,6 +273,12 @@ type DataSetInfo struct {
 	ClientDataSetID types.BigInt // caller-assigned ID used in EIP-712 payloads
 	PDPEndEpoch     types.Epoch  // epoch at which PDP service expires; 0 = indefinite
 	ProviderID      types.BigInt // storage provider ID
+	// PendingOneTimePayments is the operation-fee total waiting to be paid from
+	// the lifecycle reserve.
+	PendingOneTimePayments *big.Int
+	// LifecycleReserveBalance is the current fixed lockup balance available for
+	// lifecycle operation fees.
+	LifecycleReserveBalance *big.Int
 }
 
 func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) (*DataSetInfo, error) {
@@ -305,17 +311,19 @@ func toDataSetInfo(v fwssview.FilecoinWarmStorageServiceDataSetInfoView) (*DataS
 		return nil, err
 	}
 	return &DataSetInfo{
-		DataSetID:       dsID,
-		PDPRailID:       pdpRail,
-		CacheMissRailID: cacheRail,
-		CDNRailID:       cdnRail,
-		Payer:           v.Payer,
-		Payee:           v.Payee,
-		ServiceProvider: v.ServiceProvider,
-		CommissionBps:   copyBigInt(v.CommissionBps),
-		ClientDataSetID: clientDataSetID,
-		PDPEndEpoch:     endEpoch,
-		ProviderID:      provID,
+		DataSetID:               dsID,
+		PDPRailID:               pdpRail,
+		CacheMissRailID:         cacheRail,
+		CDNRailID:               cdnRail,
+		Payer:                   v.Payer,
+		Payee:                   v.Payee,
+		ServiceProvider:         v.ServiceProvider,
+		CommissionBps:           copyBigInt(v.CommissionBps),
+		ClientDataSetID:         clientDataSetID,
+		PDPEndEpoch:             endEpoch,
+		ProviderID:              provID,
+		PendingOneTimePayments:  copyBigInt(v.PendingOneTimePayments),
+		LifecycleReserveBalance: copyBigInt(v.LifecycleReserveBalance),
 	}, nil
 }
 

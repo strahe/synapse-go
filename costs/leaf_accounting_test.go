@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -26,7 +27,8 @@ func leafAccountingPriceList() *warmstorage.PriceList {
 		},
 		Lockups: warmstorage.PriceListLockups{
 			DefaultLockupPeriod: bi(10), LifecycleReserveTarget: bi(100),
-			CDNLockupAmount: bi(40), CacheMissLockupAmount: bi(30),
+			ReplenishThreshold: bi(10),
+			CDNLockupAmount:    bi(40), CacheMissLockupAmount: bi(30),
 		},
 	}
 }
@@ -55,14 +57,26 @@ func TestCostServices_LeafAccounting(t *testing.T) {
 			if tc.current != nil {
 				originalLeaves = new(big.Int).Set(tc.current)
 			}
-			single, err := svc.GetUploadCosts(context.Background(), common.Address{}, tc.sizes, &UploadCostOptions{
-				IsNewDataSet: tc.isNew, CurrentDataSetLeafCount: tc.current,
-			})
+			opts := &UploadCostOptions{IsNewDataSet: true, CurrentDataSetLeafCount: tc.current}
+			ref := MultiContextRef{IsNewDataSet: true, CurrentDataSetLeafCount: tc.current}
+			if tc.isNew {
+				terminatedEpoch := types.Epoch(9)
+				opts.CurrentLifecycleReserveBalance = bi(-1)
+				opts.PendingOneTimePayments = bi(-1)
+				opts.PDPEndEpoch = &terminatedEpoch
+				ref.CurrentLifecycleReserveBalance = bi(-1)
+				ref.PendingOneTimePayments = bi(-1)
+				ref.PDPEndEpoch = &terminatedEpoch
+			} else {
+				opts = existingUploadCostOptions(tc.current)
+				ref = existingMultiContextRef(tc.current)
+			}
+			single, err := svc.GetUploadCosts(context.Background(), common.Address{}, tc.sizes, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
 			multi, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, tc.sizes,
-				[]MultiContextRef{{IsNewDataSet: tc.isNew, CurrentDataSetLeafCount: tc.current}}, nil)
+				[]MultiContextRef{ref}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,8 +105,12 @@ func TestCalculateMultiContextCosts_MixedLeafAccountingAndIgnoredOptions(t *test
 	got, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, []uint64{128},
 		[]MultiContextRef{
 			{IsNewDataSet: true, CurrentDataSetLeafCount: bi(-9), WithCDN: true},
-			{CurrentDataSetLeafCount: bi(5), WithCDN: true},
-			{CurrentDataSetLeafCount: bi(0)},
+			func() MultiContextRef {
+				ref := existingMultiContextRef(bi(5))
+				ref.WithCDN = true
+				return ref
+			}(),
+			existingMultiContextRef(bi(0)),
 		}, &UploadCostOptions{IsNewDataSet: true, CurrentDataSetLeafCount: bi(-9), EnableCDN: true})
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +123,7 @@ func TestCalculateMultiContextCosts_MixedLeafAccountingAndIgnoredOptions(t *test
 	}
 }
 
-func TestGetUploadCosts_DerivesFeesAcrossBatchBoundary(t *testing.T) {
+func TestGetUploadCosts_PricesEveryPieceConservatively(t *testing.T) {
 	svc := buildSvc(t, &mockWS{priceList: leafAccountingPriceList()}, &mockPay{
 		account: &payments.AccountState{}, approval: maxApproval(),
 	})
@@ -114,7 +132,7 @@ func TestGetUploadCosts_DerivesFeesAcrossBatchBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := int64(10 + 7*((count+39)/40) + 2*count)
+		want := int64(10 + (7+2)*count)
 		if got.Fees.Total.Cmp(bi(want)) != 0 {
 			t.Fatalf("count=%d: fees=%s want %d", count, got.Fees.Total, want)
 		}
@@ -170,6 +188,10 @@ func TestCostServices_RejectInvalidArgumentsBeforeReads(t *testing.T) {
 		{"nil options", []uint64{128}, nil},
 		{"empty options", []uint64{128}, &UploadCostOptions{}},
 		{"negative leaves", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: bi(-1)}},
+		{"missing reserve", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), PDPEndEpoch: new(types.Epoch)}},
+		{"negative reserve", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: bi(-1), PDPEndEpoch: new(types.Epoch)}},
+		{"negative pending", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: new(big.Int), PendingOneTimePayments: bi(-1), PDPEndEpoch: new(types.Epoch)}},
+		{"missing end epoch", []uint64{128}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), CurrentLifecycleReserveBalance: new(big.Int)}},
 		{"negative runway", []uint64{128}, &UploadCostOptions{IsNewDataSet: true, ExtraRunwayEpochs: -1}},
 		{"negative buffer", []uint64{128}, &UploadCostOptions{IsNewDataSet: true, BufferEpochs: new(int64(-1))}},
 	} {
@@ -184,6 +206,9 @@ func TestCostServices_RejectInvalidArgumentsBeforeReads(t *testing.T) {
 			if tc.opts != nil {
 				ref.IsNewDataSet = tc.opts.IsNewDataSet
 				ref.CurrentDataSetLeafCount = tc.opts.CurrentDataSetLeafCount
+				ref.CurrentLifecycleReserveBalance = tc.opts.CurrentLifecycleReserveBalance
+				ref.PendingOneTimePayments = tc.opts.PendingOneTimePayments
+				ref.PDPEndEpoch = tc.opts.PDPEndEpoch
 			}
 			if got, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, tc.sizes, []MultiContextRef{ref}, tc.opts); got != nil || !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("CalculateMultiContextCosts = (%v, %v), want ErrInvalidArgument", got, err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/internal/integrationtest"
+	"github.com/strahe/synapse-go/types"
 )
 
 // TestIntegration_Costs directly covers the read-only costs.Service surface.
@@ -44,9 +45,14 @@ func TestIntegration_Costs(t *testing.T) {
 	// CalculateMultiContextCosts across two prospective contexts (one new,
 	// one incremental with a synthetic, explicitly supplied leaf count).
 	pieceSizes := []uint64{256 * 1024}
+	activeEndEpoch := types.Epoch(0)
 	refs := []costs.MultiContextRef{
 		{IsNewDataSet: true, WithCDN: false},
-		{IsNewDataSet: false, CurrentDataSetLeafCount: big.NewInt(1 << 20)},
+		{
+			CurrentDataSetLeafCount:        big.NewInt(1 << 20),
+			CurrentLifecycleReserveBalance: new(big.Int).Set(priceList.Lockups.LifecycleReserveTarget),
+			PDPEndEpoch:                    &activeEndEpoch,
+		},
 	}
 	multi, err := c.CalculateMultiContextCosts(ctx, client.Address(), pieceSizes, refs, nil)
 	if err != nil {

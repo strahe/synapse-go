@@ -3,9 +3,11 @@ package costs
 import (
 	"errors"
 	"math/big"
+	"slices"
 	"testing"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -34,10 +36,27 @@ func defaultPriceList() *warmstorage.PriceList {
 		},
 		Lockups: warmstorage.PriceListLockups{
 			LifecycleReserveTarget: usdfcFrac(4),
+			ReplenishThreshold:     usdfcFrac(1),
 			DefaultLockupPeriod:    bi(DefaultLockupPeriod),
 			CDNLockupAmount:        usdfcFrac(5),
 			CacheMissLockupAmount:  usdfcFrac(6),
 		},
+	}
+}
+
+func existingUploadCostOptions(leaves *big.Int) *UploadCostOptions {
+	return &UploadCostOptions{
+		CurrentDataSetLeafCount:        leaves,
+		CurrentLifecycleReserveBalance: usdfc(1_000_000),
+		PDPEndEpoch:                    new(types.Epoch),
+	}
+}
+
+func existingMultiContextRef(leaves *big.Int) MultiContextRef {
+	return MultiContextRef{
+		CurrentDataSetLeafCount:        leaves,
+		CurrentLifecycleReserveBalance: usdfc(1_000_000),
+		PDPEndEpoch:                    new(types.Epoch),
 	}
 }
 
@@ -81,23 +100,161 @@ func TestCalculateEffectiveRate_NilInputsUseZeroValues(t *testing.T) {
 	}
 }
 
-func TestCalculateUploadFees_UsesCreateFeeAndAddPiecesBatchBoundary(t *testing.T) {
+func TestCalculateUploadFees_PricesEveryPieceConservatively(t *testing.T) {
 	priceList := defaultPriceList()
-	within := CalculateUploadFees(priceList, true, bi(40))
-	spill := CalculateUploadFees(priceList, true, bi(41))
+	withinSizes := slices.Repeat([]uint64{chain.MinUploadSize}, 40)
+	spillSizes := slices.Repeat([]uint64{chain.MinUploadSize}, 41)
+	within, err := CalculateUploadFees(priceList, true, withinSizes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spill, err := CalculateUploadFees(priceList, true, spillSizes)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	wantWithin := new(big.Int).Set(priceList.Fees.CreateDataSetFee)
-	wantWithin.Add(wantWithin, priceList.Fees.AddPiecesBaseFee)
+	wantWithin.Add(wantWithin, new(big.Int).Mul(priceList.Fees.AddPiecesBaseFee, bi(40)))
 	wantWithin.Add(wantWithin, new(big.Int).Mul(priceList.Fees.AddPiecesPerPieceFee, bi(40)))
 	if within.Total.Cmp(wantWithin) != 0 {
 		t.Fatalf("within.Total=%s want %s", within.Total, wantWithin)
 	}
 
 	wantSpill := new(big.Int).Set(priceList.Fees.CreateDataSetFee)
-	wantSpill.Add(wantSpill, new(big.Int).Mul(priceList.Fees.AddPiecesBaseFee, bi(2)))
+	wantSpill.Add(wantSpill, new(big.Int).Mul(priceList.Fees.AddPiecesBaseFee, bi(41)))
 	wantSpill.Add(wantSpill, new(big.Int).Mul(priceList.Fees.AddPiecesPerPieceFee, bi(41)))
 	if spill.Total.Cmp(wantSpill) != 0 {
 		t.Fatalf("spill.Total=%s want %s", spill.Total, wantSpill)
+	}
+}
+
+func TestCalculateUploadFees_ValidatesPieceSizes(t *testing.T) {
+	for _, sizes := range [][]uint64{nil, {}, {chain.MinUploadSize - 1}, {chain.MaxUploadSize + 1}} {
+		fees, err := CalculateUploadFees(defaultPriceList(), true, sizes)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("CalculateUploadFees(%v) error=%v want ErrInvalidArgument", sizes, err)
+		}
+		if fees != (UploadFees{}) {
+			t.Fatalf("CalculateUploadFees(%v) fees=%+v want zero value", sizes, fees)
+		}
+	}
+}
+
+func TestCalculateLifecycleReserveFunding(t *testing.T) {
+	priceList := &warmstorage.PriceList{
+		Fees: warmstorage.PriceListFees{
+			CreateDataSetFee:     bi(20),
+			AddPiecesBaseFee:     bi(7),
+			AddPiecesPerPieceFee: bi(3),
+		},
+		Lockups: warmstorage.PriceListLockups{
+			LifecycleReserveTarget: bi(100),
+			ReplenishThreshold:     bi(10),
+		},
+	}
+	tests := []struct {
+		name        string
+		calc        LifecycleReserveCalculation
+		wantInitial int64
+		wantRefill  int64
+		wantTotal   int64
+		wantFinal   int64
+	}{
+		{
+			name: "new data set initial reserve",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: []uint64{chain.MinUploadSize}, IsNewDataSet: true,
+			},
+			wantInitial: 100, wantFinal: 70, wantTotal: 100,
+		},
+		{
+			name: "existing reserve remains sufficient",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: bi(50),
+			},
+			wantFinal: 40,
+		},
+		{
+			name: "threshold equality does not replenish",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: bi(20),
+			},
+			wantFinal: 10,
+		},
+		{
+			name: "below threshold replenishes",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: bi(19),
+			},
+			wantRefill: 91, wantTotal: 91, wantFinal: 100,
+		},
+		{
+			name: "existing pending payment participates",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: bi(24), PendingOneTimePayments: bi(5),
+			},
+			wantRefill: 91, wantTotal: 91, wantFinal: 100,
+		},
+		{
+			name: "multiple pieces can trigger multiple replenishments",
+			calc: LifecycleReserveCalculation{
+				PriceList: priceList, PieceSizes: slices.Repeat([]uint64{chain.MinUploadSize}, 12), CurrentLifecycleReserveBalance: bi(20),
+			},
+			wantRefill: 200, wantTotal: 200, wantFinal: 100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CalculateLifecycleReserveFunding(tt.calc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertBigIntEquals(t, "InitialLockup", got.InitialLockup, bi(tt.wantInitial))
+			assertBigIntEquals(t, "ReserveReplenishment", got.ReserveReplenishment, bi(tt.wantRefill))
+			assertBigIntEquals(t, "Total", got.Total, bi(tt.wantTotal))
+			assertBigIntEquals(t, "FinalReserveBalance", got.FinalReserveBalance, bi(tt.wantFinal))
+		})
+	}
+}
+
+func TestCalculateLifecycleReserveFunding_RejectsInvalidState(t *testing.T) {
+	tests := []LifecycleReserveCalculation{
+		{PieceSizes: []uint64{chain.MinUploadSize}},
+		{PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: bi(-1)},
+		{PieceSizes: []uint64{chain.MinUploadSize}, CurrentLifecycleReserveBalance: new(big.Int), PendingOneTimePayments: bi(-1)},
+		{PieceSizes: []uint64{chain.MinUploadSize - 1}, CurrentLifecycleReserveBalance: new(big.Int)},
+	}
+	for _, calc := range tests {
+		got, err := CalculateLifecycleReserveFunding(calc)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("CalculateLifecycleReserveFunding(%+v) error=%v want ErrInvalidArgument", calc, err)
+		}
+		if got != (LifecycleReserveFunding{}) {
+			t.Fatalf("CalculateLifecycleReserveFunding(%+v)=%+v want zero value", calc, got)
+		}
+	}
+}
+
+func TestCalculateLifecycleReserveFunding_DoesNotModifyInputs(t *testing.T) {
+	priceList := defaultPriceList()
+	reserve := bi(1)
+	pending := bi(2)
+	wantReserve := new(big.Int).Set(reserve)
+	wantPending := new(big.Int).Set(pending)
+
+	got, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
+		PriceList:                      priceList,
+		PieceSizes:                     []uint64{chain.MinUploadSize},
+		CurrentLifecycleReserveBalance: reserve,
+		PendingOneTimePayments:         pending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.FinalReserveBalance.SetInt64(0)
+	if reserve.Cmp(wantReserve) != 0 || pending.Cmp(wantPending) != 0 {
+		t.Fatalf("inputs modified: reserve=%s pending=%s", reserve, pending)
 	}
 }
 
@@ -109,6 +266,7 @@ func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) 
 	if lockup.RateDeltaPerEpoch.Sign() != 0 ||
 		lockup.StreamingLockup.Sign() != 0 ||
 		lockup.LifecycleLockup.Sign() != 0 ||
+		lockup.ReserveReplenishment.Sign() != 0 ||
 		lockup.CDNLockup.Sign() != 0 ||
 		lockup.CacheMissLockup.Sign() != 0 ||
 		lockup.Total.Sign() != 0 {
@@ -200,22 +358,21 @@ func TestCalculateAdditionalLockupRequired_RejectsNegativeExistingLeafCount(t *t
 	}
 }
 
-func TestCalculateDepositNeeded_IncludesFees(t *testing.T) {
+func TestCalculateDepositNeeded_UsesLockupWithoutSeparateFees(t *testing.T) {
 	deposit := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  bi(10),
-		Fees:              bi(7),
 		RateDelta:         bi(0),
 		CurrentLockupRate: bi(0),
 		AvailableFunds:    bi(0),
 		IsNewDataSet:      true,
 	})
-	if deposit.Cmp(bi(17)) != 0 {
-		t.Fatalf("deposit=%s want 17", deposit)
+	if deposit.Cmp(bi(10)) != 0 {
+		t.Fatalf("deposit=%s want 10", deposit)
 	}
 }
 
 func TestCalculateDepositNeeded_DoesNotAliasOrModifyInputs(t *testing.T) {
-	inputs := []*big.Int{bi(10), bi(7), bi(2), bi(3), bi(4), bi(5), bi(6)}
+	inputs := []*big.Int{bi(10), bi(2), bi(3), bi(4), bi(5), bi(6)}
 	want := make([]*big.Int, len(inputs))
 	for i := range inputs {
 		want[i] = new(big.Int).Set(inputs[i])
@@ -223,12 +380,11 @@ func TestCalculateDepositNeeded_DoesNotAliasOrModifyInputs(t *testing.T) {
 
 	deposit := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  inputs[0],
-		Fees:              inputs[1],
-		RateDelta:         inputs[2],
-		CurrentLockupRate: inputs[3],
-		Debt:              inputs[4],
-		AvailableFunds:    inputs[5],
-		RunwayInEpochs:    inputs[6],
+		RateDelta:         inputs[1],
+		CurrentLockupRate: inputs[2],
+		Debt:              inputs[3],
+		AvailableFunds:    inputs[4],
+		RunwayInEpochs:    inputs[5],
 		ExtraRunwayEpochs: 8,
 		BufferEpochs:      9,
 	})
@@ -244,7 +400,6 @@ func TestCalculateDepositNeeded_DoesNotAliasOrModifyInputs(t *testing.T) {
 func TestCalculateDepositNeeded_BufferUsesRunwayWindow(t *testing.T) {
 	deposit := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  bi(0),
-		Fees:              bi(0),
 		RateDelta:         bi(1),
 		CurrentLockupRate: bi(4),
 		AvailableFunds:    bi(10),
@@ -253,6 +408,13 @@ func TestCalculateDepositNeeded_BufferUsesRunwayWindow(t *testing.T) {
 	})
 	if deposit.Cmp(bi(15)) != 0 {
 		t.Fatalf("deposit=%s want 15", deposit)
+	}
+}
+
+func assertBigIntEquals(t *testing.T, field string, got, want *big.Int) {
+	t.Helper()
+	if got == nil || got.Cmp(want) != 0 {
+		t.Fatalf("%s=%v want %s", field, got, want)
 	}
 }
 

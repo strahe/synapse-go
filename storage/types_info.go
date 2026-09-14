@@ -66,13 +66,24 @@ type StorageInfo struct {
 
 // ContextCostRef references one prospective upload target for
 // multi-context cost aggregation. A nil DataSetID means "a new data set
-// will be created on this provider". CurrentDataSetLeafCount is required and
-// non-negative when DataSetID is non-nil; zero means known empty. It is ignored
-// for a new data set. WithCDN
-// determines whether the CDN-fixed lockup is included for this ref.
+// will be created on this provider". Existing data sets require the current
+// leaf count, lifecycle reserve balance, and PDP end epoch. WithCDN determines
+// whether the CDN-fixed lockup is included for this ref.
 type ContextCostRef struct {
-	DataSetID               *types.BigInt
-	Provider                Provider
+	DataSetID *types.BigInt
+	Provider  Provider
+	// CurrentDataSetLeafCount is required and non-negative for an existing
+	// data set. Zero means known empty. It is ignored for a new data set.
 	CurrentDataSetLeafCount *big.Int
-	WithCDN                 bool
+	// CurrentLifecycleReserveBalance is required and non-negative for an
+	// existing data set. It is ignored for a new data set.
+	CurrentLifecycleReserveBalance *big.Int
+	// PendingOneTimePayments is the non-negative operation-fee total already
+	// waiting to be paid from an existing data set's reserve. Nil defaults to
+	// zero. It is ignored for a new data set.
+	PendingOneTimePayments *big.Int
+	// PDPEndEpoch is required for an existing data set and must point to zero.
+	// It is ignored for a new data set.
+	PDPEndEpoch *types.Epoch
+	WithCDN     bool
 }
