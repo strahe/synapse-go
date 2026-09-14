@@ -6,6 +6,8 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/costs"
 )
 
 // FindDataSetsOptions configures Service.FindDataSets. A nil pointer or
@@ -68,9 +70,11 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 	return s.info.GetStorageInfo(ctx, client)
 }
 
-// CalculateMultiContextCosts fans out the cost calculation across the given
-// refs and returns an aggregate result.
-func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*MultiContextCosts, error) {
+// CalculateMultiContextCosts estimates aggregate costs for the given storage
+// targets. A zero payer uses the configured default payer. Use
+// [costs.Service.CalculateMultiContextCosts] for normalized cost refs and
+// arbitrary-precision payload sizes without storage-specific input conversion.
+func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*costs.MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
@@ -90,5 +94,26 @@ func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes 
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: empty refs", ErrInvalidArgument)
 	}
 	size := new(big.Int).SetUint64(dataSizeBytes)
-	return s.costCalc.CalculateMultiContextCosts(ctx, payer, size, refs, opts)
+	return s.calculateMultiContextCosts(ctx, payer, size, refs, opts)
+}
+
+func (s *Service) calculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []ContextCostRef, opts MultiCostOptions) (*costs.MultiContextCosts, error) {
+	costRefs := make([]costs.MultiContextRef, len(refs))
+	for i, ref := range refs {
+		isNewDataSet := ref.DataSetID == nil
+		currentSize := ref.CurrentDataSetSizeBytes
+		if isNewDataSet {
+			currentSize = nil
+		}
+		costRefs[i] = costs.MultiContextRef{
+			IsNewDataSet:            isNewDataSet,
+			CurrentDataSetSizeBytes: currentSize,
+			WithCDN:                 ref.WithCDN || opts.EnableCDN,
+		}
+	}
+	return s.costCalc.CalculateMultiContextCosts(ctx, payer, dataSizeBytes, costRefs, &costs.UploadCostOptions{
+		PieceCount:        opts.PieceCount,
+		ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
+		BufferEpochs:      opts.BufferEpochs,
+	})
 }

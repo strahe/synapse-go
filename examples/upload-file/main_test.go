@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
@@ -84,7 +85,7 @@ func TestRunUploadPreparesAndPrintsCopySummary(t *testing.T) {
 				t.Fatalf("Prepare Contexts=%d want 2", len(opts.Contexts))
 			}
 			return &storage.PrepareResult{
-				Costs: &storage.MultiContextCosts{
+				Costs: &costs.MultiContextCosts{
 					DepositNeeded: big.NewInt(0),
 					Ready:         true,
 				},
