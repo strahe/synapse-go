@@ -1054,7 +1054,7 @@ func TestIntegration(t *testing.T) {
 			if len(info.Providers) == 0 {
 				t.Fatal("StorageInfo.Providers empty")
 			}
-			mc, err := retryIntegrationRead(cctx, func(ctx context.Context) (*storage.MultiContextCosts, error) {
+			mc, err := retryIntegrationRead(cctx, func(ctx context.Context) (*costs.MultiContextCosts, error) {
 				return sm.CalculateMultiContextCosts(ctx, 64*1024, []storage.ContextCostRef{
 					{Provider: storage.Provider{ID: info.Providers[0].Info.ID}, WithCDN: false},
 				}, storage.MultiCostOptions{}, addr)

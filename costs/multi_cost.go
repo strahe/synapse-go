@@ -65,7 +65,10 @@ type MultiContextCosts struct {
 // Each ref contributes its own lockup; debt, runway and buffer are computed
 // once from the payer's account state.
 //
-// A nil BufferEpochs uses DefaultBufferEpochs.
+// Only ExtraRunwayEpochs, BufferEpochs, and PieceCount are used from opts.
+// EnableCDN, IsNewDataSet, and CurrentDataSetSizeBytes in opts are ignored;
+// supply the dataset state, current size, and CDN setting through each ref.
+// Nil opts uses defaults; a nil BufferEpochs uses DefaultBufferEpochs.
 func (s *Service) CalculateMultiContextCosts(
 	ctx context.Context,
 	payer common.Address,

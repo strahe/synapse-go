@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/examples/internal/exampleutil"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/piece"
@@ -107,7 +108,7 @@ func TestRunQuickstartPreparesUploadsAndDownloads(t *testing.T) {
 				t.Fatalf("Prepare Contexts=%d want selected contexts", len(opts.Contexts))
 			}
 			return &storage.PrepareResult{
-				Costs: &storage.MultiContextCosts{
+				Costs: &costs.MultiContextCosts{
 					DepositNeeded:        big.NewInt(1234),
 					NeedsFWSSMaxApproval: true,
 					Ready:                false,

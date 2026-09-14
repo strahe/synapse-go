@@ -89,6 +89,11 @@
 //  4. Pass the same contexts, in the desired primary-to-secondary order, to
 //     [Service.UploadToContexts].
 //
+// Cost estimates use [costs.MultiContextCosts].
+// [Service.CalculateMultiContextCosts] returns the estimate directly;
+// [Service.Prepare] includes it in [PrepareResult.Costs]. To use a precomputed
+// estimate, set [PrepareOptions.Costs] without any other preparation options.
+//
 // UploadToContexts does not select replacements. The first context stores the
 // reader; later contexts pull from it. Configure this path with
 // [UploadToContextsOptions]. Service.Upload retains automatic replacement for
@@ -190,12 +195,15 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [PDPProviderClient], [PDPVerifierReader], [FWSSDataSetReader], and
-// [FWSSTerminator] are SDK assembly interfaces. Their supported implementations
-// are [pdp.Client] and the adapters assembled by the root SDK client;
-// user-defined implementations are not compatibility targets.
+// [PDPProviderClient], [PDPVerifierReader], [FWSSDataSetReader], [FWSSTerminator],
+// and [MultiCostCalculator] are SDK assembly interfaces. Their supported
+// implementations are [pdp.Client], [costs.Service], and the adapters assembled
+// by the root SDK client; user-defined implementations are not compatibility
+// targets.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
+// [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts
+// [costs.Service]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#Service
 // [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner

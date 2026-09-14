@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/payments"
 	sdktypes "github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -121,10 +122,13 @@ type MultiCostOptions struct {
 	BufferEpochs *int64
 }
 
-// MultiCostCalculator computes an upload-cost summary for a fan-out
-// across multiple prospective contexts.
+// MultiCostCalculator is the SDK assembly interface for aggregate upload costs.
+// The supported implementation is [costs.Service]; user-defined implementations
+// are not compatibility targets. Its input contract is defined by
+// [costs.Service.CalculateMultiContextCosts]: dataset state and CDN are supplied
+// through refs, not opts.
 type MultiCostCalculator interface {
-	CalculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []ContextCostRef, opts MultiCostOptions) (*MultiContextCosts, error)
+	CalculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error)
 }
 
 // DataSetSizeReader returns the current on-chain size (bytes) of an
@@ -140,34 +144,4 @@ type DataSetSizeReader interface {
 // view of payments.Service used by PrepareTransaction.Execute.
 type PaymentsFunder interface {
 	FundSync(ctx context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error)
-}
-
-// MultiContextCosts is the aggregate cost view across N upload targets.
-// It is a flat summary rather than a per-context breakdown.
-type MultiContextCosts struct {
-	RatePerEpoch         *big.Int
-	RatePerMonth         *big.Int
-	Fees                 UploadFees
-	Lockup               UploadLockup
-	DepositNeeded        *big.Int
-	RequiredLockupPeriod *big.Int
-	NeedsFWSSMaxApproval bool
-	Ready                bool
-}
-
-// UploadFees is the one-time fee breakdown for a prepared upload.
-type UploadFees struct {
-	CreateDataSetFee *big.Int
-	AddPiecesFee     *big.Int
-	Total            *big.Int
-}
-
-// UploadLockup is the lockup breakdown for a prepared upload.
-type UploadLockup struct {
-	RateDeltaPerEpoch *big.Int
-	StreamingLockup   *big.Int
-	LifecycleLockup   *big.Int
-	CDNLockup         *big.Int
-	CacheMissLockup   *big.Int
-	Total             *big.Int
 }

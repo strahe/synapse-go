@@ -197,7 +197,8 @@ type Options struct {
 	DataSetTerminator FWSSTerminator
 
 	// CostCalculator backs Service.CalculateMultiContextCosts and the
-	// cost estimation inside Prepare. Optional.
+	// cost estimation inside Prepare. Optional; the root SDK client supplies
+	// the built-in costs.Service.
 	CostCalculator MultiCostCalculator
 
 	// PaymentsFunder backs PrepareTransaction.Execute. Optional.

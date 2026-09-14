@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -40,9 +41,9 @@ func (r *managerStorageInfoReader) GetStorageInfo(_ context.Context, client comm
 type managerCostCalculator struct {
 	payer  common.Address
 	size   *big.Int
-	refs   []ContextCostRef
-	opts   MultiCostOptions
-	result *MultiContextCosts
+	refs   []costs.MultiContextRef
+	opts   costs.UploadCostOptions
+	result *costs.MultiContextCosts
 	err    error
 }
 
@@ -50,13 +51,13 @@ func (c *managerCostCalculator) CalculateMultiContextCosts(
 	_ context.Context,
 	payer common.Address,
 	size *big.Int,
-	refs []ContextCostRef,
-	opts MultiCostOptions,
-) (*MultiContextCosts, error) {
+	refs []costs.MultiContextRef,
+	opts *costs.UploadCostOptions,
+) (*costs.MultiContextCosts, error) {
 	c.payer = payer
 	c.size = new(big.Int).Set(size)
 	c.refs = refs
-	c.opts = opts
+	c.opts = *opts
 	return c.result, c.err
 }
 
@@ -65,7 +66,7 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	override := common.HexToAddress("0x2002")
 	wantSets := []*DataSetDetails{{DataSetInfo: warmstorage.DataSetInfo{DataSetID: types.NewBigInt(7)}}}
 	wantInfo := &StorageInfo{}
-	wantCosts := &MultiContextCosts{RatePerEpoch: big.NewInt(3)}
+	wantCosts := &costs.MultiContextCosts{RatePerEpoch: big.NewInt(3)}
 	finder := &managerDataSetFinder{result: wantSets}
 	info := &managerStorageInfoReader{result: wantInfo}
 	calculator := &managerCostCalculator{result: wantCosts}
@@ -92,22 +93,71 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 		t.Fatalf("GetStorageInfo = %+v, %v; client=%s", gotInfo, err, info.client)
 	}
 
-	refs := []ContextCostRef{{Provider: testProvider()}}
-	opts := MultiCostOptions{EnableCDN: true, PieceCount: big.NewInt(2), BufferEpochs: new(int64(0))}
+	dataSetID := types.NewBigInt(7)
+	otherDataSetID := types.NewBigInt(8)
+	refs := []ContextCostRef{
+		{Provider: testProvider(), CurrentDataSetSizeBytes: big.NewInt(9999)},
+		{DataSetID: &dataSetID, CurrentDataSetSizeBytes: big.NewInt(2048)},
+		{DataSetID: &otherDataSetID, CurrentDataSetSizeBytes: big.NewInt(8192), WithCDN: true},
+	}
+	opts := MultiCostOptions{EnableCDN: true, PieceCount: big.NewInt(2), ExtraRunwayEpochs: 7, BufferEpochs: new(int64(0))}
 	gotCosts, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, common.Address{})
-	if err != nil || gotCosts != wantCosts {
+	if err != nil || gotCosts == nil || gotCosts.RatePerEpoch.Cmp(wantCosts.RatePerEpoch) != 0 {
 		t.Fatalf("CalculateMultiContextCosts = %+v, %v", gotCosts, err)
 	}
-	if calculator.payer != defaultPayer || calculator.size.Uint64() != 4096 || len(calculator.refs) != 1 || !calculator.opts.EnableCDN {
+	if calculator.payer != defaultPayer || calculator.size.Uint64() != 4096 || len(calculator.refs) != len(refs) {
 		t.Fatalf("CalculateMultiContextCosts forwarded payer=%s size=%s refs=%d opts=%+v", calculator.payer, calculator.size, len(calculator.refs), calculator.opts)
 	}
 	if calculator.opts.BufferEpochs == nil || *calculator.opts.BufferEpochs != 0 {
 		t.Fatalf("CalculateMultiContextCosts BufferEpochs=%v want explicit zero", calculator.opts.BufferEpochs)
 	}
+	if calculator.opts.ExtraRunwayEpochs != 7 || calculator.opts.PieceCount.Cmp(big.NewInt(2)) != 0 {
+		t.Fatalf("CalculateMultiContextCosts forwarded opts=%+v", calculator.opts)
+	}
+	if !calculator.refs[0].IsNewDataSet || calculator.refs[0].CurrentDataSetSizeBytes != nil {
+		t.Fatalf("new ref=%+v want new dataset without current size", calculator.refs[0])
+	}
+	for i := 1; i < len(refs); i++ {
+		if calculator.refs[i].IsNewDataSet || calculator.refs[i].CurrentDataSetSizeBytes.Cmp(refs[i].CurrentDataSetSizeBytes) != 0 {
+			t.Fatalf("ref[%d]=%+v want existing dataset size %s", i, calculator.refs[i], refs[i].CurrentDataSetSizeBytes)
+		}
+	}
+	for i, ref := range calculator.refs {
+		if !ref.WithCDN {
+			t.Fatalf("ref[%d] CDN not enabled by global option", i)
+		}
+	}
+
+	opts.EnableCDN = false
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); err != nil {
+		t.Fatal(err)
+	}
+	if calculator.payer != override {
+		t.Fatalf("payer=%s want explicit payer %s", calculator.payer, override)
+	}
+	for i, ref := range calculator.refs {
+		if ref.WithCDN != refs[i].WithCDN {
+			t.Fatalf("ref[%d].WithCDN=%v want %v", i, ref.WithCDN, refs[i].WithCDN)
+		}
+	}
+
+	calculator.err = context.Canceled
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); !errors.Is(err, context.Canceled) || errors.Unwrap(err) != nil {
+		t.Fatalf("CalculateMultiContextCosts error=%v want unwrapped cancellation", err)
+	}
+	calculator.err = nil
+	calculator.result = nil
+	if result, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); result != nil || err != nil {
+		t.Fatalf("CalculateMultiContextCosts=%+v, %v want nil calculator result unchanged", result, err)
+	}
 }
 
 func TestServiceManagerFacades_ValidateConfiguration(t *testing.T) {
 	svc, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typedNilSvc, err := New(Options{CostCalculator: (*costs.Service)(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +170,10 @@ func TestServiceManagerFacades_ValidateConfiguration(t *testing.T) {
 		{"GetStorageInfo", func() error { _, err := svc.GetStorageInfo(context.Background(), nil); return err }, ErrUninitialized},
 		{"CalculateMultiContextCosts", func() error {
 			_, err := svc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
+			return err
+		}, ErrUninitialized},
+		{"CalculateMultiContextCosts typed nil", func() error {
+			_, err := typedNilSvc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
 		}, ErrUninitialized},
 	}

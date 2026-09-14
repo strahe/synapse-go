@@ -217,7 +217,7 @@ func (c *Client) initServices() error {
 		Signer:             c.storageSigner,
 		ChainID:            types.ChainID(c.selectedChain.ChainID()),
 		RecordKeeper:       c.addresses.FWSS,
-		CostCalculator:     adapters.NewCostCalculator(costsvc),
+		CostCalculator:     costsvc,
 		PaymentsFunder:     adapters.NewPaymentsFunder(pay),
 		PayerAddress:       rootAddress,
 	}

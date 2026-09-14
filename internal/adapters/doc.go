@@ -1,5 +1,5 @@
 // Package adapters contains the private glue that composes the per-service
-// packages (warmstorage, spregistry, payments, costs, internal/contracts/
+// packages (warmstorage, spregistry, payments, internal/contracts/
 // pdpverifier) into the narrow interfaces consumed by the storage package.
 //
 // This package is a root-synapse implementation detail. It must not be

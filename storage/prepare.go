@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/types"
 )
@@ -26,7 +27,7 @@ type PrepareOptions struct {
 	PieceCount *big.Int
 	// Costs short-circuits cost calculation. When set, no other
 	// PrepareOptions fields are accepted.
-	Costs *MultiContextCosts
+	Costs *costs.MultiContextCosts
 	// ExtraRunwayEpochs is additional runway (epochs) above the
 	// minimum lockup period passed through to the cost calculator. It is
 	// valid only when Costs is nil and must be non-negative.
@@ -57,7 +58,7 @@ type PrepareTransaction struct {
 // PrepareResult is the value returned by Service.Prepare.
 type PrepareResult struct {
 	// Costs is the aggregated cost calculation that drove the decision.
-	Costs *MultiContextCosts
+	Costs *costs.MultiContextCosts
 	// Transaction is non-nil only when funding is required (Ready=false).
 	Transaction *PrepareTransaction
 }
@@ -75,8 +76,8 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		return nil, fmt.Errorf("storage.Service.Prepare: %w", err)
 	}
 
-	costs := opts.Costs
-	if costs == nil {
+	summary := opts.Costs
+	if summary == nil {
 		if err := s.validateStorageContexts("storage.Service.Prepare", opts.Contexts); err != nil {
 			return nil, err
 		}
@@ -92,7 +93,7 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 			return nil, fmt.Errorf("storage.Service.Prepare: %w: zero payer and no default payer", ErrInvalidArgument)
 		}
 		size := new(big.Int).SetUint64(opts.DataSize)
-		costs, err = s.costCalc.CalculateMultiContextCosts(ctx, payer, size, refs, MultiCostOptions{
+		summary, err = s.calculateMultiContextCosts(ctx, payer, size, refs, MultiCostOptions{
 			PieceCount:        opts.PieceCount,
 			ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
 			BufferEpochs:      opts.BufferEpochs,
@@ -100,29 +101,29 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		if err != nil {
 			return nil, fmt.Errorf("storage.Service.Prepare: %w", err)
 		}
-		if costs == nil {
+		if summary == nil {
 			return nil, errors.New("storage.Service.Prepare: cost calculator returned nil costs")
 		}
 	}
 
-	if err := validatePrepareCosts(costs); err != nil {
+	if err := validatePrepareCosts(summary); err != nil {
 		return nil, fmt.Errorf("storage.Service.Prepare: %w", err)
 	}
 
-	if costs.Ready {
-		return &PrepareResult{Costs: costs}, nil
+	if summary.Ready {
+		return &PrepareResult{Costs: summary}, nil
 	}
 
 	if s.funder == nil {
 		return nil, fmt.Errorf("storage.Service.Prepare: %w: no PaymentsFunder configured", ErrUninitialized)
 	}
 
-	deposit := costs.DepositNeeded
-	needsApproval := costs.NeedsFWSSMaxApproval
+	deposit := summary.DepositNeeded
+	needsApproval := summary.NeedsFWSSMaxApproval
 	funder := s.funder
 
 	return &PrepareResult{
-		Costs: costs,
+		Costs: summary,
 		Transaction: &PrepareTransaction{
 			DepositAmount:    deposit,
 			IncludesApproval: needsApproval,
@@ -133,8 +134,8 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 				optsOut := extraOpts
 				if needsApproval {
 					optsOut = append(optsOut, payments.WithFundNeedsFwssApproval(true))
-					if costs.RequiredLockupPeriod != nil {
-						optsOut = append(optsOut, payments.WithFundApprovalLockupPeriod(costs.RequiredLockupPeriod))
+					if summary.RequiredLockupPeriod != nil {
+						optsOut = append(optsOut, payments.WithFundApprovalLockupPeriod(summary.RequiredLockupPeriod))
 					}
 				}
 				return funder.FundSync(ctx, deposit, optsOut...)
@@ -196,22 +197,21 @@ func validatePrepareOptions(opts *PrepareOptions) error {
 	return nil
 }
 
-func validatePrepareCosts(costs *MultiContextCosts) error {
-	if costs.Ready {
+func validatePrepareCosts(summary *costs.MultiContextCosts) error {
+	if summary.Ready {
 		return nil
 	}
-	if costs.DepositNeeded == nil {
+	if summary.DepositNeeded == nil {
 		return fmt.Errorf("%w: DepositNeeded is required when costs are not ready", ErrInvalidArgument)
 	}
-	if costs.DepositNeeded.Sign() < 0 {
+	if summary.DepositNeeded.Sign() < 0 {
 		return fmt.Errorf("%w: DepositNeeded must be non-negative", ErrInvalidArgument)
 	}
 	return nil
 }
 
-// prepareRefs builds the []ContextCostRef the cost calculator expects
-// from the user-supplied Contexts. For
-// existing-dataset contexts, the current on-chain size is fetched in
+// prepareRefs builds storage cost refs from the user-supplied contexts.
+// For existing-dataset contexts, the current on-chain size is fetched in
 // parallel via [DataSetSizeReader] so the cost calculator can price
 // lockup against real storage usage rather than the floor rate.
 func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]ContextCostRef, error) {

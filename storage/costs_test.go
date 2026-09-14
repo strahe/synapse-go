@@ -1,4 +1,4 @@
-package adapters
+package storage_test
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *testing.T) {
+func TestServiceCalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
 		Chain: chain.Calibration,
 		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
@@ -28,7 +28,9 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 				AddPiecesPerPieceFee: big.NewInt(1),
 			},
 			Lockups: warmstorage.PriceListLockups{
-				DefaultLockupPeriod: big.NewInt(costs.DefaultLockupPeriod),
+				DefaultLockupPeriod:   big.NewInt(costs.DefaultLockupPeriod),
+				CDNLockupAmount:       big.NewInt(17),
+				CacheMissLockupAmount: big.NewInt(23),
 			},
 		}},
 		Payments: fixedPaymentsReader{
@@ -52,21 +54,25 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 		t.Fatalf("costs.New: %v", err)
 	}
 
-	adapter := &costCalculator{c: costSvc}
-	actual, err := adapter.CalculateMultiContextCosts(
+	payer := common.HexToAddress("0x1001")
+	svc, err := storage.New(storage.Options{CostCalculator: costSvc, PayerAddress: payer})
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
-		big.NewInt(1024),
+		1024,
 		[]storage.ContextCostRef{{CurrentDataSetSizeBytes: new(big.Int)}},
 		storage.MultiCostOptions{EnableCDN: true, PieceCount: big.NewInt(41)},
+		common.Address{},
 	)
 	if err != nil {
-		t.Fatalf("adapter.CalculateMultiContextCosts: %v", err)
+		t.Fatalf("storage.CalculateMultiContextCosts: %v", err)
 	}
 
 	expected, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
+		payer,
 		big.NewInt(1024),
 		[]costs.MultiContextRef{{IsNewDataSet: true, WithCDN: true}},
 		&costs.UploadCostOptions{PieceCount: big.NewInt(41)},
@@ -75,15 +81,10 @@ func TestCostCalculator_CalculateMultiContextCosts_EnableCDNPropagatesToRefs(t *
 		t.Fatalf("costSvc.CalculateMultiContextCosts: %v", err)
 	}
 
-	if actual.DepositNeeded.Cmp(expected.DepositNeeded) != 0 {
-		t.Fatalf("DepositNeeded=%s want %s", actual.DepositNeeded, expected.DepositNeeded)
-	}
-	if actual.Ready != expected.Ready {
-		t.Fatalf("Ready=%v want %v", actual.Ready, expected.Ready)
-	}
+	assertMultiContextCostsEqual(t, actual, expected)
 }
 
-func TestCostCalculator_CalculateMultiContextCosts_IgnoresCurrentSizeForNewDataSets(t *testing.T) {
+func TestServiceCalculateMultiContextCosts_IgnoresCurrentSizeForNewDataSets(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
 		Chain: chain.Calibration,
 		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
@@ -116,23 +117,27 @@ func TestCostCalculator_CalculateMultiContextCosts_IgnoresCurrentSizeForNewDataS
 		t.Fatalf("costs.New: %v", err)
 	}
 
-	adapter := &costCalculator{c: costSvc}
-	actual, err := adapter.CalculateMultiContextCosts(
+	payer := common.HexToAddress("0x1001")
+	svc, err := storage.New(storage.Options{CostCalculator: costSvc, PayerAddress: payer})
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
-		big.NewInt(chain.TiB),
+		uint64(chain.TiB),
 		[]storage.ContextCostRef{{
 			CurrentDataSetSizeBytes: big.NewInt(chain.TiB),
 		}},
 		storage.MultiCostOptions{},
+		common.Address{},
 	)
 	if err != nil {
-		t.Fatalf("adapter.CalculateMultiContextCosts: %v", err)
+		t.Fatalf("storage.CalculateMultiContextCosts: %v", err)
 	}
 
 	expected, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
+		payer,
 		big.NewInt(chain.TiB),
 		[]costs.MultiContextRef{{IsNewDataSet: true, WithCDN: false}},
 		&costs.UploadCostOptions{},
@@ -141,18 +146,10 @@ func TestCostCalculator_CalculateMultiContextCosts_IgnoresCurrentSizeForNewDataS
 		t.Fatalf("costSvc.CalculateMultiContextCosts: %v", err)
 	}
 
-	if actual.DepositNeeded.Cmp(expected.DepositNeeded) != 0 {
-		t.Fatalf("DepositNeeded=%s want %s", actual.DepositNeeded, expected.DepositNeeded)
-	}
-	if actual.RatePerEpoch.Cmp(expected.RatePerEpoch) != 0 {
-		t.Fatalf("RatePerEpoch=%s want %s", actual.RatePerEpoch, expected.RatePerEpoch)
-	}
-	if actual.RatePerMonth.Cmp(expected.RatePerMonth) != 0 {
-		t.Fatalf("RatePerMonth=%s want %s", actual.RatePerMonth, expected.RatePerMonth)
-	}
+	assertMultiContextCostsEqual(t, actual, expected)
 }
 
-func TestCostCalculator_CalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testing.T) {
+func TestServiceCalculateMultiContextCosts_PreservesExplicitZeroBuffer(t *testing.T) {
 	costSvc, err := costs.New(costs.Options{
 		Chain: chain.Calibration,
 		WarmStorage: fixedWarmStorageReader{priceList: &warmstorage.PriceList{
@@ -177,21 +174,25 @@ func TestCostCalculator_CalculateMultiContextCosts_PreservesExplicitZeroBuffer(t
 
 	zeroBuffer := int64(0)
 	dataSetID := types.NewBigInt(1)
-	adapter := &costCalculator{c: costSvc}
-	actual, err := adapter.CalculateMultiContextCosts(
+	payer := common.HexToAddress("0x1001")
+	svc, err := storage.New(storage.Options{CostCalculator: costSvc, PayerAddress: payer})
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	actual, err := svc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
-		big.NewInt(chain.TiB),
+		uint64(chain.TiB),
 		[]storage.ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetSizeBytes: new(big.Int)}},
 		storage.MultiCostOptions{BufferEpochs: &zeroBuffer},
+		common.Address{},
 	)
 	if err != nil {
-		t.Fatalf("adapter.CalculateMultiContextCosts: %v", err)
+		t.Fatalf("storage.CalculateMultiContextCosts: %v", err)
 	}
 
 	expected, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
+		payer,
 		big.NewInt(chain.TiB),
 		[]costs.MultiContextRef{{}},
 		&costs.UploadCostOptions{BufferEpochs: &zeroBuffer},
@@ -201,7 +202,7 @@ func TestCostCalculator_CalculateMultiContextCosts_PreservesExplicitZeroBuffer(t
 	}
 	withDefault, err := costSvc.CalculateMultiContextCosts(
 		context.Background(),
-		common.Address{},
+		payer,
 		big.NewInt(chain.TiB),
 		[]costs.MultiContextRef{{}},
 		&costs.UploadCostOptions{},
@@ -210,11 +211,48 @@ func TestCostCalculator_CalculateMultiContextCosts_PreservesExplicitZeroBuffer(t
 		t.Fatalf("costSvc.CalculateMultiContextCosts with default buffer: %v", err)
 	}
 
-	if actual.DepositNeeded.Cmp(expected.DepositNeeded) != 0 {
-		t.Fatalf("DepositNeeded=%s want explicit-zero result %s", actual.DepositNeeded, expected.DepositNeeded)
-	}
+	assertMultiContextCostsEqual(t, actual, expected)
 	if actual.DepositNeeded.Cmp(withDefault.DepositNeeded) >= 0 {
 		t.Fatalf("explicit-zero deposit=%s want less than default %s", actual.DepositNeeded, withDefault.DepositNeeded)
+	}
+}
+
+func assertMultiContextCostsEqual(t *testing.T, actual, expected *costs.MultiContextCosts) {
+	t.Helper()
+	if actual == nil || expected == nil {
+		t.Fatalf("costs actual=%+v expected=%+v", actual, expected)
+	}
+	fields := []struct {
+		name         string
+		actual, want *big.Int
+	}{
+		{"RatePerEpoch", actual.RatePerEpoch, expected.RatePerEpoch},
+		{"RatePerMonth", actual.RatePerMonth, expected.RatePerMonth},
+		{"Fees.CreateDataSetFee", actual.Fees.CreateDataSetFee, expected.Fees.CreateDataSetFee},
+		{"Fees.AddPiecesFee", actual.Fees.AddPiecesFee, expected.Fees.AddPiecesFee},
+		{"Fees.Total", actual.Fees.Total, expected.Fees.Total},
+		{"Lockup.RateDeltaPerEpoch", actual.Lockup.RateDeltaPerEpoch, expected.Lockup.RateDeltaPerEpoch},
+		{"Lockup.StreamingLockup", actual.Lockup.StreamingLockup, expected.Lockup.StreamingLockup},
+		{"Lockup.LifecycleLockup", actual.Lockup.LifecycleLockup, expected.Lockup.LifecycleLockup},
+		{"Lockup.CDNLockup", actual.Lockup.CDNLockup, expected.Lockup.CDNLockup},
+		{"Lockup.CacheMissLockup", actual.Lockup.CacheMissLockup, expected.Lockup.CacheMissLockup},
+		{"Lockup.Total", actual.Lockup.Total, expected.Lockup.Total},
+		{"DepositNeeded", actual.DepositNeeded, expected.DepositNeeded},
+		{"RequiredLockupPeriod", actual.RequiredLockupPeriod, expected.RequiredLockupPeriod},
+	}
+	for _, field := range fields {
+		if field.actual == nil || field.want == nil {
+			if field.actual != field.want {
+				t.Fatalf("%s=%v want %v", field.name, field.actual, field.want)
+			}
+			continue
+		}
+		if field.actual.Cmp(field.want) != 0 {
+			t.Fatalf("%s=%s want %s", field.name, field.actual, field.want)
+		}
+	}
+	if actual.NeedsFWSSMaxApproval != expected.NeedsFWSSMaxApproval || actual.Ready != expected.Ready {
+		t.Fatalf("NeedsFWSSMaxApproval=%v Ready=%v want %v %v", actual.NeedsFWSSMaxApproval, actual.Ready, expected.NeedsFWSSMaxApproval, expected.Ready)
 	}
 }
 

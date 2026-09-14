@@ -11,21 +11,26 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/payments"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 type stubCostCalc struct {
-	out     *MultiContextCosts
-	err     error
-	gotRefs []ContextCostRef
-	gotOpts MultiCostOptions
+	out      *costs.MultiContextCosts
+	err      error
+	gotPayer common.Address
+	gotSize  *big.Int
+	gotRefs  []costs.MultiContextRef
+	gotOpts  costs.UploadCostOptions
 }
 
-func (s *stubCostCalc) CalculateMultiContextCosts(_ context.Context, _ common.Address, _ *big.Int, refs []ContextCostRef, opts MultiCostOptions) (*MultiContextCosts, error) {
-	s.gotRefs = append([]ContextCostRef(nil), refs...)
-	s.gotOpts = opts
+func (s *stubCostCalc) CalculateMultiContextCosts(_ context.Context, payer common.Address, size *big.Int, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error) {
+	s.gotPayer = payer
+	s.gotSize = new(big.Int).Set(size)
+	s.gotRefs = append([]costs.MultiContextRef(nil), refs...)
+	s.gotOpts = *opts
 	return s.out, s.err
 }
 
@@ -88,15 +93,19 @@ func (c *fakeUploadContext) CDNEnabled() bool {
 
 func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	svc := newTestService()
-	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	calc := &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
+	svc.costCalc = calc
 	svc.payerAddr = testPayer()
 
-	res, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &MultiContextCosts{Ready: true}})
+	res, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &costs.MultiContextCosts{Ready: true}})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if res.Transaction != nil {
 		t.Fatalf("want nil Transaction when Ready=true, got %+v", res.Transaction)
+	}
+	if calc.gotRefs != nil {
+		t.Fatalf("cost calculator called for precomputed costs: %+v", calc.gotRefs)
 	}
 }
 
@@ -131,7 +140,7 @@ func TestPrepareRefs_DataSetSizeModes(t *testing.T) {
 }
 
 func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
-	calc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	calc := &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
 	svc := newTestService()
 	svc.costCalc = calc
 	identity := serviceTestIdentity()
@@ -151,7 +160,7 @@ func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
 }
 
 func TestPrepare_RejectsInvalidOptions(t *testing.T) {
-	readyCosts := &MultiContextCosts{Ready: true}
+	readyCosts := &costs.MultiContextCosts{Ready: true}
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1)}
 
 	tests := []struct {
@@ -234,7 +243,7 @@ func TestPrepare_BuildsExecuteWhenNotReady(t *testing.T) {
 	svc.payerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
-		Costs: &MultiContextCosts{
+		Costs: &costs.MultiContextCosts{
 			Ready:                false,
 			DepositNeeded:        big.NewInt(1234),
 			NeedsFWSSMaxApproval: true,
@@ -273,7 +282,7 @@ func TestPrepareExecute_UsesComputedApprovalOptionsWithCallerWriteOptions(t *tes
 	svc.payerAddr = testPayer()
 
 	res, err := svc.Prepare(context.Background(), &PrepareOptions{
-		Costs: &MultiContextCosts{
+		Costs: &costs.MultiContextCosts{
 			Ready:                false,
 			DepositNeeded:        big.NewInt(1234),
 			NeedsFWSSMaxApproval: true,
@@ -307,12 +316,12 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 	}{
 		{
 			name: "supplied nil deposit",
-			opts: &PrepareOptions{Costs: &MultiContextCosts{Ready: false}},
+			opts: &PrepareOptions{Costs: &costs.MultiContextCosts{Ready: false}},
 		},
 		{
 			name: "supplied negative deposit",
 			opts: &PrepareOptions{
-				Costs: &MultiContextCosts{
+				Costs: &costs.MultiContextCosts{
 					Ready:         false,
 					DepositNeeded: big.NewInt(-1),
 				},
@@ -327,7 +336,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 				},
 			},
 			setup: func(svc *Service) {
-				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: false}}
+				svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{Ready: false}}
 				svc.payerAddr = testPayer()
 			},
 		},
@@ -340,7 +349,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 				},
 			},
 			setup: func(svc *Service) {
-				svc.costCalc = &stubCostCalc{out: &MultiContextCosts{
+				svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{
 					Ready:         false,
 					DepositNeeded: big.NewInt(-1),
 				}}
@@ -365,7 +374,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	svc := newTestService()
 	svc.payerAddr = common.Address{}
-	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
 		DataSize: 128,
@@ -378,7 +387,7 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 
 func TestPrepare_RequiresExplicitContexts(t *testing.T) {
 	svc := newTestService()
-	svc.costCalc = &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+	svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
 	assertInvalidArgument(t, err)
 }
@@ -394,7 +403,7 @@ func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			costCalc := &stubCostCalc{out: &MultiContextCosts{Ready: true}}
+			costCalc := &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
 			svc := newTestService()
 			svc.costCalc = costCalc
 			svc.payerAddr = testPayer()
@@ -408,6 +417,9 @@ func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
+			}
+			if costCalc.gotPayer != testPayer() || costCalc.gotSize.Uint64() != 128 {
+				t.Fatalf("cost calculation payer=%s size=%s want %s and 128", costCalc.gotPayer, costCalc.gotSize, testPayer())
 			}
 			if costCalc.gotOpts.ExtraRunwayEpochs != 7 {
 				t.Fatalf("ExtraRunwayEpochs=%d want 7", costCalc.gotOpts.ExtraRunwayEpochs)
@@ -429,30 +441,41 @@ func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
 	}
 }
 
-func TestPrepare_ReturnsErrorWhenCostCalculatorReturnsNil(t *testing.T) {
-	svc := newTestService()
-	svc.costCalc = &stubCostCalc{}
-	svc.payerAddr = testPayer()
-
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("Prepare panicked: %v", recovered)
-		}
-	}()
-
-	_, err := svc.Prepare(context.Background(), &PrepareOptions{
-		DataSize: 128,
-		Contexts: []StorageContext{
-			&fakeUploadContext{id: sdktypes.NewBigInt(1)},
-		},
-	})
-	if err == nil {
-		t.Fatal("Prepare error = nil, want error")
+func TestPrepare_ReturnsErrorWhenCostCalculatorFails(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "nil costs"},
+		{name: "calculator error", err: context.Canceled},
 	}
-	if errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Prepare error = %v, want internal error", err)
-	}
-	if !strings.Contains(err.Error(), "cost calculator returned nil costs") {
-		t.Fatalf("Prepare error = %v, want nil-costs message", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService()
+			svc.costCalc = &stubCostCalc{err: tt.err}
+			svc.payerAddr = testPayer()
+
+			_, err := svc.Prepare(context.Background(), &PrepareOptions{
+				DataSize: 128,
+				Contexts: []StorageContext{
+					&fakeUploadContext{id: sdktypes.NewBigInt(1)},
+				},
+			})
+			if err == nil {
+				t.Fatal("Prepare error = nil, want error")
+			}
+			if tt.err != nil {
+				if !errors.Is(err, tt.err) || !strings.HasPrefix(err.Error(), "storage.Service.Prepare: ") {
+					t.Fatalf("Prepare error = %v, want wrapped %v", err, tt.err)
+				}
+				return
+			}
+			if errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Prepare error = %v, want internal error", err)
+			}
+			if !strings.Contains(err.Error(), "cost calculator returned nil costs") {
+				t.Fatalf("Prepare error = %v, want nil-costs message", err)
+			}
+		})
 	}
 }
