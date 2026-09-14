@@ -3,6 +3,7 @@ package costs
 import (
 	"context"
 	"math/big"
+	"slices"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -26,7 +27,7 @@ func TestCalculateMultiContextCosts_ReadyWhenFunded(t *testing.T) {
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
+		[]uint64{1024},
 		refs,
 		nil,
 	)
@@ -55,7 +56,7 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	single, err := svc.GetUploadCosts(
 		context.Background(),
 		common.Address{},
-		bi(chain.TiB),
+		[]uint64{chain.MaxUploadSize},
 		&UploadCostOptions{IsNewDataSet: true},
 	)
 	if err != nil {
@@ -69,7 +70,7 @@ func TestCalculateMultiContextCosts_AggregatesRates(t *testing.T) {
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(chain.TiB),
+		[]uint64{chain.MaxUploadSize},
 		refs,
 		nil,
 	)
@@ -100,8 +101,8 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	allExisting, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
-		[]MultiContextRef{{}, {}},
+		[]uint64{1024},
+		[]MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}, {CurrentDataSetLeafCount: new(big.Int)}},
 		opts,
 	)
 	if err != nil {
@@ -110,7 +111,7 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	allNew, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
+		[]uint64{1024},
 		[]MultiContextRef{{IsNewDataSet: true}, {IsNewDataSet: true}},
 		opts,
 	)
@@ -120,8 +121,8 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	mixed, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
-		[]MultiContextRef{{IsNewDataSet: true}, {}},
+		[]uint64{1024},
+		[]MultiContextRef{{IsNewDataSet: true}, {CurrentDataSetLeafCount: new(big.Int)}},
 		opts,
 	)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	}
 }
 
-func TestCalculateMultiContextCosts_UsesPieceCountForAddPiecesFees(t *testing.T) {
+func TestCalculateMultiContextCosts_DerivesPieceCountForAddPiecesFees(t *testing.T) {
 	priceList := defaultPriceList()
 	svc := buildSvc(t,
 		&mockWS{priceList: priceList},
@@ -161,9 +162,9 @@ func TestCalculateMultiContextCosts_UsesPieceCountForAddPiecesFees(t *testing.T)
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
-		[]MultiContextRef{{IsNewDataSet: true}, {}},
-		&UploadCostOptions{BufferEpochs: new(int64(0)), PieceCount: bi(41)},
+		slices.Repeat([]uint64{128}, 41),
+		[]MultiContextRef{{IsNewDataSet: true}, {CurrentDataSetLeafCount: new(big.Int)}},
+		&UploadCostOptions{BufferEpochs: new(int64(0))},
 	)
 	if err != nil {
 		t.Fatalf("CalculateMultiContextCosts: %v", err)
@@ -188,7 +189,7 @@ func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		bi(1024),
+		[]uint64{1024},
 		[]MultiContextRef{{IsNewDataSet: true}},
 		nil,
 	)
@@ -209,10 +210,10 @@ func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{priceList: defaultPriceList()},
 		&mockPay{account: account, approval: maxApproval()})
-	refs := []MultiContextRef{{}}
+	refs := []MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}}
 
 	withoutBuffer, err := svc.CalculateMultiContextCosts(
-		context.Background(), common.Address{}, bi(1024), refs,
+		context.Background(), common.Address{}, []uint64{1024}, refs,
 		&UploadCostOptions{BufferEpochs: new(int64(0))},
 	)
 	if err != nil {
@@ -231,7 +232,7 @@ func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := svc.CalculateMultiContextCosts(
-				context.Background(), common.Address{}, bi(1024), refs,
+				context.Background(), common.Address{}, []uint64{1024}, refs,
 				&UploadCostOptions{BufferEpochs: tt.bufferEpochs},
 			)
 			if err != nil {
@@ -251,7 +252,7 @@ func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
 func TestCalculateMultiContextCosts_EmptyRefs(t *testing.T) {
 	svc := buildSvc(t, &mockWS{}, &mockPay{})
 	if _, err := svc.CalculateMultiContextCosts(
-		context.Background(), common.Address{}, bi(1024), nil, nil,
+		context.Background(), common.Address{}, []uint64{1024}, nil, nil,
 	); err == nil {
 		t.Error("expected error for empty refs")
 	}

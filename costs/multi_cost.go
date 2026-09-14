@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -21,14 +22,13 @@ import (
 type MultiContextRef struct {
 	// IsNewDataSet is true when the target will create a new data set
 	// on this provider (contributes lifecycle and optional CDN/cache-miss
-	// lockup). When false, CurrentDataSetSizeBytes is consulted so the
-	// marginal rate is computed above the existing size.
+	// lockup). When false, CurrentDataSetLeafCount is required.
 	IsNewDataSet bool
 
-	// CurrentDataSetSizeBytes is the current on-chain size of the
-	// existing data set (zero or nil when IsNewDataSet is true). When
-	// unknown, pass nil and the marginal rate is computed from zero size.
-	CurrentDataSetSizeBytes *big.Int
+	// CurrentDataSetLeafCount is the non-negative on-chain leaf count of an
+	// existing data set. Zero means known empty; nil is invalid for an existing
+	// data set. Ignored when IsNewDataSet is true.
+	CurrentDataSetLeafCount *big.Int
 
 	// WithCDN toggles CDN and cache-miss lockup for this target. Only
 	// meaningful when IsNewDataSet is true.
@@ -60,19 +60,21 @@ type MultiContextCosts struct {
 }
 
 // CalculateMultiContextCosts aggregates upload costs across multiple
-// prospective contexts for a single uploaded payload of dataSizeBytes.
+// prospective contexts for one piece plan.
 //
 // Each ref contributes its own lockup; debt, runway and buffer are computed
 // once from the payer's account state.
 //
-// Only ExtraRunwayEpochs, BufferEpochs, and PieceCount are used from opts.
-// EnableCDN, IsNewDataSet, and CurrentDataSetSizeBytes in opts are ignored;
-// supply the dataset state, current size, and CDN setting through each ref.
+// pieceSizes contains each piece's raw payload size, replicated to every
+// target. Each size must be between chain.MinUploadSize and
+// chain.MaxUploadSize. Only ExtraRunwayEpochs and BufferEpochs are used from opts.
+// EnableCDN, IsNewDataSet, and CurrentDataSetLeafCount in opts are ignored;
+// supply the dataset state, current leaf count, and CDN setting through each ref.
 // Nil opts uses defaults; a nil BufferEpochs uses DefaultBufferEpochs.
 func (s *Service) CalculateMultiContextCosts(
 	ctx context.Context,
 	payer common.Address,
-	dataSizeBytes *big.Int,
+	pieceSizes []uint64,
 	refs []MultiContextRef,
 	opts *UploadCostOptions,
 ) (*MultiContextCosts, error) {
@@ -80,13 +82,27 @@ func (s *Service) CalculateMultiContextCosts(
 		return nil, err
 	}
 	if len(refs) == 0 {
-		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: refs is empty")
+		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w: refs is empty", ErrInvalidArgument)
 	}
-	if dataSizeBytes == nil {
-		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: dataSizeBytes is nil")
+	if err := validatePieceSizes(pieceSizes); err != nil {
+		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w", err)
 	}
 	if opts == nil {
 		opts = &UploadCostOptions{}
+	}
+	if opts.ExtraRunwayEpochs < 0 {
+		return nil, fmt.Errorf("costs.CalculateMultiContextCosts: %w: ExtraRunwayEpochs must be non-negative", ErrInvalidArgument)
+	}
+	options := *opts
+	opts = &options
+	pieceSizes = slices.Clone(pieceSizes)
+	refs = slices.Clone(refs)
+	for i := range refs {
+		leaves, err := resolveCurrentLeafCount(refs[i].IsNewDataSet, refs[i].CurrentDataSetLeafCount)
+		if err != nil {
+			return nil, fmt.Errorf("costs.CalculateMultiContextCosts: refs[%d]: %w", i, err)
+		}
+		refs[i].CurrentDataSetLeafCount = leaves
 	}
 	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
@@ -162,26 +178,25 @@ func (s *Service) CalculateMultiContextCosts(
 	totalAddPiecesFee := new(big.Int)
 	allNewDataSets := true
 	requiredLockupPeriod := requiredLockupPeriod(priceList)
+	addedLeaves := pieceSizesToLeafCount(pieceSizes)
+	pieceCount := big.NewInt(int64(len(pieceSizes)))
 
 	for i := range refs {
 		ref := &refs[i]
 		if !ref.IsNewDataSet {
 			allNewDataSets = false
 		}
-		currentSize := ref.CurrentDataSetSizeBytes
-		if currentSize == nil {
-			currentSize = new(big.Int)
-		}
+		currentLeaves := ref.CurrentDataSetLeafCount
 
-		lockup := CalculateAdditionalLockupRequired(
-			dataSizeBytes,
-			currentSize,
+		lockup := calculateAdditionalLockupRequired(
+			addedLeaves,
+			currentLeaves,
 			priceList,
 			requiredLockupPeriod,
 			ref.IsNewDataSet,
 			ref.WithCDN,
 		)
-		fees := CalculateUploadFees(priceList, ref.IsNewDataSet, opts.PieceCount)
+		fees := CalculateUploadFees(priceList, ref.IsNewDataSet, pieceCount)
 		totalRateDelta.Add(totalRateDelta, lockup.RateDeltaPerEpoch)
 		totalLockup.Add(totalLockup, lockup.Total)
 		totalLifecycleLockup.Add(totalLifecycleLockup, lockup.LifecycleLockup)
@@ -191,7 +206,7 @@ func (s *Service) CalculateMultiContextCosts(
 		totalCreateDataSetFee.Add(totalCreateDataSetFee, fees.CreateDataSetFee)
 		totalAddPiecesFee.Add(totalAddPiecesFee, fees.AddPiecesFee)
 
-		totalSize := new(big.Int).Add(currentSize, dataSizeBytes)
+		totalSize := leafCountToBillableBytes(new(big.Int).Add(currentLeaves, addedLeaves))
 		rate := CalculateEffectiveRate(
 			totalSize,
 			priceList.Rates.StoragePerTiBPerMonth,

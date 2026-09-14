@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/costs"
@@ -19,9 +18,9 @@ func Example() {
 
 	ctx := context.Background()
 	payer := common.HexToAddress("0x...")
-	dataSize := big.NewInt(1 << 30)
+	pieceSizes := []uint64{256 << 20}
 
-	quote, err := svc.GetUploadCosts(ctx, payer, dataSize, nil)
+	quote, err := svc.GetUploadCosts(ctx, payer, pieceSizes, &costs.UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		log.Fatal(err)
 	}

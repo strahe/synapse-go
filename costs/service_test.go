@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
@@ -208,13 +209,13 @@ func TestService_UsesExplicitPaymentAddresses(t *testing.T) {
 		t.Fatalf("service FWSS=%s want %s", svc.fwss, operator)
 	}
 
-	if _, err := svc.GetUploadCosts(context.Background(), owner, bi(1024), &UploadCostOptions{IsNewDataSet: true}); err != nil {
+	if _, err := svc.GetUploadCosts(context.Background(), owner, []uint64{1024}, &UploadCostOptions{IsNewDataSet: true}); err != nil {
 		t.Fatalf("GetUploadCosts: %v", err)
 	}
 	if _, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		owner,
-		bi(1024),
+		[]uint64{1024},
 		[]MultiContextRef{{IsNewDataSet: true}},
 		&UploadCostOptions{},
 	); err != nil {
@@ -243,7 +244,7 @@ func TestGetUploadCosts_NeedsApproval(t *testing.T) {
 			approval: notApproved,
 		})
 
-	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
+	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestGetUploadCosts_ReadyWhenFundedAndApproved(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{IsNewDataSet: true})
+	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestGetUploadCosts_DepositPositive_WhenUnderfunded(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(chain.TiB), &UploadCostOptions{IsNewDataSet: true})
+	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{chain.MaxUploadSize}, &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,9 +308,8 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
+	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, slices.Repeat([]uint64{128}, 41), &UploadCostOptions{
 		IsNewDataSet: true,
-		PieceCount:   bi(41),
 	})
 	if err != nil {
 		t.Fatalf("new dataset GetUploadCosts: %v", err)
@@ -322,8 +322,8 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 		t.Errorf("new dataset lifecycle lockup: got %s, want %s", newDataSet.Lockup.LifecycleLockup, priceList.Lockups.LifecycleReserveTarget)
 	}
 
-	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), &UploadCostOptions{
-		CurrentDataSetSizeBytes: bi(chain.TiB),
+	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{
+		CurrentDataSetLeafCount: bi(chain.TiB),
 	})
 	if err != nil {
 		t.Fatalf("existing dataset GetUploadCosts: %v", err)
@@ -337,7 +337,7 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 	}
 }
 
-func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
+func TestGetUploadCosts_NilOpts_RejectsMissingState(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{},
 		&mockPay{
@@ -345,13 +345,9 @@ func TestGetUploadCosts_NilOpts_UsesDefaults(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	// nil opts must not panic
-	costs, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if costs == nil {
-		t.Fatal("expected non-nil result")
+	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, nil)
+	if got != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("GetUploadCosts = (%v, %v), want ErrInvalidArgument", got, err)
 	}
 }
 
@@ -366,8 +362,8 @@ func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
 		&mockPay{account: account, approval: maxApproval()})
 
 	withoutBuffer, err := svc.GetUploadCosts(
-		context.Background(), common.Address{}, bi(1024),
-		&UploadCostOptions{BufferEpochs: new(int64(0))},
+		context.Background(), common.Address{}, []uint64{1024},
+		&UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: new(int64(0))},
 	)
 	if err != nil {
 		t.Fatalf("GetUploadCosts without buffer: %v", err)
@@ -385,8 +381,8 @@ func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := svc.GetUploadCosts(
-				context.Background(), common.Address{}, bi(1024),
-				&UploadCostOptions{BufferEpochs: tt.bufferEpochs},
+				context.Background(), common.Address{}, []uint64{1024},
+				&UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: tt.bufferEpochs},
 			)
 			if err != nil {
 				t.Fatalf("GetUploadCosts: %v", err)
@@ -418,8 +414,8 @@ func TestCostServicesRejectNegativeBufferEpochsBeforeBackendReads(t *testing.T) 
 			name: "GetUploadCosts",
 			call: func() error {
 				_, err := svc.GetUploadCosts(
-					context.Background(), common.Address{}, bi(1024),
-					&UploadCostOptions{BufferEpochs: negative},
+					context.Background(), common.Address{}, []uint64{1024},
+					&UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: negative},
 				)
 				return err
 			},
@@ -428,8 +424,8 @@ func TestCostServicesRejectNegativeBufferEpochsBeforeBackendReads(t *testing.T) 
 			name: "CalculateMultiContextCosts",
 			call: func() error {
 				_, err := svc.CalculateMultiContextCosts(
-					context.Background(), common.Address{}, bi(1024),
-					[]MultiContextRef{{}}, &UploadCostOptions{BufferEpochs: negative},
+					context.Background(), common.Address{}, []uint64{1024},
+					[]MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: negative},
 				)
 				return err
 			},
@@ -456,7 +452,7 @@ func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
+	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int)})
 	if err != nil {
 		t.Fatalf("GetUploadCosts: %v", err)
 	}
@@ -495,8 +491,7 @@ func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
 		"BufferEpochs",
 		"EnableCDN",
 		"IsNewDataSet",
-		"CurrentDataSetSizeBytes",
-		"PieceCount",
+		"CurrentDataSetLeafCount",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UploadCostOptions fields=%v want %v", got, want)
@@ -540,7 +535,7 @@ func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
 		&mockWS{},
 		&mockPayErr{err: payErr})
 
-	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, bi(1024), nil)
+	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int)})
 	if err == nil {
 		t.Fatal("expected error when payments RPC fails")
 	}

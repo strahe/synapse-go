@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"slices"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
@@ -39,23 +41,23 @@ func (r *managerStorageInfoReader) GetStorageInfo(_ context.Context, client comm
 }
 
 type managerCostCalculator struct {
-	payer  common.Address
-	size   *big.Int
-	refs   []costs.MultiContextRef
-	opts   costs.UploadCostOptions
-	result *costs.MultiContextCosts
-	err    error
+	payer      common.Address
+	pieceSizes []uint64
+	refs       []costs.MultiContextRef
+	opts       costs.UploadCostOptions
+	result     *costs.MultiContextCosts
+	err        error
 }
 
 func (c *managerCostCalculator) CalculateMultiContextCosts(
 	_ context.Context,
 	payer common.Address,
-	size *big.Int,
+	pieceSizes []uint64,
 	refs []costs.MultiContextRef,
 	opts *costs.UploadCostOptions,
 ) (*costs.MultiContextCosts, error) {
 	c.payer = payer
-	c.size = new(big.Int).Set(size)
+	c.pieceSizes = slices.Clone(pieceSizes)
 	c.refs = refs
 	c.opts = *opts
 	return c.result, c.err
@@ -96,31 +98,35 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	dataSetID := types.NewBigInt(7)
 	otherDataSetID := types.NewBigInt(8)
 	refs := []ContextCostRef{
-		{Provider: testProvider(), CurrentDataSetSizeBytes: big.NewInt(9999)},
-		{DataSetID: &dataSetID, CurrentDataSetSizeBytes: big.NewInt(2048)},
-		{DataSetID: &otherDataSetID, CurrentDataSetSizeBytes: big.NewInt(8192), WithCDN: true},
+		{Provider: testProvider(), CurrentDataSetLeafCount: big.NewInt(9999)},
+		{DataSetID: &dataSetID, CurrentDataSetLeafCount: big.NewInt(2048)},
+		{DataSetID: &otherDataSetID, CurrentDataSetLeafCount: big.NewInt(8192), WithCDN: true},
 	}
-	opts := MultiCostOptions{EnableCDN: true, PieceCount: big.NewInt(2), ExtraRunwayEpochs: 7, BufferEpochs: new(int64(0))}
-	gotCosts, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, common.Address{})
+	opts := MultiCostOptions{EnableCDN: true, ExtraRunwayEpochs: 7, BufferEpochs: new(int64(0))}
+	gotCosts, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{128, 190}, refs, opts, common.Address{})
 	if err != nil || gotCosts == nil || gotCosts.RatePerEpoch.Cmp(wantCosts.RatePerEpoch) != 0 {
 		t.Fatalf("CalculateMultiContextCosts = %+v, %v", gotCosts, err)
 	}
-	if calculator.payer != defaultPayer || calculator.size.Uint64() != 4096 || len(calculator.refs) != len(refs) {
-		t.Fatalf("CalculateMultiContextCosts forwarded payer=%s size=%s refs=%d opts=%+v", calculator.payer, calculator.size, len(calculator.refs), calculator.opts)
+	if calculator.payer != defaultPayer || !slices.Equal(calculator.pieceSizes, []uint64{128, 190}) || len(calculator.refs) != len(refs) {
+		t.Fatalf("CalculateMultiContextCosts forwarded payer=%s pieceSizes=%v refs=%d opts=%+v", calculator.payer, calculator.pieceSizes, len(calculator.refs), calculator.opts)
 	}
 	if calculator.opts.BufferEpochs == nil || *calculator.opts.BufferEpochs != 0 {
 		t.Fatalf("CalculateMultiContextCosts BufferEpochs=%v want explicit zero", calculator.opts.BufferEpochs)
 	}
-	if calculator.opts.ExtraRunwayEpochs != 7 || calculator.opts.PieceCount.Cmp(big.NewInt(2)) != 0 {
+	if calculator.opts.ExtraRunwayEpochs != 7 {
 		t.Fatalf("CalculateMultiContextCosts forwarded opts=%+v", calculator.opts)
 	}
-	if !calculator.refs[0].IsNewDataSet || calculator.refs[0].CurrentDataSetSizeBytes != nil {
+	if !calculator.refs[0].IsNewDataSet || calculator.refs[0].CurrentDataSetLeafCount != nil {
 		t.Fatalf("new ref=%+v want new dataset without current size", calculator.refs[0])
 	}
 	for i := 1; i < len(refs); i++ {
-		if calculator.refs[i].IsNewDataSet || calculator.refs[i].CurrentDataSetSizeBytes.Cmp(refs[i].CurrentDataSetSizeBytes) != 0 {
-			t.Fatalf("ref[%d]=%+v want existing dataset size %s", i, calculator.refs[i], refs[i].CurrentDataSetSizeBytes)
+		if calculator.refs[i].IsNewDataSet || calculator.refs[i].CurrentDataSetLeafCount.Cmp(refs[i].CurrentDataSetLeafCount) != 0 {
+			t.Fatalf("ref[%d]=%+v want existing dataset size %s", i, calculator.refs[i], refs[i].CurrentDataSetLeafCount)
 		}
+	}
+	calculator.refs[1].CurrentDataSetLeafCount.SetInt64(999)
+	if refs[1].CurrentDataSetLeafCount.Int64() != 2048 {
+		t.Fatal("forwarded leaf count aliases caller input")
 	}
 	for i, ref := range calculator.refs {
 		if !ref.WithCDN {
@@ -129,7 +135,7 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	}
 
 	opts.EnableCDN = false
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); err != nil {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{128, 190}, refs, opts, override); err != nil {
 		t.Fatal(err)
 	}
 	if calculator.payer != override {
@@ -142,13 +148,60 @@ func TestServiceManagerFacades_ForwardConfiguredInputs(t *testing.T) {
 	}
 
 	calculator.err = context.Canceled
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); !errors.Is(err, context.Canceled) || errors.Unwrap(err) != nil {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{128, 190}, refs, opts, override); !errors.Is(err, context.Canceled) || errors.Unwrap(err) != nil {
 		t.Fatalf("CalculateMultiContextCosts error=%v want unwrapped cancellation", err)
 	}
 	calculator.err = nil
 	calculator.result = nil
-	if result, err := svc.CalculateMultiContextCosts(context.Background(), 4096, refs, opts, override); result != nil || err != nil {
+	if result, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{128, 190}, refs, opts, override); result != nil || err != nil {
 		t.Fatalf("CalculateMultiContextCosts=%+v, %v want nil calculator result unchanged", result, err)
+	}
+}
+
+func TestCalculateMultiContextCosts_RejectsInvalidPlansBeforeCalculator(t *testing.T) {
+	dataSetID := types.NewBigInt(10)
+	for _, tc := range []struct {
+		name  string
+		sizes []uint64
+		refs  []ContextCostRef
+		opts  MultiCostOptions
+	}{
+		{"nil sizes", nil, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"empty sizes", []uint64{}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"zero piece", []uint64{128, 0}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"below minimum", []uint64{chain.MinUploadSize - 1}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"above maximum", []uint64{chain.MaxUploadSize + 1}, []ContextCostRef{{}}, MultiCostOptions{}},
+		{"missing leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID}}, MultiCostOptions{}},
+		{"negative leaves", []uint64{128}, []ContextCostRef{{DataSetID: &dataSetID, CurrentDataSetLeafCount: big.NewInt(-1)}}, MultiCostOptions{}},
+		{"negative runway", []uint64{128}, []ContextCostRef{{}}, MultiCostOptions{ExtraRunwayEpochs: -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calc := &managerCostCalculator{}
+			svc := newTestService()
+			svc.costCalc = calc
+			got, err := svc.CalculateMultiContextCosts(context.Background(), tc.sizes, tc.refs, tc.opts, testPayer())
+			if got != nil || !errors.Is(err, ErrInvalidArgument) || calc.pieceSizes != nil {
+				t.Fatalf("costs=(%v, %v), calculator input=%v", got, err, calc.pieceSizes)
+			}
+		})
+	}
+}
+
+func TestCalculateMultiContextCosts_AcceptsPieceSizeBounds(t *testing.T) {
+	calculator := &managerCostCalculator{result: &costs.MultiContextCosts{}}
+	svc, err := New(Options{CostCalculator: calculator, PayerAddress: testPayer()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []uint64{chain.MinUploadSize, chain.MaxUploadSize} {
+		if _, err := svc.CalculateMultiContextCosts(
+			context.Background(), []uint64{size}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{},
+		); err != nil {
+			t.Fatalf("CalculateMultiContextCosts(%d): %v", size, err)
+		}
+		if !slices.Equal(calculator.pieceSizes, []uint64{size}) {
+			t.Fatalf("calculator sizes=%v want [%d]", calculator.pieceSizes, size)
+		}
 	}
 }
 
@@ -169,11 +222,11 @@ func TestServiceManagerFacades_ValidateConfiguration(t *testing.T) {
 		{"FindDataSets", func() error { _, err := svc.FindDataSets(context.Background(), nil); return err }, ErrUninitialized},
 		{"GetStorageInfo", func() error { _, err := svc.GetStorageInfo(context.Background(), nil); return err }, ErrUninitialized},
 		{"CalculateMultiContextCosts", func() error {
-			_, err := svc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
+			_, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
 		}, ErrUninitialized},
 		{"CalculateMultiContextCosts typed nil", func() error {
-			_, err := typedNilSvc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
+			_, err := typedNilSvc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{})
 			return err
 		}, ErrUninitialized},
 	}
@@ -200,17 +253,17 @@ func TestServiceManagerFacades_ValidateArguments(t *testing.T) {
 	if _, err := svc.FindDataSets(context.Background(), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("FindDataSets error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), 1, nil, MultiCostOptions{}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, nil, MultiCostOptions{}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(empty refs) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{}); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{}, common.Address{}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(zero payer) error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := svc.CalculateMultiContextCosts(context.Background(), 1, []ContextCostRef{{}}, MultiCostOptions{BufferEpochs: new(int64(-1))}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.CalculateMultiContextCosts(context.Background(), []uint64{chain.MinUploadSize}, []ContextCostRef{{}}, MultiCostOptions{BufferEpochs: new(int64(-1))}, defaultPayer); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("CalculateMultiContextCosts(negative buffer) error = %v, want ErrInvalidArgument", err)
 	}
-	if calculator.size != nil {
-		t.Fatalf("cost calculator called with size=%s", calculator.size)
+	if calculator.pieceSizes != nil {
+		t.Fatalf("cost calculator called with pieceSizes=%v", calculator.pieceSizes)
 	}
 }
 

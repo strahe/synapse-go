@@ -222,7 +222,7 @@ func (c *Client) initServices() error {
 		PayerAddress:       rootAddress,
 	}
 	if c.pdpReader != nil {
-		storageOpts.DataSetSizeReader = c.pdpReader
+		storageOpts.DataSetLeafCountReader = c.pdpReader
 	}
 	svc, err := storage.New(storageOpts)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -128,12 +129,15 @@ func (s *Service) GetPriceList(ctx context.Context) (*warmstorage.PriceList, err
 
 // GetUploadCosts returns cost and deposit information for an upload.
 //
-// payer is the client address. dataSizeBytes is the size of the new data.
-// opts may be nil (defaults apply). opts.CurrentDataSetSizeBytes defaults to zero.
+// payer is the client address. pieceSizes contains each piece's raw payload
+// size and must be non-empty; every size must be between chain.MinUploadSize
+// and chain.MaxUploadSize. New datasets require opts.IsNewDataSet=true;
+// existing datasets require a non-negative leaf count. Nil or empty opts
+// therefore returns ErrInvalidArgument.
 func (s *Service) GetUploadCosts(
 	ctx context.Context,
 	payer common.Address,
-	dataSizeBytes *big.Int,
+	pieceSizes []uint64,
 	opts *UploadCostOptions,
 ) (*UploadCosts, error) {
 	if err := s.checkInit(); err != nil {
@@ -142,14 +146,23 @@ func (s *Service) GetUploadCosts(
 	if opts == nil {
 		opts = &UploadCostOptions{}
 	}
+	if err := validatePieceSizes(pieceSizes); err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
+	}
+	if opts.ExtraRunwayEpochs < 0 {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w: ExtraRunwayEpochs must be non-negative", ErrInvalidArgument)
+	}
+	options := *opts
+	opts = &options
+	pieceSizes = slices.Clone(pieceSizes)
 	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
-	currentDataSetSize := opts.CurrentDataSetSizeBytes
-	if currentDataSetSize == nil {
-		currentDataSetSize = new(big.Int)
+	currentLeaves, err := resolveCurrentLeafCount(opts.IsNewDataSet, opts.CurrentDataSetLeafCount)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
 
 	var (
@@ -208,22 +221,20 @@ func (s *Service) GetUploadCosts(
 		priceList = &warmstorage.PriceList{}
 	}
 
+	addedLeaves := pieceSizesToLeafCount(pieceSizes)
 	rate := CalculateEffectiveRate(
-		new(big.Int).Add(currentDataSetSize, dataSizeBytes),
+		leafCountToBillableBytes(new(big.Int).Add(currentLeaves, addedLeaves)),
 		priceList.Rates.StoragePerTiBPerMonth,
 		priceList.Rates.DatasetFeePerMonth,
 		chain.EpochsPerMonth,
 	)
 
-	pieceCount := opts.PieceCount
-	if pieceCount == nil {
-		pieceCount = bigOne
-	}
+	pieceCount := big.NewInt(int64(len(pieceSizes)))
 	fees := CalculateUploadFees(priceList, opts.IsNewDataSet, pieceCount)
 	requiredLockupPeriod := requiredLockupPeriod(priceList)
-	lockup := CalculateAdditionalLockupRequired(
-		dataSizeBytes,
-		currentDataSetSize,
+	lockup := calculateAdditionalLockupRequired(
+		addedLeaves,
+		currentLeaves,
 		priceList,
 		requiredLockupPeriod,
 		opts.IsNewDataSet,

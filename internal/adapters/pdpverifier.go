@@ -20,12 +20,12 @@ import (
 )
 
 // PDPReader is the union of [storage.PDPVerifierReader] and
-// [storage.DataSetSizeReader] satisfied by a single adapter around the
+// [storage.DataSetLeafCountReader] satisfied by a single adapter around the
 // abigen PDPVerifierCaller plus an RPC backend. Root synapse holds a
 // single field of this type and fans it out to both storage options.
 type PDPReader interface {
 	storage.PDPVerifierReader
-	storage.DataSetSizeReader
+	storage.DataSetLeafCountReader
 }
 
 // pdpVerifierReader adapts the abigen PDPVerifierCaller plus an RPC
@@ -190,21 +190,23 @@ func (a *pdpVerifierReader) BlockNumber(ctx context.Context) (uint64, error) {
 	return a.backend.BlockNumber(ctx)
 }
 
-// GetDataSetSizeBytes returns the on-chain size in bytes of a data set
-// by reading PDPVerifier.getDataSetLeafCount and multiplying by the
-// fixed 32-byte leaf size. Satisfies storage.DataSetSizeReader.
-func (a *pdpVerifierReader) GetDataSetSizeBytes(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
+// GetDataSetLeafCount returns the raw on-chain leaf count, before conversion
+// to billable bytes. Satisfies storage.DataSetLeafCountReader.
+func (a *pdpVerifierReader) GetDataSetLeafCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error) {
 	leafCount, err := a.caller.GetDataSetLeafCount(&bind.CallOpts{Context: ctx}, dataSetID.Big())
 	if err != nil {
 		if pdpverifier.IsDataSetUnavailable(err) {
-			return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetSizeBytes: %w", errors.Join(storage.ErrDataSetUnavailable, err))
+			return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetLeafCount: %w", errors.Join(storage.ErrDataSetUnavailable, err))
 		}
-		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetSizeBytes: %w", err)
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetLeafCount: %w", err)
 	}
 	if leafCount == nil {
-		return new(big.Int), nil
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetLeafCount: backend returned nil leaf count for data set %s", dataSetID)
 	}
-	return new(big.Int).Mul(leafCount, big.NewInt(32)), nil
+	if leafCount.Sign() < 0 {
+		return nil, fmt.Errorf("adapters.pdpVerifierReader.GetDataSetLeafCount: backend returned negative leaf count for data set %s", dataSetID)
+	}
+	return new(big.Int).Set(leafCount), nil
 }
 
 func dedupeBigInts(values []sdktypes.BigInt) []sdktypes.BigInt {

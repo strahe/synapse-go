@@ -284,7 +284,7 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 	}
 
 	prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
-		DataSize:          uint64(len(data)),
+		PieceSizes:        []uint64{uint64(len(data))},
 		Contexts:          []storage.StorageContext{uploadCtx},
 		ExtraRunwayEpochs: delegatedFundingExtraRunwayEpochs,
 		BufferEpochs:      new(int64(delegatedFundingBufferEpochs)),

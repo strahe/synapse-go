@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 )
 
@@ -71,15 +72,30 @@ func (s *Service) GetStorageInfo(ctx context.Context, opts *GetStorageInfoOption
 }
 
 // CalculateMultiContextCosts estimates aggregate costs for the given storage
-// targets. A zero payer uses the configured default payer. Use
-// [costs.Service.CalculateMultiContextCosts] for normalized cost refs and
-// arbitrary-precision payload sizes without storage-specific input conversion.
-func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*costs.MultiContextCosts, error) {
+// targets. pieceSizes contains the raw payload size of each piece, replicated
+// to every target. Each size must be between chain.MinUploadSize and
+// chain.MaxUploadSize. Existing refs require a non-negative leaf count. A zero
+// payer uses the configured default payer.
+func (s *Service) CalculateMultiContextCosts(ctx context.Context, pieceSizes []uint64, refs []ContextCostRef, opts MultiCostOptions, payer common.Address) (*costs.MultiContextCosts, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
 	if opts.BufferEpochs != nil && *opts.BufferEpochs < 0 {
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: BufferEpochs must be non-negative", ErrInvalidArgument)
+	}
+	if opts.ExtraRunwayEpochs < 0 {
+		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: ExtraRunwayEpochs must be non-negative", ErrInvalidArgument)
+	}
+	if err := validateCostPieceSizes(pieceSizes); err != nil {
+		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w", err)
+	}
+	if len(refs) == 0 {
+		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: empty refs", ErrInvalidArgument)
+	}
+	for i, ref := range refs {
+		if ref.DataSetID != nil && (ref.CurrentDataSetLeafCount == nil || ref.CurrentDataSetLeafCount.Sign() < 0) {
+			return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: refs[%d] requires a non-negative CurrentDataSetLeafCount", ErrInvalidArgument, i)
+		}
 	}
 	if s.costCalc == nil {
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: no CostCalculator configured", ErrUninitialized)
@@ -90,30 +106,42 @@ func (s *Service) CalculateMultiContextCosts(ctx context.Context, dataSizeBytes 
 	if payer == (common.Address{}) {
 		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: zero payer and no default payer", ErrInvalidArgument)
 	}
-	if len(refs) == 0 {
-		return nil, fmt.Errorf("storage.Service.CalculateMultiContextCosts: %w: empty refs", ErrInvalidArgument)
-	}
-	size := new(big.Int).SetUint64(dataSizeBytes)
-	return s.calculateMultiContextCosts(ctx, payer, size, refs, opts)
+	return s.calculateMultiContextCosts(ctx, payer, pieceSizes, refs, opts)
 }
 
-func (s *Service) calculateMultiContextCosts(ctx context.Context, payer common.Address, dataSizeBytes *big.Int, refs []ContextCostRef, opts MultiCostOptions) (*costs.MultiContextCosts, error) {
+func (s *Service) calculateMultiContextCosts(ctx context.Context, payer common.Address, pieceSizes []uint64, refs []ContextCostRef, opts MultiCostOptions) (*costs.MultiContextCosts, error) {
 	costRefs := make([]costs.MultiContextRef, len(refs))
 	for i, ref := range refs {
 		isNewDataSet := ref.DataSetID == nil
-		currentSize := ref.CurrentDataSetSizeBytes
+		currentLeaves := ref.CurrentDataSetLeafCount
 		if isNewDataSet {
-			currentSize = nil
+			currentLeaves = nil
+		} else if currentLeaves != nil {
+			currentLeaves = new(big.Int).Set(currentLeaves)
 		}
 		costRefs[i] = costs.MultiContextRef{
 			IsNewDataSet:            isNewDataSet,
-			CurrentDataSetSizeBytes: currentSize,
+			CurrentDataSetLeafCount: currentLeaves,
 			WithCDN:                 ref.WithCDN || opts.EnableCDN,
 		}
 	}
-	return s.costCalc.CalculateMultiContextCosts(ctx, payer, dataSizeBytes, costRefs, &costs.UploadCostOptions{
-		PieceCount:        opts.PieceCount,
+	return s.costCalc.CalculateMultiContextCosts(ctx, payer, pieceSizes, costRefs, &costs.UploadCostOptions{
 		ExtraRunwayEpochs: opts.ExtraRunwayEpochs,
 		BufferEpochs:      opts.BufferEpochs,
 	})
+}
+
+func validateCostPieceSizes(pieceSizes []uint64) error {
+	if len(pieceSizes) == 0 {
+		return fmt.Errorf("%w: PieceSizes must not be empty", ErrInvalidArgument)
+	}
+	for i, size := range pieceSizes {
+		if size < chain.MinUploadSize || size > chain.MaxUploadSize {
+			return fmt.Errorf(
+				"%w: PieceSizes[%d] must be between %d and %d bytes",
+				ErrInvalidArgument, i, chain.MinUploadSize, chain.MaxUploadSize,
+			)
+		}
+	}
+	return nil
 }

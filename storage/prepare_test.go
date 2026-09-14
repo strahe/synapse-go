@@ -5,12 +5,14 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/internal/lifecycle"
 	"github.com/strahe/synapse-go/payments"
@@ -18,19 +20,23 @@ import (
 )
 
 type stubCostCalc struct {
-	out      *costs.MultiContextCosts
-	err      error
-	gotPayer common.Address
-	gotSize  *big.Int
-	gotRefs  []costs.MultiContextRef
-	gotOpts  costs.UploadCostOptions
+	out           *costs.MultiContextCosts
+	err           error
+	gotPayer      common.Address
+	gotPieceSizes []uint64
+	gotRefs       []costs.MultiContextRef
+	gotOpts       costs.UploadCostOptions
+	mutateInputs  bool
 }
 
-func (s *stubCostCalc) CalculateMultiContextCosts(_ context.Context, payer common.Address, size *big.Int, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error) {
+func (s *stubCostCalc) CalculateMultiContextCosts(_ context.Context, payer common.Address, pieceSizes []uint64, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error) {
 	s.gotPayer = payer
-	s.gotSize = new(big.Int).Set(size)
+	s.gotPieceSizes = slices.Clone(pieceSizes)
 	s.gotRefs = append([]costs.MultiContextRef(nil), refs...)
 	s.gotOpts = *opts
+	if s.mutateInputs {
+		pieceSizes[0] = 999
+	}
 	return s.out, s.err
 }
 
@@ -40,15 +46,15 @@ type stubFunder struct {
 	gotOpt int
 }
 
-type stubDataSetSizeReader struct {
-	size  *big.Int
-	err   error
-	calls int
+type stubDataSetLeafCountReader struct {
+	leaves *big.Int
+	err    error
+	calls  int
 }
 
-func (s *stubDataSetSizeReader) GetDataSetSizeBytes(context.Context, sdktypes.BigInt) (*big.Int, error) {
+func (s *stubDataSetLeafCountReader) GetDataSetLeafCount(context.Context, sdktypes.BigInt) (*big.Int, error) {
 	s.calls++
-	return s.size, s.err
+	return s.leaves, s.err
 }
 
 func (s *stubFunder) FundSync(_ context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error) {
@@ -109,34 +115,106 @@ func TestPrepare_ReadyShortCircuits(t *testing.T) {
 	}
 }
 
-func TestPrepareRefs_DataSetSizeModes(t *testing.T) {
+func TestPrepareRefs_LeafCountModes(t *testing.T) {
 	dataSetID := sdktypes.NewBigInt(10)
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), dataSetID: &dataSetID}
 	opts := &PrepareOptions{Contexts: []StorageContext{uploadCtx}}
 
 	t.Run("configured reader propagates unavailable", func(t *testing.T) {
-		reader := &stubDataSetSizeReader{err: ErrDataSetUnavailable}
+		reader := &stubDataSetLeafCountReader{err: ErrDataSetUnavailable}
 		svc := newTestService()
-		svc.sizeReader = reader
+		svc.leafCountReader = reader
 		refs, err := svc.prepareRefs(context.Background(), opts)
 		if refs != nil || !errors.Is(err, ErrDataSetUnavailable) {
 			t.Fatalf("prepareRefs = (%v, %v), want unavailable sentinel", refs, err)
 		}
 		if reader.calls != 1 {
-			t.Fatalf("size reader calls = %d, want 1", reader.calls)
+			t.Fatalf("leaf count reader calls = %d, want 1", reader.calls)
 		}
 	})
 
-	t.Run("unconfigured reader keeps best effort zero", func(t *testing.T) {
+	t.Run("unconfigured reader rejects missing state", func(t *testing.T) {
 		svc := newTestService()
 		refs, err := svc.prepareRefs(context.Background(), opts)
-		if err != nil {
-			t.Fatalf("prepareRefs: %v", err)
-		}
-		if len(refs) != 1 || refs[0].CurrentDataSetSizeBytes != nil {
-			t.Fatalf("refs = %+v, want an unspecified zero-size estimate", refs)
+		if refs != nil || !errors.Is(err, ErrUninitialized) {
+			t.Fatalf("prepareRefs = (%v, %v), want ErrUninitialized", refs, err)
 		}
 	})
+	for _, tc := range []struct {
+		name   string
+		leaves *big.Int
+		err    error
+		valid  bool
+	}{
+		{"known empty", big.NewInt(0), nil, true},
+		{"nonempty", big.NewInt(5), nil, true},
+		{"nil response", nil, nil, false},
+		{"negative response", big.NewInt(-1), nil, false},
+		{"read failure", nil, context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService()
+			reader := &stubDataSetLeafCountReader{leaves: tc.leaves, err: tc.err}
+			svc.leafCountReader = reader
+			refs, err := svc.prepareRefs(context.Background(), opts)
+			if tc.valid {
+				if err != nil || len(refs) != 1 || refs[0].CurrentDataSetLeafCount.Cmp(tc.leaves) != 0 {
+					t.Fatalf("prepareRefs = (%v, %v), want leaf count %s", refs, err, tc.leaves)
+				}
+				tc.leaves.SetInt64(999)
+				if refs[0].CurrentDataSetLeafCount.Int64() == 999 {
+					t.Fatal("reader result aliases prepared state")
+				}
+			} else {
+				if refs != nil || err == nil || errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrDataSetUnavailable) || errors.Is(err, ErrUninitialized) {
+					t.Fatalf("prepareRefs = (%v, %v), want backend error", refs, err)
+				}
+				if tc.err != nil && !errors.Is(err, tc.err) {
+					t.Fatalf("lost original cause: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepare_ForwardsPiecesAndLeafCounts(t *testing.T) {
+	svc := newTestService()
+	calc := &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}, mutateInputs: true}
+	svc.costCalc = calc
+	reader := &stubDataSetLeafCountReader{leaves: big.NewInt(5)}
+	svc.leafCountReader = reader
+	dataSetID := sdktypes.NewBigInt(10)
+	opts := &PrepareOptions{
+		PieceSizes: []uint64{128, 190},
+		Contexts: []StorageContext{
+			&fakeUploadContext{id: sdktypes.NewBigInt(1)},
+			&fakeUploadContext{id: sdktypes.NewBigInt(2), dataSetID: &dataSetID},
+		},
+	}
+	if _, err := svc.Prepare(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if reader.calls != 1 || !slices.Equal(calc.gotPieceSizes, []uint64{128, 190}) ||
+		len(calc.gotRefs) != 2 || !calc.gotRefs[0].IsNewDataSet || calc.gotRefs[1].IsNewDataSet ||
+		calc.gotRefs[1].CurrentDataSetLeafCount.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("incorrect preparation: pieces=%v refs=%+v reader calls=%d", calc.gotPieceSizes, calc.gotRefs, reader.calls)
+	}
+	reader.leaves.SetInt64(999)
+	if opts.PieceSizes[0] != 128 || calc.gotRefs[1].CurrentDataSetLeafCount.Int64() != 5 {
+		t.Fatal("preparation did not preserve independent input state")
+	}
+}
+
+func TestPrepare_PrecomputedCostsSkipReader(t *testing.T) {
+	svc := newTestService()
+	reader := &stubDataSetLeafCountReader{err: errors.New("must not read")}
+	svc.leafCountReader = reader
+	for _, sizes := range [][]uint64{nil, {}} {
+		got, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: &costs.MultiContextCosts{Ready: true}, PieceSizes: sizes})
+		if err != nil || got.Transaction != nil || reader.calls != 0 {
+			t.Fatalf("precomputed preparation = (%v, %v), reader calls=%d", got, err, reader.calls)
+		}
+	}
 }
 
 func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
@@ -148,8 +226,8 @@ func TestPrepareRejectsContextIdentityBeforeCostCalculation(t *testing.T) {
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1), identity: &identity}
 
 	result, err := svc.Prepare(context.Background(), &PrepareOptions{
-		DataSize: 1,
-		Contexts: []StorageContext{uploadCtx},
+		PieceSizes: []uint64{chain.MinUploadSize},
+		Contexts:   []StorageContext{uploadCtx},
 	})
 	if result != nil || !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("result=%v error=%v want ErrInvalidArgument", result, err)
@@ -185,15 +263,29 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 		{
 			name: "costs with data size",
 			opts: &PrepareOptions{
-				Costs:    readyCosts,
-				DataSize: 128,
+				Costs:      readyCosts,
+				PieceSizes: []uint64{128},
 			},
 		},
 		{
-			name: "costs with piece count",
+			name: "zero piece size without costs",
 			opts: &PrepareOptions{
-				Costs:      readyCosts,
-				PieceCount: big.NewInt(2),
+				PieceSizes: []uint64{0},
+				Contexts:   []StorageContext{uploadCtx},
+			},
+		},
+		{
+			name: "piece size below minimum",
+			opts: &PrepareOptions{
+				PieceSizes: []uint64{chain.MinUploadSize - 1},
+				Contexts:   []StorageContext{uploadCtx},
+			},
+		},
+		{
+			name: "piece size above maximum",
+			opts: &PrepareOptions{
+				PieceSizes: []uint64{chain.MaxUploadSize + 1},
+				Contexts:   []StorageContext{uploadCtx},
 			},
 		},
 		{
@@ -213,14 +305,14 @@ func TestPrepare_RejectsInvalidOptions(t *testing.T) {
 		{
 			name: "negative extra runway",
 			opts: &PrepareOptions{
-				DataSize:          128,
+				PieceSizes:        []uint64{128},
 				ExtraRunwayEpochs: -1,
 			},
 		},
 		{
 			name: "negative buffer",
 			opts: &PrepareOptions{
-				DataSize:     128,
+				PieceSizes:   []uint64{128},
 				BufferEpochs: new(int64(-1)),
 			},
 		},
@@ -330,7 +422,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 		{
 			name: "calculated nil deposit",
 			opts: &PrepareOptions{
-				DataSize: 128,
+				PieceSizes: []uint64{128},
 				Contexts: []StorageContext{
 					uploadCtx,
 				},
@@ -343,7 +435,7 @@ func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 		{
 			name: "calculated negative deposit",
 			opts: &PrepareOptions{
-				DataSize: 128,
+				PieceSizes: []uint64{128},
 				Contexts: []StorageContext{
 					uploadCtx,
 				},
@@ -377,8 +469,8 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 	svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
 
 	_, err := svc.Prepare(context.Background(), &PrepareOptions{
-		DataSize: 128,
-		Contexts: []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
+		PieceSizes: []uint64{128},
+		Contexts:   []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Prepare error = %v, want ErrInvalidArgument", err)
@@ -388,7 +480,7 @@ func TestPrepare_RejectsZeroDefaultPayer(t *testing.T) {
 func TestPrepare_RequiresExplicitContexts(t *testing.T) {
 	svc := newTestService()
 	svc.costCalc = &stubCostCalc{out: &costs.MultiContextCosts{Ready: true}}
-	_, err := svc.Prepare(context.Background(), &PrepareOptions{DataSize: 128})
+	_, err := svc.Prepare(context.Background(), &PrepareOptions{PieceSizes: []uint64{128}})
 	assertInvalidArgument(t, err)
 }
 
@@ -409,17 +501,16 @@ func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
 			svc.payerAddr = testPayer()
 
 			_, err := svc.Prepare(context.Background(), &PrepareOptions{
-				DataSize:          128,
+				PieceSizes:        []uint64{128},
 				Contexts:          []StorageContext{&fakeUploadContext{id: sdktypes.NewBigInt(1)}},
-				PieceCount:        big.NewInt(41),
 				ExtraRunwayEpochs: 7,
 				BufferEpochs:      tt.bufferEpochs,
 			})
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
-			if costCalc.gotPayer != testPayer() || costCalc.gotSize.Uint64() != 128 {
-				t.Fatalf("cost calculation payer=%s size=%s want %s and 128", costCalc.gotPayer, costCalc.gotSize, testPayer())
+			if costCalc.gotPayer != testPayer() || !slices.Equal(costCalc.gotPieceSizes, []uint64{128}) {
+				t.Fatalf("cost calculation payer=%s pieceSizes=%v want %s and [128]", costCalc.gotPayer, costCalc.gotPieceSizes, testPayer())
 			}
 			if costCalc.gotOpts.ExtraRunwayEpochs != 7 {
 				t.Fatalf("ExtraRunwayEpochs=%d want 7", costCalc.gotOpts.ExtraRunwayEpochs)
@@ -430,9 +521,6 @@ func TestPrepare_ForwardsRunwayAndBufferOptions(t *testing.T) {
 				}
 			} else if costCalc.gotOpts.BufferEpochs == nil || *costCalc.gotOpts.BufferEpochs != *tt.bufferEpochs {
 				t.Fatalf("BufferEpochs=%v want %d", costCalc.gotOpts.BufferEpochs, *tt.bufferEpochs)
-			}
-			if costCalc.gotOpts.PieceCount.Cmp(big.NewInt(41)) != 0 {
-				t.Fatalf("PieceCount=%s want 41", costCalc.gotOpts.PieceCount)
 			}
 			if len(costCalc.gotRefs) != 1 {
 				t.Fatalf("len(gotRefs)=%d want 1", len(costCalc.gotRefs))
@@ -456,7 +544,7 @@ func TestPrepare_ReturnsErrorWhenCostCalculatorFails(t *testing.T) {
 			svc.payerAddr = testPayer()
 
 			_, err := svc.Prepare(context.Background(), &PrepareOptions{
-				DataSize: 128,
+				PieceSizes: []uint64{128},
 				Contexts: []StorageContext{
 					&fakeUploadContext{id: sdktypes.NewBigInt(1)},
 				},

@@ -98,6 +98,7 @@ func TestExternalModuleCanConfigureServiceOptions(t *testing.T) {
 import (
 	"context"
 	"iter"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -152,7 +153,11 @@ var (
 	_ = sessionkey.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ costs.ContractCaller = blockNumberReader{}
 	_                      = costs.Options{Caller: blockNumberReader{}, Lifecycle: sharedLifecycle}
-	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer}
+	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer, CurrentDataSetLeafCount: big.NewInt(0)}
+	_ = costs.MultiContextRef{CurrentDataSetLeafCount: big.NewInt(0)}
+	_ func(*costs.Service, context.Context, common.Address, []uint64, *costs.UploadCostOptions) (*costs.UploadCosts, error) = (*costs.Service).GetUploadCosts
+	_ func(*costs.Service, context.Context, common.Address, []uint64, []costs.MultiContextRef, *costs.UploadCostOptions) (*costs.MultiContextCosts, error) = (*costs.Service).CalculateMultiContextCosts
+	_ func([]uint64, *big.Int, *warmstorage.PriceList, *big.Int, bool, bool) (costs.AdditionalLockup, error) = costs.CalculateAdditionalLockupRequired
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
 	_ = storage.WithFWSSTerminator(sharedTerminator)
@@ -163,7 +168,11 @@ var (
 	_ = storage.ContextUploadOptions{}
 	_ = storage.SelectUploadContextsOptions{AllowUnendorsedPrimary: true}
 	_ = storage.MultiCostOptions{BufferEpochs: &sharedBuffer}
-	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer}
+	_ = storage.PrepareOptions{BufferEpochs: &sharedBuffer, PieceSizes: []uint64{128}}
+	_ = storage.ContextCostRef{CurrentDataSetLeafCount: big.NewInt(0)}
+	_ = storage.Options{DataSetLeafCountReader: nil}
+	_ func(storage.DataSetLeafCountReader, context.Context, types.BigInt) (*big.Int, error) = storage.DataSetLeafCountReader.GetDataSetLeafCount
+	_ func(*storage.Service, context.Context, []uint64, []storage.ContextCostRef, storage.MultiCostOptions, common.Address) (*costs.MultiContextCosts, error) = (*storage.Service).CalculateMultiContextCosts
 	_ *storage.DataSetDetails
 )
 `)
