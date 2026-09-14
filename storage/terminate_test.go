@@ -414,25 +414,38 @@ func TestContext_TerminateService_SkipProviderFallsBackFromZeroReceiptHash(t *te
 }
 
 func TestService_TerminateService_SkipProviderNeedsOnlyTerminator(t *testing.T) {
-	dataSetID := types.NewBigInt(23)
-	hash := common.HexToHash("0x1234")
-	term := &fakeFWSSTerminator{res: &types.WriteResult{
-		Hash:    hash,
-		Receipt: terminateReceipt(t, dataSetID, hash, 456, 99),
-	}}
-	svc := mustNewService(t, Options{DataSetTerminator: term})
-	res, err := svc.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{
-		SkipProvider:      true,
-		DirectWaitTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatalf("TerminateService: %v", err)
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wait    time.Duration
+	}{
+		{"explicit timeout", time.Second, time.Second},
+		{"default timeout", 0, 5 * time.Minute},
+		{"negative timeout", -time.Second, 5 * time.Minute},
 	}
-	if !term.called || !term.gotDataSetID.Equal(dataSetID) || term.gotOptions.WaitTimeout != time.Second {
-		t.Fatalf("termination target=%s called=%v wait=%s, want %s and one-second wait", term.gotDataSetID, term.called, term.gotOptions.WaitTimeout, dataSetID)
-	}
-	if res == nil || !res.DataSetID.Equal(dataSetID) || res.EndEpoch != 456 || res.TxHash == nil || *res.TxHash != hash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != hash {
-		t.Fatalf("TerminateService result=%+v, want confirmed data set %s with end epoch 456", res, dataSetID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataSetID := types.NewBigInt(23)
+			hash := common.HexToHash("0x1234")
+			term := &fakeFWSSTerminator{res: &types.WriteResult{
+				Hash:    hash,
+				Receipt: terminateReceipt(t, dataSetID, hash, 456, 99),
+			}}
+			svc := mustNewService(t, Options{DataSetTerminator: term})
+			res, err := svc.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{
+				SkipProvider:      true,
+				DirectWaitTimeout: tt.timeout,
+			})
+			if err != nil {
+				t.Fatalf("TerminateService: %v", err)
+			}
+			if !term.called || !term.gotDataSetID.Equal(dataSetID) || term.gotOptions.WaitTimeout != tt.wait {
+				t.Fatalf("termination target=%s called=%v wait=%s, want %s and %s wait", term.gotDataSetID, term.called, term.gotOptions.WaitTimeout, dataSetID, tt.wait)
+			}
+			if res == nil || !res.DataSetID.Equal(dataSetID) || res.EndEpoch != 456 || res.TxHash == nil || *res.TxHash != hash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != hash {
+				t.Fatalf("TerminateService result=%+v, want confirmed data set %s with end epoch 456", res, dataSetID)
+			}
+		})
 	}
 }
 

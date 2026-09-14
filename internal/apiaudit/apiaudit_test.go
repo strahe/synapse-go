@@ -97,10 +97,7 @@ func TestExternalModuleCanConfigureServiceOptions(t *testing.T) {
 
 import (
 	"context"
-	"errors"
 	"iter"
-	"testing"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -123,51 +120,6 @@ type paymentRailsReader interface {
 
 var _ paymentRailsReader = (*payments.Service)(nil)
 
-type independentTerminator struct {
-	wait time.Duration
-}
-
-func (term *independentTerminator) TerminateDataSet(_ context.Context, _ types.BigInt, opts storage.FWSSTerminationOptions) (*types.WriteResult, error) {
-	term.wait = opts.WaitTimeout
-	hash := common.HexToHash("0x1234")
-	if opts.OnSubmitted != nil {
-		opts.OnSubmitted(hash)
-	}
-	return &types.WriteResult{Hash: hash}, context.DeadlineExceeded
-}
-
-var _ storage.FWSSTerminator = (*independentTerminator)(nil)
-
-func TestIndependentTerminationDependency(t *testing.T) {
-	for _, timeout := range []time.Duration{0, -time.Second, time.Minute} {
-		term := &independentTerminator{}
-		svc, err := storage.New(storage.Options{DataSetTerminator: term})
-		if err != nil {
-			t.Fatal(err)
-		}
-		calls := 0
-		var submitted common.Hash
-		res, err := svc.TerminateService(context.Background(), types.NewBigInt(1), &storage.TerminateServiceOptions{
-			SkipProvider:      true,
-			DirectWaitTimeout: timeout,
-			OnSubmitted: func(hash common.Hash) {
-				calls++
-				submitted = hash
-			},
-		})
-		if !errors.Is(err, context.DeadlineExceeded) || res != nil || calls != 1 || submitted != common.HexToHash("0x1234") {
-			t.Fatalf("independent termination: result=%+v error=%v calls=%d hash=%s", res, err, calls, submitted)
-		}
-		wantWait := timeout
-		if wantWait <= 0 {
-			wantWait = 5 * time.Minute
-		}
-		if term.wait != wantWait {
-			t.Fatalf("dependency wait=%s, want %s", term.wait, wantWait)
-		}
-	}
-}
-
 type nonceManager struct{}
 
 func (nonceManager) Acquire(context.Context) (uint64, func(), error) {
@@ -189,9 +141,10 @@ func (endorsedProviderSource) GetEndorsedProviderIDs(context.Context) ([]types.B
 }
 
 var (
-	sharedNonce     nonceManager
-	sharedLifecycle lifecycle
-	sharedBuffer    int64
+	sharedNonce      nonceManager
+	sharedLifecycle  lifecycle
+	sharedBuffer     int64
+	sharedTerminator storage.FWSSTerminator
 
 	_ = payments.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = warmstorage.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
@@ -201,7 +154,8 @@ var (
 	_                      = costs.Options{Caller: blockNumberReader{}, Lifecycle: sharedLifecycle}
 	_                      = costs.UploadCostOptions{BufferEpochs: &sharedBuffer}
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
-	_ = storage.Options{Lifecycle: sharedLifecycle}
+	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
+	_ = storage.WithFWSSTerminator(sharedTerminator)
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}

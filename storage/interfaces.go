@@ -34,7 +34,7 @@ type PDPConfigReader interface {
 	GetPDPConfig(ctx context.Context) (*warmstorage.PDPConfig, error)
 }
 
-// FWSSTerminationOptions configures the direct termination dependency.
+// FWSSTerminationOptions configures the SDK's direct termination dependency.
 type FWSSTerminationOptions struct {
 	// WaitTimeout is positive and requires waiting for a receipt.
 	WaitTimeout time.Duration
@@ -47,9 +47,9 @@ type FWSSTerminationOptions struct {
 	WriteOptions []warmstorage.WriteOption
 }
 
-// FWSSTerminator terminates an on-chain data set via FWSS.TerminateService.
-// Implementations must honor the explicit submission and receipt-wait contract
-// in FWSSTerminationOptions. The root SDK client assembles a WarmStorage adapter.
+// FWSSTerminator is the SDK assembly interface for termination through FWSS.
+// The supported implementation is the WarmStorage adapter assembled by the root
+// SDK client; user-defined implementations are not compatibility targets.
 type FWSSTerminator interface {
 	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts FWSSTerminationOptions) (*sdktypes.WriteResult, error)
 }
