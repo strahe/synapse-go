@@ -132,6 +132,9 @@ func (c *contextCore) submitCommit(
 	for i, pieceCID := range pieceCIDs {
 		pieces[i] = pdp.AddPieceInput{PieceCID: pieceCID}
 	}
+	if err := validateAddPiecesMessageSize(op, pieceCIDs, extraData); err != nil {
+		return nil, err
+	}
 
 	submission := CommitSubmission{
 		ProviderID: copyBigInt(c.provider.ID),

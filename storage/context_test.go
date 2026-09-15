@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,18 @@ var _ signer.StorageSigner = (*storageSignerOnly)(nil)
 func (s *storageSignerOnly) EVMAddress() common.Address { return s.inner.EVMAddress() }
 
 func (s *storageSignerOnly) SignHash(hash []byte) ([]byte, error) {
+	return s.inner.SignHash(hash)
+}
+
+type trackingStorageSigner struct {
+	inner signer.StorageSigner
+	calls int
+}
+
+func (s *trackingStorageSigner) EVMAddress() common.Address { return s.inner.EVMAddress() }
+
+func (s *trackingStorageSigner) SignHash(hash []byte) ([]byte, error) {
+	s.calls++
 	return s.inner.SignHash(hash)
 }
 
@@ -988,6 +1001,162 @@ func TestContextPresignWireShapesRemainStable(t *testing.T) {
 	bytesType, err := abi.NewType("bytes", "", nil)
 	if err != nil || bytesArgs[0].Type.String() != bytesType.String() {
 		t.Fatalf("bytes ABI type changed: %v", err)
+	}
+}
+
+func TestContextPresignCompactsEmptyPieceMetadata(t *testing.T) {
+	info := mustPieceInfo(t)
+	storageSigner := mustTestSigner(t)
+	providerCtx, err := NewProviderContext(
+		testProvider(),
+		&fakePDPProviderClient{},
+		storageSigner,
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewProviderContext: %v", err)
+	}
+	dataSetCtx, err := NewDataSetContext(
+		testProvider(),
+		&fakePDPProviderClient{},
+		storageSigner,
+		testDataSetRef(types.NewBigInt(42), types.NewBigInt(99)),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatalf("NewDataSetContext: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		presign  func(context.Context, []PieceInput) ([]byte, error)
+		combined bool
+	}{
+		{name: "new data set", presign: providerCtx.PresignForCommit, combined: true},
+		{name: "existing data set", presign: dataSetCtx.PresignForCommit},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := test.presign(context.Background(), []PieceInput{{PieceCID: info.CIDv2}})
+			if err != nil {
+				t.Fatalf("PresignForCommit: %v", err)
+			}
+			if test.combined {
+				outer, err := createAndAddArgs.Unpack(payload)
+				if err != nil {
+					t.Fatalf("unpack create-and-add: %v", err)
+				}
+				payload = outer[1].([]byte)
+			}
+			values, err := addPiecesArgs.Unpack(payload)
+			if err != nil {
+				t.Fatalf("unpack add pieces: %v", err)
+			}
+			if keys := values[1].([][]string); len(keys) != 0 {
+				t.Fatalf("metadata keys=%v want empty", keys)
+			}
+			if metadataValues := values[2].([][]string); len(metadataValues) != 0 {
+				t.Fatalf("metadata values=%v want empty", metadataValues)
+			}
+		})
+	}
+}
+
+func TestContextPresignRetainsMixedPieceMetadataPositions(t *testing.T) {
+	first := mustPieceInfo(t)
+	second, err := piece.CalculateFromBytes(bytes.Repeat([]byte("mixed-piece"), 128))
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	dataSetCtx := mustWritableDataSetContext(
+		t,
+		&fakePDPProviderClient{},
+		testDataSetRef(types.NewBigInt(42), types.NewBigInt(99)),
+	)
+	payload, err := dataSetCtx.PresignForCommit(context.Background(), []PieceInput{
+		{PieceCID: first.CIDv2},
+		{PieceCID: second.CIDv2, PieceMetadata: map[string]string{"name": "second"}},
+	})
+	if err != nil {
+		t.Fatalf("PresignForCommit: %v", err)
+	}
+	values, err := addPiecesArgs.Unpack(payload)
+	if err != nil {
+		t.Fatalf("unpack add pieces: %v", err)
+	}
+	wantKeys := [][]string{{}, {"name"}}
+	wantValues := [][]string{{}, {"second"}}
+	if got := values[1].([][]string); !slices.EqualFunc(got, wantKeys, slices.Equal) {
+		t.Fatalf("metadata keys=%v want %v", got, wantKeys)
+	}
+	if got := values[2].([][]string); !slices.EqualFunc(got, wantValues, slices.Equal) {
+		t.Fatalf("metadata values=%v want %v", got, wantValues)
+	}
+}
+
+func TestContextPresignChecksMessageSizeBeforeSigning(t *testing.T) {
+	originalEstimator := estimateAddPiecesMessageSize
+	estimateAddPiecesMessageSize = func([]pdp.AddPieceInput, []byte) (int, error) {
+		return pdp.MaxAddPiecesMessageSize + 1, nil
+	}
+	t.Cleanup(func() { estimateAddPiecesMessageSize = originalEstimator })
+
+	newPresigner := []struct {
+		name string
+		new  func(signer.StorageSigner) func(context.Context, []PieceInput) ([]byte, error)
+	}{
+		{
+			name: "new data set",
+			new: func(storageSigner signer.StorageSigner) func(context.Context, []PieceInput) ([]byte, error) {
+				ctx, err := NewProviderContext(
+					testProvider(),
+					&fakePDPProviderClient{},
+					storageSigner,
+					WithPayer(testPayer()),
+					WithRecordKeeper(testRecordKeeper()),
+					WithChainID(types.ChainID(314159)),
+				)
+				if err != nil {
+					t.Fatalf("NewProviderContext: %v", err)
+				}
+				return ctx.PresignForCommit
+			},
+		},
+		{
+			name: "existing data set",
+			new: func(storageSigner signer.StorageSigner) func(context.Context, []PieceInput) ([]byte, error) {
+				ctx, err := NewDataSetContext(
+					testProvider(),
+					&fakePDPProviderClient{},
+					storageSigner,
+					testDataSetRef(types.NewBigInt(42), types.NewBigInt(99)),
+					WithPayer(testPayer()),
+					WithRecordKeeper(testRecordKeeper()),
+					WithChainID(types.ChainID(314159)),
+				)
+				if err != nil {
+					t.Fatalf("NewDataSetContext: %v", err)
+				}
+				return ctx.PresignForCommit
+			},
+		},
+	}
+
+	for _, test := range newPresigner {
+		t.Run(test.name, func(t *testing.T) {
+			storageSigner := &trackingStorageSigner{inner: mustTestSigner(t)}
+			_, err := test.new(storageSigner)(context.Background(), []PieceInput{{PieceCID: mustPieceInfo(t).CIDv2}})
+			if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrAddPiecesMessageTooLarge) {
+				t.Fatalf("error=%v want ErrInvalidArgument and ErrAddPiecesMessageTooLarge", err)
+			}
+			if storageSigner.calls != 0 {
+				t.Fatalf("signer calls=%d want 0", storageSigner.calls)
+			}
+		})
 	}
 }
 

@@ -80,7 +80,9 @@ type pullPieceWireItem struct {
 //
 // The endpoint is idempotent: calling again with the same extraData returns
 // the status of the existing pull request rather than creating a duplicate.
-// This makes it safe to poll for status using repeated calls.
+// This makes it safe to poll for status using repeated calls. Requests
+// exceeding MaxAddPiecesBatchSize or MaxAddPiecesMessageSize are rejected
+// before submission.
 func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, error) {
 	if err := validateAddPiecesBatch("pdp.PullPieces", len(req.Pieces)); err != nil {
 		return nil, err
@@ -98,6 +100,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 		RecordKeeper: req.RecordKeeper.Hex(),
 		Pieces:       make([]pullPieceWireItem, 0, len(req.Pieces)),
 	}
+	addPieces := make([]AddPieceInput, 0, len(req.Pieces))
 
 	if req.DataSetID != nil {
 		if req.DataSetID.IsZero() {
@@ -118,6 +121,10 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 			PieceCid:  p.PieceCID.String(),
 			SourceURL: p.SourceURL,
 		})
+		addPieces = append(addPieces, AddPieceInput{PieceCID: p.PieceCID})
+	}
+	if err := validateAddPiecesMessageSize("pdp.PullPieces", addPieces, req.ExtraData); err != nil {
+		return nil, err
 	}
 
 	_, body, err := c.postJSONRetryable(ctx, "pdp/piece/pull", wire, http.StatusOK, http.StatusCreated, http.StatusAccepted)

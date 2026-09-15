@@ -64,9 +64,9 @@ var Types = apitypes.Types{
 
 // CreateDataSetMessage builds the EIP-712 message for dataset creation.
 func CreateDataSetMessage(clientDataSetID *big.Int, payee common.Address, metadata []MetadataEntry) apitypes.TypedDataMessage {
-	metadataArray := make([]interface{}, len(metadata))
+	metadataArray := make([]any, len(metadata))
 	for i, m := range metadata {
-		metadataArray[i] = map[string]interface{}{
+		metadataArray[i] = map[string]any{
 			"key":   m.Key,
 			"value": m.Value,
 		}
@@ -81,33 +81,28 @@ func CreateDataSetMessage(clientDataSetID *big.Int, payee common.Address, metada
 
 // AddPiecesMessage builds the EIP-712 message for adding pieces.
 func AddPiecesMessage(clientDataSetID, nonce *big.Int, pieceCIDs []cid.Cid, metadata [][]MetadataEntry) (apitypes.TypedDataMessage, error) {
-	if len(metadata) == 0 {
-		metadata = make([][]MetadataEntry, len(pieceCIDs))
-		for i := range metadata {
-			metadata[i] = []MetadataEntry{}
-		}
-	}
-	if len(metadata) != len(pieceCIDs) {
+	if len(metadata) != 0 && len(metadata) != len(pieceCIDs) {
 		return nil, fmt.Errorf("typeddata.AddPiecesMessage: metadata length (%d) must match pieceCIDs length (%d)", len(metadata), len(pieceCIDs))
 	}
+	metadata = CompactPieceMetadata(metadata)
 
-	pieceData := make([]interface{}, len(pieceCIDs))
+	pieceData := make([]any, len(pieceCIDs))
 	for i, c := range pieceCIDs {
-		pieceData[i] = map[string]interface{}{
+		pieceData[i] = map[string]any{
 			"data": c.Bytes(),
 		}
 	}
 
-	pieceMetadata := make([]interface{}, len(pieceCIDs))
+	pieceMetadata := make([]any, len(metadata))
 	for i, meta := range metadata {
-		metadataArray := make([]interface{}, len(meta))
+		metadataArray := make([]any, len(meta))
 		for j, m := range meta {
-			metadataArray[j] = map[string]interface{}{
+			metadataArray[j] = map[string]any{
 				"key":   m.Key,
 				"value": m.Value,
 			}
 		}
-		pieceMetadata[i] = map[string]interface{}{
+		pieceMetadata[i] = map[string]any{
 			"pieceIndex": (*math.HexOrDecimal256)(big.NewInt(int64(i))),
 			"metadata":   metadataArray,
 		}
@@ -121,6 +116,17 @@ func AddPiecesMessage(clientDataSetID, nonce *big.Int, pieceCIDs []cid.Cid, meta
 	}, nil
 }
 
+// CompactPieceMetadata returns the compact add-pieces representation when no
+// piece in the batch has metadata. Mixed batches retain one entry per piece.
+func CompactPieceMetadata(metadata [][]MetadataEntry) [][]MetadataEntry {
+	for _, entries := range metadata {
+		if len(entries) > 0 {
+			return metadata
+		}
+	}
+	return nil
+}
+
 // TerminateServiceMessage builds the EIP-712 message for service termination.
 func TerminateServiceMessage(dataSetID *big.Int) apitypes.TypedDataMessage {
 	return apitypes.TypedDataMessage{
@@ -130,7 +136,7 @@ func TerminateServiceMessage(dataSetID *big.Int) apitypes.TypedDataMessage {
 
 // SchedulePieceRemovalsMessage builds the EIP-712 message for scheduling piece removals.
 func SchedulePieceRemovalsMessage(clientDataSetID *big.Int, pieceIDs []*big.Int) apitypes.TypedDataMessage {
-	pieceIDsArray := make([]interface{}, len(pieceIDs))
+	pieceIDsArray := make([]any, len(pieceIDs))
 	for i, id := range pieceIDs {
 		pieceIDsArray[i] = (*math.HexOrDecimal256)(id)
 	}

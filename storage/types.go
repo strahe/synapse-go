@@ -70,7 +70,7 @@ type ConfirmedPiece struct {
 // PieceInput describes a single piece being committed on-chain.
 type PieceInput struct {
 	PieceCID      cid.Cid
-	PieceMetadata map[string]string // optional key-value metadata stored with the piece
+	PieceMetadata map[string]string // optional key-value metadata emitted in the FWSS PieceAdded event
 }
 
 // DataSetRef identifies one data set and the provider that owns it.
@@ -93,9 +93,11 @@ type ContextIdentity struct {
 
 // PullRequest asks a secondary provider to pull pieces from a primary.
 type PullRequest struct {
-	Pieces    []cid.Cid
-	From      func(cid.Cid) string // returns the HTTPS URL for a given piece CID
-	ExtraData []byte               // EIP-712 signed payload authorising the pull
+	Pieces []cid.Cid
+	From   func(cid.Cid) string // returns the HTTPS URL for a given piece CID
+	// ExtraData is the EIP-712 signed payload authorising the pull. Oversized
+	// payloads are rejected before submission.
+	ExtraData []byte
 	// OnProgress is invoked after each piece status update during the pull.
 	// It may be nil. Direct Pull calls do not recover callback panics.
 	OnProgress func(pieceCID cid.Cid, status PullStatus)
@@ -117,7 +119,8 @@ type PullResult struct {
 type CommitRequest struct {
 	Pieces []PieceInput
 	// ExtraData is an EIP-712 signed payload. Leave it nil to let a
-	// ProviderContext sign a create-and-add request.
+	// ProviderContext sign a create-and-add request. Payloads whose encoded
+	// add-pieces calldata exceeds pdp.MaxAddPiecesMessageSize are rejected.
 	ExtraData []byte
 	// ClientDataSetID is the caller-owned uint256 used when a ProviderContext
 	// creates a data set. Nil generates a random ID. When ExtraData is set,
@@ -323,7 +326,8 @@ func (r *UploadResult) PartialSuccess() bool {
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. It must be positive.
 	Copies int
-	// PieceMetadata is stored with each piece on-chain.
+	// PieceMetadata is validated, signed, and emitted in the FWSS PieceAdded
+	// event. FWSS does not persist it in contract state.
 	PieceMetadata map[string]string
 	// DataSetMetadata is stored with the data set on first creation.
 	DataSetMetadata map[string]string
@@ -387,7 +391,8 @@ type UploadOptions struct {
 // callback name in an upload logs a warning. This recovery does not apply to
 // direct StoreOptions, PullRequest, or CommitRequest hooks.
 type UploadToContextsOptions struct {
-	// PieceMetadata is stored with each piece on-chain.
+	// PieceMetadata is validated, signed, and emitted in the FWSS PieceAdded
+	// event. FWSS does not persist it in contract state.
 	PieceMetadata map[string]string
 	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
 	// When set, the primary provider client skips inline commP calculation;
@@ -428,7 +433,8 @@ type UploadToContextsOptions struct {
 // first panic per callback name in an upload logs a warning. This recovery does
 // not apply to direct StoreOptions or CommitRequest hooks.
 type ContextUploadOptions struct {
-	// PieceMetadata is stored with the piece on-chain.
+	// PieceMetadata is validated, signed, and emitted in the FWSS PieceAdded
+	// event. FWSS does not persist it in contract state.
 	PieceMetadata map[string]string
 	// PieceCID, when defined, is a pre-computed PieceCIDv2 of the payload.
 	// When set, the provider client skips inline commP calculation; the server

@@ -48,13 +48,17 @@ func mustABIArguments(typeNames ...string) abi.Arguments {
 	return args
 }
 
-var randReader io.Reader = rand.Reader
+var (
+	randReader                   io.Reader = rand.Reader
+	estimateAddPiecesMessageSize           = pdp.EstimateAddPiecesMessageSize
+)
 
 const (
 	maxMetadataKeyLength   = 32
 	maxMetadataValueLength = 96
 	maxDataSetMetadataKeys = 10
 	maxPieceMetadataKeys   = 3
+	secp256k1SignatureSize = 65
 )
 
 // PDPProviderClient is the provider HTTP API surface required by storage contexts.
@@ -419,6 +423,7 @@ func (c *contextCore) presignForCommit(
 		}
 		pieceMetadata = append(pieceMetadata, meta)
 	}
+	pieceMetadata = ityped.CompactPieceMetadata(pieceMetadata)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
@@ -436,12 +441,22 @@ func (c *contextCore) presignForCommit(
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", op, err)
 		}
+		unsignedExtraData, err := encodeAddPiecesExtraData(nonce, pieceMetadata, make([]byte, secp256k1SignatureSize))
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := validateAddPiecesMessageSize(op, pieceCIDs, unsignedExtraData); err != nil {
+			return nil, nil, err
+		}
 		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 		}
 		extraData, err := encodeAddPiecesExtraData(nonce, pieceMetadata, signatureBytes(sig))
-		return extraData, nil, err
+		if err != nil {
+			return nil, nil, err
+		}
+		return extraData, nil, nil
 	}
 
 	clientDataSetID, err := clientDataSetIDOrRandom(requestedClientDataSetID)
@@ -454,6 +469,21 @@ func (c *contextCore) presignForCommit(
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
+	}
+	unsignedCreatePayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, make([]byte, secp256k1SignatureSize))
+	if err != nil {
+		return nil, nil, err
+	}
+	unsignedAddPayload, err := encodeAddPiecesExtraData(new(big.Int), pieceMetadata, make([]byte, secp256k1SignatureSize))
+	if err != nil {
+		return nil, nil, err
+	}
+	unsignedExtraData, err := encodeCreateAndAddExtraData(unsignedCreatePayload, unsignedAddPayload)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateAddPiecesMessageSize(op, pieceCIDs, unsignedExtraData); err != nil {
+		return nil, nil, err
 	}
 	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), c.provider.Payee, dataSetMetadata)
 	if err != nil {
@@ -505,6 +535,9 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 	if req.From == nil {
 		return nil, fmt.Errorf("%s: %w: nil source resolver", op, ErrInvalidArgument)
 	}
+	if err := validateAddPiecesMessageSize(op, req.Pieces, req.ExtraData); err != nil {
+		return nil, err
+	}
 	pdpReq := pdp.PullRequest{
 		ExtraData:    append([]byte(nil), req.ExtraData...),
 		RecordKeeper: c.recordKeeper,
@@ -529,7 +562,6 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 		})
 		pieceByString[pieceCID.String()] = pieceCID
 	}
-
 	res, err := c.client.WaitForPullComplete(ctx, pdpReq, 0, func(snapshot *pdp.PullResult) {
 		if req.OnProgress == nil {
 			return
@@ -767,6 +799,24 @@ func validateAddPiecesBatch(op string, count int) error {
 	return nil
 }
 
+func validateAddPiecesMessageSize(op string, pieceCIDs []cid.Cid, extraData []byte) error {
+	pieces := make([]pdp.AddPieceInput, len(pieceCIDs))
+	for i, pieceCID := range pieceCIDs {
+		pieces[i] = pdp.AddPieceInput{PieceCID: pieceCID}
+	}
+	size, err := estimateAddPiecesMessageSize(pieces, extraData)
+	if err != nil {
+		return fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, err)
+	}
+	if size > pdp.MaxAddPiecesMessageSize {
+		return fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, &pdp.AddPiecesMessageTooLargeError{
+			Size: size,
+			Max:  pdp.MaxAddPiecesMessageSize,
+		})
+	}
+	return nil
+}
+
 func encodeCreateDataSetExtraData(payer common.Address, clientDataSetID *big.Int, metadata []ityped.MetadataEntry, signature []byte) ([]byte, error) {
 	keys := make([]string, 0, len(metadata))
 	values := make([]string, 0, len(metadata))
@@ -811,7 +861,7 @@ func signatureBytes(sig *ityped.Signature) []byte {
 	if sig == nil {
 		return nil
 	}
-	out := make([]byte, 65)
+	out := make([]byte, secp256k1SignatureSize)
 	copy(out[:32], sig.R[:])
 	copy(out[32:64], sig.S[:])
 	out[64] = sig.V
