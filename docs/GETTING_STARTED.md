@@ -144,7 +144,9 @@ uncapped. Standalone `storage.Service` users can set
   `true` selects the primary from the full approved pool and skips the
   endorsement query.
 - `DataSetMetadata`: metadata used when creating or reusing datasets.
-- `PieceMetadata`: metadata stored with the committed piece.
+- `PieceMetadata`: metadata validated and emitted in the FWSS `PieceAdded`
+  event. Read it from contract events or an indexer; FWSS does not persist it
+  in contract state.
 - `WithCDN`: per-upload CDN override. `nil` inherits the client default.
 - `PieceCID`: precomputed PieceCIDv2 when you already calculated it.
 - `OnProgress`, `OnStored`, `OnCopyComplete`, `OnCopyFailed`,
@@ -393,6 +395,11 @@ The receiver never binds or changes target after creation. Concurrent creates
 on one `ProviderContext` are independent; adds on one `DataSetContext` may run
 in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
 `PresignForCommit`, and `Commit`.
+
+One `Commit` or `Pull` request can contain at most 40 pieces and must fit the
+encoded add-pieces message limit. Oversized requests return
+`pdp.ErrAddPiecesMessageTooLarge` before provider submission. Split them into
+smaller requests; the context APIs do not split batches automatically.
 
 ## Discovery And Lifecycle
 

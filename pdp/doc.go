@@ -35,6 +35,14 @@
 // retry after a server-side partial success can cause duplicate work or
 // inconsistent state.
 //
+// # Add-pieces limits
+//
+// AddPieces, CreateDataSetAndAddPieces, and PullPieces reject requests whose
+// encoded PDPVerifier.addPieces calldata exceeds MaxAddPiecesMessageSize. The
+// existing MaxAddPiecesBatchSize count limit is enforced separately. Use
+// EstimateAddPiecesMessageSize when constructing a batch; these methods do not
+// split oversized requests automatically.
+//
 // # Status URLs
 //
 // Transaction status URLs must be absolute HTTP(S) URLs with the same scheme,

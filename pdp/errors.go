@@ -96,6 +96,28 @@ var ErrPieceProcessing = errors.New("pdp: piece still processing")
 // add or delete request limit.
 var ErrTooManyPieces = errors.New("pdp: too many pieces")
 
+// ErrAddPiecesMessageTooLarge is matched when the encoded
+// PDPVerifier.addPieces calldata exceeds [MaxAddPiecesMessageSize].
+var ErrAddPiecesMessageTooLarge = errors.New("pdp: add-pieces message too large")
+
+// AddPiecesMessageTooLargeError reports the encoded calldata size and limit.
+type AddPiecesMessageTooLargeError struct {
+	Size int
+	Max  int
+}
+
+func (e *AddPiecesMessageTooLargeError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%s: got %d bytes, max %d", ErrAddPiecesMessageTooLarge, e.Size, e.Max)
+}
+
+// Is makes AddPiecesMessageTooLargeError match ErrAddPiecesMessageTooLarge.
+func (e *AddPiecesMessageTooLargeError) Is(target error) bool {
+	return target == ErrAddPiecesMessageTooLarge
+}
+
 // ErrTooManyPiecesQueued is returned when a provider cannot schedule more
 // piece deletions until its on-chain removal queue has been processed.
 var ErrTooManyPiecesQueued = errors.New("pdp: piece deletion queue is full; retry after the next proving period")

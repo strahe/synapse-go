@@ -1,6 +1,7 @@
 package typeddata
 
 import (
+	"encoding/hex"
 	"math/big"
 	"strings"
 	"testing"
@@ -151,6 +152,113 @@ func TestSign_AddPieces(t *testing.T) {
 	recovered := recoverAddress(t, domain, "AddPieces", msg, sig)
 	if recovered != addr {
 		t.Errorf("recovered address %s != expected %s", recovered.Hex(), addr.Hex())
+	}
+}
+
+func TestAddPiecesMessageCompactsOnlyFullyEmptyMetadata(t *testing.T) {
+	pieceCIDs := []cid.Cid{
+		testCID(t, []byte("piece-1")),
+		testCID(t, []byte("piece-2")),
+	}
+	tests := []struct {
+		name         string
+		metadata     [][]MetadataEntry
+		wantCount    int
+		wantMetadata []int
+		wantError    bool
+	}{
+		{name: "omitted", wantCount: 0},
+		{name: "all empty", metadata: [][]MetadataEntry{{}, {}}, wantCount: 0},
+		{
+			name:         "mixed",
+			metadata:     [][]MetadataEntry{{}, {{Key: "name", Value: "piece-2"}}},
+			wantCount:    2,
+			wantMetadata: []int{0, 1},
+		},
+		{
+			name:         "all present",
+			metadata:     [][]MetadataEntry{{{Key: "name", Value: "piece-1"}}, {{Key: "name", Value: "piece-2"}}},
+			wantCount:    2,
+			wantMetadata: []int{1, 1},
+		},
+		{name: "wrong length", metadata: [][]MetadataEntry{{}}, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message, err := AddPiecesMessage(big.NewInt(1), big.NewInt(2), pieceCIDs, test.metadata)
+			if test.wantError {
+				if err == nil {
+					t.Fatal("AddPiecesMessage error=nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("AddPiecesMessage: %v", err)
+			}
+			pieceMetadata, ok := message["pieceMetadata"].([]any)
+			if !ok {
+				t.Fatalf("pieceMetadata type=%T", message["pieceMetadata"])
+			}
+			if len(pieceMetadata) != test.wantCount {
+				t.Fatalf("pieceMetadata len=%d want %d", len(pieceMetadata), test.wantCount)
+			}
+			for i, wantCount := range test.wantMetadata {
+				entry, ok := pieceMetadata[i].(map[string]any)
+				if !ok {
+					t.Fatalf("pieceMetadata[%d] type=%T", i, pieceMetadata[i])
+				}
+				pieceIndex := (*big.Int)(entry["pieceIndex"].(*math.HexOrDecimal256))
+				if pieceIndex.Cmp(big.NewInt(int64(i))) != 0 {
+					t.Fatalf("pieceMetadata[%d].pieceIndex=%s", i, pieceIndex)
+				}
+				metadata, ok := entry["metadata"].([]any)
+				if !ok || len(metadata) != wantCount {
+					t.Fatalf("pieceMetadata[%d].metadata=%T len=%d want %d", i, entry["metadata"], len(metadata), wantCount)
+				}
+			}
+		})
+	}
+}
+
+func TestSignAddPiecesMetadataFreeUpstreamFixture(t *testing.T) {
+	key, err := crypto.HexToECDSA("1234567890123456789012345678901234567890123456789012345678901234")
+	if err != nil {
+		t.Fatalf("HexToECDSA: %v", err)
+	}
+	pieceCIDs := make([]cid.Cid, 0, 2)
+	for _, encoded := range []string{
+		"bafkzcibcaac542av3szurbbscwuu3zjssvfwbpsvbjf6y3tukvlgl2nf5rha6pa",
+		"bafkzcibcpybwiktap34inmaex4wbs6cghlq5i2j2yd2bb2zndn5ep7ralzphkdy",
+	} {
+		pieceCID, err := cid.Decode(encoded)
+		if err != nil {
+			t.Fatalf("Decode(%q): %v", encoded, err)
+		}
+		pieceCIDs = append(pieceCIDs, pieceCID)
+	}
+	domain := NewDomain(
+		big.NewInt(314159),
+		common.HexToAddress("0x02925630df557F957f70E112bA06e50965417CA0"),
+	)
+	signature, err := SignAddPieces(
+		func(hash []byte) ([]byte, error) { return crypto.Sign(hash, key) },
+		domain,
+		big.NewInt(12345),
+		big.NewInt(1),
+		pieceCIDs,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("SignAddPieces: %v", err)
+	}
+	actual := make([]byte, 65)
+	copy(actual[:32], signature.R[:])
+	copy(actual[32:64], signature.S[:])
+	actual[64] = signature.V
+	const expected = "7b5f69b921e8b7b39652d384277ce73954a3154d70b0a64d309147a34bb9ce135690c1927e042e64bab7ffe3946084b81d807efc978ff47425da148a709cdf761b"
+	if got := hex.EncodeToString(actual); got != expected {
+		t.Fatalf("signature=%s want %s", got, expected)
 	}
 }
 

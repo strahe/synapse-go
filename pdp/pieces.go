@@ -22,6 +22,9 @@ const (
 	// MaxAddPiecesBatchSize is the maximum number of pieces accepted by
 	// add-pieces style PDP requests.
 	MaxAddPiecesBatchSize = 40
+	// MaxAddPiecesMessageSize is the maximum encoded PDPVerifier.addPieces
+	// calldata size accepted by the Filecoin message path.
+	MaxAddPiecesMessageSize = 64*1024 - 288
 	// MaxDeletePiecesBatchSize is the maximum number of pieces accepted by a
 	// batch deletion request.
 	MaxDeletePiecesBatchSize = 35
@@ -58,13 +61,18 @@ type AddPiecesResult struct {
 // AddPieces calls POST /pdp/data-sets/{dataSetId}/pieces. extraData must be
 // caller-provided EIP-712 signed data encoded as the PDP provider expects.
 // Piece CIDs must be unique within one request after PieceCIDv2-to-v1
-// normalization; the same CID may be used again in a later request.
+// normalization; the same CID may be used again in a later request. Requests
+// exceeding MaxAddPiecesBatchSize or MaxAddPiecesMessageSize are rejected
+// before submission.
 func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
 	if err := validateAddPieceInputs("pdp.AddPieces", pieces); err != nil {
 		return nil, err
 	}
 	if len(extraData) == 0 {
 		return nil, errors.New("pdp.AddPieces: empty extraData")
+	}
+	if err := validateAddPiecesMessageSize("pdp.AddPieces", pieces, extraData); err != nil {
+		return nil, err
 	}
 	wire := addPiecesRequest{
 		ExtraData: "0x" + hex.EncodeToString(extraData),

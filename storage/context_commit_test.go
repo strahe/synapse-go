@@ -155,6 +155,56 @@ func TestAddCommitLifecycleCanResumeFromJSON(t *testing.T) {
 	}
 }
 
+func TestContextRejectsOversizedExternalPayloadBeforeProviderCall(t *testing.T) {
+	pieceCID := mustPieceInfo(t).CIDv2
+	providerCalls := 0
+	fromCalls := 0
+	client := &fakePDPProviderClient{
+		addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+			providerCalls++
+			return nil, errors.New("unexpected AddPieces")
+		},
+		pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+			providerCalls++
+			return nil, errors.New("unexpected WaitForPullComplete")
+		},
+	}
+	ctx := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)))
+	extraData := make([]byte, pdp.MaxAddPiecesMessageSize)
+
+	_, err := ctx.SubmitCommit(context.Background(), CommitRequest{
+		Pieces:    []PieceInput{{PieceCID: pieceCID}},
+		ExtraData: extraData,
+	})
+	assertAddPiecesMessageTooLarge(t, err)
+	_, err = ctx.Pull(context.Background(), PullRequest{
+		Pieces: []cid.Cid{pieceCID},
+		From: func(cid.Cid) string {
+			fromCalls++
+			return "https://source.example.com/piece"
+		},
+		ExtraData: extraData,
+	})
+	assertAddPiecesMessageTooLarge(t, err)
+	if fromCalls != 0 {
+		t.Fatalf("source resolver calls=%d want 0", fromCalls)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d want 0", providerCalls)
+	}
+}
+
+func assertAddPiecesMessageTooLarge(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrAddPiecesMessageTooLarge) {
+		t.Fatalf("error=%v want ErrInvalidArgument and ErrAddPiecesMessageTooLarge", err)
+	}
+	var sizeError *pdp.AddPiecesMessageTooLargeError
+	if !errors.As(err, &sizeError) || sizeError.Size <= sizeError.Max {
+		t.Fatalf("error=%v sizeError=%+v", err, sizeError)
+	}
+}
+
 func TestSubmitCommitRejectsDuplicatePieceCIDBeforeDependencies(t *testing.T) {
 	pieceCID := mustPieceInfo(t).CIDv2
 	ref := testDataSetRef(types.NewBigInt(42), types.NewBigInt(7))

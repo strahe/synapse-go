@@ -96,14 +96,11 @@ func TestProviderContextSubmitCommitUsesRequestedClientDataSetIDInBothSignatures
 	if err != nil {
 		t.Fatalf("unpack add payload: %v", err)
 	}
-	pieceMetadata := [][]ityped.MetadataEntry{
-		decodedMetadataEntries(addValues[1].([][]string)[0], addValues[2].([][]string)[0]),
-	}
 	addMessage, err := ityped.AddPiecesMessage(
 		want.Big(),
 		addValues[0].(*big.Int),
 		[]cid.Cid{pieceInfo.CIDv2},
-		pieceMetadata,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("build AddPieces message: %v", err)
