@@ -201,10 +201,12 @@ operation because the eventual transaction batches are not known yet. Actual
 fees can be lower when pieces are submitted together.
 
 For existing datasets, the root client reads both the PDP leaf count and FWSS
-lifecycle reserve state automatically. A standalone storage service must
-configure both `DataSetLeafCountReader` and `FWSSDataSetReader`; without either,
-`Prepare` returns `ErrUninitialized`. Precomputed `Costs` and new-dataset
-contexts do not use these readers.
+lifecycle reserve state automatically when the resolved contract topology
+includes PDPVerifier. If PDPVerifier is not configured, `Prepare` returns
+`ErrUninitialized` because the leaf count cannot be read. A standalone storage
+service must configure both `DataSetLeafCountReader` and `FWSSDataSetReader`;
+without either, `Prepare` returns `ErrUninitialized`. Precomputed `Costs` and
+new-dataset contexts do not use these readers.
 
 The result reports operation fees in `Fees`, but does not add them directly to
 `DepositNeeded`. FWSS pays those fees from the lifecycle reserve. The required

@@ -33,13 +33,13 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 	}
 
 	oneCopy := aggregateNewUploadCosts(base, account, 1)
-	if oneCopy.DepositNeeded.Sign() != 0 {
-		t.Fatalf("oneCopy.DepositNeeded=%s want 0", oneCopy.DepositNeeded)
+	if oneCopy.DepositNeeded.Cmp(big.NewInt(5710)) != 0 {
+		t.Fatalf("oneCopy.DepositNeeded=%s want 5710", oneCopy.DepositNeeded)
 	}
 
 	twoCopies := aggregateNewUploadCosts(base, account, 2)
-	if twoCopies.DepositNeeded.Cmp(big.NewInt(50)) != 0 {
-		t.Fatalf("twoCopies.DepositNeeded=%s want 50", twoCopies.DepositNeeded)
+	if twoCopies.DepositNeeded.Cmp(big.NewInt(11570)) != 0 {
+		t.Fatalf("twoCopies.DepositNeeded=%s want 11570", twoCopies.DepositNeeded)
 	}
 	if twoCopies.Lockup.RateDeltaPerEpoch.Cmp(big.NewInt(4)) != 0 {
 		t.Fatalf("twoCopies.Lockup.RateDeltaPerEpoch=%s want 4", twoCopies.Lockup.RateDeltaPerEpoch)
