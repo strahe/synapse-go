@@ -132,8 +132,8 @@ func (s *Service) GetPriceList(ctx context.Context) (*warmstorage.PriceList, err
 // payer is the client address. pieceSizes contains each piece's raw payload
 // size and must be non-empty; every size must be between chain.MinUploadSize
 // and chain.MaxUploadSize. New datasets require opts.IsNewDataSet=true;
-// existing datasets require a non-negative leaf count. Nil or empty opts
-// therefore returns ErrInvalidArgument.
+// existing datasets require a non-negative leaf count and complete lifecycle
+// reserve state. Nil or empty opts therefore returns ErrInvalidArgument.
 func (s *Service) GetUploadCosts(
 	ctx context.Context,
 	payer common.Address,
@@ -160,10 +160,17 @@ func (s *Service) GetUploadCosts(
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
-	currentLeaves, err := resolveCurrentLeafCount(opts.IsNewDataSet, opts.CurrentDataSetLeafCount)
+	dataSetState, err := resolveDataSetCostState(
+		opts.IsNewDataSet,
+		opts.CurrentDataSetLeafCount,
+		opts.CurrentLifecycleReserveBalance,
+		opts.PendingOneTimePayments,
+		opts.PDPEndEpoch,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
+	currentLeaves := dataSetState.leaves
 
 	var (
 		priceList *warmstorage.PriceList
@@ -229,8 +236,20 @@ func (s *Service) GetUploadCosts(
 		chain.EpochsPerMonth,
 	)
 
-	pieceCount := big.NewInt(int64(len(pieceSizes)))
-	fees := CalculateUploadFees(priceList, opts.IsNewDataSet, pieceCount)
+	fees, err := CalculateUploadFees(priceList, opts.IsNewDataSet, pieceSizes)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
+	}
+	reserveFunding, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
+		PriceList:                      priceList,
+		PieceSizes:                     pieceSizes,
+		IsNewDataSet:                   opts.IsNewDataSet,
+		CurrentLifecycleReserveBalance: dataSetState.reserveBalance,
+		PendingOneTimePayments:         dataSetState.pendingPayments,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
+	}
 	requiredLockupPeriod := requiredLockupPeriod(priceList)
 	lockup := calculateAdditionalLockupRequired(
 		addedLeaves,
@@ -240,6 +259,8 @@ func (s *Service) GetUploadCosts(
 		opts.IsNewDataSet,
 		opts.EnableCDN,
 	)
+	lockup.ReserveReplenishment = reserveFunding.ReserveReplenishment
+	lockup.Total.Add(lockup.Total, lockup.ReserveReplenishment)
 
 	currentEpoch, err := s.currentEpoch(ctx)
 	if err != nil {
@@ -256,7 +277,6 @@ func (s *Service) GetUploadCosts(
 
 	depositNeeded := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  lockup.Total,
-		Fees:              fees.Total,
 		RateDelta:         lockup.RateDeltaPerEpoch,
 		CurrentLockupRate: currentRate,
 		Debt:              debt,

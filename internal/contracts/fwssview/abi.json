@@ -121,35 +121,6 @@
   },
   {
     "type": "function",
-    "name": "getAllPieceMetadata",
-    "inputs": [
-      {
-        "name": "dataSetId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "pieceId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "keys",
-        "type": "string[]",
-        "internalType": "string[]"
-      },
-      {
-        "name": "values",
-        "type": "string[]",
-        "internalType": "string[]"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "getApprovedProviders",
     "inputs": [
       {
@@ -492,6 +463,25 @@
   },
   {
     "type": "function",
+    "name": "getDataSetAuthorizer",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getDataSetMetadata",
     "inputs": [
       {
@@ -581,40 +571,6 @@
         "name": "initChallengeWindowStart",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getPieceMetadata",
-    "inputs": [
-      {
-        "name": "dataSetId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "pieceId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "key",
-        "type": "string",
-        "internalType": "string"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "exists",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
-        "name": "value",
-        "type": "string",
-        "internalType": "string"
       }
     ],
     "stateMutability": "view"
@@ -938,6 +894,11 @@
         "internalType": "enum Errors.AddressField"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "AuthorizerReentrancy",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1406,6 +1367,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidDataSetAuthorizer",
+    "inputs": [
+      {
+        "name": "authorizer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidDataSetId",
     "inputs": [
       {
@@ -1598,6 +1570,22 @@
         "name": "expected",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "actual",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OnlyDataSetPayer",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
         "name": "actual",
@@ -1833,6 +1821,32 @@
         "name": "keysLength",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": [
+      {
+        "name": "payer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "operation",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ]
   },

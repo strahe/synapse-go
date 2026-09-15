@@ -21,6 +21,5 @@ var (
 	// halfMaxUint256 is maxUint256 >> 1.
 	halfMaxUint256 = new(big.Int).Rsh(maxUint256, 1)
 
-	bigOne = big.NewInt(1)
 	bigTiB = big.NewInt(chain.TiB)
 )

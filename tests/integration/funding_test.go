@@ -17,12 +17,13 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 			RatePerMonth: big.NewInt(60),
 		},
 		Lockup: costs.AdditionalLockup{
-			RateDeltaPerEpoch: big.NewInt(2),
-			StreamingLockup:   big.NewInt(20),
-			LifecycleLockup:   big.NewInt(50),
-			CDNLockup:         big.NewInt(10),
-			CacheMissLockup:   big.NewInt(20),
-			Total:             big.NewInt(100),
+			RateDeltaPerEpoch:    big.NewInt(2),
+			StreamingLockup:      big.NewInt(20),
+			LifecycleLockup:      big.NewInt(40),
+			ReserveReplenishment: big.NewInt(10),
+			CDNLockup:            big.NewInt(10),
+			CacheMissLockup:      big.NewInt(20),
+			Total:                big.NewInt(100),
 		},
 	}
 	account := &payments.AccountState{
@@ -32,13 +33,13 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 	}
 
 	oneCopy := aggregateNewUploadCosts(base, account, 1)
-	if oneCopy.DepositNeeded.Sign() != 0 {
-		t.Fatalf("oneCopy.DepositNeeded=%s want 0", oneCopy.DepositNeeded)
+	if oneCopy.DepositNeeded.Cmp(big.NewInt(5710)) != 0 {
+		t.Fatalf("oneCopy.DepositNeeded=%s want 5710", oneCopy.DepositNeeded)
 	}
 
 	twoCopies := aggregateNewUploadCosts(base, account, 2)
-	if twoCopies.DepositNeeded.Cmp(big.NewInt(50)) != 0 {
-		t.Fatalf("twoCopies.DepositNeeded=%s want 50", twoCopies.DepositNeeded)
+	if twoCopies.DepositNeeded.Cmp(big.NewInt(11570)) != 0 {
+		t.Fatalf("twoCopies.DepositNeeded=%s want 11570", twoCopies.DepositNeeded)
 	}
 	if twoCopies.Lockup.RateDeltaPerEpoch.Cmp(big.NewInt(4)) != 0 {
 		t.Fatalf("twoCopies.Lockup.RateDeltaPerEpoch=%s want 4", twoCopies.Lockup.RateDeltaPerEpoch)
@@ -46,8 +47,11 @@ func TestAggregateNewUploadCosts_MultipliesPerCopyLockup(t *testing.T) {
 	if twoCopies.Lockup.StreamingLockup.Cmp(big.NewInt(40)) != 0 {
 		t.Fatalf("twoCopies.Lockup.StreamingLockup=%s want 40", twoCopies.Lockup.StreamingLockup)
 	}
-	if twoCopies.Lockup.LifecycleLockup.Cmp(big.NewInt(100)) != 0 {
-		t.Fatalf("twoCopies.Lockup.LifecycleLockup=%s want 100", twoCopies.Lockup.LifecycleLockup)
+	if twoCopies.Lockup.LifecycleLockup.Cmp(big.NewInt(80)) != 0 {
+		t.Fatalf("twoCopies.Lockup.LifecycleLockup=%s want 80", twoCopies.Lockup.LifecycleLockup)
+	}
+	if twoCopies.Lockup.ReserveReplenishment.Cmp(big.NewInt(20)) != 0 {
+		t.Fatalf("twoCopies.Lockup.ReserveReplenishment=%s want 20", twoCopies.Lockup.ReserveReplenishment)
 	}
 	if twoCopies.Lockup.CDNLockup.Cmp(big.NewInt(20)) != 0 {
 		t.Fatalf("twoCopies.Lockup.CDNLockup=%s want 20", twoCopies.Lockup.CDNLockup)

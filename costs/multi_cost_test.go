@@ -10,6 +10,8 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func TestCalculateMultiContextCosts_ReadyWhenFunded(t *testing.T) {
@@ -102,7 +104,7 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 		context.Background(),
 		common.Address{},
 		[]uint64{1024},
-		[]MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}, {CurrentDataSetLeafCount: new(big.Int)}},
+		[]MultiContextRef{existingMultiContextRef(new(big.Int)), existingMultiContextRef(new(big.Int))},
 		opts,
 	)
 	if err != nil {
@@ -122,7 +124,7 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 		context.Background(),
 		common.Address{},
 		[]uint64{1024},
-		[]MultiContextRef{{IsNewDataSet: true}, {CurrentDataSetLeafCount: new(big.Int)}},
+		[]MultiContextRef{{IsNewDataSet: true}, existingMultiContextRef(new(big.Int))},
 		opts,
 	)
 	if err != nil {
@@ -130,7 +132,13 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	}
 
 	twoNewDelta := new(big.Int).Sub(allNew.DepositNeeded, allExisting.DepositNeeded)
-	wantPerNew := new(big.Int).Add(priceList.Fees.CreateDataSetFee, priceList.Lockups.LifecycleReserveTarget)
+	reserveFunding, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
+		PriceList: priceList, PieceSizes: []uint64{1024}, IsNewDataSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPerNew := reserveFunding.Total
 	wantTwoNew := new(big.Int).Mul(wantPerNew, big.NewInt(2))
 	if twoNewDelta.Cmp(wantTwoNew) != 0 {
 		t.Errorf("two new dataset delta: got %s, want %s", twoNewDelta, wantTwoNew)
@@ -150,7 +158,7 @@ func TestCalculateMultiContextCosts_AggregatesNewDataSetFeesAndLifecycleLockup(t
 	}
 }
 
-func TestCalculateMultiContextCosts_DerivesPieceCountForAddPiecesFees(t *testing.T) {
+func TestCalculateMultiContextCosts_PricesEveryPieceForEachContext(t *testing.T) {
 	priceList := defaultPriceList()
 	svc := buildSvc(t,
 		&mockWS{priceList: priceList},
@@ -159,23 +167,69 @@ func TestCalculateMultiContextCosts_DerivesPieceCountForAddPiecesFees(t *testing
 			approval: maxApproval(),
 		})
 
+	pieceSizes := slices.Repeat([]uint64{128}, 41)
 	got, err := svc.CalculateMultiContextCosts(
 		context.Background(),
 		common.Address{},
-		slices.Repeat([]uint64{128}, 41),
-		[]MultiContextRef{{IsNewDataSet: true}, {CurrentDataSetLeafCount: new(big.Int)}},
+		pieceSizes,
+		[]MultiContextRef{{IsNewDataSet: true}, existingMultiContextRef(new(big.Int))},
 		&UploadCostOptions{BufferEpochs: new(int64(0))},
 	)
 	if err != nil {
 		t.Fatalf("CalculateMultiContextCosts: %v", err)
 	}
 
-	newFees := CalculateUploadFees(priceList, true, bi(41))
-	existingFees := CalculateUploadFees(priceList, false, bi(41))
+	newFees, err := CalculateUploadFees(priceList, true, pieceSizes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingFees, err := CalculateUploadFees(priceList, false, pieceSizes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantAddPieces := new(big.Int).Add(newFees.AddPiecesFee, existingFees.AddPiecesFee)
 	if got.Fees.AddPiecesFee.Cmp(wantAddPieces) != 0 {
 		t.Fatalf("AddPiecesFee=%s want %s", got.Fees.AddPiecesFee, wantAddPieces)
 	}
+}
+
+func TestCalculateMultiContextCosts_AggregatesReservePerContextAndAccountDebtOnce(t *testing.T) {
+	priceList := &warmstorage.PriceList{
+		Fees: warmstorage.PriceListFees{AddPiecesBaseFee: bi(7), AddPiecesPerPieceFee: bi(3)},
+		Lockups: warmstorage.PriceListLockups{
+			LifecycleReserveTarget: bi(100), ReplenishThreshold: bi(10), DefaultLockupPeriod: bi(DefaultLockupPeriod),
+		},
+	}
+	svc := buildSvc(t, &mockWS{priceList: priceList}, &mockPay{
+		account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: bi(5), LockupRate: new(big.Int)},
+		approval: maxApproval(),
+	})
+	endEpoch := types.Epoch(0)
+	refs := []MultiContextRef{
+		{
+			CurrentDataSetLeafCount:        new(big.Int),
+			CurrentLifecycleReserveBalance: bi(19),
+			PDPEndEpoch:                    &endEpoch,
+		},
+		{
+			CurrentDataSetLeafCount:        new(big.Int),
+			CurrentLifecycleReserveBalance: bi(20),
+			PDPEndEpoch:                    &endEpoch,
+		},
+	}
+	zeroBuffer := int64(0)
+
+	got, err := svc.CalculateMultiContextCosts(
+		context.Background(), common.Address{}, []uint64{1024}, refs,
+		&UploadCostOptions{BufferEpochs: &zeroBuffer},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBigIntEquals(t, "reserve replenishment", got.Lockup.ReserveReplenishment, bi(91))
+	assertBigIntEquals(t, "total lockup", got.Lockup.Total, bi(91))
+	assertBigIntEquals(t, "fees", got.Fees.Total, bi(20))
+	assertBigIntEquals(t, "deposit", got.DepositNeeded, bi(96))
 }
 
 func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
@@ -210,7 +264,7 @@ func TestCalculateMultiContextCosts_BufferEpochOptions(t *testing.T) {
 	svc := buildSvc(t,
 		&mockWS{priceList: defaultPriceList()},
 		&mockPay{account: account, approval: maxApproval()})
-	refs := []MultiContextRef{{CurrentDataSetLeafCount: new(big.Int)}}
+	refs := []MultiContextRef{existingMultiContextRef(new(big.Int))}
 
 	withoutBuffer, err := svc.CalculateMultiContextCosts(
 		context.Background(), common.Address{}, []uint64{1024}, refs,

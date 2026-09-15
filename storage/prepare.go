@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 // PrepareOptions configures Service.Prepare. Costs and context-based cost
@@ -64,9 +66,9 @@ type PrepareResult struct {
 
 // Prepare returns the funding transaction needed, if any, to cover one upload
 // of PieceSizes across the supplied contexts. Existing data sets require a
-// DataSetLeafCountReader; missing configuration returns [ErrUninitialized],
-// and unavailable data sets return [ErrDataSetUnavailable]. Precomputed Costs
-// bypasses leaf-count reads.
+// DataSetLeafCountReader and FWSSDataSetReader; missing configuration returns
+// [ErrUninitialized], and unavailable data sets return [ErrDataSetUnavailable].
+// Precomputed Costs bypasses these reads.
 func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -204,9 +206,9 @@ func validatePrepareCosts(summary *costs.MultiContextCosts) error {
 }
 
 // prepareRefs builds storage cost refs from the user-supplied contexts.
-// For existing-dataset contexts, the current on-chain leaf count is fetched in
-// parallel via [DataSetLeafCountReader] so the cost calculator can price
-// lockup against real storage usage rather than the floor rate.
+// For existing-dataset contexts, the current on-chain leaf count and FWSS data
+// set state are fetched in parallel so the cost calculator can account for
+// real storage usage and lifecycle reserve funding.
 func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]ContextCostRef, error) {
 	contexts := opts.Contexts
 
@@ -227,27 +229,44 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 			if s.leafCountReader == nil {
 				return nil, fmt.Errorf("storage.Service.Prepare: %w: no DataSetLeafCountReader configured", ErrUninitialized)
 			}
+			if s.dsReader == nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: %w: no FWSSDataSetReader configured", ErrUninitialized)
+			}
 			jobs = append(jobs, leafCountJob{idx: i, id: id})
 		}
 	}
 
 	if len(jobs) > 0 {
-		type leafCountResult struct {
-			idx    int
-			leaves *big.Int
-			err    error
+		type dataSetStateResult struct {
+			idx     int
+			leaves  *big.Int
+			leafErr error
+			dataSet *warmstorage.DataSetInfo
+			dataErr error
 		}
-		results := make(chan leafCountResult, len(jobs))
+		results := make(chan dataSetStateResult, len(jobs))
 		for _, j := range jobs {
 			go func(j leafCountJob) {
-				leaves, err := s.leafCountReader.GetDataSetLeafCount(ctx, j.id)
-				results <- leafCountResult{idx: j.idx, leaves: leaves, err: err}
+				var result dataSetStateResult
+				result.idx = j.idx
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					result.leaves, result.leafErr = s.leafCountReader.GetDataSetLeafCount(ctx, j.id)
+				}()
+				go func() {
+					defer wg.Done()
+					result.dataSet, result.dataErr = s.dsReader.GetDataSet(ctx, j.id)
+				}()
+				wg.Wait()
+				results <- result
 			}(j)
 		}
 		for range jobs {
 			r := <-results
-			if r.err != nil {
-				return nil, fmt.Errorf("storage.Service.Prepare: GetDataSetLeafCount for data set %s: %w", refs[r.idx].DataSetID, r.err)
+			if r.leafErr != nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: GetDataSetLeafCount for data set %s: %w", refs[r.idx].DataSetID, r.leafErr)
 			}
 			if r.leaves == nil {
 				return nil, fmt.Errorf("storage.Service.Prepare: reader returned nil leaf count for data set %s", refs[r.idx].DataSetID)
@@ -255,7 +274,38 @@ func (s *Service) prepareRefs(ctx context.Context, opts *PrepareOptions) ([]Cont
 			if r.leaves.Sign() < 0 {
 				return nil, fmt.Errorf("storage.Service.Prepare: reader returned negative leaf count for data set %s", refs[r.idx].DataSetID)
 			}
+			if r.dataErr != nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: GetDataSet for data set %s: %w", refs[r.idx].DataSetID, r.dataErr)
+			}
+			if r.dataSet == nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: FWSS reader returned nil data set %s", refs[r.idx].DataSetID)
+			}
+			if !r.dataSet.DataSetID.Equal(*refs[r.idx].DataSetID) {
+				return nil, fmt.Errorf(
+					"storage.Service.Prepare: FWSS reader returned data set %s for requested data set %s",
+					r.dataSet.DataSetID,
+					refs[r.idx].DataSetID,
+				)
+			}
+			if err := validateDataSetAcceptsUploads(*refs[r.idx].DataSetID, r.dataSet.PDPEndEpoch); err != nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: %w", err)
+			}
+			if r.dataSet.LifecycleReserveBalance == nil {
+				return nil, fmt.Errorf("storage.Service.Prepare: FWSS reader returned nil lifecycle reserve balance for data set %s", refs[r.idx].DataSetID)
+			}
+			if r.dataSet.LifecycleReserveBalance.Sign() < 0 {
+				return nil, fmt.Errorf("storage.Service.Prepare: FWSS reader returned negative lifecycle reserve balance for data set %s", refs[r.idx].DataSetID)
+			}
+			if r.dataSet.PendingOneTimePayments != nil && r.dataSet.PendingOneTimePayments.Sign() < 0 {
+				return nil, fmt.Errorf("storage.Service.Prepare: FWSS reader returned negative pending one-time payments for data set %s", refs[r.idx].DataSetID)
+			}
 			refs[r.idx].CurrentDataSetLeafCount = new(big.Int).Set(r.leaves)
+			refs[r.idx].CurrentLifecycleReserveBalance = new(big.Int).Set(r.dataSet.LifecycleReserveBalance)
+			if r.dataSet.PendingOneTimePayments != nil {
+				refs[r.idx].PendingOneTimePayments = new(big.Int).Set(r.dataSet.PendingOneTimePayments)
+			}
+			endEpoch := r.dataSet.PDPEndEpoch
+			refs[r.idx].PDPEndEpoch = &endEpoch
 		}
 	}
 

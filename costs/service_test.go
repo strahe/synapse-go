@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -314,7 +315,10 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new dataset GetUploadCosts: %v", err)
 	}
-	wantFees := CalculateUploadFees(priceList, true, bi(41))
+	wantFees, err := CalculateUploadFees(priceList, true, slices.Repeat([]uint64{128}, 41))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if newDataSet.Fees.Total.Cmp(wantFees.Total) != 0 {
 		t.Errorf("new dataset fees: got %s, want %s", newDataSet.Fees.Total, wantFees.Total)
 	}
@@ -322,13 +326,15 @@ func TestGetUploadCosts_UsesPriceListFeesAndLifecycleLockup(t *testing.T) {
 		t.Errorf("new dataset lifecycle lockup: got %s, want %s", newDataSet.Lockup.LifecycleLockup, priceList.Lockups.LifecycleReserveTarget)
 	}
 
-	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{
-		CurrentDataSetLeafCount: bi(chain.TiB),
-	})
+	existingOpts := existingUploadCostOptions(bi(chain.TiB))
+	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingOpts)
 	if err != nil {
 		t.Fatalf("existing dataset GetUploadCosts: %v", err)
 	}
-	wantExistingFees := CalculateUploadFees(priceList, false, nil)
+	wantExistingFees, err := CalculateUploadFees(priceList, false, []uint64{1024})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if existingDataSet.Fees.Total.Cmp(wantExistingFees.Total) != 0 {
 		t.Errorf("existing dataset fees: got %s, want %s", existingDataSet.Fees.Total, wantExistingFees.Total)
 	}
@@ -351,6 +357,72 @@ func TestGetUploadCosts_NilOpts_RejectsMissingState(t *testing.T) {
 	}
 }
 
+func TestGetUploadCosts_RejectsTerminatedDataSetBeforeBackendReads(t *testing.T) {
+	backend := forbiddenCostBackend{t}
+	svc := buildSvc(t, backend, backend)
+	svc.caller = backend
+	opts := existingUploadCostOptions(new(big.Int))
+	endEpoch := types.Epoch(1234)
+	opts.PDPEndEpoch = &endEpoch
+
+	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, opts)
+	if got != nil {
+		t.Fatalf("GetUploadCosts returned costs: %+v", got)
+	}
+	var terminated *DataSetServiceTerminatedError
+	if !errors.As(err, &terminated) || terminated.PDPEndEpoch != endEpoch {
+		t.Fatalf("GetUploadCosts error=%v want DataSetServiceTerminatedError{%d}", err, endEpoch)
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("terminated error must not match ErrInvalidArgument: %v", err)
+	}
+}
+
+func TestGetUploadCosts_DepositExcludesFeesButIncludesReserveReplenishment(t *testing.T) {
+	priceList := &warmstorage.PriceList{
+		Fees: warmstorage.PriceListFees{
+			CreateDataSetFee:     bi(20),
+			AddPiecesBaseFee:     bi(7),
+			AddPiecesPerPieceFee: bi(3),
+		},
+		Lockups: warmstorage.PriceListLockups{
+			LifecycleReserveTarget: bi(100),
+			ReplenishThreshold:     bi(10),
+			DefaultLockupPeriod:    bi(DefaultLockupPeriod),
+		},
+	}
+	svc := buildSvc(t, &mockWS{priceList: priceList}, &mockPay{
+		account:  &payments.AccountState{Funds: new(big.Int), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
+		approval: maxApproval(),
+	})
+	zeroBuffer := int64(0)
+
+	newDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{
+		IsNewDataSet: true,
+		BufferEpochs: &zeroBuffer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBigIntEquals(t, "new fees", newDataSet.Fees.Total, bi(30))
+	assertBigIntEquals(t, "new reserve replenishment", newDataSet.Lockup.ReserveReplenishment, new(big.Int))
+	assertBigIntEquals(t, "new deposit", newDataSet.DepositNeeded, bi(100))
+
+	endEpoch := types.Epoch(0)
+	existingDataSet, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{
+		CurrentDataSetLeafCount:        new(big.Int),
+		CurrentLifecycleReserveBalance: bi(19),
+		PDPEndEpoch:                    &endEpoch,
+		BufferEpochs:                   &zeroBuffer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBigIntEquals(t, "existing fees", existingDataSet.Fees.Total, bi(10))
+	assertBigIntEquals(t, "existing reserve replenishment", existingDataSet.Lockup.ReserveReplenishment, bi(91))
+	assertBigIntEquals(t, "existing deposit", existingDataSet.DepositNeeded, bi(91))
+}
+
 func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
 	account := &payments.AccountState{
 		Funds:         new(big.Int),
@@ -361,9 +433,11 @@ func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
 		&mockWS{priceList: defaultPriceList()},
 		&mockPay{account: account, approval: maxApproval()})
 
+	withoutBufferOpts := existingUploadCostOptions(new(big.Int))
+	withoutBufferOpts.BufferEpochs = new(int64(0))
 	withoutBuffer, err := svc.GetUploadCosts(
 		context.Background(), common.Address{}, []uint64{1024},
-		&UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: new(int64(0))},
+		withoutBufferOpts,
 	)
 	if err != nil {
 		t.Fatalf("GetUploadCosts without buffer: %v", err)
@@ -380,9 +454,11 @@ func TestGetUploadCosts_BufferEpochOptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			opts := existingUploadCostOptions(new(big.Int))
+			opts.BufferEpochs = tt.bufferEpochs
 			got, err := svc.GetUploadCosts(
 				context.Background(), common.Address{}, []uint64{1024},
-				&UploadCostOptions{CurrentDataSetLeafCount: new(big.Int), BufferEpochs: tt.bufferEpochs},
+				opts,
 			)
 			if err != nil {
 				t.Fatalf("GetUploadCosts: %v", err)
@@ -452,7 +528,7 @@ func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
 			approval: maxApproval(),
 		})
 
-	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int)})
+	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingUploadCostOptions(new(big.Int)))
 	if err != nil {
 		t.Fatalf("GetUploadCosts: %v", err)
 	}
@@ -471,6 +547,7 @@ func TestAdditionalLockup_OnlyExposesCurrentFields(t *testing.T) {
 		"RateDeltaPerEpoch",
 		"StreamingLockup",
 		"LifecycleLockup",
+		"ReserveReplenishment",
 		"CDNLockup",
 		"CacheMissLockup",
 		"Total",
@@ -492,6 +569,9 @@ func TestUploadCostOptions_OnlyExposeCurrentFields(t *testing.T) {
 		"EnableCDN",
 		"IsNewDataSet",
 		"CurrentDataSetLeafCount",
+		"CurrentLifecycleReserveBalance",
+		"PendingOneTimePayments",
+		"PDPEndEpoch",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UploadCostOptions fields=%v want %v", got, want)
@@ -535,7 +615,7 @@ func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
 		&mockWS{},
 		&mockPayErr{err: payErr})
 
-	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{CurrentDataSetLeafCount: new(big.Int)})
+	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingUploadCostOptions(new(big.Int)))
 	if err == nil {
 		t.Fatal("expected error when payments RPC fails")
 	}

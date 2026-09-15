@@ -81,31 +81,6 @@
   },
   {
     "type": "function",
-    "name": "announcePlannedUpgrade",
-    "inputs": [
-      {
-        "name": "plannedUpgrade",
-        "type": "tuple",
-        "internalType": "struct FilecoinWarmStorageService.PlannedUpgrade",
-        "components": [
-          {
-            "name": "nextImplementation",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "afterEpoch",
-            "type": "uint96",
-            "internalType": "uint96"
-          }
-        ]
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "announceUpgradePlan",
     "inputs": [
       {
@@ -689,6 +664,24 @@
   },
   {
     "type": "function",
+    "name": "setDataSetAuthorizer",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "authorizer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setViewContract",
     "inputs": [
       {
@@ -1007,6 +1000,25 @@
         "name": "implementation",
         "type": "address",
         "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DataSetAuthorizerSet",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "authorizer",
+        "type": "address",
+        "indexed": true,
         "internalType": "address"
       }
     ],
@@ -1724,6 +1736,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidDataSetAuthorizer",
+    "inputs": [
+      {
+        "name": "authorizer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidDataSetId",
     "inputs": [
       {
@@ -1869,6 +1892,22 @@
     "type": "error",
     "name": "NotInitializing",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OnlyDataSetPayer",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "actual",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -2240,6 +2279,11 @@
         "internalType": "enum Errors.AddressField"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "AuthorizerReentrancy",
+    "inputs": []
   },
   {
     "type": "error",
@@ -2708,6 +2752,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidDataSetAuthorizer",
+    "inputs": [
+      {
+        "name": "authorizer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidDataSetId",
     "inputs": [
       {
@@ -2900,6 +2955,22 @@
         "name": "expected",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "actual",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OnlyDataSetPayer",
+    "inputs": [
+      {
+        "name": "dataSetId",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
         "name": "actual",
@@ -3135,6 +3206,32 @@
         "name": "keysLength",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": [
+      {
+        "name": "payer",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "operation",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "digest",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ]
   },

@@ -40,6 +40,7 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 	totalRateDelta := new(big.Int).Mul(copyBig(base.Lockup.RateDeltaPerEpoch), multiplier)
 	totalStreamingLockup := new(big.Int).Mul(copyBig(base.Lockup.StreamingLockup), multiplier)
 	totalLifecycleLockup := new(big.Int).Mul(copyBig(base.Lockup.LifecycleLockup), multiplier)
+	totalReserveReplenishment := new(big.Int).Mul(copyBig(base.Lockup.ReserveReplenishment), multiplier)
 	totalCDNLockup := new(big.Int).Mul(copyBig(base.Lockup.CDNLockup), multiplier)
 	totalCacheMissLockup := new(big.Int).Mul(copyBig(base.Lockup.CacheMissLockup), multiplier)
 	totalLockup := new(big.Int).Mul(copyBig(base.Lockup.Total), multiplier)
@@ -61,12 +62,13 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 			RatePerMonth: totalRatePerMonth,
 		},
 		Lockup: costs.AdditionalLockup{
-			RateDeltaPerEpoch: totalRateDelta,
-			StreamingLockup:   totalStreamingLockup,
-			LifecycleLockup:   totalLifecycleLockup,
-			CDNLockup:         totalCDNLockup,
-			CacheMissLockup:   totalCacheMissLockup,
-			Total:             totalLockup,
+			RateDeltaPerEpoch:    totalRateDelta,
+			StreamingLockup:      totalStreamingLockup,
+			LifecycleLockup:      totalLifecycleLockup,
+			ReserveReplenishment: totalReserveReplenishment,
+			CDNLockup:            totalCDNLockup,
+			CacheMissLockup:      totalCacheMissLockup,
+			Total:                totalLockup,
 		},
 		DepositNeeded:        depositNeeded,
 		NeedsFWSSMaxApproval: base.NeedsFWSSMaxApproval,

@@ -122,8 +122,8 @@ type MultiCostOptions struct {
 // MultiCostCalculator is the SDK assembly interface for aggregate upload costs.
 // The supported implementation is [costs.Service]; user-defined implementations
 // are not compatibility targets. Its input contract is defined by
-// [costs.Service.CalculateMultiContextCosts]: dataset state and CDN are supplied
-// through refs, not opts.
+// [costs.Service.CalculateMultiContextCosts]: leaf count, lifecycle reserve
+// state, PDP end epoch, and CDN are supplied through refs, not opts.
 type MultiCostCalculator interface {
 	CalculateMultiContextCosts(ctx context.Context, payer common.Address, pieceSizes []uint64, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error)
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -29,6 +30,17 @@ type MultiContextRef struct {
 	// existing data set. Zero means known empty; nil is invalid for an existing
 	// data set. Ignored when IsNewDataSet is true.
 	CurrentDataSetLeafCount *big.Int
+	// CurrentLifecycleReserveBalance is required and non-negative for an
+	// existing data set. It is ignored when IsNewDataSet is true.
+	CurrentLifecycleReserveBalance *big.Int
+	// PendingOneTimePayments is the non-negative operation-fee total already
+	// waiting to be paid from an existing data set's reserve. Nil defaults to
+	// zero. It is ignored when IsNewDataSet is true.
+	PendingOneTimePayments *big.Int
+	// PDPEndEpoch is required for an existing data set. It must point to zero;
+	// a non-zero epoch means the data set can no longer accept uploads. It is
+	// ignored when IsNewDataSet is true.
+	PDPEndEpoch *types.Epoch
 
 	// WithCDN toggles CDN and cache-miss lockup for this target. Only
 	// meaningful when IsNewDataSet is true.
@@ -98,11 +110,21 @@ func (s *Service) CalculateMultiContextCosts(
 	pieceSizes = slices.Clone(pieceSizes)
 	refs = slices.Clone(refs)
 	for i := range refs {
-		leaves, err := resolveCurrentLeafCount(refs[i].IsNewDataSet, refs[i].CurrentDataSetLeafCount)
+		state, err := resolveDataSetCostState(
+			refs[i].IsNewDataSet,
+			refs[i].CurrentDataSetLeafCount,
+			refs[i].CurrentLifecycleReserveBalance,
+			refs[i].PendingOneTimePayments,
+			refs[i].PDPEndEpoch,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("costs.CalculateMultiContextCosts: refs[%d]: %w", i, err)
 		}
-		refs[i].CurrentDataSetLeafCount = leaves
+		refs[i].CurrentDataSetLeafCount = state.leaves
+		refs[i].CurrentLifecycleReserveBalance = state.reserveBalance
+		refs[i].PendingOneTimePayments = state.pendingPayments
+		endEpoch := state.pdpEndEpoch
+		refs[i].PDPEndEpoch = &endEpoch
 	}
 	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
@@ -169,6 +191,7 @@ func (s *Service) CalculateMultiContextCosts(
 	totalRateDelta := new(big.Int)
 	totalLockup := new(big.Int)
 	totalLifecycleLockup := new(big.Int)
+	totalReserveReplenishment := new(big.Int)
 	totalStreamingLockup := new(big.Int)
 	totalCDNLockup := new(big.Int)
 	totalCacheMissLockup := new(big.Int)
@@ -179,7 +202,6 @@ func (s *Service) CalculateMultiContextCosts(
 	allNewDataSets := true
 	requiredLockupPeriod := requiredLockupPeriod(priceList)
 	addedLeaves := pieceSizesToLeafCount(pieceSizes)
-	pieceCount := big.NewInt(int64(len(pieceSizes)))
 
 	for i := range refs {
 		ref := &refs[i]
@@ -196,10 +218,26 @@ func (s *Service) CalculateMultiContextCosts(
 			ref.IsNewDataSet,
 			ref.WithCDN,
 		)
-		fees := CalculateUploadFees(priceList, ref.IsNewDataSet, pieceCount)
+		fees, err := CalculateUploadFees(priceList, ref.IsNewDataSet, pieceSizes)
+		if err != nil {
+			return nil, fmt.Errorf("costs.CalculateMultiContextCosts: refs[%d]: %w", i, err)
+		}
+		reserveFunding, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
+			PriceList:                      priceList,
+			PieceSizes:                     pieceSizes,
+			IsNewDataSet:                   ref.IsNewDataSet,
+			CurrentLifecycleReserveBalance: ref.CurrentLifecycleReserveBalance,
+			PendingOneTimePayments:         ref.PendingOneTimePayments,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("costs.CalculateMultiContextCosts: refs[%d]: %w", i, err)
+		}
+		lockup.ReserveReplenishment = reserveFunding.ReserveReplenishment
+		lockup.Total.Add(lockup.Total, lockup.ReserveReplenishment)
 		totalRateDelta.Add(totalRateDelta, lockup.RateDeltaPerEpoch)
 		totalLockup.Add(totalLockup, lockup.Total)
 		totalLifecycleLockup.Add(totalLifecycleLockup, lockup.LifecycleLockup)
+		totalReserveReplenishment.Add(totalReserveReplenishment, lockup.ReserveReplenishment)
 		totalStreamingLockup.Add(totalStreamingLockup, lockup.StreamingLockup)
 		totalCDNLockup.Add(totalCDNLockup, lockup.CDNLockup)
 		totalCacheMissLockup.Add(totalCacheMissLockup, lockup.CacheMissLockup)
@@ -231,7 +269,6 @@ func (s *Service) CalculateMultiContextCosts(
 
 	depositNeeded := CalculateDepositNeeded(DepositCalculation{
 		AdditionalLockup:  totalLockup,
-		Fees:              new(big.Int).Add(totalCreateDataSetFee, totalAddPiecesFee),
 		RateDelta:         totalRateDelta,
 		CurrentLockupRate: currentRate,
 		Debt:              debt,
@@ -252,7 +289,15 @@ func (s *Service) CalculateMultiContextCosts(
 	ready := depositNeeded.Sign() == 0 && !needsApproval
 
 	totalFees := new(big.Int).Add(totalCreateDataSetFee, totalAddPiecesFee)
-	aggregateLockup := aggregateLockup(totalRateDelta, totalStreamingLockup, totalLifecycleLockup, totalCDNLockup, totalCacheMissLockup, totalLockup)
+	aggregateLockup := aggregateLockup(
+		totalRateDelta,
+		totalStreamingLockup,
+		totalLifecycleLockup,
+		totalReserveReplenishment,
+		totalCDNLockup,
+		totalCacheMissLockup,
+		totalLockup,
+	)
 
 	return &MultiContextCosts{
 		RatePerEpoch:         totalRatePerEpoch,

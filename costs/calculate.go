@@ -5,7 +5,6 @@ import (
 	"math/big"
 
 	"github.com/strahe/synapse-go/chain"
-	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
@@ -57,33 +56,98 @@ func CalculateEffectiveRate(
 	}
 }
 
-// CalculateUploadFees computes one-time upload fees from the price list.
-func CalculateUploadFees(priceList *warmstorage.PriceList, isNewDataSet bool, pieceCount *big.Int) UploadFees {
+// CalculateUploadFees computes a conservative one-time upload fee estimate from
+// the price list. Every piece is priced as its own add-pieces operation because
+// runtime batch boundaries cannot be inferred from raw sizes alone.
+func CalculateUploadFees(priceList *warmstorage.PriceList, isNewDataSet bool, pieceSizes []uint64) (UploadFees, error) {
+	if err := validatePieceSizes(pieceSizes); err != nil {
+		return UploadFees{}, fmt.Errorf("costs.CalculateUploadFees: %w", err)
+	}
 	if priceList == nil {
 		priceList = &warmstorage.PriceList{}
 	}
-	pieces := copyBigOrDefault(pieceCount, bigOne)
-	if pieces.Sign() <= 0 {
-		pieces.SetInt64(1)
-	}
-
-	maxBatch := big.NewInt(pdp.MaxAddPiecesBatchSize)
-	addPiecesOperationCount := new(big.Int).Add(pieces, new(big.Int).Sub(maxBatch, bigOne))
-	addPiecesOperationCount.Div(addPiecesOperationCount, maxBatch)
+	pieces := new(big.Int).SetUint64(uint64(len(pieceSizes)))
 
 	createDataSetFee := new(big.Int)
 	if isNewDataSet {
 		createDataSetFee.Set(zeroBig(priceList.Fees.CreateDataSetFee))
 	}
-	addPiecesFee := new(big.Int).Mul(zeroBig(priceList.Fees.AddPiecesBaseFee), addPiecesOperationCount)
-	addPiecesFee.Add(addPiecesFee, new(big.Int).Mul(zeroBig(priceList.Fees.AddPiecesPerPieceFee), pieces))
+	singlePieceFee := new(big.Int).Add(zeroBig(priceList.Fees.AddPiecesBaseFee), zeroBig(priceList.Fees.AddPiecesPerPieceFee))
+	addPiecesFee := new(big.Int).Mul(singlePieceFee, pieces)
 	total := new(big.Int).Add(createDataSetFee, addPiecesFee)
 
 	return UploadFees{
 		CreateDataSetFee: createDataSetFee,
 		AddPiecesFee:     addPiecesFee,
 		Total:            total,
+	}, nil
+}
+
+// CalculateLifecycleReserveFunding computes the lifecycle reserve lockup needed
+// to process the planned upload fees. For a new data set, the current reserve is
+// ignored and the reserve starts at the configured target. Pending payments
+// default to zero and, when supplied, are included for either data-set mode.
+// The calculation does not modify its inputs.
+func CalculateLifecycleReserveFunding(calc LifecycleReserveCalculation) (LifecycleReserveFunding, error) {
+	if err := validatePieceSizes(calc.PieceSizes); err != nil {
+		return LifecycleReserveFunding{}, fmt.Errorf("costs.CalculateLifecycleReserveFunding: %w", err)
 	}
+
+	pending := copyBigOrDefault(calc.PendingOneTimePayments, nil)
+	if pending.Sign() < 0 {
+		return LifecycleReserveFunding{}, fmt.Errorf(
+			"costs.CalculateLifecycleReserveFunding: %w: PendingOneTimePayments must be non-negative",
+			ErrInvalidArgument,
+		)
+	}
+	priceList := calc.PriceList
+	if priceList == nil {
+		priceList = &warmstorage.PriceList{}
+	}
+	target := zeroBig(priceList.Lockups.LifecycleReserveTarget)
+	threshold := zeroBig(priceList.Lockups.ReplenishThreshold)
+	initialLockup := new(big.Int)
+	reserveBalance := new(big.Int)
+	if calc.IsNewDataSet {
+		initialLockup.Set(target)
+		reserveBalance.Set(target)
+		pending.Add(pending, zeroBig(priceList.Fees.CreateDataSetFee))
+	} else {
+		if calc.CurrentLifecycleReserveBalance == nil {
+			return LifecycleReserveFunding{}, fmt.Errorf(
+				"costs.CalculateLifecycleReserveFunding: %w: CurrentLifecycleReserveBalance is required for an existing dataset",
+				ErrInvalidArgument,
+			)
+		}
+		if calc.CurrentLifecycleReserveBalance.Sign() < 0 {
+			return LifecycleReserveFunding{}, fmt.Errorf(
+				"costs.CalculateLifecycleReserveFunding: %w: CurrentLifecycleReserveBalance must be non-negative",
+				ErrInvalidArgument,
+			)
+		}
+		reserveBalance.Set(calc.CurrentLifecycleReserveBalance)
+	}
+
+	reserveReplenishment := new(big.Int)
+	singlePieceFee := new(big.Int).Add(zeroBig(priceList.Fees.AddPiecesBaseFee), zeroBig(priceList.Fees.AddPiecesPerPieceFee))
+	for range calc.PieceSizes {
+		pending.Add(pending, singlePieceFee)
+		minimumBalance := new(big.Int).Add(pending, threshold)
+		if reserveBalance.Cmp(minimumBalance) < 0 {
+			replenishedBalance := new(big.Int).Add(target, pending)
+			reserveReplenishment.Add(reserveReplenishment, new(big.Int).Sub(replenishedBalance, reserveBalance))
+			reserveBalance.Set(replenishedBalance)
+		}
+		reserveBalance.Sub(reserveBalance, pending)
+		pending.SetInt64(0)
+	}
+
+	return LifecycleReserveFunding{
+		InitialLockup:        initialLockup,
+		ReserveReplenishment: reserveReplenishment,
+		Total:                new(big.Int).Add(initialLockup, reserveReplenishment),
+		FinalReserveBalance:  reserveBalance,
+	}, nil
 }
 
 // CalculateAdditionalLockupRequired returns the incremental lockup for pieces
@@ -184,12 +248,13 @@ func calculateAdditionalLockupRequired(
 	totalLockup.Add(totalLockup, cacheMissLockup)
 
 	return AdditionalLockup{
-		RateDeltaPerEpoch: rateDelta,
-		StreamingLockup:   streamingLockup,
-		LifecycleLockup:   lifecycleLockup,
-		CDNLockup:         cdnLockup,
-		CacheMissLockup:   cacheMissLockup,
-		Total:             totalLockup,
+		RateDeltaPerEpoch:    rateDelta,
+		StreamingLockup:      streamingLockup,
+		LifecycleLockup:      lifecycleLockup,
+		ReserveReplenishment: new(big.Int),
+		CDNLockup:            cdnLockup,
+		CacheMissLockup:      cacheMissLockup,
+		Total:                totalLockup,
 	}
 }
 
@@ -204,7 +269,6 @@ func calculateAdditionalLockupRequired(
 // to zero. The calculation does not modify its inputs.
 func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	additionalLockup := zeroBig(calc.AdditionalLockup)
-	fees := zeroBig(calc.Fees)
 	rateDelta := zeroBig(calc.RateDelta)
 	currentLockupRate := zeroBig(calc.CurrentLockupRate)
 	debt := zeroBig(calc.Debt)
@@ -217,7 +281,6 @@ func CalculateDepositNeeded(calc DepositCalculation) *big.Int {
 	runway := new(big.Int).Mul(combinedRate, big.NewInt(runwayEpochs))
 
 	raw := new(big.Int).Add(additionalLockup, runway)
-	raw.Add(raw, fees)
 	raw.Sub(raw, availableFunds)
 	raw.Add(raw, debt)
 
@@ -288,19 +351,21 @@ func requiredLockupPeriod(priceList *warmstorage.PriceList) *big.Int {
 	return big.NewInt(DefaultLockupPeriod)
 }
 
-func aggregateLockup(rateDelta, streaming, lifecycle, cdn, cacheMiss, total *big.Int) AdditionalLockup {
+func aggregateLockup(rateDelta, streaming, lifecycle, reserveReplenishment, cdn, cacheMiss, total *big.Int) AdditionalLockup {
 	rateDeltaOut := copyBigOrDefault(rateDelta, nil)
 	streamingOut := copyBigOrDefault(streaming, nil)
 	lifecycleOut := copyBigOrDefault(lifecycle, nil)
+	reserveReplenishmentOut := copyBigOrDefault(reserveReplenishment, nil)
 	cdnOut := copyBigOrDefault(cdn, nil)
 	cacheMissOut := copyBigOrDefault(cacheMiss, nil)
 	totalOut := copyBigOrDefault(total, nil)
 	return AdditionalLockup{
-		RateDeltaPerEpoch: rateDeltaOut,
-		StreamingLockup:   streamingOut,
-		LifecycleLockup:   lifecycleOut,
-		CDNLockup:         cdnOut,
-		CacheMissLockup:   cacheMissOut,
-		Total:             totalOut,
+		RateDeltaPerEpoch:    rateDeltaOut,
+		StreamingLockup:      streamingOut,
+		LifecycleLockup:      lifecycleOut,
+		ReserveReplenishment: reserveReplenishmentOut,
+		CDNLockup:            cdnOut,
+		CacheMissLockup:      cacheMissOut,
+		Total:                totalOut,
 	}
 }
