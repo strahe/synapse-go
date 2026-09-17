@@ -236,16 +236,17 @@ and returns an error matching `storage.ErrClosed` after its root client closes.
 Existing data sets share a window only when the provider, complete data-set
 reference, and exact service URL match. New data sets also require the same
 payee, CDN setting, and data-set metadata. Piece metadata remains per piece.
-Every new-data-set window receives a distinct client data-set ID, and a
-`ProviderContext` remains unbound after the upload.
+Uploads to the same new target, including sequential `ProviderContext.Upload`
+calls, share one data set for the life of the client, so split windows add
+transactions rather than data sets. Use different data-set metadata to keep
+uploads in separate data sets. A `ProviderContext` remains unbound after the
+upload.
 
 In a multi-copy `Service.Upload` or `UploadToContexts` call, the primary and
-already-bound secondary contexts participate in batching. An unbound
-`ProviderContext` used as a secondary keeps the single-piece pull and
-create-and-add flow. That secondary may therefore submit before the primary
-window, and replicas from one call are not guaranteed to share a transaction.
-Each caller still receives callbacks and the PieceID only for its own piece;
-pieces in one batch report the same transaction ID.
+every secondary participate in batching. Replicas from one call are not
+guaranteed to share a transaction. Each caller still receives callbacks and
+the PieceID only for its own piece; pieces in one batch report the same
+transaction ID.
 
 Low-level `Store`, `Pull`, `PresignForCommit`, `Commit`, `SubmitCommit`, and
 `WaitForCommit` calls remain immediate and are never implicitly batched.

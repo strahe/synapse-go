@@ -541,9 +541,9 @@ secondariesLoop:
 			currentAttemptCounted = false
 			var extraData []byte
 			var presignErr error
-			_, bound := current.DataSetRef()
-			if s.uploadBatcher != nil && bound {
-				extraData, presignErr = s.uploadBatcher.presignExisting(ctx, current, pieceInputs)
+			pullTarget := current
+			if s.uploadBatcher != nil {
+				pullTarget, extraData, presignErr = s.uploadBatcher.authorizePull(ctx, current, pieceInputs)
 			} else {
 				extraData, presignErr = current.PresignForCommit(ctx, pieceInputs)
 			}
@@ -560,7 +560,7 @@ secondariesLoop:
 						opts.OnPullProgress(pullProviderID, pieceCID, status)
 					}
 				}
-				pullResult, pullErr := current.Pull(ctx, PullRequest{
+				pullResult, pullErr := pullTarget.Pull(ctx, PullRequest{
 					Pieces:     []cid.Cid{storeResult.PieceCID},
 					From:       primary.PieceURL,
 					ExtraData:  extraData,
@@ -579,7 +579,7 @@ secondariesLoop:
 						ctx:       current,
 						extraData: append([]byte(nil), extraData...),
 					}
-					if s.uploadBatcher != nil && bound {
+					if s.uploadBatcher != nil {
 						secondary.task, secondary.err = s.uploadBatcher.enqueue(ctx, reservation.seq, current, pieceInputs[0])
 						secondary.extraData = nil
 						if secondary.task != nil {

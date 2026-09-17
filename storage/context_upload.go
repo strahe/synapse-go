@@ -7,8 +7,10 @@ import (
 )
 
 // Upload stores a single copy and commits it to a new data set. opts may be
-// nil. When batching is configured, successful admission transfers ownership
-// to the batcher; later caller cancellation stops waiting but not the commit.
+// nil. With batching, it commits to the data set the batcher shares for this
+// provider, data-set metadata, and CDN setting. Successful admission transfers
+// ownership to the batcher; later caller cancellation stops waiting but not the
+// commit.
 func (c *ProviderContext) Upload(ctx context.Context, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
 	return c.core.upload(ctx, "storage.ProviderContext.Upload", c, nil, r, opts)
 }
