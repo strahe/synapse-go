@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/integrationtest"
+	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
@@ -25,7 +27,7 @@ import (
 
 const (
 	contextIntegrationDataSize = 64 * 1024
-	contextIntegrationTxWait   = 180 * time.Second
+	contextIntegrationTxWait   = 10 * time.Minute
 )
 
 // TestIntegration_ContextCreateDataSetStagedFlow directly exercises the
@@ -36,7 +38,7 @@ const (
 // retains a long lockup period, so an empty provider-terminated fixture supplies
 // the second mature rail needed to exercise both settlement entry points.
 func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -85,7 +87,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 			if _, terminated := terminatedIDs[id.String()]; terminated {
 				continue
 			}
-			cctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			cctx, cancel := context.WithTimeout(context.Background(), contextIntegrationTxWait)
 			start := time.Now()
 			t.Logf("start storage staged cleanup TerminateDataSet(%s)", id)
 			_, err := client.WarmStorage().TerminateDataSet(cctx, id, warmstorage.WithWait(contextIntegrationTxWait))
@@ -326,11 +328,15 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		if deleted == nil || deleted.Hash == (common.Hash{}) {
 			t.Fatalf("DeletePieceByID result = %+v, want non-zero transaction hash", deleted)
 		}
+		t.Logf("DeletePieceByID tx=%s piece=%s", deleted.Hash, commit.PieceIDs[0])
+		waitForCalibrationReceipt(t, ctx, deleted.Hash)
 
 		deadline := time.Now().Add(3 * time.Minute)
+		var lastRemovals []types.BigInt
 		for {
 			removals, err := recovered.GetScheduledRemovals(ctx)
 			if err == nil {
+				lastRemovals = removals
 				for _, removalID := range removals {
 					if removalID.Equal(commit.PieceIDs[0]) {
 						t.Logf("scheduled removal observed for piece %s", removalID)
@@ -339,7 +345,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 				}
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("scheduled removal for piece %s was not indexed within 3m (last error: %v)", commit.PieceIDs[0], err)
+				t.Fatalf("scheduled removal for piece %s was not indexed within 3m after confirmation (last error: %v removals=%v)", commit.PieceIDs[0], err, lastRemovals)
 			}
 			select {
 			case <-ctx.Done():
@@ -383,7 +389,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged secondary DataSetContext.TerminateService")
 	providerTermination, err := recovered.TerminateService(ctx, &storage.TerminateServiceOptions{
-		ProviderWaitTimeout: 5 * time.Minute,
+		ProviderWaitTimeout: 10 * time.Minute,
 		PollInterval:        2 * time.Second,
 	})
 	t.Logf("done storage staged secondary DataSetContext.TerminateService elapsed=%s", time.Since(start).Round(time.Second))
@@ -441,7 +447,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged settlement fixture DataSetContext.TerminateService")
 	settlementTermination, err := settlementDataSet.TerminateService(ctx, &storage.TerminateServiceOptions{
-		ProviderWaitTimeout: 5 * time.Minute,
+		ProviderWaitTimeout: 10 * time.Minute,
 		PollInterval:        2 * time.Second,
 	})
 	t.Logf("done storage staged settlement fixture DataSetContext.TerminateService elapsed=%s", time.Since(start).Round(time.Second))
@@ -554,4 +560,22 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("SettleAuto(terminated rail %s) receipt = %+v", settlementInfo.PDPRailID, autoSettle.Receipt)
 	}
 	t.Logf("SettleAuto routed settlement fixture rail %s: tx=%s", settlementInfo.PDPRailID, autoSettle.Hash)
+}
+
+func waitForCalibrationReceipt(t *testing.T, ctx context.Context, hash common.Hash) {
+	t.Helper()
+	eth, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
+	if err != nil {
+		t.Fatalf("dial RPC: %v", err)
+	}
+	defer eth.Close()
+	start := time.Now()
+	receipt, err := txutil.WaitForReceipt(ctx, eth, hash, contextIntegrationTxWait)
+	if err != nil {
+		t.Fatalf("wait for %s: %v", hash, err)
+	}
+	if receipt == nil || receipt.Status != 1 {
+		t.Fatalf("tx %s receipt = %+v after %s", hash, receipt, time.Since(start).Round(time.Second))
+	}
+	t.Logf("tx %s confirmed in %s", hash, time.Since(start).Round(time.Second))
 }

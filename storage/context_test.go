@@ -385,6 +385,11 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	if _, ok := providerCtx.DataSetRef(); ok {
 		t.Fatal("ProviderContext unexpectedly reports a data-set target")
 	}
+	metadataCopy := providerCtx.DataSetMetadata()
+	metadataCopy["job"] = "changed"
+	if providerCtx.DataSetMetadata()["job"] != "original" {
+		t.Fatal("DataSetMetadata exposed mutable context state")
+	}
 
 	t.Run("provider mismatch", func(t *testing.T) {
 		ref, err := NewDataSetRef(types.NewBigInt(2), types.NewBigInt(42), types.NewBigInt(7))
@@ -422,6 +427,11 @@ func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {
 	again, _ := dataSetCtx.DataSetRef()
 	if !again.ProviderID().Equal(testProvider().ID) || !again.DataSetID().Equal(types.NewBigInt(42)) || !again.ClientDataSetID().IsZero() {
 		t.Fatalf("DataSetRef mutated through returned copy: %+v", again)
+	}
+	dataSetMetadataCopy := dataSetCtx.DataSetMetadata()
+	dataSetMetadataCopy["job"] = "changed again"
+	if dataSetCtx.DataSetMetadata()["job"] != "original" {
+		t.Fatal("DataSetMetadata exposed mutable DataSetContext state")
 	}
 	if _, ok := providerCtx.DataSetRef(); ok {
 		t.Fatal("ForDataSet mutated its ProviderContext receiver")

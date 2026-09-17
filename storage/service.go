@@ -31,12 +31,18 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// StorageContext is an immutable provider or data-set upload target.
+// StorageContext is the SDK-owned composition interface for an immutable
+// provider or data-set upload target. Its supported implementations are
+// [ProviderContext] and [DataSetContext]. Custom resolvers may return those
+// built-in contexts; external implementations of the complete method set are
+// not compatibility targets during the 0.x phase.
 type StorageContext interface {
 	ContextIdentity() ContextIdentity
 	ProviderID() types.BigInt
 	GetProviderInfo() Provider
 	DataSetRef() (DataSetRef, bool)
+	// DataSetMetadata returns an independent copy of the target metadata.
+	DataSetMetadata() map[string]string
 	ServiceURL() string
 	CDNEnabled() bool
 	PieceURL(cid.Cid) string
@@ -45,6 +51,8 @@ type StorageContext interface {
 	PresignForCommit(context.Context, []PieceInput) ([]byte, error)
 	Pull(context.Context, PullRequest) (*PullResult, error)
 	Commit(context.Context, CommitRequest) (*CommitResult, error)
+	SubmitCommit(context.Context, CommitRequest) (*CommitSubmission, error)
+	WaitForCommit(context.Context, CommitSubmission) (*CommitResult, error)
 	// Upload stores and commits one copy. Its options may be nil.
 	Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error)
 }
@@ -88,6 +96,7 @@ type Service struct {
 	defaultWithCDN       bool
 	maxSecondaryAttempts int
 	commitConcurrency    int
+	uploadBatcher        *UploadBatcher
 	downloadMaxBytes     int64
 	logger               *slog.Logger
 	lifecycle            interface{ CheckClosed() error }
@@ -242,6 +251,12 @@ type Options struct {
 	// When zero, New derives it from a non-nil Signer. Set it explicitly when a
 	// delegated Signer authorizes operations for a different payer.
 	PayerAddress common.Address
+
+	// UploadBatcher batches commits made by high-level Upload and
+	// UploadToContexts calls. Accepted work uses the batcher's lifecycle rather
+	// than the individual Upload context. The caller retains ownership and must
+	// close the batcher separately.
+	UploadBatcher *UploadBatcher
 }
 
 // New creates a Service from the given Options.
@@ -296,6 +311,7 @@ func New(opts Options) (*Service, error) {
 		defaultWithCDN:       opts.DefaultWithCDN,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
 		commitConcurrency:    opts.CommitConcurrency,
+		uploadBatcher:        opts.UploadBatcher,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
 		logger:               opts.Logger,
 		lifecycle:            ifaceutil.NormalizeNil(opts.Lifecycle),
@@ -317,6 +333,28 @@ func New(opts Options) (*Service, error) {
 	}, nil
 }
 
+func (s *Service) reserveUpload() (*uploadReservation, error) {
+	if s.uploadBatcher == nil {
+		return nil, nil
+	}
+	return s.uploadBatcher.reserve()
+}
+
+// Flush waits for uploads started before this call to reach the batcher,
+// submits their windows, and waits for final confirmations. Later compatible
+// uploads may join those windows and are not guaranteed to be included or
+// excluded. Canceling ctx stops only this wait. It is a no-op when batching is
+// not configured.
+func (s *Service) Flush(ctx context.Context) error {
+	if err := s.checkInit(); err != nil {
+		return err
+	}
+	if s.uploadBatcher == nil {
+		return nil
+	}
+	return s.uploadBatcher.Flush(ctx)
+}
+
 // Upload automatically selects targets and runs the multi-copy upload pipeline
 // streaming from r in a single pass. opts must be non-nil. Returns UploadResult whose
 // Complete field indicates whether all requested copies were committed
@@ -326,14 +364,14 @@ func New(opts Options) (*Service, error) {
 // are populated via server-to-server Pulls. On success the reader is
 // fully drained; on error it may be only partially consumed.
 //
-// Timeouts and cancellation: Upload honours ctx for every step —
-// presign, store, pull and on-chain commit wait. To bound the total
-// upload time (including the blockchain confirmation that populates the
-// returned [UploadResult.Copies]), wrap ctx with [context.WithTimeout]; the
-// Service itself does not impose an internal wait deadline. The built-in
-// 24h HTTP timeout on Service only affects URL-based downloads; Upload,
-// Pull, and Commit use the StorageContext implementation's own HTTP client
-// configuration.
+// Timeouts and cancellation: before batching accepts a piece, ctx controls
+// resolution, presign, Store, Pull, and validation. After acceptance, ctx
+// stops this caller's wait and later callbacks, but the batcher continues the
+// commit on its own lifecycle context. A context error therefore does not
+// prove that no transaction will be submitted. Without batching, ctx continues
+// to control the commit wait. The Service itself imposes no upload deadline.
+// Its built-in 24-hour HTTP timeout affects only URL-based downloads; Upload,
+// Pull, and Commit use the StorageContext implementation's HTTP client.
 func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) (*UploadResult, error) {
 	const op = "storage.Service.Upload"
 	if err := s.checkInit(); err != nil {
@@ -351,6 +389,16 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	if s.resolver == nil {
 		return nil, fmt.Errorf("%s: %w: upload resolver not configured", op, ErrUninitialized)
 	}
+	reservation, err := s.reserveUpload()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if reservation != nil {
+		defer reservation.release()
+		var releaseContext func()
+		ctx, releaseContext = s.uploadBatcher.bindContext(ctx)
+		defer releaseContext()
+	}
 	opts = cloneUploadOptions(opts)
 	if s.source != "" {
 		opts = s.withSourceMetadata(opts)
@@ -358,7 +406,7 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 	opts = s.resolveWithCDN(opts)
 	contexts, err := s.resolver.ResolveUploadContexts(ctx, selectUploadContextsOptionsFromUpload(opts))
 	if err != nil {
-		return nil, fmt.Errorf("%s: resolve contexts: %w", op, err)
+		return nil, fmt.Errorf("%s: resolve contexts: %w", op, uploadBatchContextError(ctx, err))
 	}
 	if err := s.validateStorageContexts(op, contexts); err != nil {
 		return nil, err
@@ -370,38 +418,56 @@ func (s *Service) Upload(ctx context.Context, r io.Reader, opts *UploadOptions) 
 		return nil, err
 	}
 	if err := s.validateUploadContextsWritable(ctx, contexts); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: %w", op, uploadBatchContextError(ctx, err))
 	}
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
-	return s.uploadWithContexts(ctx, r, contexts, opts, opts.Copies, true)
+	return s.uploadWithContexts(ctx, op, r, contexts, opts, opts.Copies, true, reservation)
 }
 
 // UploadToContexts uploads to the exact contexts supplied by the caller. The
 // first context is primary; later contexts receive provider-to-provider pulls.
-// opts may be nil.
+// opts may be nil. When batching is configured, cancellation follows the
+// ownership-transfer contract documented by [Service.Upload].
 func (s *Service) UploadToContexts(ctx context.Context, r io.Reader, contexts []StorageContext, opts *UploadToContextsOptions) (*UploadResult, error) {
 	const op = "storage.Service.UploadToContexts"
 	if err := s.checkInit(); err != nil {
 		return nil, err
+	}
+	reservation, err := s.reserveUpload()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if reservation != nil {
+		defer reservation.release()
+		var releaseContext func()
+		ctx, releaseContext = s.uploadBatcher.bindContext(ctx)
+		defer releaseContext()
 	}
 	contexts = append([]StorageContext(nil), contexts...)
 	if err := s.validateStorageContexts(op, contexts); err != nil {
 		return nil, err
 	}
 	if err := s.validateUploadContextsWritable(ctx, contexts); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: %w", op, uploadBatchContextError(ctx, err))
 	}
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
-	return s.uploadWithContexts(ctx, r, contexts, uploadOptionsFromUploadToContexts(opts), len(contexts), false)
+	return s.uploadWithContexts(ctx, op, r, contexts, uploadOptionsFromUploadToContexts(opts), len(contexts), false, reservation)
 }
 
-func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts []StorageContext, opts *UploadOptions, requestedCopies int, allowReplacement bool) (*UploadResult, error) {
+func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader, contexts []StorageContext, opts *UploadOptions, requestedCopies int, allowReplacement bool, reservation *uploadReservation) (*UploadResult, error) {
 	opts = newUploadCallbackGuard(s.logger).wrapUploadOptions(opts)
 	explicitProviders := !allowReplacement
+	if s.uploadBatcher != nil {
+		for _, target := range contexts {
+			if err := s.uploadBatcher.validateTarget(target); err != nil {
+				return nil, fmt.Errorf("%s: %w", op, err)
+			}
+		}
+	}
 
 	primary := contexts[0]
 	secondaries := contexts[1:]
@@ -416,7 +482,7 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		return nil, &StoreError{
 			ProviderID: primary.ProviderID(),
 			Endpoint:   primary.ServiceURL(),
-			Cause:      err,
+			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}
 
@@ -428,6 +494,13 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		PieceCID:      storeResult.PieceCID,
 		PieceMetadata: cloneMetadata(opts),
 	}}
+	var primaryTask *uploadBatchTask
+	var primaryEnqueueErr error
+	admittedBatchWork := false
+	if s.uploadBatcher != nil {
+		primaryTask, primaryEnqueueErr = s.uploadBatcher.enqueue(ctx, reservation.seq, primary, pieceInputs[0])
+		admittedBatchWork = primaryTask != nil
+	}
 
 	usedProviders := make(map[string]types.BigInt, len(contexts))
 	for _, c := range contexts {
@@ -442,6 +515,8 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 	type successfulSecondary struct {
 		ctx       StorageContext
 		extraData []byte
+		task      *uploadBatchTask
+		err       error
 	}
 
 	var (
@@ -449,7 +524,13 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		failedAttempts        []FailedAttempt
 	)
 
+secondariesLoop:
 	for _, secondary := range secondaries {
+		if admittedBatchWork {
+			if err := uploadBatchContextError(ctx, nil); err != nil {
+				break secondariesLoop
+			}
+		}
 		current := secondary
 		maxAttempts := s.maxSecondaryAttempts
 		currentAttemptCounted := false
@@ -458,7 +539,19 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 				attemptsUsed++
 			}
 			currentAttemptCounted = false
-			extraData, presignErr := current.PresignForCommit(ctx, pieceInputs)
+			var extraData []byte
+			var presignErr error
+			_, bound := current.DataSetRef()
+			if s.uploadBatcher != nil && bound {
+				extraData, presignErr = s.uploadBatcher.presignExisting(ctx, current, pieceInputs)
+			} else {
+				extraData, presignErr = current.PresignForCommit(ctx, pieceInputs)
+			}
+			if admittedBatchWork {
+				if err := uploadBatchContextError(ctx, nil); err != nil {
+					break secondariesLoop
+				}
+			}
 			if presignErr == nil {
 				var onProgress func(cid.Cid, PullStatus)
 				if opts != nil && opts.OnPullProgress != nil {
@@ -473,14 +566,27 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 					ExtraData:  extraData,
 					OnProgress: onProgress,
 				})
+				if admittedBatchWork {
+					if err := uploadBatchContextError(ctx, nil); err != nil {
+						break secondariesLoop
+					}
+				}
 				if pullErr == nil && pullResult != nil && pullResult.Status == PullStatusComplete {
 					if opts != nil && opts.OnCopyComplete != nil {
 						opts.OnCopyComplete(current.ProviderID(), storeResult.PieceCID)
 					}
-					successfulSecondaries = append(successfulSecondaries, successfulSecondary{
+					secondary := successfulSecondary{
 						ctx:       current,
 						extraData: append([]byte(nil), extraData...),
-					})
+					}
+					if s.uploadBatcher != nil && bound {
+						secondary.task, secondary.err = s.uploadBatcher.enqueue(ctx, reservation.seq, current, pieceInputs[0])
+						secondary.extraData = nil
+						if secondary.task != nil {
+							admittedBatchWork = true
+						}
+					}
+					successfulSecondaries = append(successfulSecondaries, secondary)
 					break
 				}
 				if pullErr == nil {
@@ -509,6 +615,11 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 					Explicit:   explicitProviders,
 				})
 			}
+			if admittedBatchWork {
+				if err := uploadBatchContextError(ctx, nil); err != nil {
+					break secondariesLoop
+				}
+			}
 
 			if explicitProviders || attemptsUsed >= maxAttempts {
 				break
@@ -516,6 +627,11 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 			foundReplacement := false
 			for attemptsUsed < maxAttempts {
 				replacement, replErr := s.resolver.SelectReplacement(ctx, selectProviderContextOptionsForReplacement(opts, usedProviders))
+				if admittedBatchWork {
+					if err := uploadBatchContextError(ctx, nil); err != nil {
+						break secondariesLoop
+					}
+				}
 				if replErr != nil {
 					break
 				}
@@ -565,6 +681,8 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		ctx       StorageContext
 		role      CopyRole
 		extraData []byte
+		task      *uploadBatchTask
+		err       error
 	}
 	type commitOutcome struct {
 		result *CommitResult
@@ -572,13 +690,23 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 	}
 
 	targets := make([]commitTarget, 0, 1+len(successfulSecondaries))
-	targets = append(targets, commitTarget{ctx: primary, role: CopyRolePrimary})
+	targets = append(targets, commitTarget{
+		ctx:  primary,
+		role: CopyRolePrimary,
+		task: primaryTask,
+		err:  primaryEnqueueErr,
+	})
 	for _, secondary := range successfulSecondaries {
 		targets = append(targets, commitTarget{
 			ctx:       secondary.ctx,
 			role:      CopyRoleSecondary,
 			extraData: secondary.extraData,
+			task:      secondary.task,
+			err:       secondary.err,
 		})
+	}
+	if reservation != nil {
+		reservation.release()
 	}
 
 	outcomes := make([]commitOutcome, len(targets))
@@ -592,30 +720,43 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				outcomes[idx].err = ctx.Err()
-				return
-			}
-			defer func() { <-sem }()
-			if err := ctx.Err(); err != nil {
-				outcomes[idx].err = err
+			target := targets[idx]
+			if target.err != nil {
+				outcomes[idx].err = target.err
 				return
 			}
 			var onSubmitted func(string)
 			if opts != nil && opts.OnPiecesAdded != nil {
-				commitProviderID := targets[idx].ctx.ProviderID()
+				commitProviderID := target.ctx.ProviderID()
 				commitPieceCID := storeResult.PieceCID
 				onSubmitted = func(txHash string) {
 					opts.OnPiecesAdded(txHash, commitProviderID, []SubmittedPiece{{PieceCID: commitPieceCID}})
 				}
 			}
-			outcomes[idx].result, outcomes[idx].err = targets[idx].ctx.Commit(ctx, CommitRequest{
+			if target.task != nil {
+				outcomes[idx].result, outcomes[idx].err = target.task.wait(ctx, onSubmitted)
+				return
+			}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				outcomes[idx].err = uploadBatchContextError(ctx, ctx.Err())
+				return
+			}
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				outcomes[idx].err = uploadBatchContextError(ctx, err)
+				return
+			}
+			result, err := target.ctx.Commit(ctx, CommitRequest{
 				Pieces:      pieceInputs,
-				ExtraData:   targets[idx].extraData,
+				ExtraData:   target.extraData,
 				OnSubmitted: onSubmitted,
 			})
+			outcomes[idx].result = result
+			if err != nil {
+				outcomes[idx].err = uploadBatchContextError(ctx, err)
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -675,7 +816,7 @@ func (s *Service) uploadWithContexts(ctx context.Context, r io.Reader, contexts 
 			continue
 		}
 
-		if opts != nil && opts.OnPiecesConfirmed != nil {
+		if opts != nil && opts.OnPiecesConfirmed != nil && ctx.Err() == nil {
 			confirmed := make([]ConfirmedPiece, len(outcome.result.PieceIDs))
 			for j, id := range outcome.result.PieceIDs {
 				confirmed[j] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}

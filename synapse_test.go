@@ -398,6 +398,77 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	}
 }
 
+func TestNew_UploadBatchingConfigurationAndOwnership(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        []ClientOption
+		wantBatcher bool
+	}{
+		{name: "default", wantBatcher: true},
+		{name: "disabled", opts: []ClientOption{WithoutUploadBatching()}},
+		{
+			name: "last option re-enables",
+			opts: []ClientOption{
+				WithoutUploadBatching(),
+				WithUploadBatching(storage.WithUploadIdleWait(0)),
+			},
+			wantBatcher: true,
+		},
+		{
+			name: "last option disables",
+			opts: []ClientOption{
+				WithUploadBatching(storage.WithUploadIdleWait(0)),
+				WithoutUploadBatching(),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, ec := fakeRPCServer(t, "0x4cb2f")
+			defer srv.Close()
+			defer ec.Close()
+			opts := []ClientOption{WithPrivateKey(testKey(t)), WithEthClient(ec)}
+			opts = append(opts, tt.opts...)
+			client, err := New(context.Background(), opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := client.uploadBatcher != nil; got != tt.wantBatcher {
+				t.Fatalf("managed upload batcher=%t, want %t", got, tt.wantBatcher)
+			}
+			managedBatcher := client.uploadBatcher
+			if err := client.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if managedBatcher != nil {
+				if err := managedBatcher.Flush(context.Background()); !errors.Is(err, storage.ErrClosed) {
+					t.Fatalf("managed batcher Flush after Client.Close error=%v, want storage.ErrClosed", err)
+				}
+			}
+			if err := client.Storage().Flush(context.Background()); !errors.Is(err, storage.ErrClosed) {
+				t.Fatalf("Storage.Flush after Client.Close error=%v, want storage.ErrClosed", err)
+			}
+			if err := client.Close(); err != nil {
+				t.Fatalf("second Close: %v", err)
+			}
+		})
+	}
+}
+
+func TestNew_RejectsInvalidUploadBatchingOptions(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+	client, err := New(context.Background(),
+		WithPrivateKey(testKey(t)),
+		WithEthClient(ec),
+		WithUploadBatching(storage.WithUploadMaxConcurrentSubmissions(0)),
+	)
+	if client != nil || !errors.Is(err, storage.ErrInvalidArgument) {
+		t.Fatalf("client=%v error=%v, want nil client and storage.ErrInvalidArgument", client, err)
+	}
+}
+
 type kmsStorageSigner struct {
 	key *ecdsa.PrivateKey
 }

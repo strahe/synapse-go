@@ -570,6 +570,143 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	}
 }
 
+func TestUploadToContextsKeepsCommitResultWhenCommitIgnoresCanceledContext(t *testing.T) {
+	data := bytes.Repeat([]byte("keep-commit"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ref := testCommitDataSetRef(101, 1001)
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
+			cancel()
+			return &CommitResult{DataSet: ref, PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+		},
+	}
+	svc := mustNewService(t, Options{})
+	result, err := svc.UploadToContexts(ctx, bytes.NewReader(data), []StorageContext{primary}, nil)
+	if err != nil {
+		t.Fatalf("UploadToContexts error=%v, want confirmed copy", err)
+	}
+	if result == nil || len(result.Copies) != 1 || !result.Copies[0].PieceID.Equal(types.NewBigInt(2001)) {
+		t.Fatalf("result=%+v, want one confirmed copy", result)
+	}
+}
+
+func TestUploadToContextsCancelDuringSecondaryPullReturnsCommitError(t *testing.T) {
+	data := bytes.Repeat([]byte("pull-cancel"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pullStarted := make(chan struct{})
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+		},
+	}
+	secondary := &fakeUploadContext{
+		id:       types.NewBigInt(202),
+		endpoint: "https://secondary.example.com",
+		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+			return []byte{0x01}, nil
+		},
+		pullFn: func(ctx context.Context, _ PullRequest) (*PullResult, error) {
+			close(pullStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+			return nil, errors.New("canceled secondary must not commit")
+		},
+	}
+	svc := mustNewService(t, Options{})
+	type outcome struct {
+		result *UploadResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := svc.UploadToContexts(ctx, bytes.NewReader(data), []StorageContext{primary, secondary}, nil)
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-pullStarted:
+	case <-time.After(time.Second):
+		t.Fatal("secondary pull did not start")
+	}
+	cancel()
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("UploadToContexts did not return after cancellation")
+	}
+	if got.result != nil {
+		t.Fatalf("result=%+v, want CommitError", got.result)
+	}
+	if _, ok := errors.AsType[*CommitError](got.err); !ok {
+		t.Fatalf("error=%v (%T), want CommitError", got.err, got.err)
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", got.err)
+	}
+}
+
+func TestUploadToContextsOnStoredThenCancelReturnsCommitError(t *testing.T) {
+	data := bytes.Repeat([]byte("onstored-cancel"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stored bool
+	primary := &fakeUploadContext{
+		id:       types.NewBigInt(101),
+		endpoint: "https://primary.example.com",
+		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		commitFn: func(ctx context.Context, _ CommitRequest) (*CommitResult, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+		},
+	}
+	svc := mustNewService(t, Options{})
+	_, err = svc.UploadToContexts(ctx, bytes.NewReader(data), []StorageContext{primary}, &UploadToContextsOptions{
+		OnStored: func(types.BigInt, cid.Cid) {
+			stored = true
+			cancel()
+		},
+	})
+	if !stored {
+		t.Fatal("OnStored was not called")
+	}
+	if _, ok := errors.AsType[*CommitError](err); !ok {
+		t.Fatalf("error=%v (%T), want CommitError", err, err)
+	}
+}
+
 func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	data := bytes.Repeat([]byte("gh"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -981,6 +1118,8 @@ type fakeUploadContext struct {
 	presignFn       func(context.Context, []PieceInput) ([]byte, error)
 	pullFn          func(context.Context, PullRequest) (*PullResult, error)
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
+	submitCommitFn  func(context.Context, CommitRequest) (*CommitSubmission, error)
+	waitCommitFn    func(context.Context, CommitSubmission) (*CommitResult, error)
 	identity        *ContextIdentity
 }
 
@@ -1001,6 +1140,10 @@ func (c *fakeUploadContext) DataSetRef() (DataSetRef, bool) {
 		return DataSetRef{}, false
 	}
 	return ref, true
+}
+
+func (c *fakeUploadContext) DataSetMetadata() map[string]string {
+	return cloneStringMap(c.dataSetMetadata)
 }
 
 func (c *fakeUploadContext) ContextIdentity() ContextIdentity {
@@ -1036,6 +1179,20 @@ func (c *fakeUploadContext) Commit(ctx context.Context, req CommitRequest) (*Com
 		return nil, fmt.Errorf("unexpected commit")
 	}
 	return c.commitFn(ctx, req)
+}
+
+func (c *fakeUploadContext) SubmitCommit(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
+	if c.submitCommitFn == nil {
+		return nil, fmt.Errorf("unexpected SubmitCommit")
+	}
+	return c.submitCommitFn(ctx, req)
+}
+
+func (c *fakeUploadContext) WaitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+	if c.waitCommitFn == nil {
+		return nil, fmt.Errorf("unexpected WaitForCommit")
+	}
+	return c.waitCommitFn(ctx, submission)
 }
 
 func (c *fakeUploadContext) Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error) {

@@ -48,9 +48,14 @@ Common setup options:
 - `WithMaxMulticallCalls`: limit dynamic Multicall3 requests.
 - `WithSource`: namespace datasets for this application.
 - `WithCDN`: set the client default for CDN-backed storage.
+- `WithUploadBatching`: configure the default high-level upload commit
+  coordinator.
+- `WithoutUploadBatching`: restore immediate, independent commits for each
+  high-level upload.
 - `WithAllowPrivateNetworks`: opt into private-network access for provider
   PDP, FilBeam, and URL downloads.
-- `Close`: release SDK-owned network clients.
+- `Close`: abort unflushed upload batches and release SDK-owned network
+  clients. Call `Storage().Flush(ctx)` first for a graceful drain.
 
 By default, provider PDP, FilBeam, and URL requests reject private or reserved
 destinations; match rejections with
@@ -155,9 +160,98 @@ uncapped. Standalone `storage.Service` users can set
 High-level upload callbacks are isolated from the upload flow: a callback panic
 does not interrupt the upload, and a configured logger records a warning.
 
-`Upload` succeeds when at least one copy commits on-chain. Before returning,
-it waits for started commit attempts to settle. Check `UploadResult.Complete`
-to know whether every requested copy succeeded.
+`Upload` succeeds when at least one copy is confirmed on-chain. If you do not
+cancel the call, it waits for every commit it started. Check
+`UploadResult.Complete` to see whether every requested copy succeeded. Canceling
+after a piece has entered a batch is covered in
+[Commit Batching](#commit-batching).
+
+### Commit Batching
+
+The root client batches compatible high-level upload commits by default. Once
+a piece is stored or pulled and ready to commit, its window is submitted after
+3 seconds without another compatible piece or 30 seconds after the first
+ready piece, whichever comes first. At most four batches are signed and
+submitted concurrently; provider confirmation waits continue outside that
+limit.
+
+The wait policy is explicit:
+
+- `WithUploadIdleWait(0)` submits as soon as a piece is ready.
+- Positive idle and maximum waits set custom delays.
+- `WithoutUploadIdleWait()` or `WithoutUploadMaxWait()` disables that timer
+  independently.
+- Disabling both timers creates Flush-only windows. They still submit at the
+  40-piece limit, the provider message-size limit, or a repeated piece CID.
+- `WithoutUploadBatching()` bypasses the coordinator and preserves one commit
+  per high-level upload.
+
+Options of the same kind use the last value. Negative waits, an effective idle
+wait greater than the effective maximum, or a submission limit below one make
+`synapse.New` return an error matching `storage.ErrInvalidArgument`.
+
+For example, use a custom timed window:
+
+```go
+client, err := synapse.New(ctx,
+    synapse.WithPrivateKeyHex("0x..."),
+    synapse.WithRPCURL("https://api.calibration.node.glif.io/rpc/v1"),
+    synapse.WithUploadBatching(
+        storage.WithUploadIdleWait(time.Second),
+        storage.WithUploadMaxWait(15*time.Second),
+        storage.WithUploadMaxConcurrentSubmissions(2),
+    ),
+)
+```
+
+The caller context controls target resolution, Store, Pull, validation, and
+admission to the coordinator. Admission transfers ownership of that piece to
+the batcher. After that point, canceling the caller context stops that caller's
+wait and suppresses later callbacks, but it does not remove the piece or stop
+signing, submission, or confirmation. `Upload` may therefore return
+`context.Canceled` or `context.DeadlineExceeded` while the accepted work later
+creates a data set or commits on-chain. Reconcile provider or chain state
+before retrying; a timeout alone does not prove that a retry is safe. If a
+terminal result was already published when cancellation races, `Upload`
+returns that result.
+
+`client.Storage().Flush(ctx)` establishes a barrier at the call: it waits for
+uploads already in progress to finish Store and Pull, submits their windows,
+and waits for final provider confirmation. A compatible upload that begins
+after the barrier may join the same still-open window, so later uploads are
+neither guaranteed to be included nor guaranteed to be excluded. Canceling the
+Flush context stops only the caller's wait; shared batches continue and a
+later Flush can still report their failures. A completed Flush publishes
+terminal results before returning, so an immediate `client.Close()` does not
+replace those results with `storage.ErrClosed`. Call Flush before Close for a
+graceful drain because Close aborts pending work. Close cannot retract a
+transaction that a provider has already accepted.
+
+Flush-only mode is intended for applications that coordinate several uploads
+concurrently and call Flush after those uploads have started. Calling a
+blocking `Upload` and then Flush sequentially cannot release that Upload's
+window. `Service.Flush` is a no-op when a standalone service has no batcher,
+and returns an error matching `storage.ErrClosed` after its root client closes.
+
+Existing data sets share a window only when the provider, complete data-set
+reference, and exact service URL match. New data sets also require the same
+payee, CDN setting, and data-set metadata. Piece metadata remains per piece.
+Every new-data-set window receives a distinct client data-set ID, and a
+`ProviderContext` remains unbound after the upload.
+
+In a multi-copy `Service.Upload` or `UploadToContexts` call, the primary and
+already-bound secondary contexts participate in batching. An unbound
+`ProviderContext` used as a secondary keeps the single-piece pull and
+create-and-add flow. That secondary may therefore submit before the primary
+window, and replicas from one call are not guaranteed to share a transaction.
+Each caller still receives callbacks and the PieceID only for its own piece;
+pieces in one batch report the same transaction ID.
+
+Low-level `Store`, `Pull`, `PresignForCommit`, `Commit`, `SubmitCommit`, and
+`WaitForCommit` calls remain immediate and are never implicitly batched.
+Standalone users opt in by constructing `storage.NewUploadBatcher`, injecting
+it through `storage.Options.UploadBatcher` or `storage.WithUploadBatcher`, and
+owning its Flush and Close lifecycle.
 
 Dataset metadata must match exactly for automatic dataset reuse. Use stable
 metadata values when you want uploads to share payment rails.
@@ -396,10 +490,11 @@ on one `ProviderContext` are independent; adds on one `DataSetContext` may run
 in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
 `PresignForCommit`, and `Commit`.
 
-One `Commit` or `Pull` request can contain at most 40 pieces and must fit the
-encoded add-pieces message limit. Oversized requests return
-`pdp.ErrAddPiecesMessageTooLarge` before provider submission. Split them into
-smaller requests; the context APIs do not split batches automatically.
+One direct `Commit` or `Pull` request can contain at most 40 pieces and must fit
+the encoded add-pieces message limit. Oversized requests return
+`pdp.ErrAddPiecesMessageTooLarge` before provider submission. Split direct
+requests into smaller requests; low-level context methods do not split them
+automatically.
 
 ## Discovery And Lifecycle
 

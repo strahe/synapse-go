@@ -23,7 +23,7 @@ import (
 
 func TestNewClientRejectsPrivateNetworkDownloadsByDefault(t *testing.T) {
 	t.Setenv(EnvRPCURL, fakeChainRPCServer(t).URL)
-	client := NewClient(t, context.Background(), generateTestPrivateKeyHex(t))
+	client := NewClient(t, context.Background(), generateTestPrivateKeyHex(t), synapse.WithAllowPrivateNetworks(false))
 
 	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte("private-network"), 32))
 	if err != nil {

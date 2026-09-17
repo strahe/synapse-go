@@ -6,14 +6,18 @@ import (
 	"io"
 )
 
-// Upload stores a single copy and commits it to a new data set. opts may be nil.
+// Upload stores a single copy and commits it to a new data set. opts may be
+// nil. When batching is configured, successful admission transfers ownership
+// to the batcher; later caller cancellation stops waiting but not the commit.
 func (c *ProviderContext) Upload(ctx context.Context, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
-	return c.core.upload(ctx, "storage.ProviderContext.Upload", nil, r, opts)
+	return c.core.upload(ctx, "storage.ProviderContext.Upload", c, nil, r, opts)
 }
 
-// Upload stores a single copy and commits it to the bound data set. opts may be nil.
+// Upload stores a single copy and commits it to the bound data set. opts may be
+// nil. When batching is configured, successful admission transfers ownership
+// to the batcher; later caller cancellation stops waiting but not the commit.
 func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
-	return c.core.upload(ctx, "storage.DataSetContext.Upload", &c.ref, r, opts)
+	return c.core.upload(ctx, "storage.DataSetContext.Upload", c, &c.ref, r, opts)
 }
 
 // upload stores a single copy of data on this context's provider and
@@ -28,14 +32,29 @@ func (c *DataSetContext) Upload(ctx context.Context, r io.Reader, opts *ContextU
 //   - OnStored after Store succeeds
 //   - OnPiecesAdded when the commit transaction is submitted
 //   - OnPiecesConfirmed after commit is confirmed
-func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
+func (c *contextCore) upload(ctx context.Context, op string, target StorageContext, ref *DataSetRef, r io.Reader, opts *ContextUploadOptions) (*UploadResult, error) {
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
 	uploadOpts := newUploadCallbackGuard(c.logger).wrapUploadOptions(uploadOptionsFromContext(opts))
+	var reservation *uploadReservation
+	if c.uploadBatcher != nil {
+		if err := c.uploadBatcher.validateTarget(target); err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		var err error
+		reservation, err = c.uploadBatcher.reserve()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		defer reservation.release()
+		var releaseContext func()
+		ctx, releaseContext = c.uploadBatcher.bindContext(ctx)
+		defer releaseContext()
+	}
 
 	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
-		return nil, err
+		return nil, uploadBatchContextError(ctx, err)
 	}
 
 	storeOpts := &StoreOptions{}
@@ -48,7 +67,7 @@ func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r 
 		return nil, &StoreError{
 			ProviderID: copyBigInt(c.provider.ID),
 			Endpoint:   c.provider.ServiceURL,
-			Cause:      err,
+			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}
 
@@ -70,20 +89,35 @@ func (c *contextCore) upload(ctx context.Context, op string, ref *DataSetRef, r 
 		}
 	}
 
-	commit, err := c.commit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
+	var commit *CommitResult
+	batched := c.uploadBatcher != nil
+	if !batched {
+		commit, err = c.commit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
+	} else {
+		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0])
+		reservation.release()
+		if enqueueErr != nil {
+			err = enqueueErr
+		} else {
+			commit, err = task.wait(ctx, onSubmitted)
+		}
+	}
 	if err != nil {
 		return nil, &CommitError{
 			ProviderID: copyBigInt(c.provider.ID),
 			Endpoint:   c.provider.ServiceURL,
-			Cause:      err,
+			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}
 
+	if commit == nil {
+		return nil, fmt.Errorf("%s: commit returned nil result", op)
+	}
 	if len(commit.PieceIDs) == 0 {
 		return nil, fmt.Errorf("%s: commit returned no piece IDs", op)
 	}
 
-	if uploadOpts != nil && uploadOpts.OnPiecesConfirmed != nil {
+	if uploadOpts != nil && uploadOpts.OnPiecesConfirmed != nil && ctx.Err() == nil {
 		confirmed := make([]ConfirmedPiece, len(commit.PieceIDs))
 		for i, id := range commit.PieceIDs {
 			confirmed[i] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
