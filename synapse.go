@@ -50,9 +50,13 @@ type Client struct {
 	source                 string
 	withCDN                bool
 	filbeamRetrievalDomain string
+	uploadBatching         bool
+	uploadBatcherOptions   []storage.UploadBatcherOption
+	uploadBatcher          *storage.UploadBatcher
 
 	lifecycle *lifecycle.Lifecycle
 	closeOnce sync.Once
+	closeErr  error
 
 	warmStorage *warmstorage.Service
 	spRegistry  *spregistry.Service
@@ -79,6 +83,8 @@ type clientConfig struct {
 	source                 string
 	withCDN                bool
 	filbeamRetrievalDomain string
+	uploadBatching         bool
+	uploadBatcherOptions   []storage.UploadBatcherOption
 	allowPrivateNetworks   bool
 	maxMulticallCalls      int
 }
@@ -113,6 +119,28 @@ func WithPrivateKeyHex(hex string) ClientOption {
 // signer.
 func WithStorageSigner(storageSigner signer.StorageSigner) ClientOption {
 	return func(cfg *clientConfig) { cfg.storageSigner = storageSigner }
+}
+
+// WithUploadBatching enables root-managed batching for high-level storage
+// uploads and applies the supplied batching options. Batching is enabled by
+// default with a three-second idle wait, a 30-second maximum wait, and four
+// concurrent submissions. Call [WithoutUploadBatching] to retain immediate
+// per-upload commits.
+func WithUploadBatching(opts ...storage.UploadBatcherOption) ClientOption {
+	options := append([]storage.UploadBatcherOption(nil), opts...)
+	return func(cfg *clientConfig) {
+		cfg.uploadBatching = true
+		cfg.uploadBatcherOptions = append([]storage.UploadBatcherOption(nil), options...)
+	}
+}
+
+// WithoutUploadBatching disables root-managed upload batching. High-level
+// storage uploads submit their commit as soon as the piece is ready.
+func WithoutUploadBatching() ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.uploadBatching = false
+		cfg.uploadBatcherOptions = nil
+	}
 }
 
 // WithRPCURL sets the JSON-RPC endpoint URL. An ethclient is dialed
@@ -238,7 +266,7 @@ func WithAllowPrivateNetworks(allow bool) ClientOption {
 // If no RPC source is provided, the client uses the selected chain's default
 // RPC endpoint, defaulting to Calibration when no chain is selected.
 func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
-	var cfg clientConfig
+	cfg := clientConfig{uploadBatching: true}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -288,10 +316,16 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 // connections belonging to the root-managed HTTP transport are closed. Safe
 // to call concurrently or multiple times.
 //
-// After Close returns, the Client and all services obtained from it must
-// not be used.
+// Close aborts pending upload batches rather than flushing them. Call
+// Client.Storage().Flush before Close when accepted uploads must reach final
+// confirmation. Close cannot retract a provider submission that already
+// succeeded. After Close returns, the Client and all services obtained from it
+// must not be used.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		if c.uploadBatcher != nil {
+			c.closeErr = c.uploadBatcher.Close()
+		}
 		if c.lifecycle != nil {
 			c.lifecycle.Close()
 		}
@@ -302,7 +336,7 @@ func (c *Client) Close() error {
 			c.ownedHTTPClient.CloseIdleConnections()
 		}
 	})
-	return nil
+	return c.closeErr
 }
 
 // Chain returns the resolved [chain.Chain].
@@ -443,11 +477,16 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		source:                 cfg.source,
 		withCDN:                cfg.withCDN,
 		filbeamRetrievalDomain: cfg.filbeamRetrievalDomain,
+		uploadBatching:         cfg.uploadBatching,
+		uploadBatcherOptions:   append([]storage.UploadBatcherOption(nil), cfg.uploadBatcherOptions...),
 		allowPrivateNetworks:   cfg.allowPrivateNetworks,
 		maxMulticallCalls:      cfg.maxMulticallCalls,
 		lifecycle:              lifecycle.New(),
 	}
 	if err := c.initServices(); err != nil {
+		if c.uploadBatcher != nil {
+			_ = c.uploadBatcher.Close()
+		}
 		if c.ownedHTTPClient != nil {
 			c.ownedHTTPClient.CloseIdleConnections()
 		}

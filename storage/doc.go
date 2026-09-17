@@ -35,6 +35,69 @@
 // capitalization, unknown or duplicate fields, and incomplete objects are
 // rejected.
 //
+// # Upload batching
+//
+// The root synapse Client enables commit batching for high-level Upload calls
+// by default. A ready piece waits for three seconds of inactivity, with a
+// maximum wait of 30 seconds; at most four batches are signed and submitted at
+// once.
+// Provider confirmation waits do not consume that submission limit. Configure
+// the root coordinator with [synapse.WithUploadBatching], or disable it with
+// [synapse.WithoutUploadBatching].
+//
+// [WithUploadIdleWait] with a zero duration submits as soon as a piece is
+// ready. Positive idle and maximum waits set the corresponding delays.
+// [WithoutUploadIdleWait] and [WithoutUploadMaxWait] disable each timer
+// independently. With both timers disabled, a window is submitted only by
+// [Service.Flush], the 40-piece limit, the provider message-size limit, or a
+// repeated piece CID.
+//
+// Compatible uploads share a window only when their immutable target matches.
+// Existing data sets match by provider, complete DataSetRef, and exact service
+// URL. New data sets also require the same payee, CDN setting, and data-set
+// metadata. Each new-data-set window chooses its own client data-set ID and
+// does not bind or mutate the source ProviderContext.
+//
+// Store, Pull, target resolution, and coordinator admission use the caller
+// context. Successful admission transfers ownership of the piece to the
+// coordinator. Later caller cancellation stops that caller's wait and
+// suppresses later callbacks, but the coordinator continues signing,
+// submission, and confirmation. An Upload context error therefore does not
+// prove that the accepted piece will not commit; reconcile external state
+// before retrying. A terminal result already published when cancellation races
+// takes precedence over the context error.
+//
+// [Service.Flush] waits for uploads that began before the call to reach the
+// coordinator, submits their corresponding windows, and waits for final
+// confirmations. A later compatible upload may join one of those windows, so
+// later uploads are neither guaranteed to be included nor excluded. A waiter
+// that receives a terminal result consumes that piece's failure, so a later
+// Flush does not report it again. Flush still reports failures that no waiter
+// observed. Canceling the Flush context stops only that wait and does not
+// discard those unobserved failures. A completed Flush publishes terminal
+// results before returning. The root [synapse.Client.Close] closes its
+// coordinator without flushing, so call Service.Flush first when a graceful
+// drain is required. Close cannot retract a provider submission that already
+// succeeded.
+//
+// Standalone users can construct [UploadBatcher] with [NewUploadBatcher] and
+// inject it through [Options.UploadBatcher] or [WithUploadBatcher]. The caller
+// owns an injected coordinator and must flush or close it. With no injected
+// coordinator, standalone services and contexts retain immediate per-upload
+// commits.
+//
+// During a multi-copy Service upload, a primary and every already-bound
+// secondary participate in batching. An unbound ProviderContext used as a
+// secondary retains the single-piece pull and create-and-add flow. It may
+// therefore submit before the primary window, and replicas from one Upload
+// call are not guaranteed to share a transaction. Store, Pull,
+// PresignForCommit, Commit, SubmitCommit, and WaitForCommit keep their direct
+// behavior; only high-level Upload methods opt into the coordinator.
+//
+// The Go API intentionally uses an explicitly owned coordinator, functional
+// options, context-aware Flush, and immutable context injection rather than
+// copying the upstream TypeScript SDK's configuration and lifecycle shape.
+//
 // # Signing and payer identity
 //
 // Storage authorization uses the [signer.StorageSigner] capability: an EVM
@@ -206,11 +269,14 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [PDPProviderClient], [PDPVerifierReader], [FWSSDataSetReader], [FWSSTerminator],
-// and [MultiCostCalculator] are SDK assembly interfaces. Their supported
-// implementations are [pdp.Client], [costs.Service], and the adapters assembled
-// by the root SDK client; user-defined implementations are not compatibility
-// targets.
+// [StorageContext], [PDPProviderClient], [PDPVerifierReader],
+// [FWSSDataSetReader], [FWSSTerminator], and [MultiCostCalculator] are SDK
+// assembly interfaces. The supported StorageContext implementations are
+// [ProviderContext] and [DataSetContext]; custom resolvers can return those
+// built-in contexts. External implementations of the complete StorageContext
+// method set are not compatibility targets. Other assembly interfaces are
+// implemented by [pdp.Client], [costs.Service], and adapters assembled by the
+// root SDK client.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts
@@ -218,4 +284,6 @@
 // [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner
+// [synapse.WithUploadBatching]: https://pkg.go.dev/github.com/strahe/synapse-go#WithUploadBatching
+// [synapse.WithoutUploadBatching]: https://pkg.go.dev/github.com/strahe/synapse-go#WithoutUploadBatching
 package storage

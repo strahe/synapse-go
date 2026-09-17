@@ -48,6 +48,18 @@ are detected from the RPC chain ID.
 
 Single uploads must be at least 127 bytes and fit the PDP cap, about 1 GiB.
 
+The root client batches compatible high-level upload commits by default. A
+ready piece normally waits for 3 seconds of inactivity, up to 30 seconds,
+so concurrent uploads can share a provider transaction. Use
+`client.Storage().Flush(ctx)` to drain accepted uploads before shutdown, or
+configure immediate, timed, Flush-only, or disabled behavior with
+`WithUploadBatching` and `WithoutUploadBatching`. See
+[upload batching](docs/GETTING_STARTED.md#commit-batching).
+After a piece enters a batch window, canceling its Upload context stops only
+that caller's wait; the accepted commit may still complete. Flush before Close
+for a graceful drain, and reconcile external state before retrying a timed-out
+upload.
+
 ## Package Map
 
 | Package | Purpose |

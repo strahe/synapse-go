@@ -111,15 +111,16 @@ type DataSetContext struct {
 // contextCore contains the immutable configuration shared by provider and
 // data-set contexts. Mutable inputs are copied before a core is published.
 type contextCore struct {
-	provider     Provider
-	client       PDPProviderClient
-	signer       signer.StorageSigner
-	payer        common.Address
-	chainID      types.ChainID
-	recordKeeper common.Address
-	withCDN      bool
-	cdnRetriever CDNRetriever
-	logger       *slog.Logger
+	provider      Provider
+	client        PDPProviderClient
+	signer        signer.StorageSigner
+	payer         common.Address
+	chainID       types.ChainID
+	recordKeeper  common.Address
+	withCDN       bool
+	cdnRetriever  CDNRetriever
+	logger        *slog.Logger
+	uploadBatcher *UploadBatcher
 
 	dataSetMetadata map[string]string
 
@@ -247,6 +248,14 @@ func WithCDNRetriever(r CDNRetriever) ContextOption {
 // WithLogger sets the logger used for internal warnings.
 func WithLogger(logger *slog.Logger) ContextOption {
 	return func(c *contextCore) { c.logger = logger }
+}
+
+// WithUploadBatcher enables commit batching for high-level Upload calls made
+// through the constructed context. Accepted work uses the batcher's lifecycle
+// rather than the individual Upload context. The caller retains ownership of
+// batcher.
+func WithUploadBatcher(batcher *UploadBatcher) ContextOption {
+	return func(c *contextCore) { c.uploadBatcher = batcher }
 }
 
 // WithPDPVerifierReader injects a reader for PDPVerifier contract state.
@@ -398,20 +407,45 @@ func (c *contextCore) presignForCommit(
 	pieces []PieceInput,
 	requestedClientDataSetID *types.BigInt,
 ) ([]byte, *types.BigInt, error) {
+	return presignCommitAuthorization(ctx, op, commitAuthorization{
+		identity:        c.identity(),
+		provider:        c.providerInfo(),
+		signer:          c.signer,
+		dataSetMetadata: c.dataSetMetadata,
+		withCDN:         c.withCDN,
+	}, ref, pieces, requestedClientDataSetID)
+}
+
+type commitAuthorization struct {
+	identity        ContextIdentity
+	provider        Provider
+	signer          signer.StorageSigner
+	dataSetMetadata map[string]string
+	withCDN         bool
+}
+
+func presignCommitAuthorization(
+	ctx context.Context,
+	op string,
+	auth commitAuthorization,
+	ref *DataSetRef,
+	pieces []PieceInput,
+	requestedClientDataSetID *types.BigInt,
+) ([]byte, *types.BigInt, error) {
 	pieceCIDs, err := validateCommitPieces(op, pieces)
 	if err != nil {
 		return nil, nil, err
 	}
-	if c.signer == nil {
+	if auth.signer == nil {
 		return nil, nil, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
 	}
-	if !c.chainID.IsValid() {
+	if !auth.identity.ChainID.IsValid() {
 		return nil, nil, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
 	}
-	if c.recordKeeper == (common.Address{}) {
+	if auth.identity.RecordKeeper == (common.Address{}) {
 		return nil, nil, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
 	}
-	if c.payer == (common.Address{}) {
+	if auth.identity.Payer == (common.Address{}) {
 		return nil, nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
 	}
 
@@ -428,7 +462,8 @@ func (c *contextCore) presignForCommit(
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	domain := ityped.NewDomain(c.chainID.BigInt(), c.recordKeeper)
+	domain := ityped.NewDomain(auth.identity.ChainID.BigInt(), auth.identity.RecordKeeper)
+	signHash := func(hash []byte) ([]byte, error) { return auth.signer.SignHash(hash) }
 
 	if ref != nil {
 		if requestedClientDataSetID != nil {
@@ -448,7 +483,7 @@ func (c *contextCore) presignForCommit(
 		if err := validateAddPiecesMessageSize(op, pieceCIDs, unsignedExtraData); err != nil {
 			return nil, nil, err
 		}
-		sig, err := ityped.SignAddPieces(c.signHashFunc(), domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
+		sig, err := ityped.SignAddPieces(signHash, domain, ref.clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 		}
@@ -463,14 +498,14 @@ func (c *contextCore) presignForCommit(
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
-	dataSetMetadata, err := dataSetMetadataEntries(c.dataSetMetadata, c.withCDN)
+	dataSetMetadata, err := dataSetMetadataEntries(auth.dataSetMetadata, auth.withCDN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
-	unsignedCreatePayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, make([]byte, secp256k1SignatureSize))
+	unsignedCreatePayload, err := encodeCreateDataSetExtraData(auth.identity.Payer, clientDataSetID.Big(), dataSetMetadata, make([]byte, secp256k1SignatureSize))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -485,7 +520,7 @@ func (c *contextCore) presignForCommit(
 	if err := validateAddPiecesMessageSize(op, pieceCIDs, unsignedExtraData); err != nil {
 		return nil, nil, err
 	}
-	createSig, err := ityped.SignCreateDataSet(c.signHashFunc(), domain, clientDataSetID.Big(), c.provider.Payee, dataSetMetadata)
+	createSig, err := ityped.SignCreateDataSet(signHash, domain, clientDataSetID.Big(), auth.provider.Payee, dataSetMetadata)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: sign create dataset: %w", op, err)
 	}
@@ -496,11 +531,11 @@ func (c *contextCore) presignForCommit(
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", op, err)
 	}
-	addSig, err := ityped.SignAddPieces(c.signHashFunc(), domain, clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
+	addSig, err := ityped.SignAddPieces(signHash, domain, clientDataSetID.Big(), nonce, pieceCIDs, pieceMetadata)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: sign add pieces: %w", op, err)
 	}
-	createPayload, err := encodeCreateDataSetExtraData(c.payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
+	createPayload, err := encodeCreateDataSetExtraData(auth.identity.Payer, clientDataSetID.Big(), dataSetMetadata, signatureBytes(createSig))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -717,6 +752,24 @@ func (c *ProviderContext) DataSetRef() (DataSetRef, bool) {
 // DataSetRef returns the immutable target of this context.
 func (c *DataSetContext) DataSetRef() (DataSetRef, bool) {
 	return copyDataSetRef(c.ref), true
+}
+
+// DataSetMetadata returns an independent copy of the metadata associated with
+// this context's data-set selection or creation target.
+func (c *ProviderContext) DataSetMetadata() map[string]string {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return cloneStringMap(c.core.dataSetMetadata)
+}
+
+// DataSetMetadata returns an independent copy of the metadata associated with
+// this context's data-set selection or creation target.
+func (c *DataSetContext) DataSetMetadata() map[string]string {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return cloneStringMap(c.core.dataSetMetadata)
 }
 
 // DataSetID returns the immutable on-chain data-set ID.

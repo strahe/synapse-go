@@ -57,7 +57,7 @@ test-cover-public:
 # -p 1 is required when using a single shared wallet, otherwise package-level
 # parallelism races on FEVM nonces and causes mpool conflicts.
 test-integration:
-	go test -tags=integration -run '^TestIntegration' -p 1 -count=1 -v -timeout 60m $(INTEGRATION_PKGS)
+	go test -tags=integration -run '^TestIntegration' -p 1 -count=1 -v -timeout 90m $(INTEGRATION_PKGS)
 
 # Run read-only integration tests. These packages do not broadcast
 # transactions, so package-level parallelism is safe with one wallet.

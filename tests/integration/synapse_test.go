@@ -252,6 +252,7 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		synapse.WithRPCURL(integrationtest.RPCURL()),
 		synapse.WithHTTPClient(httpClient),
 		synapse.WithCDN(true),
+		synapse.WithoutUploadBatching(),
 	)
 	if err != nil {
 		t.Fatalf("synapse.New: %v", err)
@@ -748,7 +749,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- Multicopy subtest ---
 	t.Run("Multicopy", func(t *testing.T) {
-		cctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 		defer cancel()
 
 		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{testDataSize}, &costs.UploadCostOptions{
@@ -1263,11 +1264,192 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
-	// --- ContextUploadExistingDataSet: explicit evidence that the existing-dataset
-	// AddPieces typed-data path accepts the current PieceCID encoding end-to-end. ---
-	t.Run("ContextUploadExistingDataSet", func(t *testing.T) {
+	// --- ContextUploadBatchingNewDataSet: the managed default batcher combines
+	// concurrent ProviderContext uploads into one create-and-add transaction. ---
+	t.Run("ContextUploadBatchingNewDataSet", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+
+		batchClient := integrationtest.NewDefaultClient(t, cctx, synapse.WithUploadBatching())
+		metadata := map[string]string{
+			"source": "integration-new-dataset-batch",
+			"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
+		}
+		providerCtx, err := batchClient.Storage().SelectProviderContext(cctx, storage.SelectProviderContextOptions{
+			DataSetMetadata: metadata,
+		})
+		if err != nil {
+			t.Fatalf("SelectProviderContext(new dataset batch): %v", err)
+		}
+		if providerCtx == nil || providerCtx.ProviderID().IsZero() {
+			t.Fatalf("SelectProviderContext(new dataset batch) returned %+v", providerCtx)
+		}
+		if _, bound := providerCtx.DataSetRef(); bound {
+			t.Fatal("selected ProviderContext unexpectedly started bound")
+		}
+
+		payloads := make([][]byte, 2)
+		for i := range payloads {
+			payloads[i] = make([]byte, 128*1024)
+			if _, err := crypto_rand.Read(payloads[i]); err != nil {
+				t.Fatalf("generate new-dataset batch upload data %d: %v", i, err)
+			}
+		}
+
+		t.Log("start NewDataSetBatch Prepare")
+		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
+			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1]))},
+			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			Contexts:          []storage.StorageContext{providerCtx},
+		})
+		if err != nil {
+			t.Fatalf("Prepare(new dataset batch): %v", err)
+		}
+		if prep.Transaction != nil {
+			t.Log("start NewDataSetBatch Prepare.Execute")
+			res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				if errors.Is(err, payments.ErrPermitUnsupported) {
+					t.Skip("needs-usdfc-permit-support: new-dataset batch funding requires permit support")
+				}
+				t.Fatalf("Prepare(new dataset batch).Execute: %v", err)
+			}
+			if res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Fatalf("Prepare(new dataset batch).Execute receipt = %+v", res.Receipt)
+			}
+		}
+
+		type uploadOutcome struct {
+			index  int
+			result *storage.UploadResult
+			err    error
+		}
+		stored := make(chan int, len(payloads))
+		releaseStored := make(chan struct{})
+		var releaseStoredOnce sync.Once
+		releaseStores := func() { releaseStoredOnce.Do(func() { close(releaseStored) }) }
+		defer releaseStores()
+		outcomes := make(chan uploadOutcome, len(payloads))
+		txHashes := make([]string, len(payloads))
+		start := time.Now()
+		t.Log("start NewDataSetBatch concurrent ProviderContext.Upload")
+		for i := range payloads {
+			index := i
+			opts := tracedContextUploadOptions(t, fmt.Sprintf("NewDataSetBatch[%d]", index), &storage.ContextUploadOptions{
+				OnStored: func(types.BigInt, cid.Cid) {
+					stored <- index
+					<-releaseStored
+				},
+				OnPiecesAdded: func(txHash string, _ types.BigInt, pieces []storage.SubmittedPiece) {
+					txHashes[index] = txHash
+					if len(pieces) != 1 {
+						t.Errorf("upload %d OnPiecesAdded pieces=%d, want 1", index, len(pieces))
+					}
+				},
+			})
+			go func() {
+				result, err := providerCtx.Upload(cctx, bytes.NewReader(payloads[index]), opts)
+				outcomes <- uploadOutcome{index: index, result: result, err: err}
+			}()
+		}
+		seenStored := make(map[int]struct{}, len(payloads))
+		for len(seenStored) < len(payloads) {
+			select {
+			case index := <-stored:
+				seenStored[index] = struct{}{}
+			case outcome := <-outcomes:
+				if outcome.err != nil {
+					t.Fatalf("ProviderContext.Upload(new dataset batch %d) before barrier: %v", outcome.index, outcome.err)
+				}
+				t.Fatalf("ProviderContext.Upload(new dataset batch %d) returned before OnStored barrier", outcome.index)
+			case <-cctx.Done():
+				t.Fatalf("wait for concurrent new-dataset stores: %v", cctx.Err())
+			}
+		}
+		releaseStores()
+
+		results := make([]*storage.UploadResult, len(payloads))
+		for range payloads {
+			select {
+			case outcome := <-outcomes:
+				if outcome.err != nil {
+					t.Fatalf("ProviderContext.Upload(new dataset batch %d): %v", outcome.index, outcome.err)
+				}
+				results[outcome.index] = outcome.result
+			case <-cctx.Done():
+				t.Fatalf("wait for concurrent new-dataset uploads: %v", cctx.Err())
+			}
+		}
+		t.Logf("done NewDataSetBatch concurrent ProviderContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
+
+		var dataSetID types.BigInt
+		for i, result := range results {
+			if result == nil || !result.PieceCID.Defined() || len(result.Copies) != 1 {
+				t.Fatalf("ProviderContext.Upload(new dataset batch %d) result=%+v", i, result)
+			}
+			info, err := piece.ParseV2(result.PieceCID)
+			if err != nil || info.RawSize != uint64(len(payloads[i])) {
+				t.Fatalf("upload %d PieceCID info=%+v error=%v, want raw size %d", i, info, err, len(payloads[i]))
+			}
+			copy0 := result.Copies[0]
+			if !copy0.ProviderID.Equal(providerCtx.ProviderID()) || !copy0.IsNewDataSet || copy0.DataSetID.IsZero() {
+				t.Fatalf("upload %d copy=%+v, want new data set on provider %s", i, copy0, providerCtx.ProviderID())
+			}
+			if i == 0 {
+				dataSetID = copy0.DataSetID
+				cleanupDataSetID := dataSetID
+				t.Cleanup(func() {
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					defer cleanupCancel()
+					t.Logf("start NewDataSetBatch cleanup TerminateDataSet(%s)", cleanupDataSetID)
+					termRes, err := batchClient.WarmStorage().TerminateDataSet(cleanupCtx, cleanupDataSetID, warmstorage.WithWait(txWaitTimeout))
+					if err != nil {
+						t.Logf("cleanup TerminateDataSet(%s): %v", cleanupDataSetID, err)
+						return
+					}
+					if termRes == nil {
+						t.Logf("cleanup TerminateDataSet(%s) returned nil result", cleanupDataSetID)
+						return
+					}
+					if termRes.Receipt != nil && termRes.Receipt.Status != 1 {
+						t.Logf("cleanup TerminateDataSet(%s) receipt = %+v", cleanupDataSetID, termRes.Receipt)
+					}
+					t.Logf("done NewDataSetBatch cleanup TerminateDataSet(%s) tx=%s", cleanupDataSetID, termRes.Hash)
+				})
+			} else if !copy0.DataSetID.Equal(dataSetID) {
+				t.Fatalf("batch DataSetIDs=%s,%s, want one shared data set", dataSetID, copy0.DataSetID)
+			}
+		}
+		if txHashes[0] == "" || txHashes[0] != txHashes[1] {
+			t.Fatalf("batch transaction IDs=%q,%q, want one shared non-empty transaction", txHashes[0], txHashes[1])
+		}
+		if results[0].Copies[0].PieceID.Equal(results[1].Copies[0].PieceID) {
+			t.Fatalf("batch PieceIDs=%s,%s, want distinct IDs", results[0].Copies[0].PieceID, results[1].Copies[0].PieceID)
+		}
+
+		providerID := providerCtx.ProviderID()
+		resolved, err := batchClient.Storage().NewDataSetContext(cctx, dataSetID, storage.NewDataSetContextOptions{
+			ProviderID: &providerID,
+		})
+		if err != nil {
+			t.Fatalf("NewDataSetContext(new dataset batch): %v", err)
+		}
+		ref, ok := resolved.DataSetRef()
+		if !ok || !ref.ProviderID().Equal(providerCtx.ProviderID()) || !ref.DataSetID().Equal(dataSetID) {
+			t.Fatalf("resolved DataSetRef=(%+v, %t), want provider=%s dataSet=%s", ref, ok, providerCtx.ProviderID(), dataSetID)
+		}
+		t.Logf("NewDataSetBatch resolved DataSetRef: provider=%s dataSet=%s clientDataSet=%s", ref.ProviderID(), ref.DataSetID(), ref.ClientDataSetID())
+		if _, bound := providerCtx.DataSetRef(); bound {
+			t.Fatal("ProviderContext was mutated into a bound context")
+		}
+	})
+
+	// --- ContextUploadBatchingExistingDataSet: explicit evidence that two
+	// concurrent high-level uploads share one existing-dataset transaction. ---
+	t.Run("ContextUploadBatchingExistingDataSet", func(t *testing.T) {
 		if uploadedDataSetID.IsZero() {
-			t.Skip("Upload subtest did not produce dataset id; skipping existing-dataset AddPieces evidence")
+			t.Skip("Upload subtest did not produce dataset id; skipping upload batching evidence")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
@@ -1281,19 +1463,26 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("active piece count before existing-dataset upload invalid: %v", beforeCount)
 		}
 
-		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
+		batchClient := integrationtest.NewDefaultClient(t, cctx, synapse.WithUploadBatching(
+			storage.WithoutUploadIdleWait(),
+			storage.WithoutUploadMaxWait(),
+		))
+		uctx, err := batchClient.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
 		if err != nil {
 			t.Fatalf("NewDataSetContext(uploadedDataSetID): %v", err)
 		}
 
-		extraData := make([]byte, 128*1024)
-		if _, err := crypto_rand.Read(extraData); err != nil {
-			t.Fatalf("generate existing-dataset upload data: %v", err)
+		payloads := make([][]byte, 2)
+		for i := range payloads {
+			payloads[i] = make([]byte, 128*1024)
+			if _, err := crypto_rand.Read(payloads[i]); err != nil {
+				t.Fatalf("generate existing-dataset upload data %d: %v", i, err)
+			}
 		}
 
-		t.Log("start ExistingDataSet Prepare")
-		prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
-			PieceSizes:        []uint64{uint64(len(extraData))},
+		t.Log("start ExistingDataSetBatch Prepare")
+		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
+			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1]))},
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			Contexts: []storage.StorageContext{
@@ -1301,60 +1490,97 @@ func TestIntegration(t *testing.T) {
 			},
 		})
 		if err != nil {
-			t.Fatalf("Prepare(existing dataset): %v", err)
+			t.Fatalf("Prepare(existing dataset batch): %v", err)
 		}
 		if prep.Transaction != nil {
-			t.Log("start ExistingDataSet Prepare.Execute")
+			t.Log("start ExistingDataSetBatch Prepare.Execute")
 			res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
 			if err != nil {
 				if errors.Is(err, payments.ErrPermitUnsupported) {
-					t.Skip("needs-usdfc-permit-support: existing-dataset funding requires permit support")
+					t.Skip("needs-usdfc-permit-support: existing-dataset batch funding requires permit support")
 				}
-				t.Fatalf("Prepare(existing dataset).Execute: %v", err)
+				t.Fatalf("Prepare(existing dataset batch).Execute: %v", err)
 			}
 			if res.Receipt == nil || res.Receipt.Status != 1 {
-				t.Fatalf("Prepare(existing dataset).Execute receipt = %+v", res.Receipt)
+				t.Fatalf("Prepare(existing dataset batch).Execute receipt = %+v", res.Receipt)
 			}
 		}
 
+		type uploadOutcome struct {
+			index  int
+			result *storage.UploadResult
+			err    error
+		}
+		stored := make(chan struct{}, len(payloads))
+		outcomes := make(chan uploadOutcome, len(payloads))
+		txHashes := make([]string, len(payloads))
 		start := time.Now()
-		t.Log("start ExistingDataSet DataSetContext.Upload")
-		result, err := uctx.Upload(cctx, bytes.NewReader(extraData), tracedContextUploadOptions(t, "ExistingDataSet", nil))
-		t.Logf("done ExistingDataSet DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
-		if err != nil {
-			t.Fatalf("DataSetContext.Upload(existing dataset): %v", err)
+		t.Log("start ExistingDataSetBatch concurrent DataSetContext.Upload")
+		for i := range payloads {
+			opts := tracedContextUploadOptions(t, fmt.Sprintf("ExistingDataSetBatch[%d]", i), &storage.ContextUploadOptions{
+				OnStored: func(types.BigInt, cid.Cid) { stored <- struct{}{} },
+				OnPiecesAdded: func(txHash string, _ types.BigInt, pieces []storage.SubmittedPiece) {
+					txHashes[i] = txHash
+					if len(pieces) != 1 {
+						t.Errorf("upload %d OnPiecesAdded pieces=%d, want 1", i, len(pieces))
+					}
+				},
+			})
+			go func() {
+				result, err := uctx.Upload(cctx, bytes.NewReader(payloads[i]), opts)
+				outcomes <- uploadOutcome{index: i, result: result, err: err}
+			}()
 		}
-		if !result.PieceCID.Defined() {
-			t.Fatal("DataSetContext.Upload(existing dataset) returned undefined PieceCID")
+		for range payloads {
+			select {
+			case <-stored:
+			case <-cctx.Done():
+				t.Fatalf("wait for concurrent stores: %v", cctx.Err())
+			}
 		}
-		info, err := piece.ParseV2(result.PieceCID)
-		if err != nil {
-			t.Fatalf("DataSetContext.Upload(existing dataset) PieceCID must be v2: %v", err)
+		if err := batchClient.Storage().Flush(cctx); err != nil {
+			t.Fatalf("Flush(existing dataset batch): %v", err)
 		}
-		if info.RawSize != uint64(len(extraData)) {
-			t.Fatalf("DataSetContext.Upload(existing dataset) raw size = %d, want %d", info.RawSize, len(extraData))
+		t.Logf("done ExistingDataSetBatch concurrent DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
+
+		results := make([]*storage.UploadResult, len(payloads))
+		for range payloads {
+			outcome := <-outcomes
+			if outcome.err != nil {
+				t.Fatalf("DataSetContext.Upload(existing dataset batch %d): %v", outcome.index, outcome.err)
+			}
+			results[outcome.index] = outcome.result
 		}
-		if len(result.Copies) != 1 {
-			t.Fatalf("DataSetContext.Upload(existing dataset) copies = %d, want 1", len(result.Copies))
+		for i, result := range results {
+			if result == nil || !result.PieceCID.Defined() || len(result.Copies) != 1 {
+				t.Fatalf("DataSetContext.Upload(existing dataset batch %d) result=%+v", i, result)
+			}
+			info, err := piece.ParseV2(result.PieceCID)
+			if err != nil || info.RawSize != uint64(len(payloads[i])) {
+				t.Fatalf("upload %d PieceCID info=%+v error=%v, want raw size %d", i, info, err, len(payloads[i]))
+			}
+			copy0 := result.Copies[0]
+			if !copy0.DataSetID.Equal(uploadedDataSetID) || copy0.IsNewDataSet {
+				t.Fatalf("upload %d copy=%+v, want existing dataSetID %s", i, copy0, uploadedDataSetID)
+			}
 		}
-		copy0 := result.Copies[0]
-		if !copy0.DataSetID.Equal(uploadedDataSetID) {
-			t.Fatalf("DataSetContext.Upload(existing dataset) dataSetID = %s, want %s", copy0.DataSetID, uploadedDataSetID)
+		if txHashes[0] == "" || txHashes[0] != txHashes[1] {
+			t.Fatalf("batch transaction IDs=%q,%q, want one shared non-empty transaction", txHashes[0], txHashes[1])
 		}
-		if copy0.IsNewDataSet {
-			t.Fatal("DataSetContext.Upload(existing dataset) unexpectedly created a new dataset")
+		if results[0].Copies[0].PieceID.Equal(results[1].Copies[0].PieceID) {
+			t.Fatalf("batch PieceIDs=%s,%s, want distinct IDs", results[0].Copies[0].PieceID, results[1].Copies[0].PieceID)
 		}
 
 		if err := ws.ValidateDataSet(cctx, uploadedDataSetID); err != nil {
-			t.Fatalf("ValidateDataSet(existing dataset after addPieces): %v", err)
+			t.Fatalf("ValidateDataSet(existing dataset after batch): %v", err)
 		}
 		afterCount, err := ws.GetActivePieceCount(cctx, uploadedDataSetID)
 		if err != nil {
-			t.Fatalf("GetActivePieceCount(after existing-dataset upload): %v", err)
+			t.Fatalf("GetActivePieceCount(after existing-dataset batch): %v", err)
 		}
-		wantAfter := new(big.Int).Add(new(big.Int).Set(beforeCount), big.NewInt(1))
+		wantAfter := new(big.Int).Add(new(big.Int).Set(beforeCount), big.NewInt(int64(len(payloads))))
 		if afterCount == nil || afterCount.Cmp(wantAfter) != 0 {
-			t.Fatalf("active piece count after existing-dataset upload = %v, want %v", afterCount, wantAfter)
+			t.Fatalf("active piece count after existing-dataset batch = %v, want %v", afterCount, wantAfter)
 		}
 	})
 

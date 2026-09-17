@@ -99,6 +99,7 @@ import (
 	"context"
 	"iter"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -191,7 +192,19 @@ var (
 		PDPEndEpoch:                    new(types.Epoch),
 	}
 	_ = storage.Options{DataSetLeafCountReader: nil}
+	_ = storage.Options{UploadBatcher: (*storage.UploadBatcher)(nil)}
+	_ = storage.UploadBatcherOptions{Identity: storage.ContextIdentity{}}
+	_ = storage.WithUploadIdleWait(time.Second)
+	_ = storage.WithoutUploadIdleWait()
+	_ = storage.WithUploadMaxWait(time.Minute)
+	_ = storage.WithoutUploadMaxWait()
+	_ = storage.WithUploadMaxConcurrentSubmissions(2)
+	_ = storage.WithUploadBatcher((*storage.UploadBatcher)(nil))
 	_ func(storage.DataSetLeafCountReader, context.Context, types.BigInt) (*big.Int, error) = storage.DataSetLeafCountReader.GetDataSetLeafCount
+	_ func(storage.UploadBatcherOptions, ...storage.UploadBatcherOption) (*storage.UploadBatcher, error) = storage.NewUploadBatcher
+	_ func(*storage.UploadBatcher, context.Context) error = (*storage.UploadBatcher).Flush
+	_ func(*storage.UploadBatcher) error                  = (*storage.UploadBatcher).Close
+	_ func(*storage.Service, context.Context) error       = (*storage.Service).Flush
 	_ func(*storage.Service, context.Context, []uint64, []storage.ContextCostRef, storage.MultiCostOptions, common.Address) (*costs.MultiContextCosts, error) = (*storage.Service).CalculateMultiContextCosts
 	_ *storage.DataSetDetails
 )
@@ -223,6 +236,9 @@ var (
 	_ func(*storage.Service, context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error) = (*storage.Service).Upload
 	_ func(*storage.Service, context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error) = (*storage.Service).UploadToContexts
 	_ func(storage.StorageContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = storage.StorageContext.Upload
+	_ func(storage.StorageContext) map[string]string = storage.StorageContext.DataSetMetadata
+	_ func(storage.StorageContext, context.Context, storage.CommitRequest) (*storage.CommitSubmission, error) = storage.StorageContext.SubmitCommit
+	_ func(storage.StorageContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = storage.StorageContext.WaitForCommit
 	_ func(*storage.ProviderContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.ProviderContext).Upload
 	_ func(*storage.DataSetContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.DataSetContext).Upload
 )
@@ -278,7 +294,22 @@ func TestStorageSignerContract(t *testing.T) {
 	}
 
 	_ = synapse.WithStorageSigner(kms)
-	_ = storage.Options{Signer: kms}
+	identity := storage.ContextIdentity{
+		Payer:        common.HexToAddress("0x2001"),
+		ChainID:      types.ChainID(314159),
+		RecordKeeper: common.HexToAddress("0x2002"),
+	}
+	batcher, err := storage.NewUploadBatcher(storage.UploadBatcherOptions{
+		Identity: identity,
+		Signer:   kms,
+	}, storage.WithUploadIdleWait(0))
+	if err != nil {
+		t.Fatalf("NewUploadBatcher: %v", err)
+	}
+	defer batcher.Close()
+	_ = synapse.WithUploadBatching(storage.WithUploadIdleWait(0))
+	_ = synapse.WithoutUploadBatching()
+	_ = storage.Options{Signer: kms, UploadBatcher: batcher}
 	pdpClient, err := pdp.New("https://pdp.example.com")
 	if err != nil {
 		t.Fatalf("pdp.New: %v", err)
@@ -293,9 +324,10 @@ func TestStorageSignerContract(t *testing.T) {
 		},
 		pdpClient,
 		kms,
-		storage.WithPayer(common.HexToAddress("0x2001")),
-		storage.WithChainID(types.ChainID(314159)),
-		storage.WithRecordKeeper(common.HexToAddress("0x2002")),
+		storage.WithPayer(identity.Payer),
+		storage.WithChainID(identity.ChainID),
+		storage.WithRecordKeeper(identity.RecordKeeper),
+		storage.WithUploadBatcher(batcher),
 	)
 	if err != nil {
 		t.Fatalf("NewProviderContext: %v", err)

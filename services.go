@@ -161,6 +161,20 @@ func (c *Client) initServices() error {
 	}
 
 	terminator := adapters.NewFWSSTerminator(ws)
+	if c.uploadBatching {
+		batcher, err := storage.NewUploadBatcher(storage.UploadBatcherOptions{
+			Identity: storage.ContextIdentity{
+				Payer:        rootAddress,
+				ChainID:      types.ChainID(c.selectedChain.ChainID()),
+				RecordKeeper: c.addresses.FWSS,
+			},
+			Signer: c.storageSigner,
+		}, c.uploadBatcherOptions...)
+		if err != nil {
+			return fmt.Errorf("create storage upload batcher: %w", err)
+		}
+		c.uploadBatcher = batcher
+	}
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
 		Payer:        rootAddress,
 		SPRegistry:   spReg,
@@ -186,6 +200,9 @@ func (c *Client) initServices() error {
 				storage.WithFWSSDataSetReader(ws),
 				storage.WithDataSetValidator(ws),
 				storage.WithPaymentStateReader(pay, c.ethClient, c.addresses.USDFC),
+			}
+			if c.uploadBatcher != nil {
+				ctxOpts = append(ctxOpts, storage.WithUploadBatcher(c.uploadBatcher))
 			}
 			return storage.NewProviderContext(
 				provider,
@@ -220,6 +237,7 @@ func (c *Client) initServices() error {
 		CostCalculator:     costsvc,
 		PaymentsFunder:     adapters.NewPaymentsFunder(pay),
 		PayerAddress:       rootAddress,
+		UploadBatcher:      c.uploadBatcher,
 	}
 	if c.pdpReader != nil {
 		storageOpts.DataSetLeafCountReader = c.pdpReader
