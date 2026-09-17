@@ -55,8 +55,9 @@
 // Compatible uploads share a window only when their immutable target matches.
 // Existing data sets match by provider, complete DataSetRef, and exact service
 // URL. New data sets also require the same payee, CDN setting, and data-set
-// metadata. Each new-data-set window chooses its own client data-set ID and
-// does not bind or mutate the source ProviderContext.
+// metadata. Uploads to the same new target share one data set for the
+// coordinator's lifetime, across windows and sequential uploads, without
+// binding or mutating the source ProviderContext.
 //
 // Store, Pull, target resolution, and coordinator admission use the caller
 // context. Successful admission transfers ownership of the piece to the
@@ -86,13 +87,11 @@
 // coordinator, standalone services and contexts retain immediate per-upload
 // commits.
 //
-// During a multi-copy Service upload, a primary and every already-bound
-// secondary participate in batching. An unbound ProviderContext used as a
-// secondary retains the single-piece pull and create-and-add flow. It may
-// therefore submit before the primary window, and replicas from one Upload
-// call are not guaranteed to share a transaction. Store, Pull,
-// PresignForCommit, Commit, SubmitCommit, and WaitForCommit keep their direct
-// behavior; only high-level Upload methods opt into the coordinator.
+// During a multi-copy Service upload, the primary and every secondary
+// participate in batching. Replicas from one Upload call are not guaranteed to
+// share a transaction. Store, Pull, PresignForCommit, Commit, SubmitCommit, and
+// WaitForCommit keep their direct behavior; only high-level Upload methods opt
+// into the coordinator.
 //
 // The Go API intentionally uses an explicitly owned coordinator, functional
 // options, context-aware Flush, and immutable context injection rather than

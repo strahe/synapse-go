@@ -1265,9 +1265,10 @@ func TestIntegration(t *testing.T) {
 	})
 
 	// --- ContextUploadBatchingNewDataSet: the managed default batcher combines
-	// concurrent ProviderContext uploads into one create-and-add transaction. ---
+	// concurrent ProviderContext uploads into one create-and-add transaction,
+	// and a later upload to the same target adds to that data set. ---
 	t.Run("ContextUploadBatchingNewDataSet", func(t *testing.T) {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 		defer cancel()
 
 		batchClient := integrationtest.NewDefaultClient(t, cctx, synapse.WithUploadBatching())
@@ -1295,10 +1296,14 @@ func TestIntegration(t *testing.T) {
 				t.Fatalf("generate new-dataset batch upload data %d: %v", i, err)
 			}
 		}
+		sequentialPayload := make([]byte, 128*1024)
+		if _, err := crypto_rand.Read(sequentialPayload); err != nil {
+			t.Fatalf("generate sequential new-dataset batch upload data: %v", err)
+		}
 
 		t.Log("start NewDataSetBatch Prepare")
 		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
-			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1]))},
+			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1])), uint64(len(sequentialPayload))},
 			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
 			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
 			Contexts:          []storage.StorageContext{providerCtx},
@@ -1428,6 +1433,20 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("batch PieceIDs=%s,%s, want distinct IDs", results[0].Copies[0].PieceID, results[1].Copies[0].PieceID)
 		}
 
+		start = time.Now()
+		t.Log("start NewDataSetBatch sequential ProviderContext.Upload")
+		sequential, err := providerCtx.Upload(cctx, bytes.NewReader(sequentialPayload), tracedContextUploadOptions(t, "NewDataSetBatchSequential", nil))
+		if err != nil {
+			t.Fatalf("ProviderContext.Upload(sequential new dataset batch): %v", err)
+		}
+		t.Logf("done NewDataSetBatch sequential ProviderContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
+		if sequential == nil || len(sequential.Copies) != 1 {
+			t.Fatalf("ProviderContext.Upload(sequential new dataset batch) result=%+v", sequential)
+		}
+		if copy0 := sequential.Copies[0]; !copy0.DataSetID.Equal(dataSetID) || copy0.IsNewDataSet {
+			t.Fatalf("sequential copy=%+v, want pieces added to shared data set %s", copy0, dataSetID)
+		}
+
 		providerID := providerCtx.ProviderID()
 		resolved, err := batchClient.Storage().NewDataSetContext(cctx, dataSetID, storage.NewDataSetContextOptions{
 			ProviderID: &providerID,
@@ -1442,6 +1461,139 @@ func TestIntegration(t *testing.T) {
 		t.Logf("NewDataSetBatch resolved DataSetRef: provider=%s dataSet=%s clientDataSet=%s", ref.ProviderID(), ref.DataSetID(), ref.ClientDataSetID())
 		if _, bound := providerCtx.DataSetRef(); bound {
 			t.Fatal("ProviderContext was mutated into a bound context")
+		}
+	})
+
+	// --- UploadBatchingMultiCopyNewDataSets: concurrent multi-copy uploads with
+	// no matching data set share one new data set on each provider. ---
+	t.Run("UploadBatchingMultiCopyNewDataSets", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
+		defer cancel()
+
+		batchClient := integrationtest.NewDefaultClient(t, cctx, synapse.WithUploadBatching())
+		metadata := map[string]string{
+			"source": "integration-multicopy-shared-dataset",
+			"run":    fmt.Sprintf("%d", time.Now().UnixNano()),
+		}
+		const uploads = 3
+		payloads := make([][]byte, uploads)
+		pieceSizes := make([]uint64, uploads)
+		for i := range payloads {
+			payloads[i] = make([]byte, 128*1024)
+			if _, err := crypto_rand.Read(payloads[i]); err != nil {
+				t.Fatalf("generate multi-copy shared dataset upload data %d: %v", i, err)
+			}
+			pieceSizes[i] = uint64(len(payloads[i]))
+		}
+
+		selection, err := batchClient.Storage().SelectUploadContexts(cctx, storage.SelectUploadContextsOptions{
+			Copies:          2,
+			DataSetMetadata: metadata,
+		})
+		if err != nil {
+			t.Fatalf("SelectUploadContexts(multi-copy shared dataset): %v", err)
+		}
+		if selection == nil || len(selection.Contexts) != 2 {
+			t.Fatalf("SelectUploadContexts(multi-copy shared dataset) returned %+v, want two contexts", selection)
+		}
+		for i, target := range selection.Contexts {
+			if _, bound := target.DataSetRef(); bound {
+				t.Fatalf("selected context %d is already bound to a data set", i)
+			}
+		}
+
+		t.Log("start MultiCopySharedDataSet Prepare")
+		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
+			PieceSizes:        pieceSizes,
+			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			Contexts:          selection.Contexts,
+		})
+		if err != nil {
+			t.Fatalf("Prepare(multi-copy shared dataset): %v", err)
+		}
+		if prep.Transaction != nil {
+			t.Log("start MultiCopySharedDataSet Prepare.Execute")
+			res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				if errors.Is(err, payments.ErrPermitUnsupported) {
+					t.Skip("needs-usdfc-permit-support: multi-copy shared dataset funding requires permit support")
+				}
+				t.Fatalf("Prepare(multi-copy shared dataset).Execute: %v", err)
+			}
+			if res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Fatalf("Prepare(multi-copy shared dataset).Execute receipt = %+v", res.Receipt)
+			}
+		}
+
+		type uploadOutcome struct {
+			index  int
+			result *storage.UploadResult
+			err    error
+		}
+		outcomes := make(chan uploadOutcome, uploads)
+		start := time.Now()
+		t.Log("start MultiCopySharedDataSet concurrent Storage.Upload")
+		for i := range payloads {
+			opts := tracedUploadOptions(t, fmt.Sprintf("MultiCopySharedDataSet[%d]", i), &storage.UploadOptions{
+				Copies:          2,
+				DataSetMetadata: metadata,
+			})
+			go func() {
+				result, err := batchClient.Storage().Upload(cctx, bytes.NewReader(payloads[i]), opts)
+				outcomes <- uploadOutcome{index: i, result: result, err: err}
+			}()
+		}
+		results := make([]*storage.UploadResult, uploads)
+		errs := make([]error, uploads)
+		for range payloads {
+			select {
+			case outcome := <-outcomes:
+				results[outcome.index] = outcome.result
+				errs[outcome.index] = outcome.err
+			case <-cctx.Done():
+				t.Fatalf("wait for concurrent multi-copy uploads: %v", cctx.Err())
+			}
+		}
+		t.Logf("done MultiCopySharedDataSet concurrent Storage.Upload elapsed=%s", time.Since(start).Round(time.Second))
+
+		cleaned := make(map[string]struct{})
+		for _, result := range results {
+			if result == nil {
+				continue
+			}
+			for _, cp := range result.Copies {
+				key := idconv.Key(cp.DataSetID)
+				if _, ok := cleaned[key]; ok || cp.DataSetID.IsZero() {
+					continue
+				}
+				cleaned[key] = struct{}{}
+				terminateDataSetOnCleanup(t, batchClient, cp.DataSetID, "MultiCopySharedDataSet")
+			}
+		}
+
+		dataSetByProvider := make(map[string]types.BigInt, 2)
+		for i, result := range results {
+			if errs[i] != nil {
+				t.Fatalf("Storage.Upload(multi-copy shared dataset %d): %v", i, errs[i])
+			}
+			if result == nil || !result.Complete || len(result.Copies) != 2 {
+				t.Fatalf("Storage.Upload(multi-copy shared dataset %d) result=%+v, want two copies", i, result)
+			}
+			for _, cp := range result.Copies {
+				key := idconv.Key(cp.ProviderID)
+				if existing, ok := dataSetByProvider[key]; !ok {
+					dataSetByProvider[key] = cp.DataSetID
+				} else if !existing.Equal(cp.DataSetID) {
+					t.Fatalf("provider %s DataSetIDs=%s,%s, want one shared data set", cp.ProviderID, existing, cp.DataSetID)
+				}
+			}
+		}
+		if len(dataSetByProvider) != 2 {
+			t.Fatalf("data sets by provider=%v, want two providers", dataSetByProvider)
+		}
+		for _, cp := range results[0].Copies {
+			t.Logf("MultiCopySharedDataSet provider=%s role=%s dataSet=%s", cp.ProviderID, cp.Role, cp.DataSetID)
 		}
 	})
 
@@ -1824,5 +1976,27 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("DepositWithPermitAndApproveOperator tx failed: %+v", dpaRes.Receipt)
 		}
 		t.Logf("DepositWithPermitAndApproveOperator tx=%s", dpaRes.Hash)
+	})
+}
+
+func terminateDataSetOnCleanup(t *testing.T, client *synapse.Client, dataSetID types.BigInt, label string) {
+	t.Helper()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		t.Logf("start %s cleanup TerminateDataSet(%s)", label, dataSetID)
+		termRes, err := client.WarmStorage().TerminateDataSet(cleanupCtx, dataSetID, warmstorage.WithWait(txWaitTimeout))
+		if err != nil {
+			t.Logf("cleanup TerminateDataSet(%s): %v", dataSetID, err)
+			return
+		}
+		if termRes == nil {
+			t.Logf("cleanup TerminateDataSet(%s) returned nil result", dataSetID)
+			return
+		}
+		if termRes.Receipt != nil && termRes.Receipt.Status != 1 {
+			t.Logf("cleanup TerminateDataSet(%s) receipt = %+v", dataSetID, termRes.Receipt)
+		}
+		t.Logf("done %s cleanup TerminateDataSet(%s) tx=%s", label, dataSetID, termRes.Hash)
 	})
 }

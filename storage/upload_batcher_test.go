@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strconv"
@@ -464,60 +465,6 @@ func TestUploadBatcherZeroWaitSealsEachReadyPieceImmediately(t *testing.T) {
 	}
 	if got := submissions.Load(); got != 2 {
 		t.Fatalf("submissions=%d, want one immediate submission per piece", got)
-	}
-}
-
-func TestUploadBatcherDuplicateCIDCreatesDistinctNewDataSetWindows(t *testing.T) {
-	identity := serviceTestIdentity()
-	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
-	target := batchTestTarget(identity, DataSetRef{})
-	target.id = types.NewBigInt(1)
-	target.dataSetID = nil
-	target.clientDataSetID = nil
-	var (
-		mu        sync.Mutex
-		clientIDs []types.BigInt
-		nextID    atomic.Uint64
-	)
-	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
-		if req.ClientDataSetID == nil {
-			return nil, errors.New("missing client data-set ID")
-		}
-		clientID := copyBigInt(*req.ClientDataSetID)
-		mu.Lock()
-		clientIDs = append(clientIDs, clientID)
-		mu.Unlock()
-		return &CommitSubmission{
-			TransactionID:   "0xnew",
-			PieceCIDs:       pieceCIDs(req.Pieces),
-			ClientDataSetID: &clientID,
-		}, nil
-	}
-	target.waitCommitFn = func(_ context.Context, submission CommitSubmission) (*CommitResult, error) {
-		ref, err := NewDataSetRef(target.ProviderID(), types.NewBigInt(100+nextID.Add(1)), *submission.ClientDataSetID)
-		if err != nil {
-			return nil, err
-		}
-		return &CommitResult{DataSet: ref, PieceIDs: []types.BigInt{types.NewBigInt(1)}, IsNewDataSet: true}, nil
-	}
-	pieceInput := batchTestPiece(t, "duplicate-new")
-	taskA := enqueueBatchTestPiece(t, batcher, target, pieceInput)
-	taskB := enqueueBatchTestPiece(t, batcher, target, pieceInput)
-	if err := batcher.Flush(context.Background()); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	for name, task := range map[string]*uploadBatchTask{"first": taskA, "second": taskB} {
-		if _, err := task.wait(context.Background(), nil); err != nil {
-			t.Fatalf("wait %s: %v", name, err)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(clientIDs) != 2 || clientIDs[0].Equal(clientIDs[1]) {
-		t.Fatalf("client data-set IDs=%v, want two distinct window IDs", clientIDs)
-	}
-	if _, bound := target.DataSetRef(); bound {
-		t.Fatal("batching mutated the unbound target")
 	}
 }
 
@@ -1278,18 +1225,15 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringAnotherCommi
 		return nil, errors.New("primary must use the batcher")
 	}
 
-	secondary := batchTestTarget(identity, DataSetRef{})
-	secondary.id = types.NewBigInt(2)
-	secondary.dataSetID = nil
-	secondary.clientDataSetID = nil
-	secondary.presignFn = func(context.Context, []PieceInput) ([]byte, error) {
-		return []byte{0x01}, nil
-	}
+	secondary := sharedBatchTestTarget(identity, 2)
 	secondary.pullFn = func(context.Context, PullRequest) (*PullResult, error) {
 		return &PullResult{Status: PullStatusComplete}, nil
 	}
+	secondary.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+		return &CommitSubmission{TransactionID: "0xsecondary", PieceCIDs: pieceCIDs(req.Pieces), ClientDataSetID: copyBigIntPtr(req.ClientDataSetID)}, nil
+	}
 	secondaryCommitStarted := make(chan struct{})
-	secondary.commitFn = func(ctx context.Context, _ CommitRequest) (*CommitResult, error) {
+	secondary.waitCommitFn = func(ctx context.Context, _ CommitSubmission) (*CommitResult, error) {
 		close(secondaryCommitStarted)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -1316,9 +1260,7 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringAnotherCommi
 	case <-time.After(time.Second):
 		t.Fatal("secondary commit did not start")
 	}
-	if err := service.Flush(context.Background()); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
+	waitForUploadBatchFlightCount(t, batcher, 1)
 	cancel()
 	select {
 	case got := <-uploadDone:
@@ -1871,61 +1813,712 @@ func TestProviderContextUploadUsesInjectedBatcher(t *testing.T) {
 	}
 }
 
-func TestServiceUploadToContextsLeavesUnboundSecondaryUnbatched(t *testing.T) {
+func TestUploadBatcherSharesNewDataSetAcrossPieceLimit(t *testing.T) {
 	identity := serviceTestIdentity()
 	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
-	pieceInput := batchTestPiece(t, "unbound-secondary")
-	primaryRef := testCommitDataSetRef(1, 11)
-	primary := batchTestTarget(identity, primaryRef)
-	primary.storeFn = func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
-		return &StoreResult{PieceCID: pieceInput.PieceCID, Size: 1}, nil
+	target := sharedBatchTestTarget(identity, 1)
+	commits := recordSharedBatchCommits(target)
+	tasks := make([]*uploadBatchTask, 0, pdp.MaxAddPiecesBatchSize+1)
+	for i := range pdp.MaxAddPiecesBatchSize + 1 {
+		tasks = append(tasks, enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, fmt.Sprintf("shared-limit-%d", i))))
 	}
-	configureBatchTargetCommit(primary, primaryRef, nil)
-
-	secondary := batchTestTarget(identity, DataSetRef{})
-	secondary.id = types.NewBigInt(2)
-	secondary.dataSetID = nil
-	secondary.presignFn = func(context.Context, []PieceInput) ([]byte, error) {
-		return []byte{0x01}, nil
+	if err := batcher.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
-	secondary.pullFn = func(_ context.Context, req PullRequest) (*PullResult, error) {
-		if !bytes.Equal(req.ExtraData, []byte{0x01}) {
-			t.Fatalf("Pull extraData=%x, want standalone authorization", req.ExtraData)
+	got := commits.snapshot()
+	if len(got) != 2 || !got[0].create || got[0].pieces != pdp.MaxAddPiecesBatchSize || got[1].create || got[1].pieces != 1 {
+		t.Fatalf("commits=%+v, want one full create-and-add followed by one add-pieces", got)
+	}
+	for i, task := range tasks {
+		result, err := task.wait(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("wait %d: %v", i, err)
 		}
+		if !result.DataSet.DataSetID().Equal(types.NewBigInt(101)) || result.IsNewDataSet != (i < pdp.MaxAddPiecesBatchSize) {
+			t.Fatalf("result %d=%+v, want shared data set 101", i, result)
+		}
+	}
+}
+
+func TestUploadBatcherLaterWindowWaitsForPendingCreate(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(time.Second), WithoutUploadMaxWait(), withUploadBatchClock(clock))
+	target := sharedBatchTestTarget(identity, 1)
+	commits := recordSharedBatchCommits(target)
+	createWaiting := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	commits.waitHook = func(_ context.Context, commit sharedBatchCommit) error {
+		if commit.create {
+			close(createWaiting)
+			<-releaseCreate
+		}
+		return nil
+	}
+	first := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "pending-first"))
+	clock.Advance(time.Second)
+	select {
+	case <-createWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("create-and-add was not submitted")
+	}
+	second := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "pending-second"))
+	clock.Advance(time.Second)
+	waitForUploadBatchFlightCount(t, batcher, 2)
+	if got := commits.snapshot(); len(got) != 1 {
+		t.Fatalf("commits=%+v, want later window to wait for the pending create", got)
+	}
+	close(releaseCreate)
+	if err := batcher.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	firstResult, err := first.wait(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("wait first: %v", err)
+	}
+	secondResult, err := second.wait(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("wait second: %v", err)
+	}
+	if !secondResult.DataSet.Equal(firstResult.DataSet) || secondResult.IsNewDataSet {
+		t.Fatalf("second result=%+v, want add-pieces to %+v", secondResult, firstResult.DataSet)
+	}
+	if got := commits.snapshot(); len(got) != 2 || !got[0].create || got[1].create {
+		t.Fatalf("commits=%+v, want create-and-add then add-pieces", got)
+	}
+}
+
+func TestUploadBatcherReusesSharedDataSetForLaterUploads(t *testing.T) {
+	tests := map[string][2]string{
+		"sequential upload": {"sequential-first", "sequential-second"},
+		"repeated piece":    {"repeated-piece", "repeated-piece"},
+	}
+	for name, values := range tests {
+		t.Run(name, func(t *testing.T) {
+			identity := serviceTestIdentity()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+			target := sharedBatchTestTarget(identity, 1)
+			commits := recordSharedBatchCommits(target)
+			var results []*CommitResult
+			for _, value := range values {
+				task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, value))
+				if err := batcher.Flush(context.Background()); err != nil {
+					t.Fatalf("Flush: %v", err)
+				}
+				result, err := task.wait(context.Background(), nil)
+				if err != nil {
+					t.Fatalf("wait: %v", err)
+				}
+				results = append(results, result)
+			}
+			if !results[1].DataSet.Equal(results[0].DataSet) || !results[0].IsNewDataSet || results[1].IsNewDataSet {
+				t.Fatalf("results=%+v, want the second upload added to the first data set", results)
+			}
+			if got := commits.snapshot(); len(got) != 2 || !got[0].create || got[1].create {
+				t.Fatalf("commits=%+v, want create-and-add then add-pieces", got)
+			}
+			if _, bound := target.DataSetRef(); bound {
+				t.Fatal("batching mutated the unbound target")
+			}
+		})
+	}
+}
+
+func TestUploadBatcherRecoversSharedDataSetAfterFailedCreate(t *testing.T) {
+	recovered := testCommitDataSetRef(1, 555)
+	tests := []struct {
+		name       string
+		find       func(DataSetRef) func(context.Context, types.BigInt) (DataSetRef, bool, error)
+		wantCreate bool
+		wantSameID bool
+	}{
+		{
+			name: "found on chain",
+			find: func(ref DataSetRef) func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+				return func(context.Context, types.BigInt) (DataSetRef, bool, error) { return ref, true, nil }
+			},
+		},
+		{
+			name: "not found",
+			find: func(DataSetRef) func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+				return func(context.Context, types.BigInt) (DataSetRef, bool, error) { return DataSetRef{}, false, nil }
+			},
+			wantCreate: true,
+			wantSameID: true,
+		},
+		{
+			name:       "no chain reader",
+			wantCreate: true,
+			wantSameID: true,
+		},
+		{
+			name: "correlation conflict",
+			find: func(DataSetRef) func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+				return func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+					return DataSetRef{}, false, ErrDataSetCorrelationConflict
+				}
+			},
+			wantCreate: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			identity := serviceTestIdentity()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+			target := sharedBatchTestTarget(identity, 1)
+			commits := recordSharedBatchCommits(target)
+			var failed atomic.Bool
+			commits.waitHook = func(_ context.Context, commit sharedBatchCommit) error {
+				if commit.create && failed.CompareAndSwap(false, true) {
+					return errors.New("provider status unavailable")
+				}
+				return nil
+			}
+			enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "recover-first"))
+			if err := batcher.Flush(context.Background()); err == nil {
+				t.Fatal("Flush error=nil, want failed create")
+			}
+			first := commits.snapshot()[0]
+			ref := recovered
+			if tt.find != nil {
+				ref = testCommitDataSetRefWithClientID(t, 1, 555, first.clientDataSetID)
+				target.findDataSetFn = tt.find(ref)
+				commits.useDataSet(ref)
+			}
+			task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "recover-second"))
+			if err := batcher.Flush(context.Background()); err != nil {
+				t.Fatalf("Flush after recovery: %v", err)
+			}
+			result, err := task.wait(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("wait: %v", err)
+			}
+			got := commits.snapshot()
+			if len(got) != 2 || got[1].create != tt.wantCreate {
+				t.Fatalf("commits=%+v, want create=%t after recovery", got, tt.wantCreate)
+			}
+			if tt.wantCreate {
+				if got[1].clientDataSetID.Equal(first.clientDataSetID) != tt.wantSameID {
+					t.Fatalf("retry client data-set ID=%s first=%s, want same=%t", got[1].clientDataSetID, first.clientDataSetID, tt.wantSameID)
+				}
+				return
+			}
+			if !result.DataSet.Equal(ref) {
+				t.Fatalf("result data set=%+v, want recovered %+v", result.DataSet, ref)
+			}
+		})
+	}
+}
+
+func TestUploadBatcherWaitsForCreatedDataSetVisibility(t *testing.T) {
+	t.Run("visible", func(t *testing.T) {
+		identity := serviceTestIdentity()
+		batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait(), withSharedDataSetPolling(time.Millisecond, time.Second))
+		target := sharedBatchTestTarget(identity, 1)
+		commits := recordSharedBatchCommits(target)
+		var lookups atomic.Int32
+		target.findDataSetFn = func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+			if lookups.Add(1) < 3 {
+				return DataSetRef{}, false, nil
+			}
+			return commits.lastDataSet(), true, nil
+		}
+		enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "visible-first"))
+		if err := batcher.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush first: %v", err)
+		}
+		task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "visible-second"))
+		if err := batcher.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush second: %v", err)
+		}
+		if _, err := task.wait(context.Background(), nil); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+		if got := lookups.Load(); got != 3 {
+			t.Fatalf("lookups=%d, want add-pieces after the data set became visible", got)
+		}
+		if got := commits.snapshot(); len(got) != 2 || got[1].create {
+			t.Fatalf("commits=%+v, want add-pieces after visibility", got)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		identity := serviceTestIdentity()
+		batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait(), withSharedDataSetPolling(time.Millisecond, 5*time.Millisecond))
+		target := sharedBatchTestTarget(identity, 1)
+		commits := recordSharedBatchCommits(target)
+		target.findDataSetFn = func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+			return DataSetRef{}, false, nil
+		}
+		enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "hidden-first"))
+		if err := batcher.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush first: %v", err)
+		}
+		task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "hidden-second"))
+		if err := batcher.Flush(context.Background()); !errors.Is(err, ErrDataSetUnavailable) {
+			t.Fatalf("Flush error=%v, want ErrDataSetUnavailable", err)
+		}
+		if _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrDataSetUnavailable) {
+			t.Fatalf("wait error=%v, want ErrDataSetUnavailable", err)
+		}
+		enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "hidden-third"))
+		if err := batcher.Flush(context.Background()); !errors.Is(err, ErrDataSetUnavailable) {
+			t.Fatalf("Flush third error=%v, want ErrDataSetUnavailable", err)
+		}
+		if got := commits.snapshot(); len(got) != 1 {
+			t.Fatalf("commits=%+v, want no create or add-pieces while the confirmed data set is invisible", got)
+		}
+		target.findDataSetFn = func(context.Context, types.BigInt) (DataSetRef, bool, error) {
+			return commits.lastDataSet(), true, nil
+		}
+		visible := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "hidden-visible"))
+		if err := batcher.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush after visibility: %v", err)
+		}
+		result, err := visible.wait(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("wait after visibility: %v", err)
+		}
+		if !result.DataSet.DataSetID().Equal(types.NewBigInt(101)) || result.IsNewDataSet {
+			t.Fatalf("result=%+v, want add-pieces to confirmed data set 101", result)
+		}
+	})
+}
+
+func TestUploadBatcherReplacesTerminatedSharedDataSet(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+	target := sharedBatchTestTarget(identity, 1)
+	commits := recordSharedBatchCommits(target)
+	var terminated atomic.Bool
+	commits.submitHook = func(commit sharedBatchCommit) error {
+		if !commit.create && terminated.CompareAndSwap(false, true) {
+			return fmt.Errorf("validate data set: %w", &DataSetPDPPaymentTerminatedError{DataSetID: types.NewBigInt(101), PDPEndEpoch: 10})
+		}
+		return nil
+	}
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "terminated-first"))
+	if err := batcher.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush first: %v", err)
+	}
+	task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "terminated-second"))
+	if err := batcher.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush second: %v", err)
+	}
+	result, err := task.wait(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	got := commits.snapshot()
+	if len(got) != 3 || !got[0].create || got[1].create || !got[2].create || got[2].clientDataSetID.Equal(got[0].clientDataSetID) {
+		t.Fatalf("commits=%+v, want replacement create with a new client data-set ID", got)
+	}
+	if !result.DataSet.DataSetID().Equal(types.NewBigInt(102)) || !result.IsNewDataSet {
+		t.Fatalf("result=%+v, want replacement data set 102", result)
+	}
+}
+
+func TestUploadBatcherCloseStopsWindowsWaitingForCreate(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0))
+	target := sharedBatchTestTarget(identity, 1)
+	commits := recordSharedBatchCommits(target)
+	createWaiting := make(chan struct{})
+	commits.waitHook = func(ctx context.Context, commit sharedBatchCommit) error {
+		if commit.create {
+			close(createWaiting)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	first := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "close-first"))
+	select {
+	case <-createWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("create-and-add was not submitted")
+	}
+	second := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "close-second"))
+	waitForUploadBatchFlightCount(t, batcher, 2)
+	if err := batcher.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for name, task := range map[string]*uploadBatchTask{"first": first, "second": second} {
+		if _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrClosed) {
+			t.Fatalf("wait %s error=%v, want ErrClosed", name, err)
+		}
+	}
+	waitForNoUploadBatchFlights(t, batcher)
+	if got := commits.snapshot(); len(got) != 1 {
+		t.Fatalf("commits=%+v, want waiting window never submitted", got)
+	}
+}
+
+func TestUploadBatcherRejectsUnboundTargetThatCannotShare(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+	reservation, err := batcher.reserve()
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	defer reservation.release()
+	target := opaqueStorageContext{StorageContext: sharedBatchTestTarget(identity, 1)}
+	if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "opaque")); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("enqueue error=%v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestServiceUploadToContextsSharesUnboundSecondaryCreate(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+	const uploads = 3
+	primary, secondary := sharedServiceTestTargets(t, identity, uploads)
+	pullIDs := make(chan types.BigInt, uploads)
+	secondary.pullFn = func(_ context.Context, req PullRequest) (*PullResult, error) {
+		clientDataSetID, err := decodeCreateAndAddIdentity("test", req.ExtraData, identity.Payer)
+		if err != nil {
+			t.Errorf("pull extraData is not create-and-add: %v", err)
+			return nil, err
+		}
+		pullIDs <- *clientDataSetID
 		return &PullResult{Status: PullStatusComplete}, nil
 	}
-	directCommit := make(chan struct{}, 1)
-	secondary.commitFn = func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-		if !bytes.Equal(req.ExtraData, []byte{0x01}) {
-			t.Fatalf("Commit extraData=%x, want pull authorization", req.ExtraData)
-		}
-		directCommit <- struct{}{}
-		return &CommitResult{
-			TransactionID: "0xsecondary",
-			DataSet:       testCommitDataSetRef(2, 22),
-			PieceIDs:      []types.BigInt{types.NewBigInt(2)},
-			IsNewDataSet:  true,
-		}, nil
-	}
-	secondary.submitCommitFn = func(context.Context, CommitRequest) (*CommitSubmission, error) {
-		return nil, errors.New("unbound secondary must not use batch submission")
-	}
+	commits := recordSharedBatchCommits(secondary)
 	service := mustNewService(t, Options{UploadBatcher: batcher})
-	uploadDone := make(chan error, 1)
-	go func() {
-		_, err := service.UploadToContexts(context.Background(), bytes.NewReader([]byte("ignored")), []StorageContext{primary, secondary}, nil)
-		uploadDone <- err
-	}()
-	select {
-	case <-directCommit:
-	case <-time.After(time.Second):
-		t.Fatal("unbound secondary did not commit independently")
+	outcomes := startSharedServiceUploads(service, primary, secondary, uploads)
+	var ids []types.BigInt
+	for range uploads {
+		select {
+		case id := <-pullIDs:
+			ids = append(ids, id)
+		case <-time.After(time.Second):
+			t.Fatal("secondary pull was not authorized")
+		}
 	}
 	if err := service.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	if err := <-uploadDone; err != nil {
-		t.Fatalf("UploadToContexts: %v", err)
+	assertSharedSecondaryUploads(t, outcomes, uploads)
+	got := commits.snapshot()
+	if len(got) != 1 || !got[0].create || got[0].pieces != uploads {
+		t.Fatalf("secondary commits=%+v, want one create-and-add for every upload", got)
+	}
+	for _, id := range ids {
+		if !id.Equal(got[0].clientDataSetID) {
+			t.Fatalf("pull client data-set IDs=%v, want every pull to authorize %s", ids, got[0].clientDataSetID)
+		}
+	}
+}
+
+func TestServiceUploadToContextsPullWaitsForSubmittedSecondaryCreate(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0))
+	primary, secondary := sharedServiceTestTargets(t, identity, 2)
+	pullCreates := make(chan bool, 2)
+	secondary.pullFn = func(_ context.Context, req PullRequest) (*PullResult, error) {
+		_, err := decodeCreateAndAddIdentity("test", req.ExtraData, identity.Payer)
+		pullCreates <- err == nil
+		return &PullResult{Status: PullStatusComplete}, nil
+	}
+	commits := recordSharedBatchCommits(secondary)
+	createWaiting := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	commits.waitHook = func(_ context.Context, commit sharedBatchCommit) error {
+		if commit.create {
+			close(createWaiting)
+			<-releaseCreate
+		}
+		return nil
+	}
+	service := mustNewService(t, Options{UploadBatcher: batcher})
+	first := startSharedServiceUploads(service, primary, secondary, 1)
+	if create := <-pullCreates; !create {
+		t.Fatal("first secondary pull did not authorize create-and-add")
+	}
+	select {
+	case <-createWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("secondary create-and-add was not submitted")
+	}
+	second := startSharedServiceUploads(service, primary, secondary, 1)
+	select {
+	case <-pullCreates:
+		t.Fatal("secondary pull started before the submitted create was confirmed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseCreate)
+	select {
+	case create := <-pullCreates:
+		if create {
+			t.Fatal("later secondary pull authorized another create-and-add")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("later secondary pull did not start after confirmation")
+	}
+	assertSharedSecondaryUploads(t, first, 1)
+	assertSharedSecondaryUploads(t, second, 1)
+	if got := commits.snapshot(); len(got) != 2 || !got[0].create || got[1].create {
+		t.Fatalf("secondary commits=%+v, want create-and-add then add-pieces", got)
+	}
+}
+
+func TestProviderContextUploadReusesBatcherDataSet(t *testing.T) {
+	payloads := [][]byte{bytes.Repeat([]byte("context-reuse-a"), 128), bytes.Repeat([]byte("context-reuse-b"), 128)}
+	pieceCIDs := make([]cid.Cid, len(payloads))
+	for i, payload := range payloads {
+		info, err := piece.CalculateFromBytes(payload)
+		if err != nil {
+			t.Fatalf("CalculateFromBytes: %v", err)
+		}
+		pieceCIDs[i] = info.CIDv2
+	}
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0))
+	var uploadsSeen atomic.Int32
+	var addedDataSet types.BigInt
+	client := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			if _, err := io.Copy(io.Discard, r); err != nil {
+				return nil, err
+			}
+			i := uploadsSeen.Add(1) - 1
+			return &pdp.UploadStreamingResult{PieceCID: pieceCIDs[i], Size: int64(len(payloads[i]))}, nil
+		},
+		waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error { return nil },
+		createAndAddFn: func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{TxHash: common.HexToHash("0xabc"), StatusURL: "https://sp.example.com/create"}, nil
+		},
+		waitForCreateAndAddFn: func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xabc"),
+				DataSetID:         types.NewBigInt(55),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(77)},
+			}, nil
+		},
+		addPiecesFn: func(_ context.Context, dataSetID types.BigInt, _ []pdp.AddPieceInput, _ []byte) (*pdp.AddPiecesResult, error) {
+			addedDataSet = dataSetID
+			return &pdp.AddPiecesResult{TxHash: common.HexToHash("0xdef"), StatusURL: "https://sp.example.com/add"}, nil
+		},
+		waitForAddedFn: func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xdef"),
+				DataSetID:         types.NewBigInt(55),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(78)},
+			}, nil
+		},
+	}
+	target := mustWritableProviderContext(t, client, WithUploadBatcher(batcher))
+	var results []*UploadResult
+	for _, payload := range payloads {
+		result, err := target.Upload(context.Background(), bytes.NewReader(payload), nil)
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		results = append(results, result)
+	}
+	if !addedDataSet.Equal(types.NewBigInt(55)) {
+		t.Fatalf("add-pieces data set=%s, want 55", addedDataSet)
+	}
+	second := results[1].Copies[0]
+	if !second.DataSetID.Equal(results[0].Copies[0].DataSetID) || second.IsNewDataSet || !second.PieceID.Equal(types.NewBigInt(78)) {
+		t.Fatalf("second copy=%+v, want piece 78 added to data set 55", second)
+	}
+	if _, bound := target.DataSetRef(); bound {
+		t.Fatal("batched upload mutated ProviderContext")
+	}
+}
+
+type opaqueStorageContext struct {
+	StorageContext
+}
+
+type sharedBatchCommit struct {
+	create          bool
+	clientDataSetID types.BigInt
+	pieces          int
+}
+
+type sharedBatchCommits struct {
+	mu         sync.Mutex
+	providerID types.BigInt
+	commits    []sharedBatchCommit
+	dataSets   []DataSetRef
+	submitHook func(sharedBatchCommit) error
+	waitHook   func(context.Context, sharedBatchCommit) error
+}
+
+// recordSharedBatchCommits creates data sets 101, 102, ... and adds to the latest.
+func recordSharedBatchCommits(target *fakeUploadContext) *sharedBatchCommits {
+	rec := &sharedBatchCommits{providerID: target.id}
+	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+		commit := sharedBatchCommit{create: req.ClientDataSetID != nil, pieces: len(req.Pieces)}
+		if commit.create {
+			commit.clientDataSetID = copyBigInt(*req.ClientDataSetID)
+		}
+		rec.mu.Lock()
+		rec.commits = append(rec.commits, commit)
+		hook := rec.submitHook
+		rec.mu.Unlock()
+		if hook != nil {
+			if err := hook(commit); err != nil {
+				return nil, err
+			}
+		}
+		return &CommitSubmission{
+			TransactionID:   fmt.Sprintf("0x%x", len(rec.snapshot())),
+			PieceCIDs:       pieceCIDs(req.Pieces),
+			ClientDataSetID: copyBigIntPtr(req.ClientDataSetID),
+		}, nil
+	}
+	target.waitCommitFn = func(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+		commit := sharedBatchCommit{create: submission.ClientDataSetID != nil, pieces: len(submission.PieceCIDs)}
+		rec.mu.Lock()
+		hook := rec.waitHook
+		rec.mu.Unlock()
+		if hook != nil {
+			if err := hook(ctx, commit); err != nil {
+				return nil, err
+			}
+		}
+		result := &CommitResult{TransactionID: submission.TransactionID, PieceIDs: make([]types.BigInt, len(submission.PieceCIDs))}
+		for i := range result.PieceIDs {
+			result.PieceIDs[i] = types.NewBigInt(uint64(i + 1))
+		}
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		if commit.create {
+			ref, err := NewDataSetRef(rec.providerID, types.NewBigInt(uint64(101+len(rec.dataSets))), *submission.ClientDataSetID)
+			if err != nil {
+				return nil, err
+			}
+			rec.dataSets = append(rec.dataSets, ref)
+			result.DataSet = ref
+			result.IsNewDataSet = true
+			return result, nil
+		}
+		if len(rec.dataSets) == 0 {
+			return nil, errors.New("add-pieces before a data set exists")
+		}
+		result.DataSet = rec.dataSets[len(rec.dataSets)-1]
+		return result, nil
+	}
+	return rec
+}
+
+func (r *sharedBatchCommits) snapshot() []sharedBatchCommit {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sharedBatchCommit(nil), r.commits...)
+}
+
+func (r *sharedBatchCommits) lastDataSet() DataSetRef {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.dataSets) == 0 {
+		return DataSetRef{}
+	}
+	return r.dataSets[len(r.dataSets)-1]
+}
+
+func (r *sharedBatchCommits) useDataSet(ref DataSetRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dataSets = append(r.dataSets, ref)
+}
+
+func sharedBatchTestTarget(identity ContextIdentity, providerID uint64) *fakeUploadContext {
+	return &fakeUploadContext{id: types.NewBigInt(providerID), endpoint: "https://provider.example.com", identity: &identity}
+}
+
+func testCommitDataSetRefWithClientID(t *testing.T, providerID, dataSetID uint64, clientDataSetID types.BigInt) DataSetRef {
+	t.Helper()
+	ref, err := NewDataSetRef(types.NewBigInt(providerID), types.NewBigInt(dataSetID), clientDataSetID)
+	if err != nil {
+		t.Fatalf("NewDataSetRef: %v", err)
+	}
+	return ref
+}
+
+// sharedServiceTestTargets returns a bound primary and an unbound secondary.
+func sharedServiceTestTargets(t *testing.T, identity ContextIdentity, uploads int) (primary, secondary *fakeUploadContext) {
+	t.Helper()
+	pieces := make([]PieceInput, uploads)
+	for i := range pieces {
+		pieces[i] = batchTestPiece(t, fmt.Sprintf("shared-service-%d", i))
+	}
+	primaryRef := testCommitDataSetRef(1, 11)
+	primary = batchTestTarget(identity, primaryRef)
+	var stored atomic.Int32
+	primary.storeFn = func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+		i := stored.Add(1) - 1
+		return &StoreResult{PieceCID: pieces[i].PieceCID, Size: 1}, nil
+	}
+	primary.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+		return &CommitSubmission{TransactionID: "0xprimary", PieceCIDs: pieceCIDs(req.Pieces)}, nil
+	}
+	primary.waitCommitFn = func(_ context.Context, submission CommitSubmission) (*CommitResult, error) {
+		pieceIDs := make([]types.BigInt, len(submission.PieceCIDs))
+		for i := range pieceIDs {
+			pieceIDs[i] = types.NewBigInt(uint64(i + 1))
+		}
+		return &CommitResult{TransactionID: submission.TransactionID, DataSet: primaryRef, PieceIDs: pieceIDs}, nil
+	}
+	return primary, sharedBatchTestTarget(identity, 2)
+}
+
+type sharedServiceUploadOutcome struct {
+	result *UploadResult
+	err    error
+}
+
+func startSharedServiceUploads(service *Service, primary, secondary StorageContext, uploads int) <-chan sharedServiceUploadOutcome {
+	outcomes := make(chan sharedServiceUploadOutcome, uploads)
+	for range uploads {
+		go func() {
+			result, err := service.UploadToContexts(context.Background(), bytes.NewReader([]byte("ignored")), []StorageContext{primary, secondary}, nil)
+			outcomes <- sharedServiceUploadOutcome{result: result, err: err}
+		}()
+	}
+	return outcomes
+}
+
+func assertSharedSecondaryUploads(t *testing.T, outcomes <-chan sharedServiceUploadOutcome, uploads int) {
+	t.Helper()
+	for range uploads {
+		select {
+		case outcome := <-outcomes:
+			if outcome.err != nil {
+				t.Fatalf("UploadToContexts: %v", outcome.err)
+			}
+			if !outcome.result.Complete || len(outcome.result.Copies) != 2 {
+				t.Fatalf("result=%+v, want both copies", outcome.result)
+			}
+			if cp := outcome.result.Copies[1]; cp.Role != CopyRoleSecondary || !cp.DataSetID.Equal(types.NewBigInt(101)) {
+				t.Fatalf("secondary copy=%+v, want shared data set 101", cp)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("UploadToContexts did not finish")
+		}
+	}
+}
+
+func waitForUploadBatchFlightCount(t *testing.T, batcher *UploadBatcher, count int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		batcher.mu.Lock()
+		ready := len(batcher.flights) == count
+		batcher.mu.Unlock()
+		if ready {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("upload batch flights did not reach %d", count)
+		default:
+			runtime.Gosched()
+		}
 	}
 }
 

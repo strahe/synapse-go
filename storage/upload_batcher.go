@@ -24,6 +24,8 @@ const (
 	defaultUploadIdleWait                 = 3 * time.Second
 	defaultUploadMaxWait                  = 30 * time.Second
 	defaultUploadMaxConcurrentSubmissions = 4
+	defaultSharedDataSetPollInterval      = 4 * time.Second
+	defaultSharedDataSetVisibleTimeout    = 5 * time.Minute
 )
 
 // UploadBatcherOptions configures the fixed authorization identity of an
@@ -41,6 +43,8 @@ type uploadBatcherConfig struct {
 	maxWaitEnabled           bool
 	maxConcurrentSubmissions int
 	clock                    uploadBatchClock
+	dataSetPollInterval      time.Duration
+	dataSetVisibleTimeout    time.Duration
 }
 
 // UploadBatcherOption configures upload batching behavior.
@@ -101,6 +105,13 @@ func withUploadBatchClock(clock uploadBatchClock) UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) { cfg.clock = clock }
 }
 
+func withSharedDataSetPolling(interval, timeout time.Duration) UploadBatcherOption {
+	return func(cfg *uploadBatcherConfig) {
+		cfg.dataSetPollInterval = interval
+		cfg.dataSetVisibleTimeout = timeout
+	}
+}
+
 // UploadBatcher coordinates compatible high-level uploads into bounded PDP
 // add-pieces submissions. It is safe for concurrent use.
 type UploadBatcher struct {
@@ -123,7 +134,59 @@ type UploadBatcher struct {
 	failedFlights   map[uint64]*uploadBatchFailure
 	flushes         map[uint64]*uploadBatchFlush
 	datasetGates    map[string]*uploadBatchDataSetGate
+	newTargets      map[string]*uploadBatchNewTarget
 	submissionSlots chan struct{}
+}
+
+type uploadBatchNewTargetPhase int
+
+const (
+	uploadBatchNewTargetIdle uploadBatchNewTargetPhase = iota
+	uploadBatchNewTargetLookingUp
+	uploadBatchNewTargetCreating
+	uploadBatchNewTargetSubmitted
+)
+
+// uploadBatchNewTarget is the data set shared by one new-target key. Its client
+// data-set ID stays fixed across create retries, so at most one create succeeds.
+type uploadBatchNewTarget struct {
+	clientDataSetID types.BigInt
+	ref             *DataSetRef
+	refVisible      bool
+	phase           uploadBatchNewTargetPhase
+	needsLookup     bool
+	changed         chan struct{}
+}
+
+func (t *uploadBatchNewTarget) notifyLocked() {
+	close(t.changed)
+	t.changed = make(chan struct{})
+}
+
+// uploadBatchUnboundTarget can join the data set shared by its new-target key.
+type uploadBatchUnboundTarget interface {
+	StorageContext
+	forDataSet(DataSetRef) (StorageContext, error)
+	findDataSetByClientDataSetID(context.Context, types.BigInt) (DataSetRef, bool, error)
+}
+
+func (c *ProviderContext) forDataSet(ref DataSetRef) (StorageContext, error) {
+	dataSetCtx, err := c.ForDataSet(ref)
+	if err != nil {
+		return nil, err
+	}
+	return dataSetCtx, nil
+}
+
+func (c *ProviderContext) findDataSetByClientDataSetID(ctx context.Context, clientDataSetID types.BigInt) (DataSetRef, bool, error) {
+	return c.FindDataSetByClientDataSetID(ctx, clientDataSetID)
+}
+
+type uploadBatchSharedPlan struct {
+	state           *uploadBatchNewTarget
+	target          StorageContext
+	ref             *DataSetRef
+	clientDataSetID types.BigInt
 }
 
 type uploadBatchDataSetGate struct {
@@ -135,7 +198,6 @@ type uploadBatchWindow struct {
 	key             string
 	target          StorageContext
 	ref             *DataSetRef
-	clientDataSetID *types.BigInt
 	slots           []*uploadBatchSlot
 	pieceCIDs       map[string]struct{}
 	idleDeadline    time.Time
@@ -167,14 +229,14 @@ type uploadBatchTask struct {
 }
 
 type uploadBatchFlight struct {
-	seq             uint64
-	minReservation  uint64
-	target          StorageContext
-	ref             *DataSetRef
-	clientDataSetID *types.BigInt
-	slots           []*uploadBatchSlot
-	done            chan struct{}
-	err             error
+	seq            uint64
+	minReservation uint64
+	key            string
+	target         StorageContext
+	ref            *DataSetRef
+	slots          []*uploadBatchSlot
+	done           chan struct{}
+	err            error
 }
 
 // uploadBatchFailure is the Flush-visible remainder of a finished error.
@@ -222,6 +284,8 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 		maxWaitEnabled:           true,
 		maxConcurrentSubmissions: defaultUploadMaxConcurrentSubmissions,
 		clock:                    systemUploadBatchClock{},
+		dataSetPollInterval:      defaultSharedDataSetPollInterval,
+		dataSetVisibleTimeout:    defaultSharedDataSetVisibleTimeout,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -257,6 +321,7 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 		failedFlights:   make(map[uint64]*uploadBatchFailure),
 		flushes:         make(map[uint64]*uploadBatchFlush),
 		datasetGates:    make(map[string]*uploadBatchDataSetGate),
+		newTargets:      make(map[string]*uploadBatchNewTarget),
 		submissionSlots: make(chan struct{}, cfg.maxConcurrentSubmissions),
 	}, nil
 }
@@ -345,7 +410,25 @@ func (b *UploadBatcher) validateTarget(target StorageContext) error {
 	if target.ContextIdentity() != b.identity {
 		return fmt.Errorf("storage.UploadBatcher: %w: context identity does not match batcher identity", ErrInvalidArgument)
 	}
+	if _, bound := target.DataSetRef(); !bound {
+		if _, ok := target.(uploadBatchUnboundTarget); !ok {
+			return fmt.Errorf("storage.UploadBatcher: %w: unbound context cannot join a shared data set", ErrInvalidArgument)
+		}
+	}
 	return nil
+}
+
+func (b *UploadBatcher) newTargetLocked(key string) (*uploadBatchNewTarget, error) {
+	if state := b.newTargets[key]; state != nil {
+		return state, nil
+	}
+	clientDataSetID, err := randomClientDataSetID()
+	if err != nil {
+		return nil, err
+	}
+	state := &uploadBatchNewTarget{clientDataSetID: clientDataSetID, changed: make(chan struct{})}
+	b.newTargets[key] = state
+	return state, nil
 }
 
 func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target StorageContext, piece PieceInput) (*uploadBatchTask, error) {
@@ -366,14 +449,6 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	var candidateID *types.BigInt
-	if ref == nil {
-		id, idErr := clientDataSetIDOrRandom(nil)
-		if idErr != nil {
-			return nil, fmt.Errorf("%s: %w", op, idErr)
-		}
-		candidateID = &id
-	}
 
 	var launches []*uploadBatchFlight
 	b.mu.Lock()
@@ -385,24 +460,33 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 		b.mu.Unlock()
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	var sizeClientDataSetID *types.BigInt
+	if ref == nil {
+		state, stateErr := b.newTargetLocked(key)
+		if stateErr != nil {
+			b.mu.Unlock()
+			return nil, fmt.Errorf("%s: %w", op, stateErr)
+		}
+		id := copyBigInt(state.clientDataSetID)
+		sizeClientDataSetID = &id
+	}
 	window := b.windows[key]
 	if window != nil {
 		pieces := append(windowPieces(window), clonePieceInput(piece))
 		_, duplicate := window.pieceCIDs[canonicalCommitPieceCIDKey(piece.PieceCID)]
-		if duplicate || b.validateCandidate(window.target, window.ref, window.clientDataSetID, pieces) != nil {
+		if duplicate || b.validateCandidate(window.target, window.ref, sizeClientDataSetID, pieces) != nil {
 			launches = append(launches, b.sealWindowLocked(window))
 			window = nil
 		}
 	}
 	if window == nil {
 		window = &uploadBatchWindow{
-			key:             key,
-			target:          target,
-			ref:             copyDataSetRefPtr(ref),
-			clientDataSetID: copyBigIntPtr(candidateID),
-			pieceCIDs:       make(map[string]struct{}),
+			key:       key,
+			target:    target,
+			ref:       copyDataSetRefPtr(ref),
+			pieceCIDs: make(map[string]struct{}),
 		}
-		if err := b.validateCandidate(target, window.ref, window.clientDataSetID, []PieceInput{piece}); err != nil {
+		if err := b.validateCandidate(target, window.ref, sizeClientDataSetID, []PieceInput{piece}); err != nil {
 			b.mu.Unlock()
 			b.launchFlights(launches)
 			return nil, fmt.Errorf("%s: %w", op, err)
@@ -587,13 +671,13 @@ func (b *UploadBatcher) sealWindowLocked(window *uploadBatchWindow) *uploadBatch
 	}
 	b.nextBatch++
 	flight := &uploadBatchFlight{
-		seq:             b.nextBatch,
-		minReservation:  window.slots[0].reservation,
-		target:          window.target,
-		ref:             copyDataSetRefPtr(window.ref),
-		clientDataSetID: copyBigIntPtr(window.clientDataSetID),
-		slots:           append([]*uploadBatchSlot(nil), window.slots...),
-		done:            make(chan struct{}),
+		seq:            b.nextBatch,
+		minReservation: window.slots[0].reservation,
+		key:            window.key,
+		target:         window.target,
+		ref:            copyDataSetRefPtr(window.ref),
+		slots:          append([]*uploadBatchSlot(nil), window.slots...),
+		done:           make(chan struct{}),
 	}
 	for _, slot := range flight.slots {
 		if slot.reservation < flight.minReservation {
@@ -623,10 +707,47 @@ func (b *UploadBatcher) runFlight(flight *uploadBatchFlight) {
 	for i, slot := range flight.slots {
 		pieces[i] = clonePieceInput(slot.piece)
 	}
+	if flight.ref != nil {
+		result, err := b.commitFlight(flight, pieces, flight.target, flight.ref, nil)
+		b.finishFlight(flight, result, err)
+		return
+	}
+	unbound, ok := flight.target.(uploadBatchUnboundTarget)
+	if !ok {
+		b.finishFlight(flight, nil, fmt.Errorf("storage.UploadBatcher: %w: unbound context cannot join a shared data set", ErrInvalidArgument))
+		return
+	}
+	for {
+		plan, err := b.resolveSharedDataSet(b.ctx, flight.key, unbound, true)
+		if err != nil {
+			b.finishFlight(flight, nil, uploadBatchContextError(b.ctx, err))
+			return
+		}
+		if plan.ref != nil {
+			result, err := b.commitFlight(flight, pieces, plan.target, plan.ref, nil)
+			if err != nil && b.forgetTerminatedSharedDataSet(plan.state, *plan.ref, err) {
+				continue
+			}
+			b.finishFlight(flight, result, err)
+			return
+		}
+		result, err := b.commitFlight(flight, pieces, flight.target, nil, &plan)
+		err = b.finishSharedCreate(plan.state, plan.clientDataSetID, flight.target.ProviderID(), result, err)
+		if err != nil {
+			result = nil
+		}
+		b.finishFlight(flight, result, err)
+		return
+	}
+}
+
+// commitFlight submits one batch; create is non-nil when it creates the shared
+// data set.
+func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceInput, target StorageContext, ref *DataSetRef, create *uploadBatchSharedPlan) (*CommitResult, error) {
 	var gate *uploadBatchDataSetGate
 	var gateKey string
-	if flight.ref != nil {
-		gateKey = flight.targetKey()
+	if ref != nil {
+		gateKey = uploadBatchGateKey(*ref, target.ServiceURL())
 		b.mu.Lock()
 		gate = b.datasetGates[gateKey]
 		if gate == nil {
@@ -637,34 +758,40 @@ func (b *UploadBatcher) runFlight(flight *uploadBatchFlight) {
 		b.mu.Unlock()
 		if err := acquireUploadBatchSlot(b.ctx, gate.slot); err != nil {
 			b.releaseDataSetGate(gateKey, gate, false)
-			b.finishFlight(flight, nil, err)
-			return
+			return nil, err
 		}
 	}
 	if err := acquireUploadBatchSlot(b.ctx, b.submissionSlots); err != nil {
 		if gate != nil {
 			b.releaseDataSetGate(gateKey, gate, true)
 		}
-		b.finishFlight(flight, nil, err)
-		return
+		return nil, err
+	}
+	var clientDataSetID *types.BigInt
+	if create != nil {
+		id := copyBigInt(create.clientDataSetID)
+		clientDataSetID = &id
 	}
 	extraData, _, err := presignCommitAuthorization(b.ctx, "storage.UploadBatcher", commitAuthorization{
 		identity:        b.identity,
-		provider:        flight.target.GetProviderInfo(),
+		provider:        target.GetProviderInfo(),
 		signer:          b.signer,
-		dataSetMetadata: flight.target.DataSetMetadata(),
-		withCDN:         flight.target.CDNEnabled(),
-	}, flight.ref, pieces, flight.clientDataSetID)
+		dataSetMetadata: target.DataSetMetadata(),
+		withCDN:         target.CDNEnabled(),
+	}, ref, pieces, clientDataSetID)
 	if err == nil {
 		err = b.ctx.Err()
 	}
 	var submission *CommitSubmission
 	if err == nil {
-		submission, err = flight.target.SubmitCommit(b.ctx, CommitRequest{
+		submission, err = target.SubmitCommit(b.ctx, CommitRequest{
 			Pieces:          pieces,
 			ExtraData:       extraData,
-			ClientDataSetID: copyBigIntPtr(flight.clientDataSetID),
+			ClientDataSetID: copyBigIntPtr(clientDataSetID),
 		})
+	}
+	if create != nil && err == nil {
+		b.markSharedCreateSubmitted(create.state)
 	}
 	<-b.submissionSlots
 	if gate != nil {
@@ -675,22 +802,19 @@ func (b *UploadBatcher) runFlight(flight *uploadBatchFlight) {
 	}
 	err = uploadBatchContextError(b.ctx, err)
 	if err != nil {
-		b.finishFlight(flight, nil, err)
-		return
+		return nil, err
 	}
 	if submission == nil {
-		b.finishFlight(flight, nil, errors.New("storage.UploadBatcher: submit commit returned nil submission"))
-		return
+		return nil, errors.New("storage.UploadBatcher: submit commit returned nil submission")
 	}
 	if err := validateUploadBatchSubmissionPieces(pieces, submission.PieceCIDs); err != nil {
-		b.finishFlight(flight, nil, err)
-		return
+		return nil, err
 	}
 	for _, slot := range flight.slots {
 		copySubmission := copyCommitSubmission(*submission)
 		b.sendSlotEvent(slot, uploadBatchEvent{submission: &copySubmission})
 	}
-	result, err := flight.target.WaitForCommit(b.ctx, *submission)
+	result, err := target.WaitForCommit(b.ctx, *submission)
 	err = uploadBatchContextError(b.ctx, err)
 	if err == nil {
 		if result == nil {
@@ -699,7 +823,217 @@ func (b *UploadBatcher) runFlight(flight *uploadBatchFlight) {
 			err = validateConfirmedPieceIDs(result.PieceIDs, len(flight.slots))
 		}
 	}
-	b.finishFlight(flight, result, err)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// resolveSharedDataSet waits until the shared data set is usable. A returned
+// plan without ref makes a create=true caller the only creator, which must call
+// finishSharedCreate.
+func (b *UploadBatcher) resolveSharedDataSet(ctx context.Context, key string, unbound uploadBatchUnboundTarget, create bool) (uploadBatchSharedPlan, error) {
+	for {
+		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return uploadBatchSharedPlan{}, ErrClosed
+		}
+		state, err := b.newTargetLocked(key)
+		if err != nil {
+			b.mu.Unlock()
+			return uploadBatchSharedPlan{}, err
+		}
+		idle := state.phase == uploadBatchNewTargetIdle
+		switch {
+		case state.ref != nil && state.refVisible:
+			ref := copyDataSetRef(*state.ref)
+			b.mu.Unlock()
+			target, err := unbound.forDataSet(ref)
+			if err != nil {
+				return uploadBatchSharedPlan{}, err
+			}
+			return uploadBatchSharedPlan{state: state, target: target, ref: &ref}, nil
+		case idle && state.ref != nil:
+			state.phase = uploadBatchNewTargetLookingUp
+			ref := copyDataSetRef(*state.ref)
+			b.mu.Unlock()
+			if err := b.waitSharedDataSetVisible(ctx, state, unbound, ref); err != nil {
+				return uploadBatchSharedPlan{}, err
+			}
+		case idle && state.needsLookup:
+			state.phase = uploadBatchNewTargetLookingUp
+			clientDataSetID := copyBigInt(state.clientDataSetID)
+			b.mu.Unlock()
+			if err := b.lookupSharedDataSet(ctx, state, unbound, clientDataSetID); err != nil {
+				return uploadBatchSharedPlan{}, err
+			}
+		case idle && create:
+			state.phase = uploadBatchNewTargetCreating
+			plan := uploadBatchSharedPlan{state: state, clientDataSetID: copyBigInt(state.clientDataSetID)}
+			b.mu.Unlock()
+			return plan, nil
+		case !create && (idle || state.phase == uploadBatchNewTargetCreating):
+			plan := uploadBatchSharedPlan{state: state, clientDataSetID: copyBigInt(state.clientDataSetID)}
+			b.mu.Unlock()
+			return plan, nil
+		default:
+			changed := state.changed
+			b.mu.Unlock()
+			select {
+			case <-changed:
+			case <-ctx.Done():
+				return uploadBatchSharedPlan{}, ctx.Err()
+			case <-b.ctx.Done():
+				return uploadBatchSharedPlan{}, ErrClosed
+			}
+		}
+	}
+}
+
+// waitSharedDataSetVisible waits for chain reads to see a newly created data
+// set, because add-pieces validates the data set before submitting.
+func (b *UploadBatcher) waitSharedDataSetVisible(ctx context.Context, state *uploadBatchNewTarget, unbound uploadBatchUnboundTarget, ref DataSetRef) error {
+	deadline := time.Now().Add(b.config.dataSetVisibleTimeout)
+	var lastErr error
+	for {
+		found, ok, err := unbound.findDataSetByClientDataSetID(ctx, ref.ClientDataSetID())
+		switch {
+		case err == nil && ok:
+			b.finishSharedLookup(state, func() {
+				state.ref = &found
+				state.refVisible = true
+			})
+			return nil
+		case errors.Is(err, ErrUninitialized):
+			b.finishSharedLookup(state, func() { state.refVisible = true })
+			return nil
+		case err != nil && ctx.Err() != nil:
+			b.finishSharedLookup(state, func() {})
+			return err
+		case err != nil:
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			b.finishSharedLookup(state, func() {})
+			if lastErr != nil {
+				return fmt.Errorf("storage.UploadBatcher: data set %s is not visible: %w: %w", ref.DataSetID().String(), ErrDataSetUnavailable, lastErr)
+			}
+			return fmt.Errorf("storage.UploadBatcher: data set %s is not visible: %w", ref.DataSetID().String(), ErrDataSetUnavailable)
+		}
+		timer := time.NewTimer(b.config.dataSetPollInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			b.finishSharedLookup(state, func() {})
+			return ctx.Err()
+		case <-b.ctx.Done():
+			timer.Stop()
+			b.finishSharedLookup(state, func() {})
+			return ErrClosed
+		}
+	}
+}
+
+// lookupSharedDataSet recovers a data set that a failed create may have made.
+func (b *UploadBatcher) lookupSharedDataSet(ctx context.Context, state *uploadBatchNewTarget, unbound uploadBatchUnboundTarget, clientDataSetID types.BigInt) error {
+	ref, found, err := unbound.findDataSetByClientDataSetID(ctx, clientDataSetID)
+	var replacementID types.BigInt
+	if errors.Is(err, ErrDataSetCorrelationConflict) {
+		var idErr error
+		replacementID, idErr = randomClientDataSetID()
+		if idErr != nil {
+			b.finishSharedLookup(state, func() {})
+			return idErr
+		}
+	}
+	var out error
+	b.finishSharedLookup(state, func() {
+		switch {
+		case err == nil && found:
+			state.ref = &ref
+			state.refVisible = true
+			state.needsLookup = false
+		case err == nil, errors.Is(err, ErrUninitialized):
+			// Without a chain reader, keep the ID so at most one create can succeed.
+			state.needsLookup = false
+		case errors.Is(err, ErrDataSetCorrelationConflict):
+			state.clientDataSetID = replacementID
+			state.needsLookup = false
+		default:
+			out = fmt.Errorf("storage.UploadBatcher: recover shared data set: %w", err)
+		}
+	})
+	return out
+}
+
+func (b *UploadBatcher) finishSharedLookup(state *uploadBatchNewTarget, update func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	update()
+	state.phase = uploadBatchNewTargetIdle
+	state.notifyLocked()
+}
+
+func (b *UploadBatcher) markSharedCreateSubmitted(state *uploadBatchNewTarget) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if state.phase == uploadBatchNewTargetCreating {
+		state.phase = uploadBatchNewTargetSubmitted
+		state.notifyLocked()
+	}
+}
+
+// finishSharedCreate records the outcome of the creating batch. Any failure may
+// have reached the chain, so the next attempt looks the data set up first.
+func (b *UploadBatcher) finishSharedCreate(state *uploadBatchNewTarget, clientDataSetID, providerID types.BigInt, result *CommitResult, err error) error {
+	if err == nil && (!result.DataSet.valid() ||
+		!result.DataSet.ProviderID().Equal(providerID) ||
+		!result.DataSet.ClientDataSetID().Equal(clientDataSetID)) {
+		err = errors.New("storage.UploadBatcher: create result does not match the shared data set")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state.phase = uploadBatchNewTargetIdle
+	if err == nil {
+		ref := copyDataSetRef(result.DataSet)
+		state.ref = &ref
+		state.refVisible = false
+		state.needsLookup = false
+	} else {
+		state.needsLookup = true
+	}
+	state.notifyLocked()
+	return err
+}
+
+// forgetTerminatedSharedDataSet reports whether a batch should retry with a
+// replacement for a terminated shared data set.
+func (b *UploadBatcher) forgetTerminatedSharedDataSet(state *uploadBatchNewTarget, ref DataSetRef, err error) bool {
+	if _, ok := errors.AsType[*DataSetPDPPaymentTerminatedError](err); !ok {
+		return false
+	}
+	clientDataSetID, idErr := randomClientDataSetID()
+	if idErr != nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false
+	}
+	if state.ref != nil && state.ref.Equal(ref) {
+		if state.phase != uploadBatchNewTargetIdle {
+			return true
+		}
+		state.ref = nil
+		state.refVisible = false
+		state.needsLookup = false
+		state.clientDataSetID = clientDataSetID
+		state.notifyLocked()
+	}
+	return true
 }
 
 func (b *UploadBatcher) releaseDataSetGate(key string, gate *uploadBatchDataSetGate, acquired bool) {
@@ -726,8 +1060,8 @@ func validateUploadBatchSubmissionPieces(pieces []PieceInput, submitted []cid.Ci
 	return nil
 }
 
-func (f *uploadBatchFlight) targetKey() string {
-	return f.ref.ProviderID().String() + "\x00" + f.ref.DataSetID().String() + "\x00" + f.ref.ClientDataSetID().String() + "\x00" + f.target.ServiceURL()
+func uploadBatchGateKey(ref DataSetRef, serviceURL string) string {
+	return ref.ProviderID().String() + "\x00" + ref.DataSetID().String() + "\x00" + ref.ClientDataSetID().String() + "\x00" + serviceURL
 }
 
 func acquireUploadBatchSlot(ctx context.Context, slot chan struct{}) error {
@@ -870,20 +1204,47 @@ func (task *uploadBatchTask) wait(ctx context.Context, onSubmitted func(string))
 	}
 }
 
-func (b *UploadBatcher) presignExisting(ctx context.Context, target StorageContext, pieces []PieceInput) ([]byte, error) {
+// authorizePull returns the pull target and authorization for a secondary,
+// using the shared data set for unbound targets.
+func (b *UploadBatcher) authorizePull(ctx context.Context, target StorageContext, pieces []PieceInput) (StorageContext, []byte, error) {
+	const op = "storage.UploadBatcher.authorizePull"
 	if err := b.validateTarget(target); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ref, ok := target.DataSetRef()
-	if !ok {
-		return nil, fmt.Errorf("storage.UploadBatcher.presignExisting: %w: unbound context", ErrInvalidArgument)
+	auth := commitAuthorization{
+		identity:        b.identity,
+		provider:        target.GetProviderInfo(),
+		signer:          b.signer,
+		dataSetMetadata: target.DataSetMetadata(),
+		withCDN:         target.CDNEnabled(),
 	}
-	extraData, _, err := presignCommitAuthorization(ctx, "storage.UploadBatcher.presignExisting", commitAuthorization{
-		identity: b.identity,
-		provider: target.GetProviderInfo(),
-		signer:   b.signer,
-	}, &ref, pieces, nil)
-	return extraData, err
+	if ref, ok := target.DataSetRef(); ok {
+		extraData, _, err := presignCommitAuthorization(ctx, op, auth, &ref, pieces, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		return target, extraData, nil
+	}
+	key, _, err := uploadBatchTargetKey(target)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
+	}
+	plan, err := b.resolveSharedDataSet(ctx, key, target.(uploadBatchUnboundTarget), false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if plan.ref != nil {
+		extraData, _, err := presignCommitAuthorization(ctx, op, auth, plan.ref, pieces, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		return plan.target, extraData, nil
+	}
+	extraData, _, err := presignCommitAuthorization(ctx, op, auth, nil, pieces, &plan.clientDataSetID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return target, extraData, nil
 }
 
 // Flush waits for uploads started before this call to reach the batcher,
@@ -1046,6 +1407,7 @@ func (b *UploadBatcher) Close() error {
 	}
 	b.windows = make(map[string]*uploadBatchWindow)
 	b.failedFlights = make(map[uint64]*uploadBatchFailure)
+	b.newTargets = make(map[string]*uploadBatchNewTarget)
 	for _, slot := range slots {
 		slot.events <- uploadBatchEvent{err: ErrClosed, final: true}
 	}

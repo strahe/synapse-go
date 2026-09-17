@@ -1120,6 +1120,7 @@ type fakeUploadContext struct {
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
 	submitCommitFn  func(context.Context, CommitRequest) (*CommitSubmission, error)
 	waitCommitFn    func(context.Context, CommitSubmission) (*CommitResult, error)
+	findDataSetFn   func(context.Context, types.BigInt) (DataSetRef, bool, error)
 	identity        *ContextIdentity
 }
 
@@ -1201,6 +1202,22 @@ func (c *fakeUploadContext) Upload(context.Context, io.Reader, *ContextUploadOpt
 
 func (c *fakeUploadContext) Download(context.Context, cid.Cid) (io.ReadCloser, error) {
 	return nil, errors.New("unexpected Download")
+}
+
+func (c *fakeUploadContext) forDataSet(ref DataSetRef) (StorageContext, error) {
+	bound := *c
+	dataSetID := ref.DataSetID()
+	clientDataSetID := ref.ClientDataSetID()
+	bound.dataSetID = &dataSetID
+	bound.clientDataSetID = &clientDataSetID
+	return &bound, nil
+}
+
+func (c *fakeUploadContext) findDataSetByClientDataSetID(ctx context.Context, clientDataSetID types.BigInt) (DataSetRef, bool, error) {
+	if c.findDataSetFn == nil {
+		return DataSetRef{}, false, ErrUninitialized
+	}
+	return c.findDataSetFn(ctx, clientDataSetID)
 }
 
 type readCountingReader struct {
