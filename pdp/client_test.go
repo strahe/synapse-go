@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ipfs/go-cid"
 	"golang.org/x/net/http2"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
@@ -779,8 +781,7 @@ func TestAddPieces(t *testing.T) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0xdead000000000000000000000000000000000000000000000000000000000000")
 		w.WriteHeader(http.StatusCreated)
 	}))
-	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
-	pc := pcInfo.CIDv1
+	pc := testPieceInfoV2(t).CIDv2
 	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: pc}}, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatal(err)
@@ -794,11 +795,11 @@ func TestAddPieces(t *testing.T) {
 func TestAddPieces_MaxBatchSizeAccepted(t *testing.T) {
 	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize)
 	for i := range pieces {
-		info, err := piece.CalculateFromBytes([]byte{byte(i), 0xa5})
+		info, err := piece.CalculateFromBytes(bytes.Repeat([]byte{byte(i), 0xa5}, 128))
 		if err != nil {
 			t.Fatalf("CalculateFromBytes(%d): %v", i, err)
 		}
-		pieces[i] = AddPieceInput{PieceCID: info.CIDv1}
+		pieces[i] = AddPieceInput{PieceCID: info.CIDv2}
 	}
 	var gotPieces int
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -818,14 +819,50 @@ func TestAddPieces_MaxBatchSizeAccepted(t *testing.T) {
 	}
 }
 
-func TestAddPiecesRejectsDuplicateCanonicalCIDBeforeRequest(t *testing.T) {
+func TestAddAndPullRejectPieceCIDsOutsideUploadBounds(t *testing.T) {
+	info := testPieceInfoV2(t)
+	withRawSize := func(rawSize uint64) cid.Cid { return testutil.PieceCIDv2WithRawSize(t, info.CIDv1, rawSize) }
+	c, _ := newTestClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("invalid piece reached the provider")
+	}))
+	recordKeeper := common.HexToAddress("0x1")
+	for _, tt := range []struct {
+		name     string
+		pieceCID cid.Cid
+		want     string
+	}{
+		{name: "PieceCIDv1", pieceCID: info.CIDv1, want: "not PieceCIDv2"},
+		{name: "below minimum", pieceCID: withRawSize(chain.MinUploadSize - 1), want: "raw size"},
+		{name: "above maximum", pieceCID: withRawSize(chain.MaxUploadSize + 1), want: "raw size"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pieces := []AddPieceInput{{PieceCID: tt.pieceCID}}
+			if _, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1}); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("AddPieces error=%v, want %q", err, tt.want)
+			}
+			if _, err := c.CreateDataSetAndAddPieces(context.Background(), recordKeeper, pieces, []byte{1}); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("CreateDataSetAndAddPieces error=%v, want %q", err, tt.want)
+			}
+			_, err := c.PullPieces(context.Background(), PullRequest{
+				RecordKeeper: recordKeeper,
+				ExtraData:    []byte{1},
+				Pieces:       []PullPieceInput{{PieceCID: tt.pieceCID, SourceURL: "https://source.example.com/piece"}},
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("PullPieces error=%v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAddPiecesRejectsDuplicateCIDBeforeRequest(t *testing.T) {
 	info := testPieceInfoV2(t)
 	requests := 0
 	c, _ := newTestClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests++
 	}))
 	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{
-		{PieceCID: info.CIDv1},
+		{PieceCID: info.CIDv2},
 		{PieceCID: info.CIDv2},
 	}, []byte{1})
 	if err == nil || !strings.Contains(err.Error(), "duplicate pieceCID") {
@@ -866,8 +903,7 @@ func TestAddPieces_TooManyPieces(t *testing.T) {
 }
 
 func TestAddPieces_RootRelativeLocationPreservesBaseOrigin(t *testing.T) {
-	pcInfo, _ := piece.CalculateFromBytes([]byte("hi"))
-	pc := pcInfo.CIDv1
+	pc := testPieceInfoV2(t).CIDv2
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/prefix/pdp/data-sets/5/pieces" {
 			t.Fatalf("bad path: %s", r.URL.Path)

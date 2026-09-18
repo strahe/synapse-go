@@ -139,16 +139,74 @@ func TestGetUploadCosts_PricesEveryPieceConservatively(t *testing.T) {
 	}
 }
 
-func TestCalculateAdditionalLockupRequired_NoAddedLeaves(t *testing.T) {
-	for _, sizes := range [][]uint64{nil, {}, {0, 0}} {
-		current := bi(5)
-		got, err := CalculateAdditionalLockupRequired(sizes, current, leafAccountingPriceList(), nil, false, true)
-		if err != nil {
-			t.Fatal(err)
+func TestCalculateAdditionalLockupRequired_RejectsInvalidInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sizes   []uint64
+		current *big.Int
+	}{
+		{name: "nil sizes", current: bi(5)},
+		{name: "empty sizes", sizes: []uint64{}, current: bi(5)},
+		{name: "zero size", sizes: []uint64{0}, current: bi(5)},
+		{name: "below minimum", sizes: []uint64{chain.MinUploadSize - 1}, current: bi(5)},
+		{name: "above maximum", sizes: []uint64{chain.MaxUploadSize + 1}, current: bi(5)},
+		{name: "missing existing leaf count", sizes: []uint64{chain.MinUploadSize}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CalculateAdditionalLockupRequired(tc.sizes, tc.current, leafAccountingPriceList(), nil, false, true)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error=%v want ErrInvalidArgument", err)
+			}
+			if got != (AdditionalLockup{}) {
+				t.Fatalf("lockup=%+v want zero value", got)
+			}
+		})
+	}
+}
+
+func TestLeafConversionHelpersMatchUploadCosts(t *testing.T) {
+	sizes := []uint64{127, 128, 159, 190, chain.MaxUploadSize}
+	leaves, err := PieceSizesToLeafCount(sizes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := pieceSizesToLeafCount(sizes); leaves.Cmp(want) != 0 {
+		t.Fatalf("leaves=%s want %s", leaves, want)
+	}
+	current := bi(5)
+	billable, err := LeafCountToBillableBytes(new(big.Int).Add(current, leaves))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priceList := leafAccountingPriceList()
+	rate := CalculateEffectiveRate(billable, priceList.Rates.StoragePerTiBPerMonth, priceList.Rates.DatasetFeePerMonth, 0)
+	currentBillable, err := LeafCountToBillableBytes(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRate := CalculateEffectiveRate(currentBillable, priceList.Rates.StoragePerTiBPerMonth, priceList.Rates.DatasetFeePerMonth, 0)
+	lockup, err := CalculateAdditionalLockupRequired(sizes, current, priceList, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDelta := new(big.Int).Sub(rate.RatePerEpoch, currentRate.RatePerEpoch)
+	if lockup.RateDeltaPerEpoch.Cmp(wantDelta) != 0 {
+		t.Fatalf("rate delta=%s want %s from exported helpers", lockup.RateDeltaPerEpoch, wantDelta)
+	}
+}
+
+func TestLeafConversionHelpersValidateInputs(t *testing.T) {
+	for _, sizes := range [][]uint64{nil, {}, {chain.MinUploadSize - 1}, {chain.MaxUploadSize + 1}} {
+		if got, err := PieceSizesToLeafCount(sizes); !errors.Is(err, ErrInvalidArgument) || got != nil {
+			t.Fatalf("PieceSizesToLeafCount(%v)=(%v, %v), want ErrInvalidArgument", sizes, got, err)
 		}
-		if got.RateDeltaPerEpoch.Sign() != 0 || got.Total.Sign() != 0 || current.Int64() != 5 {
-			t.Fatalf("zero addition lockup=%+v current leaves=%s", got, current)
-		}
+	}
+	if got, err := LeafCountToBillableBytes(bi(-1)); !errors.Is(err, ErrInvalidArgument) || got != nil {
+		t.Fatalf("LeafCountToBillableBytes(-1)=(%v, %v), want ErrInvalidArgument", got, err)
+	}
+	got, err := LeafCountToBillableBytes(nil)
+	if err != nil || got.Sign() != 0 {
+		t.Fatalf("LeafCountToBillableBytes(nil)=(%v, %v), want zero", got, err)
 	}
 }
 

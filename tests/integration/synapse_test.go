@@ -290,8 +290,8 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 	prep, err := client.Storage().Prepare(cctx, &storage.PrepareOptions{
 		PieceSizes:        []uint64{uint64(len(data))},
 		Contexts:          []storage.StorageContext{uploadCtx},
-		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-		BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 	})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -513,8 +513,8 @@ func TestIntegration(t *testing.T) {
 		dataSize := big.NewInt(testDataSize)
 		uploadCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{dataSize.Uint64()},
 			&costs.UploadCostOptions{
-				ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-				BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+				ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+				BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 				IsNewDataSet:      true,
 			})
 		if err != nil {
@@ -753,8 +753,8 @@ func TestIntegration(t *testing.T) {
 		defer cancel()
 
 		perCopyCosts, err := client.Costs().GetUploadCosts(cctx, addr, []uint64{testDataSize}, &costs.UploadCostOptions{
-			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 			EnableCDN:         true,
 			IsNewDataSet:      true,
 		})
@@ -1304,8 +1304,8 @@ func TestIntegration(t *testing.T) {
 		t.Log("start NewDataSetBatch Prepare")
 		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
 			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1])), uint64(len(sequentialPayload))},
-			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 			Contexts:          []storage.StorageContext{providerCtx},
 		})
 		if err != nil {
@@ -1505,8 +1505,8 @@ func TestIntegration(t *testing.T) {
 		t.Log("start MultiCopySharedDataSet Prepare")
 		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
 			PieceSizes:        pieceSizes,
-			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 			Contexts:          selection.Contexts,
 		})
 		if err != nil {
@@ -1635,8 +1635,8 @@ func TestIntegration(t *testing.T) {
 		t.Log("start ExistingDataSetBatch Prepare")
 		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
 			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1]))},
-			ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-			BufferEpochs:      new(int64(integrationFundingBufferEpochs)),
+			ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 			Contexts: []storage.StorageContext{
 				uctx,
 			},
@@ -1733,6 +1733,125 @@ func TestIntegration(t *testing.T) {
 		wantAfter := new(big.Int).Add(new(big.Int).Set(beforeCount), big.NewInt(int64(len(payloads))))
 		if afterCount == nil || afterCount.Cmp(wantAfter) != 0 {
 			t.Fatalf("active piece count after existing-dataset batch = %v, want %v", afterCount, wantAfter)
+		}
+	})
+
+	// --- ContextUploadBatchingWaitsForInProgressStore: with default timers, a
+	// piece that finishes storing well after the idle wait still joins the
+	// window of an upload that was ready earlier. ---
+	t.Run("ContextUploadBatchingWaitsForInProgressStore", func(t *testing.T) {
+		if uploadedDataSetID.IsZero() {
+			t.Skip("Upload subtest did not produce dataset id; skipping in-progress store batching evidence")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+
+		// Default batching timers: no maximum wait and a 3-second idle wait.
+		batchClient := integrationtest.NewDefaultClient(t, cctx, synapse.WithUploadBatching())
+		uctx, err := batchClient.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
+		if err != nil {
+			t.Fatalf("NewDataSetContext(uploadedDataSetID): %v", err)
+		}
+
+		payloads := make([][]byte, 2)
+		for i := range payloads {
+			payloads[i] = make([]byte, 128*1024)
+			if _, err := crypto_rand.Read(payloads[i]); err != nil {
+				t.Fatalf("generate in-progress store upload data %d: %v", i, err)
+			}
+		}
+
+		t.Log("start InProgressStoreBatch Prepare")
+		prep, err := batchClient.Storage().Prepare(cctx, &storage.PrepareOptions{
+			PieceSizes:        []uint64{uint64(len(payloads[0])), uint64(len(payloads[1]))},
+			ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+			BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
+			Contexts:          []storage.StorageContext{uctx},
+		})
+		if err != nil {
+			t.Fatalf("Prepare(in-progress store batch): %v", err)
+		}
+		if prep.Transaction != nil {
+			t.Log("start InProgressStoreBatch Prepare.Execute")
+			res, err := prep.Transaction.Execute(cctx, payments.WithWait(txWaitTimeout))
+			if err != nil {
+				if errors.Is(err, payments.ErrPermitUnsupported) {
+					t.Skip("needs-usdfc-permit-support: in-progress store batch funding requires permit support")
+				}
+				t.Fatalf("Prepare(in-progress store batch).Execute: %v", err)
+			}
+			if res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Fatalf("Prepare(in-progress store batch).Execute receipt = %+v", res.Receipt)
+			}
+		}
+
+		// The second upload stays in its Store step (OnStored runs before the
+		// piece joins a batch) for longer than the default 3-second idle wait
+		// after the first piece is ready.
+		const lateDelay = 5 * time.Second
+		firstStored := make(chan struct{})
+		type uploadOutcome struct {
+			index  int
+			result *storage.UploadResult
+			err    error
+		}
+		outcomes := make(chan uploadOutcome, len(payloads))
+		txHashes := make([]string, len(payloads))
+		start := time.Now()
+		t.Log("start InProgressStoreBatch concurrent DataSetContext.Upload")
+		for i := range payloads {
+			opts := tracedContextUploadOptions(t, fmt.Sprintf("InProgressStoreBatch[%d]", i), &storage.ContextUploadOptions{
+				OnStored: func(types.BigInt, cid.Cid) {
+					if i == 0 {
+						close(firstStored)
+						return
+					}
+					select {
+					case <-firstStored:
+					case <-cctx.Done():
+						return
+					}
+					time.Sleep(lateDelay)
+				},
+				OnPiecesAdded: func(txHash string, _ types.BigInt, pieces []storage.SubmittedPiece) {
+					txHashes[i] = txHash
+					if len(pieces) != 1 {
+						t.Errorf("upload %d OnPiecesAdded pieces=%d, want 1", i, len(pieces))
+					}
+				},
+			})
+			go func() {
+				result, err := uctx.Upload(cctx, bytes.NewReader(payloads[i]), opts)
+				outcomes <- uploadOutcome{index: i, result: result, err: err}
+			}()
+		}
+		results := make([]*storage.UploadResult, len(payloads))
+		for range payloads {
+			select {
+			case outcome := <-outcomes:
+				if outcome.err != nil {
+					t.Fatalf("DataSetContext.Upload(in-progress store batch %d): %v", outcome.index, outcome.err)
+				}
+				results[outcome.index] = outcome.result
+			case <-cctx.Done():
+				t.Fatalf("wait for in-progress store batch uploads: %v", cctx.Err())
+			}
+		}
+		t.Logf("done InProgressStoreBatch concurrent DataSetContext.Upload elapsed=%s", time.Since(start).Round(time.Second))
+
+		for i, result := range results {
+			if result == nil || len(result.Copies) != 1 {
+				t.Fatalf("DataSetContext.Upload(in-progress store batch %d) result=%+v", i, result)
+			}
+			if copy0 := result.Copies[0]; !copy0.DataSetID.Equal(uploadedDataSetID) || copy0.IsNewDataSet {
+				t.Fatalf("upload %d copy=%+v, want existing dataSetID %s", i, copy0, uploadedDataSetID)
+			}
+		}
+		if txHashes[0] == "" || txHashes[0] != txHashes[1] {
+			t.Fatalf("transaction IDs=%q,%q, want one shared transaction after the late store", txHashes[0], txHashes[1])
+		}
+		if results[0].Copies[0].PieceID.Equal(results[1].Copies[0].PieceID) {
+			t.Fatalf("PieceIDs=%s,%s, want distinct IDs", results[0].Copies[0].PieceID, results[1].Copies[0].PieceID)
 		}
 	})
 

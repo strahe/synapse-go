@@ -20,6 +20,8 @@ import (
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/testutil"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
@@ -1366,6 +1368,47 @@ func TestContextPresignAndPullRejectInvalidInputs(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty source URL error=%v", err)
+	}
+}
+
+func TestContextRejectsPieceCIDsOutsideUploadBounds(t *testing.T) {
+	info := mustPieceInfo(t)
+	withRawSize := func(rawSize uint64) cid.Cid { return testutil.PieceCIDv2WithRawSize(t, info.CIDv1, rawSize) }
+	tests := []struct {
+		name     string
+		pieceCID cid.Cid
+		wantErr  bool
+	}{
+		{name: "PieceCIDv1", pieceCID: info.CIDv1, wantErr: true},
+		{name: "below minimum", pieceCID: withRawSize(chain.MinUploadSize - 1), wantErr: true},
+		{name: "minimum", pieceCID: withRawSize(chain.MinUploadSize)},
+		{name: "maximum", pieceCID: withRawSize(chain.MaxUploadSize)},
+		{name: "above maximum", pieceCID: withRawSize(chain.MaxUploadSize + 1), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := mustWritableProviderContext(t, &fakePDPProviderClient{})
+			pieces := []PieceInput{{PieceCID: tt.pieceCID}}
+			_, err := c.PresignForCommit(context.Background(), pieces)
+			if tt.wantErr != errors.Is(err, ErrInvalidArgument) || !tt.wantErr && err != nil {
+				t.Fatalf("PresignForCommit error=%v, want invalid=%t", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				return
+			}
+			_, err = c.Commit(context.Background(), CommitRequest{Pieces: pieces, ExtraData: []byte{0x01}})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Commit error=%v, want ErrInvalidArgument", err)
+			}
+			_, err = c.Pull(context.Background(), PullRequest{
+				Pieces:    []cid.Cid{tt.pieceCID},
+				From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+				ExtraData: []byte{0x01},
+			})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Pull error=%v, want ErrInvalidArgument", err)
+			}
+		})
 	}
 }
 

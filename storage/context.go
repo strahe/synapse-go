@@ -583,9 +583,12 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 	}
 
 	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
-	for _, pieceCID := range req.Pieces {
+	for i, pieceCID := range req.Pieces {
 		if !pieceCID.Defined() {
 			return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
+		}
+		if err := validateUploadPieceCID(op, i, pieceCID); err != nil {
+			return nil, err
 		}
 		sourceURL := req.From(pieceCID)
 		if sourceURL == "" {

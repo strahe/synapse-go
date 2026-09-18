@@ -7,12 +7,8 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/costs"
+	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
-)
-
-const (
-	integrationFundingExtraRunwayEpochs = chain.EpochsPerDay
-	integrationFundingBufferEpochs      = 120
 )
 
 func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountState, copies int) *costs.UploadCosts {
@@ -51,8 +47,8 @@ func aggregateNewUploadCosts(base *costs.UploadCosts, account *payments.AccountS
 		CurrentLockupRate: currentLockupRate,
 		Debt:              debt,
 		AvailableFunds:    availableFunds,
-		ExtraRunwayEpochs: integrationFundingExtraRunwayEpochs,
-		BufferEpochs:      integrationFundingBufferEpochs,
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      integrationtest.FundingBufferEpochs,
 		IsNewDataSet:      true,
 	})
 
