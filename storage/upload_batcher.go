@@ -22,7 +22,6 @@ import (
 
 const (
 	defaultUploadIdleWait                 = 3 * time.Second
-	defaultUploadMaxWait                  = 30 * time.Second
 	defaultUploadMaxConcurrentSubmissions = 4
 	defaultSharedDataSetPollInterval      = 4 * time.Second
 	defaultSharedDataSetVisibleTimeout    = 5 * time.Minute
@@ -50,8 +49,9 @@ type uploadBatcherConfig struct {
 // UploadBatcherOption configures upload batching behavior.
 type UploadBatcherOption func(*uploadBatcherConfig)
 
-// WithUploadIdleWait sets the inactivity delay before an open window is
-// submitted. A zero duration submits as soon as a piece is ready.
+// WithUploadIdleWait sets how long a batch waits without a new piece before it
+// is submitted. The wait starts once no other upload to the same target is in
+// progress; zero submits as soon as that is true.
 func WithUploadIdleWait(wait time.Duration) UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) {
 		cfg.idleWait = wait
@@ -64,8 +64,10 @@ func WithoutUploadIdleWait() UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) { cfg.idleWaitEnabled = false }
 }
 
-// WithUploadMaxWait sets the maximum age of an open window. A zero duration
-// submits as soon as the first piece is ready.
+// WithUploadMaxWait submits a batch at most wait after its first piece is
+// ready, even while other uploads to the same target are in progress. Zero
+// submits every piece immediately and requires a zero or disabled idle wait.
+// There is no maximum wait by default.
 func WithUploadMaxWait(wait time.Duration) UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) {
 		cfg.maxWait = wait
@@ -73,7 +75,7 @@ func WithUploadMaxWait(wait time.Duration) UploadBatcherOption {
 	}
 }
 
-// WithoutUploadMaxWait disables age-based submission.
+// WithoutUploadMaxWait removes the maximum wait, which is the default.
 func WithoutUploadMaxWait() UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) { cfg.maxWaitEnabled = false }
 }
@@ -135,6 +137,7 @@ type UploadBatcher struct {
 	flushes         map[uint64]*uploadBatchFlush
 	datasetGates    map[string]*uploadBatchDataSetGate
 	newTargets      map[string]*uploadBatchNewTarget
+	transfers       map[string]int
 	submissionSlots chan struct{}
 }
 
@@ -258,13 +261,26 @@ type uploadReservation struct {
 	batcher *UploadBatcher
 	seq     uint64
 	once    sync.Once
+
+	// released and transfers are guarded by batcher.mu.
+	released  bool
+	transfers []*uploadBatchTransfer
 }
 
-// NewUploadBatcher creates an independent batching coordinator. By default,
-// an open window is submitted after three seconds of inactivity or 30 seconds
-// from its first ready piece, and up to four batches may be signed and
-// submitted concurrently. When options of the same kind are repeated, the
-// last one takes effect.
+// uploadBatchTransfer marks a Store or Pull that may still join a target's
+// window. While any transfer for a target is open, that window's idle wait
+// does not start.
+type uploadBatchTransfer struct {
+	batcher *UploadBatcher
+	key     string
+	ended   bool // guarded by batcher.mu
+}
+
+// NewUploadBatcher creates an independent batching coordinator. By default, a
+// batch is submitted three seconds after its last new piece once no other
+// upload to the same target is in progress, with no maximum wait, and up to
+// four batches may be signed and submitted concurrently. When options of the
+// same kind are repeated, the last one takes effect.
 func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption) (*UploadBatcher, error) {
 	const op = "storage.NewUploadBatcher"
 	storageSigner := normalizeOptional(opts.Signer)
@@ -280,8 +296,6 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 	cfg := uploadBatcherConfig{
 		idleWait:                 defaultUploadIdleWait,
 		idleWaitEnabled:          true,
-		maxWait:                  defaultUploadMaxWait,
-		maxWaitEnabled:           true,
 		maxConcurrentSubmissions: defaultUploadMaxConcurrentSubmissions,
 		clock:                    systemUploadBatchClock{},
 		dataSetPollInterval:      defaultSharedDataSetPollInterval,
@@ -322,6 +336,7 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 		flushes:         make(map[uint64]*uploadBatchFlush),
 		datasetGates:    make(map[string]*uploadBatchDataSetGate),
 		newTargets:      make(map[string]*uploadBatchNewTarget),
+		transfers:       make(map[string]int),
 		submissionSlots: make(chan struct{}, cfg.maxConcurrentSubmissions),
 	}, nil
 }
@@ -346,13 +361,97 @@ func (r *uploadReservation) release() {
 		return
 	}
 	r.once.Do(func() {
-		r.batcher.mu.Lock()
-		if done, ok := r.batcher.reservations[r.seq]; ok {
-			delete(r.batcher.reservations, r.seq)
+		b := r.batcher
+		b.mu.Lock()
+		if done, ok := b.reservations[r.seq]; ok {
+			delete(b.reservations, r.seq)
 			close(done)
 		}
-		r.batcher.mu.Unlock()
+		r.released = true
+		launches := make([]*uploadBatchFlight, 0, len(r.transfers))
+		for _, transfer := range r.transfers {
+			launches = append(launches, b.endTransferLocked(transfer, true))
+		}
+		r.transfers = nil
+		b.mu.Unlock()
+		b.launchFlights(launches)
 	})
+}
+
+// beginTransfer records a Store or Pull whose piece may join target's window.
+// The transfer ends when its piece is enqueued, when end is called, or when the
+// reservation is released, so an upload never keeps a target open while it
+// waits for commit results.
+func (r *uploadReservation) beginTransfer(target StorageContext) (*uploadBatchTransfer, error) {
+	const op = "storage.UploadBatcher.beginTransfer"
+	if r == nil || r.batcher == nil {
+		return nil, fmt.Errorf("%s: %w: nil reservation", op, ErrInvalidArgument)
+	}
+	key, _, err := uploadBatchTargetKey(target)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	b := r.batcher
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, ErrClosed
+	}
+	if r.released {
+		return nil, fmt.Errorf("%s: %w: released reservation", op, ErrInvalidArgument)
+	}
+	return b.beginTransferLocked(r, key), nil
+}
+
+func (b *UploadBatcher) beginTransferLocked(r *uploadReservation, key string) *uploadBatchTransfer {
+	transfer := &uploadBatchTransfer{batcher: b, key: key}
+	b.transfers[key]++
+	r.transfers = append(r.transfers, transfer)
+	if window := b.windows[key]; window != nil {
+		b.scheduleWindowLocked(window, b.config.clock.Now())
+	}
+	return transfer
+}
+
+// end marks a transfer that will not enqueue a piece. It is idempotent.
+func (t *uploadBatchTransfer) end() {
+	if t == nil || t.batcher == nil {
+		return
+	}
+	b := t.batcher
+	b.mu.Lock()
+	flight := b.endTransferLocked(t, true)
+	b.mu.Unlock()
+	b.launchFlights([]*uploadBatchFlight{flight})
+}
+
+// endTransferLocked ends transfer. With reschedule, the last transfer for a
+// target restarts that window's idle wait, or submits it when the idle wait is
+// zero.
+func (b *UploadBatcher) endTransferLocked(transfer *uploadBatchTransfer, reschedule bool) *uploadBatchFlight {
+	if transfer == nil || transfer.ended {
+		return nil
+	}
+	transfer.ended = true
+	if b.closed {
+		return nil
+	}
+	if count := b.transfers[transfer.key]; count > 1 {
+		b.transfers[transfer.key] = count - 1
+		return nil
+	}
+	delete(b.transfers, transfer.key)
+	window := b.windows[transfer.key]
+	if !reschedule || window == nil || !b.config.idleWaitEnabled {
+		return nil
+	}
+	now := b.config.clock.Now()
+	window.idleDeadline = now.Add(b.config.idleWait)
+	if b.config.idleWait == 0 {
+		return b.sealWindowLocked(window)
+	}
+	b.scheduleWindowLocked(window, now)
+	return nil
 }
 
 func (b *UploadBatcher) bindContext(parent context.Context) (context.Context, func()) {
@@ -431,8 +530,11 @@ func (b *UploadBatcher) newTargetLocked(key string) (*uploadBatchNewTarget, erro
 	return state, nil
 }
 
-func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target StorageContext, piece PieceInput) (*uploadBatchTask, error) {
+// enqueue adds piece to target's window. A non-nil transfer always ends,
+// whether or not the piece is accepted.
+func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target StorageContext, piece PieceInput, transfer *uploadBatchTransfer) (*uploadBatchTask, error) {
 	const op = "storage.UploadBatcher.enqueue"
+	defer transfer.end()
 	if ctx == nil {
 		return nil, fmt.Errorf("%s: %w: nil context", op, ErrInvalidArgument)
 	}
@@ -508,7 +610,12 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 	if b.config.idleWaitEnabled {
 		window.idleDeadline = now.Add(b.config.idleWait)
 	}
-	immediate := b.config.idleWaitEnabled && b.config.idleWait == 0 ||
+	if transfer != nil {
+		// The piece is already in the window, so ending its own transfer here
+		// needs no separate reschedule when the transfer used this target.
+		launches = append(launches, b.endTransferLocked(transfer, transfer.key != key))
+	}
+	immediate := b.config.idleWaitEnabled && b.config.idleWait == 0 && b.transfers[key] == 0 ||
 		b.config.maxWaitEnabled && b.config.maxWait == 0
 	if immediate || len(window.slots) == pdp.MaxAddPiecesBatchSize {
 		launches = append(launches, b.sealWindowLocked(window))
@@ -633,8 +740,11 @@ func (b *UploadBatcher) scheduleWindowLocked(window *uploadBatchWindow, now time
 		window.timer.Stop()
 		window.timer = nil
 	}
+	// A timer that already fired may be waiting for b.mu; a new generation
+	// makes it a no-op even when no replacement timer is armed.
+	window.timerGeneration++
 	var deadline time.Time
-	if b.config.idleWaitEnabled {
+	if b.config.idleWaitEnabled && b.transfers[window.key] == 0 {
 		deadline = window.idleDeadline
 	}
 	if b.config.maxWaitEnabled && (deadline.IsZero() || window.maxDeadline.Before(deadline)) {
@@ -643,7 +753,6 @@ func (b *UploadBatcher) scheduleWindowLocked(window *uploadBatchWindow, now time
 	if deadline.IsZero() {
 		return
 	}
-	window.timerGeneration++
 	generation := window.timerGeneration
 	wait := max(deadline.Sub(now), 0)
 	window.timer = b.config.clock.AfterFunc(wait, func() { b.fireWindowTimer(window, generation) })
@@ -1408,6 +1517,7 @@ func (b *UploadBatcher) Close() error {
 	b.windows = make(map[string]*uploadBatchWindow)
 	b.failedFlights = make(map[uint64]*uploadBatchFailure)
 	b.newTargets = make(map[string]*uploadBatchNewTarget)
+	b.transfers = make(map[string]int)
 	for _, slot := range slots {
 		slot.events <- uploadBatchEvent{err: ErrClosed, final: true}
 	}

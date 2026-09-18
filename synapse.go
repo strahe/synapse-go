@@ -123,9 +123,9 @@ func WithStorageSigner(storageSigner signer.StorageSigner) ClientOption {
 
 // WithUploadBatching enables root-managed batching for high-level storage
 // uploads and applies the supplied batching options. Batching is enabled by
-// default with a three-second idle wait, a 30-second maximum wait, and four
-// concurrent submissions. Call [WithoutUploadBatching] to retain immediate
-// per-upload commits.
+// default with a three-second idle wait, no maximum wait, and four concurrent
+// submissions. Call [WithoutUploadBatching] to retain immediate per-upload
+// commits.
 func WithUploadBatching(opts ...storage.UploadBatcherOption) ClientOption {
 	options := append([]storage.UploadBatcherOption(nil), opts...)
 	return func(cfg *clientConfig) {

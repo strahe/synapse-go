@@ -174,6 +174,8 @@ var (
 	_ func(*warmstorage.PriceList, bool, []uint64) (costs.UploadFees, error) = costs.CalculateUploadFees
 	_ func(costs.LifecycleReserveCalculation) (costs.LifecycleReserveFunding, error) = costs.CalculateLifecycleReserveFunding
 	_ func([]uint64, *big.Int, *warmstorage.PriceList, *big.Int, bool, bool) (costs.AdditionalLockup, error) = costs.CalculateAdditionalLockupRequired
+	_ func([]uint64) (*big.Int, error) = costs.PieceSizesToLeafCount
+	_ func(*big.Int) (*big.Int, error) = costs.LeafCountToBillableBytes
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
 	_ = storage.WithFWSSTerminator(sharedTerminator)

@@ -58,6 +58,14 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	if err := c.validateWritableDataSet(ctx, op, ref); err != nil {
 		return nil, uploadBatchContextError(ctx, err)
 	}
+	var transfer *uploadBatchTransfer
+	if reservation != nil {
+		var err error
+		transfer, err = reservation.beginTransfer(target)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+	}
 
 	storeOpts := &StoreOptions{}
 	if uploadOpts != nil {
@@ -96,7 +104,7 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	if !batched {
 		commit, err = c.commit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
 	} else {
-		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0])
+		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0], transfer)
 		reservation.release()
 		if enqueueErr != nil {
 			err = enqueueErr

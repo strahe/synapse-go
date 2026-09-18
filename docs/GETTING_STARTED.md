@@ -168,21 +168,23 @@ after a piece has entered a batch is covered in
 
 ### Commit Batching
 
-The root client batches compatible high-level upload commits by default. Once
-a piece is stored or pulled and ready to commit, its window is submitted after
-3 seconds without another compatible piece or 30 seconds after the first
-ready piece, whichever comes first. At most four batches are signed and
-submitted concurrently; provider confirmation waits continue outside that
-limit.
+The root client batches compatible high-level upload commits by default.
+Ready pieces are submitted together once no other upload to the same target
+is in progress and 3 seconds pass without a new piece. There is no time limit
+by default, so a slow upload delays the others for that target. At most four
+batches are signed and submitted concurrently; provider confirmation waits
+continue outside that limit.
 
 The wait policy is explicit:
 
-- `WithUploadIdleWait(0)` submits as soon as a piece is ready.
-- Positive idle and maximum waits set custom delays.
-- `WithoutUploadIdleWait()` or `WithoutUploadMaxWait()` disables that timer
-  independently.
-- Disabling both timers creates Flush-only windows. They still submit at the
-  40-piece limit, the provider message-size limit, or a repeated piece CID.
+- `WithUploadIdleWait(d)` changes the 3-second delay.
+- `WithUploadMaxWait(d)` submits a batch at most `d` after its first piece is
+  ready, even while other uploads are still running.
+- `WithoutUploadIdleWait()` with `WithUploadMaxWait(0)` submits every piece
+  immediately.
+- `WithoutUploadIdleWait()` alone creates Flush-only batches. They still
+  submit at the 40-piece limit, the provider message-size limit, or a
+  repeated piece CID.
 - `WithoutUploadBatching()` bypasses the coordinator and preserves one commit
   per high-level upload.
 
@@ -198,7 +200,7 @@ client, err := synapse.New(ctx,
     synapse.WithRPCURL("https://api.calibration.node.glif.io/rpc/v1"),
     synapse.WithUploadBatching(
         storage.WithUploadIdleWait(time.Second),
-        storage.WithUploadMaxWait(15*time.Second),
+        storage.WithUploadMaxWait(15*time.Second), // optional hard limit
         storage.WithUploadMaxConcurrentSubmissions(2),
     ),
 )
@@ -256,6 +258,13 @@ owning its Flush and Close lifecycle.
 
 Dataset metadata must match exactly for automatic dataset reuse. Use stable
 metadata values when you want uploads to share payment rails.
+
+Only data sets created after the PDPVerifier 3.5.0 upgrade use compact piece
+storage; older data sets are never converted. Because reuse matches metadata,
+uploads may keep going to an older data set. To switch, add a new stable
+metadata value, or create a data set with `ProviderContext.CreateDataSet` and
+upload through `ForDataSet`. Reuse the new data set afterward: each one costs
+a creation fee and a lifecycle reserve.
 
 The root client configures strict endorsed-primary selection by default. The
 primary must be endorsed, approved, active, and healthy; secondary copies use

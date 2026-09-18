@@ -38,17 +38,18 @@
 // # Upload batching
 //
 // The root synapse Client enables commit batching for high-level Upload calls
-// by default. A ready piece waits for three seconds of inactivity, with a
-// maximum wait of 30 seconds; at most four batches are signed and submitted at
-// once.
-// Provider confirmation waits do not consume that submission limit. Configure
-// the root coordinator with [synapse.WithUploadBatching], or disable it with
+// by default. Ready pieces are submitted together once no other upload to the
+// same target is in progress and three seconds pass without a new piece. There
+// is no time limit by default, so a slow upload delays the others for that
+// target. At most four batches are signed and submitted at once; provider
+// confirmation waits do not consume that limit. Configure the root coordinator
+// with [synapse.WithUploadBatching], or disable it with
 // [synapse.WithoutUploadBatching].
 //
-// [WithUploadIdleWait] with a zero duration submits as soon as a piece is
-// ready. Positive idle and maximum waits set the corresponding delays.
-// [WithoutUploadIdleWait] and [WithoutUploadMaxWait] disable each timer
-// independently. With both timers disabled, a window is submitted only by
+// [WithUploadIdleWait] changes the three-second delay. [WithUploadMaxWait]
+// submits a batch at most that long after its first piece is ready.
+// [WithoutUploadIdleWait] with a zero [WithUploadMaxWait] submits every piece
+// immediately. With both timers disabled, a batch is submitted only by
 // [Service.Flush], the 40-piece limit, the provider message-size limit, or a
 // repeated piece CID.
 //

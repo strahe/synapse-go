@@ -9,7 +9,8 @@ import (
 )
 
 // CalculateEffectiveRate computes the storage rate for the given contract
-// billable size in bytes, not the sum of raw piece payload sizes.
+// billable size in bytes, not the sum of raw piece payload sizes; obtain it
+// with [PieceSizesToLeafCount] and [LeafCountToBillableBytes].
 // Integer division is used to match on-chain Solidity truncation.
 // If epochsPerMonth is zero or negative, chain.EpochsPerMonth is used as a safe default.
 // Nil sizeBytes, pricePerTiBPerMonth, or datasetFeePerMonth are treated as zero.
@@ -151,10 +152,11 @@ func CalculateLifecycleReserveFunding(calc LifecycleReserveCalculation) (Lifecyc
 }
 
 // CalculateAdditionalLockupRequired returns the incremental lockup for pieces
-// with the supplied raw payload sizes. A provided CurrentDataSetLeafCount is
-// ignored for a new dataset. For an existing dataset, a negative leaf count
-// returns ErrInvalidArgument. Nil leaf count and price list use zero-value
-// defaults; empty pieceSizes and zero elements add no leaves.
+// with the supplied raw payload sizes. pieceSizes must be non-empty and every
+// size must be between chain.MinUploadSize and chain.MaxUploadSize. A provided
+// CurrentDataSetLeafCount is ignored for a new dataset; an existing dataset
+// requires a non-negative leaf count. Invalid inputs return ErrInvalidArgument.
+// A nil price list uses zero-value prices.
 func CalculateAdditionalLockupRequired(
 	pieceSizes []uint64,
 	currentDataSetLeafCount *big.Int,
@@ -163,15 +165,17 @@ func CalculateAdditionalLockupRequired(
 	isNewDataSet bool,
 	enableCDN bool,
 ) (AdditionalLockup, error) {
-	if !isNewDataSet && currentDataSetLeafCount != nil && currentDataSetLeafCount.Sign() < 0 {
-		return AdditionalLockup{}, fmt.Errorf(
-			"costs.CalculateAdditionalLockupRequired: %w: CurrentDataSetLeafCount must be non-negative",
-			ErrInvalidArgument,
-		)
+	const op = "costs.CalculateAdditionalLockupRequired"
+	if err := validatePieceSizes(pieceSizes); err != nil {
+		return AdditionalLockup{}, fmt.Errorf("%s: %w", op, err)
+	}
+	currentLeaves, err := resolveCurrentLeafCount(isNewDataSet, currentDataSetLeafCount)
+	if err != nil {
+		return AdditionalLockup{}, fmt.Errorf("%s: %w", op, err)
 	}
 	return calculateAdditionalLockupRequired(
 		pieceSizesToLeafCount(pieceSizes),
-		currentDataSetLeafCount,
+		currentLeaves,
 		priceList,
 		lockupPeriod,
 		isNewDataSet,

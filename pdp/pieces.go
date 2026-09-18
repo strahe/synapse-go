@@ -14,6 +14,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
@@ -32,7 +33,8 @@ const (
 
 // AddPieceInput mirrors one entry of the pieces array for
 // POST /pdp/data-sets/{id}/pieces. The wire format uses the piece CID
-// as its own single sub-piece.
+// as its own single sub-piece. PieceCID must be a PieceCIDv2 whose raw size is
+// between chain.MinUploadSize and chain.MaxUploadSize.
 type AddPieceInput struct {
 	PieceCID cid.Cid
 }
@@ -307,14 +309,33 @@ func validateAddPieceInputs(op string, pieces []AddPieceInput) error {
 	}
 	seen := make(map[string]int, len(pieces))
 	for i, input := range pieces {
-		if !input.PieceCID.Defined() {
-			return fmt.Errorf("%s: undefined pieceCID at index %d", op, i)
+		if err := validateUploadPieceCID(op, i, input.PieceCID); err != nil {
+			return err
 		}
 		key := canonicalPieceCIDKey(input.PieceCID)
 		if first, ok := seen[key]; ok {
 			return fmt.Errorf("%s: duplicate pieceCID at indexes %d and %d", op, first, i)
 		}
 		seen[key] = i
+	}
+	return nil
+}
+
+// validateUploadPieceCID requires a PieceCIDv2 whose encoded raw size is within
+// the provider upload bounds; providers reject other pieces for add and pull.
+func validateUploadPieceCID(op string, index int, pieceCID cid.Cid) error {
+	if !pieceCID.Defined() {
+		return fmt.Errorf("%s: undefined pieceCID at index %d", op, index)
+	}
+	info, err := piece.ParseV2(pieceCID)
+	if err != nil {
+		return fmt.Errorf("%s: pieceCID at index %d: %w", op, index, err)
+	}
+	if info.RawSize < chain.MinUploadSize || info.RawSize > chain.MaxUploadSize {
+		return fmt.Errorf(
+			"%s: pieceCID at index %d has raw size %d, want %d to %d bytes",
+			op, index, info.RawSize, chain.MinUploadSize, chain.MaxUploadSize,
+		)
 	}
 	return nil
 }

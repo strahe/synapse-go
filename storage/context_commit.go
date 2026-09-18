@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
@@ -199,7 +200,28 @@ func validateCommitPieces(op string, pieces []PieceInput) ([]cid.Cid, error) {
 	if err := validateCommitPieceCIDs(op, pieceCIDs); err != nil {
 		return nil, err
 	}
+	for i, pieceCID := range pieceCIDs {
+		if err := validateUploadPieceCID(op, i, pieceCID); err != nil {
+			return nil, err
+		}
+	}
 	return pieceCIDs, nil
+}
+
+// validateUploadPieceCID requires a PieceCIDv2 whose encoded raw size is within
+// the provider upload bounds; providers reject other pieces for add and pull.
+func validateUploadPieceCID(op string, index int, pieceCID cid.Cid) error {
+	info, err := piece.ParseV2(pieceCID)
+	if err != nil {
+		return fmt.Errorf("%s: %w: pieceCID at index %d: %w", op, ErrInvalidArgument, index, err)
+	}
+	if info.RawSize < chain.MinUploadSize || info.RawSize > chain.MaxUploadSize {
+		return fmt.Errorf(
+			"%s: %w: pieceCID at index %d has raw size %d, want %d to %d bytes",
+			op, ErrInvalidArgument, index, info.RawSize, chain.MinUploadSize, chain.MaxUploadSize,
+		)
+	}
+	return nil
 }
 
 func validateCommitPieceCIDs(op string, pieceCIDs []cid.Cid) error {

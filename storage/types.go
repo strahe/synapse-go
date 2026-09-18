@@ -67,7 +67,9 @@ type ConfirmedPiece struct {
 	PieceCID cid.Cid
 }
 
-// PieceInput describes a single piece being committed on-chain.
+// PieceInput describes a single piece being committed on-chain. PieceCID must
+// be a PieceCIDv2 whose raw size is between chain.MinUploadSize and
+// chain.MaxUploadSize; other pieces return ErrInvalidArgument.
 type PieceInput struct {
 	PieceCID      cid.Cid
 	PieceMetadata map[string]string // optional key-value metadata emitted in the FWSS PieceAdded event
@@ -93,6 +95,8 @@ type ContextIdentity struct {
 
 // PullRequest asks a secondary provider to pull pieces from a primary.
 type PullRequest struct {
+	// Pieces must be PieceCIDv2 values whose raw sizes are between
+	// chain.MinUploadSize and chain.MaxUploadSize.
 	Pieces []cid.Cid
 	From   func(cid.Cid) string // returns the HTTPS URL for a given piece CID
 	// ExtraData is the EIP-712 signed payload authorising the pull. Oversized

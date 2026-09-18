@@ -472,6 +472,15 @@ func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader
 	primary := contexts[0]
 	secondaries := contexts[1:]
 
+	var primaryTransfer *uploadBatchTransfer
+	if s.uploadBatcher != nil {
+		var err error
+		primaryTransfer, err = reservation.beginTransfer(primary)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+	}
+
 	storeOpts := &StoreOptions{}
 	if opts != nil {
 		storeOpts.PieceCID = opts.PieceCID
@@ -498,7 +507,7 @@ func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader
 	var primaryEnqueueErr error
 	admittedBatchWork := false
 	if s.uploadBatcher != nil {
-		primaryTask, primaryEnqueueErr = s.uploadBatcher.enqueue(ctx, reservation.seq, primary, pieceInputs[0])
+		primaryTask, primaryEnqueueErr = s.uploadBatcher.enqueue(ctx, reservation.seq, primary, pieceInputs[0], primaryTransfer)
 		admittedBatchWork = primaryTask != nil
 	}
 
@@ -541,9 +550,13 @@ secondariesLoop:
 			currentAttemptCounted = false
 			var extraData []byte
 			var presignErr error
+			var transfer *uploadBatchTransfer
 			pullTarget := current
 			if s.uploadBatcher != nil {
-				pullTarget, extraData, presignErr = s.uploadBatcher.authorizePull(ctx, current, pieceInputs)
+				transfer, presignErr = reservation.beginTransfer(current)
+				if presignErr == nil {
+					pullTarget, extraData, presignErr = s.uploadBatcher.authorizePull(ctx, current, pieceInputs)
+				}
 			} else {
 				extraData, presignErr = current.PresignForCommit(ctx, pieceInputs)
 			}
@@ -580,7 +593,7 @@ secondariesLoop:
 						extraData: append([]byte(nil), extraData...),
 					}
 					if s.uploadBatcher != nil {
-						secondary.task, secondary.err = s.uploadBatcher.enqueue(ctx, reservation.seq, current, pieceInputs[0])
+						secondary.task, secondary.err = s.uploadBatcher.enqueue(ctx, reservation.seq, current, pieceInputs[0], transfer)
 						secondary.extraData = nil
 						if secondary.task != nil {
 							admittedBatchWork = true
@@ -615,6 +628,7 @@ secondariesLoop:
 					Explicit:   explicitProviders,
 				})
 			}
+			transfer.end()
 			if admittedBatchWork {
 				if err := uploadBatchContextError(ctx, nil); err != nil {
 					break secondariesLoop

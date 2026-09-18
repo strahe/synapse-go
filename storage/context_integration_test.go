@@ -124,8 +124,13 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 
 	start = time.Now()
 	t.Log("start storage staged Prepare")
+	// Each Prepare below is followed by several epochs of confirmations before
+	// its funded operation executes, while the wallet's existing rails keep
+	// draining available funds; the default buffer is too tight for that.
 	prepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		PieceSizes: []uint64{uint64(len(data))},
+		PieceSizes:        []uint64{uint64(len(data))},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 		Contexts: []storage.StorageContext{
 			primary,
 			secondary,
@@ -270,7 +275,9 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	start = time.Now()
 	t.Log("start storage staged Prepare(commit)")
 	commitPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		PieceSizes: []uint64{uint64(len(data))},
+		PieceSizes:        []uint64{uint64(len(data))},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
 		Contexts: []storage.StorageContext{
 			recovered,
 		},
@@ -413,8 +420,10 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("NewProviderContext(settlement fixture): %v", err)
 	}
 	settlementPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
-		PieceSizes: []uint64{chain.MinUploadSize},
-		Contexts:   []storage.StorageContext{settlementProvider},
+		PieceSizes:        []uint64{chain.MinUploadSize},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
+		Contexts:          []storage.StorageContext{settlementProvider},
 	})
 	if err != nil {
 		t.Fatalf("Prepare(settlement fixture): %v", err)

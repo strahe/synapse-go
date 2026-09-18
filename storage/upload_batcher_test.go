@@ -40,8 +40,8 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 				if !cfg.idleWaitEnabled || cfg.idleWait != 3*time.Second {
 					t.Fatalf("idle=(%t,%s), want enabled 3s", cfg.idleWaitEnabled, cfg.idleWait)
 				}
-				if !cfg.maxWaitEnabled || cfg.maxWait != 30*time.Second {
-					t.Fatalf("max=(%t,%s), want enabled 30s", cfg.maxWaitEnabled, cfg.maxWait)
+				if cfg.maxWaitEnabled {
+					t.Fatalf("max=(%t,%s), want disabled", cfg.maxWaitEnabled, cfg.maxWait)
 				}
 				if cfg.maxConcurrentSubmissions != 4 {
 					t.Fatalf("maxConcurrentSubmissions=%d, want 4", cfg.maxConcurrentSubmissions)
@@ -73,14 +73,24 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 			opts: []UploadBatcherOption{WithoutUploadIdleWait()},
 			check: func(t *testing.T, cfg uploadBatcherConfig) {
 				t.Helper()
-				if cfg.idleWaitEnabled || !cfg.maxWaitEnabled || cfg.maxWait != 30*time.Second {
-					t.Fatalf("idle enabled=%t max=(%t,%s), want idle disabled and default max", cfg.idleWaitEnabled, cfg.maxWaitEnabled, cfg.maxWait)
+				if cfg.idleWaitEnabled || cfg.maxWaitEnabled {
+					t.Fatalf("idle enabled=%t max enabled=%t, want flush-only defaults", cfg.idleWaitEnabled, cfg.maxWaitEnabled)
 				}
 			},
 		},
 		{
-			name: "max disabled",
-			opts: []UploadBatcherOption{WithoutUploadMaxWait()},
+			name: "max enabled",
+			opts: []UploadBatcherOption{WithUploadMaxWait(30 * time.Second)},
+			check: func(t *testing.T, cfg uploadBatcherConfig) {
+				t.Helper()
+				if !cfg.idleWaitEnabled || cfg.idleWait != 3*time.Second || !cfg.maxWaitEnabled || cfg.maxWait != 30*time.Second {
+					t.Fatalf("idle=(%t,%s) max=(%t,%s), want default idle and 30s max", cfg.idleWaitEnabled, cfg.idleWait, cfg.maxWaitEnabled, cfg.maxWait)
+				}
+			},
+		},
+		{
+			name: "max disabled after enabled",
+			opts: []UploadBatcherOption{WithUploadMaxWait(time.Minute), WithoutUploadMaxWait()},
 			check: func(t *testing.T, cfg uploadBatcherConfig) {
 				t.Helper()
 				if !cfg.idleWaitEnabled || cfg.idleWait != 3*time.Second || cfg.maxWaitEnabled {
@@ -88,9 +98,20 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "per piece",
+			opts: []UploadBatcherOption{WithoutUploadIdleWait(), WithUploadMaxWait(0)},
+			check: func(t *testing.T, cfg uploadBatcherConfig) {
+				t.Helper()
+				if cfg.idleWaitEnabled || !cfg.maxWaitEnabled || cfg.maxWait != 0 {
+					t.Fatalf("idle enabled=%t max=(%t,%s), want idle disabled and zero max", cfg.idleWaitEnabled, cfg.maxWaitEnabled, cfg.maxWait)
+				}
+			},
+		},
 		{name: "negative idle", opts: []UploadBatcherOption{WithUploadIdleWait(-time.Second)}, wantErr: true},
 		{name: "negative max", opts: []UploadBatcherOption{WithUploadMaxWait(-time.Second)}, wantErr: true},
 		{name: "idle exceeds max", opts: []UploadBatcherOption{WithUploadIdleWait(time.Minute), WithUploadMaxWait(time.Second)}, wantErr: true},
+		{name: "zero max with default idle", opts: []UploadBatcherOption{WithUploadMaxWait(0)}, wantErr: true},
 		{name: "zero concurrency", opts: []UploadBatcherOption{WithUploadMaxConcurrentSubmissions(0)}, wantErr: true},
 		{
 			name: "last option wins",
@@ -237,7 +258,7 @@ func TestUploadBatcherFlushReportsCompletedFailuresUntilAcknowledged(t *testing.
 		if err != nil {
 			t.Fatalf("reserve: %v", err)
 		}
-		if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "historical-failure")); err != nil {
+		if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "historical-failure"), nil); err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}
 		waitForNoUploadBatchFlights(t, batcher)
@@ -378,7 +399,7 @@ func TestUploadBatcherFlushMayIncludeCompatiblePostBarrierSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve first: %v", err)
 	}
-	first, err := batcher.enqueue(context.Background(), firstReservation.seq, target, batchTestPiece(t, "barrier-first"))
+	first, err := batcher.enqueue(context.Background(), firstReservation.seq, target, batchTestPiece(t, "barrier-first"), nil)
 	if err != nil {
 		t.Fatalf("enqueue first: %v", err)
 	}
@@ -389,7 +410,7 @@ func TestUploadBatcherFlushMayIncludeCompatiblePostBarrierSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve second: %v", err)
 	}
-	second, err := batcher.enqueue(context.Background(), secondReservation.seq, target, batchTestPiece(t, "barrier-second"))
+	second, err := batcher.enqueue(context.Background(), secondReservation.seq, target, batchTestPiece(t, "barrier-second"), nil)
 	secondReservation.release()
 	if err != nil {
 		t.Fatalf("enqueue second: %v", err)
@@ -559,7 +580,7 @@ func TestUploadBatcherRejectsOversizedSinglePiece(t *testing.T) {
 		t.Fatalf("reserve: %v", err)
 	}
 	defer reservation.release()
-	_, err = batcher.enqueue(context.Background(), reservation.seq, batchTestTarget(identity, testCommitDataSetRef(1, 11)), batchTestPiece(t, "oversized"))
+	_, err = batcher.enqueue(context.Background(), reservation.seq, batchTestTarget(identity, testCommitDataSetRef(1, 11)), batchTestPiece(t, "oversized"), nil)
 	if !errors.Is(err, pdp.ErrAddPiecesMessageTooLarge) {
 		t.Fatalf("enqueue error=%v, want pdp.ErrAddPiecesMessageTooLarge", err)
 	}
@@ -755,6 +776,202 @@ func TestUploadBatcherIdleWaitResetsAndMaxWaitDoesNot(t *testing.T) {
 	}
 }
 
+func TestUploadBatcherIdleWaitWaitsForInProgressTransfers(t *testing.T) {
+	tests := []struct {
+		name       string
+		finish     func(*testing.T, *UploadBatcher, *fakeUploadContext, *uploadReservation, *uploadBatchTransfer)
+		wantPieces int
+	}{
+		{
+			name: "transfer joins window",
+			finish: func(t *testing.T, batcher *UploadBatcher, target *fakeUploadContext, reservation *uploadReservation, transfer *uploadBatchTransfer) {
+				t.Helper()
+				if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "late"), transfer); err != nil {
+					t.Fatalf("enqueue late piece: %v", err)
+				}
+				reservation.release()
+			},
+			wantPieces: 2,
+		},
+		{
+			name: "transfer fails",
+			finish: func(_ *testing.T, _ *UploadBatcher, _ *fakeUploadContext, _ *uploadReservation, transfer *uploadBatchTransfer) {
+				transfer.end()
+			},
+			wantPieces: 1,
+		},
+		{
+			name: "reservation released",
+			finish: func(_ *testing.T, _ *UploadBatcher, _ *fakeUploadContext, reservation *uploadReservation, _ *uploadBatchTransfer) {
+				reservation.release()
+			},
+			wantPieces: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			identity := serviceTestIdentity()
+			clock := newManualUploadBatchClock()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), withUploadBatchClock(clock))
+			target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+			submitted := captureBatchTestSubmissions(target)
+			reservation, transfer := beginBatchTestTransfer(t, batcher, target)
+
+			enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "ready"))
+			clock.Advance(5 * time.Second)
+			assertNoBatchTestSubmission(t, submitted)
+
+			tt.finish(t, batcher, target, reservation, transfer)
+			clock.Advance(3*time.Second - time.Nanosecond)
+			assertNoBatchTestSubmission(t, submitted)
+			clock.Advance(time.Nanosecond)
+			if got := waitBatchTestSubmission(t, submitted); got != tt.wantPieces {
+				t.Fatalf("submitted pieces=%d, want %d", got, tt.wantPieces)
+			}
+			assertNoUploadBatchTransfers(t, batcher)
+		})
+	}
+}
+
+func TestUploadBatcherTransferInvalidatesFiredIdleTimer(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	submitted := captureBatchTestSubmissions(target)
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "fired"))
+	reservation, err := batcher.reserve()
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	defer reservation.release()
+	key, _, err := uploadBatchTargetKey(target)
+	if err != nil {
+		t.Fatalf("uploadBatchTargetKey: %v", err)
+	}
+
+	// Fire the idle timer while the batcher lock is held, so its callback runs
+	// only after a transfer has started for the same target.
+	batcher.mu.Lock()
+	advanced := make(chan struct{})
+	go func() {
+		clock.Advance(3 * time.Second)
+		close(advanced)
+	}()
+	waitForManualUploadBatchTimerFired(t, clock)
+	batcher.beginTransferLocked(reservation, key)
+	batcher.mu.Unlock()
+	<-advanced
+	assertNoBatchTestSubmission(t, submitted)
+}
+
+func TestUploadBatcherMaxWaitDoesNotWaitForTransfers(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadMaxWait(10*time.Second), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	submitted := captureBatchTestSubmissions(target)
+	reservation, _ := beginBatchTestTransfer(t, batcher, target)
+	defer reservation.release()
+
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "capped"))
+	clock.Advance(10*time.Second - time.Nanosecond)
+	assertNoBatchTestSubmission(t, submitted)
+	clock.Advance(time.Nanosecond)
+	if got := waitBatchTestSubmission(t, submitted); got != 1 {
+		t.Fatalf("submitted pieces=%d, want 1", got)
+	}
+}
+
+func TestUploadBatcherDefaultHasNoMaxWait(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	submitted := captureBatchTestSubmissions(target)
+	reservation, _ := beginBatchTestTransfer(t, batcher, target)
+
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "uncapped"))
+	clock.Advance(time.Hour)
+	assertNoBatchTestSubmission(t, submitted)
+
+	reservation.release()
+	clock.Advance(3 * time.Second)
+	if got := waitBatchTestSubmission(t, submitted); got != 1 {
+		t.Fatalf("submitted pieces=%d, want 1", got)
+	}
+}
+
+func TestUploadBatcherZeroIdleWaitWaitsForTransfers(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	submitted := captureBatchTestSubmissions(target)
+	reservation, transfer := beginBatchTestTransfer(t, batcher, target)
+
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "zero-first"))
+	assertNoBatchTestSubmission(t, submitted)
+	if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "zero-second"), transfer); err != nil {
+		t.Fatalf("enqueue second piece: %v", err)
+	}
+	reservation.release()
+	if got := waitBatchTestSubmission(t, submitted); got != 2 {
+		t.Fatalf("submitted pieces=%d, want 2", got)
+	}
+}
+
+func TestUploadBatcherTransferIsTargetScoped(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	other := batchTestTarget(identity, testCommitDataSetRef(2, 22))
+	submitted := captureBatchTestSubmissions(target)
+	reservation, _ := beginBatchTestTransfer(t, batcher, other)
+	defer reservation.release()
+
+	enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "unrelated"))
+	clock.Advance(3 * time.Second)
+	if got := waitBatchTestSubmission(t, submitted); got != 1 {
+		t.Fatalf("submitted pieces=%d, want 1", got)
+	}
+}
+
+func TestUploadBatcherEnqueueEndsRejectedTransfer(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	reservation, transfer := beginBatchTestTransfer(t, batcher, target)
+	defer reservation.release()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "rejected"), transfer); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enqueue error=%v, want context.Canceled", err)
+	}
+	assertNoUploadBatchTransfers(t, batcher)
+}
+
+func TestUploadBatcherCloseEndsTransfers(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	reservation, transfer := beginBatchTestTransfer(t, batcher, target)
+	if err := batcher.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	transfer.end()
+	reservation.release()
+	assertNoUploadBatchTransfers(t, batcher)
+	next, err := batcher.reserve()
+	if !errors.Is(err, ErrClosed) || next != nil {
+		t.Fatalf("reserve after Close=(%v, %v), want ErrClosed", next, err)
+	}
+	if _, err := reservation.beginTransfer(target); !errors.Is(err, ErrClosed) {
+		t.Fatalf("beginTransfer after Close error=%v, want ErrClosed", err)
+	}
+}
+
 func TestUploadBatcherCancellationRetainsAcceptedSlotAndOriginalMaxWait(t *testing.T) {
 	identity := serviceTestIdentity()
 	clock := newManualUploadBatchClock()
@@ -778,7 +995,7 @@ func TestUploadBatcherCancellationRetainsAcceptedSlotAndOriginalMaxWait(t *testi
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	first, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "first-canceled"))
+	first, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "first-canceled"), nil)
 	reservation.release()
 	if err != nil {
 		t.Fatalf("enqueue first: %v", err)
@@ -816,7 +1033,7 @@ func TestUploadBatcherRejectsCancellationBeforeAcceptance(t *testing.T) {
 	defer reservation.release()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = batcher.enqueue(ctx, reservation.seq, batchTestTarget(identity, testCommitDataSetRef(1, 11)), batchTestPiece(t, "pre-canceled"))
+	_, err = batcher.enqueue(ctx, reservation.seq, batchTestTarget(identity, testCommitDataSetRef(1, 11)), batchTestPiece(t, "pre-canceled"), nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("enqueue error=%v, want context.Canceled", err)
 	}
@@ -907,7 +1124,7 @@ func TestUploadBatcherCallerCancellationWhileWaitingForSubmissionSlotDoesNotAbor
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	task, err := batcher.enqueue(ctx, reservation.seq, second, batchTestPiece(t, "slot-second"))
+	task, err := batcher.enqueue(ctx, reservation.seq, second, batchTestPiece(t, "slot-second"), nil)
 	reservation.release()
 	if err != nil {
 		t.Fatalf("enqueue second: %v", err)
@@ -952,7 +1169,7 @@ func TestUploadBatcherCallerCancellationDuringSigningDoesNotAbortFlight(t *testi
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	task, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "signing"))
+	task, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "signing"), nil)
 	reservation.release()
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -1077,7 +1294,7 @@ func TestUploadBatchTaskCancellationSuppressesQueuedSubmissionCallback(t *testin
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	task, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "queued-callback"))
+	task, err := batcher.enqueue(ctx, reservation.seq, target, batchTestPiece(t, "queued-callback"), nil)
 	reservation.release()
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -1346,6 +1563,7 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringSecondaryPul
 	if got := confirmedCallbacks.Load(); got != 0 {
 		t.Fatalf("OnPiecesConfirmed callbacks=%d, want suppressed after cancellation", got)
 	}
+	assertNoUploadBatchTransfers(t, batcher)
 }
 
 func TestUploadBatchContextErrorPreservesPublishedFailure(t *testing.T) {
@@ -1703,6 +1921,69 @@ func TestServiceUploadToContextsBatchesConcurrentCommits(t *testing.T) {
 	if got := submitCount.Load(); got != 1 {
 		t.Fatalf("SubmitCommit calls=%d, want 1", got)
 	}
+}
+
+func TestServiceUploadToContextsWaitsForInProgressStore(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), withUploadBatchClock(clock))
+	ref := testCommitDataSetRef(1, 11)
+	target := batchTestTarget(identity, ref)
+	slowStoreStarted := make(chan struct{})
+	releaseSlowStore := make(chan struct{})
+	target.storeFn = func(ctx context.Context, r io.Reader, _ *StoreOptions) (*StoreResult, error) {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		info, err := piece.CalculateFromBytes(data)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.HasPrefix(data, []byte("slow")) {
+			close(slowStoreStarted)
+			select {
+			case <-releaseSlowStore:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+	}
+	submitted := captureBatchTestSubmissions(target)
+	target.commitFn = func(context.Context, CommitRequest) (*CommitResult, error) {
+		return nil, errors.New("direct Commit must not be called")
+	}
+	service := mustNewService(t, Options{UploadBatcher: batcher})
+
+	outcomes := make(chan error, 2)
+	upload := func(data []byte) {
+		_, err := service.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{target}, nil)
+		outcomes <- err
+	}
+	go upload(bytes.Repeat([]byte("slow"), 128))
+	select {
+	case <-slowStoreStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow store did not start")
+	}
+	go upload(bytes.Repeat([]byte("fast"), 128))
+	waitForUploadBatchWindowSlots(t, batcher, 1)
+
+	clock.Advance(5 * time.Second)
+	assertNoBatchTestSubmission(t, submitted)
+	close(releaseSlowStore)
+	waitForUploadBatchWindowSlots(t, batcher, 2)
+	clock.Advance(3 * time.Second)
+	if got := waitBatchTestSubmission(t, submitted); got != 2 {
+		t.Fatalf("submitted pieces=%d, want 2", got)
+	}
+	for range 2 {
+		if err := <-outcomes; err != nil {
+			t.Fatalf("UploadToContexts: %v", err)
+		}
+	}
+	assertNoUploadBatchTransfers(t, batcher)
 }
 
 func TestServiceFlushWithoutBatcherIsNoop(t *testing.T) {
@@ -2162,7 +2443,7 @@ func TestUploadBatcherRejectsUnboundTargetThatCannotShare(t *testing.T) {
 	}
 	defer reservation.release()
 	target := opaqueStorageContext{StorageContext: sharedBatchTestTarget(identity, 1)}
-	if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "opaque")); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := batcher.enqueue(context.Background(), reservation.seq, target, batchTestPiece(t, "opaque"), nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("enqueue error=%v, want ErrInvalidArgument", err)
 	}
 }
@@ -2652,12 +2933,119 @@ func enqueueBatchTestPiece(t *testing.T, batcher *UploadBatcher, target StorageC
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	task, err := batcher.enqueue(context.Background(), reservation.seq, target, piece)
+	task, err := batcher.enqueue(context.Background(), reservation.seq, target, piece, nil)
 	reservation.release()
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	return task
+}
+
+func beginBatchTestTransfer(t *testing.T, batcher *UploadBatcher, target StorageContext) (*uploadReservation, *uploadBatchTransfer) {
+	t.Helper()
+	reservation, err := batcher.reserve()
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	transfer, err := reservation.beginTransfer(target)
+	if err != nil {
+		reservation.release()
+		t.Fatalf("beginTransfer: %v", err)
+	}
+	return reservation, transfer
+}
+
+// captureBatchTestSubmissions reports the piece count of each submission.
+func captureBatchTestSubmissions(target *fakeUploadContext) <-chan int {
+	submitted := make(chan int, 8)
+	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+		submitted <- len(req.Pieces)
+		return &CommitSubmission{TransactionID: "0xtransfer", PieceCIDs: pieceCIDs(req.Pieces)}, nil
+	}
+	target.waitCommitFn = func(_ context.Context, submission CommitSubmission) (*CommitResult, error) {
+		ref, _ := target.DataSetRef()
+		pieceIDs := make([]types.BigInt, len(submission.PieceCIDs))
+		for i := range pieceIDs {
+			pieceIDs[i] = types.NewBigInt(uint64(i + 1))
+		}
+		return &CommitResult{TransactionID: submission.TransactionID, DataSet: ref, PieceIDs: pieceIDs}, nil
+	}
+	return submitted
+}
+
+func waitBatchTestSubmission(t *testing.T, submitted <-chan int) int {
+	t.Helper()
+	select {
+	case pieces := <-submitted:
+		return pieces
+	case <-time.After(time.Second):
+		t.Fatal("window was not submitted")
+		return 0
+	}
+}
+
+// assertNoBatchTestSubmission checks that no submission starts. Timer
+// callbacks launch flights on goroutines, so allow them a moment to run.
+func assertNoBatchTestSubmission(t *testing.T, submitted <-chan int) {
+	t.Helper()
+	select {
+	case pieces := <-submitted:
+		t.Fatalf("window submitted early with %d pieces", pieces)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func assertNoUploadBatchTransfers(t *testing.T, batcher *UploadBatcher) {
+	t.Helper()
+	batcher.mu.Lock()
+	defer batcher.mu.Unlock()
+	if len(batcher.transfers) != 0 {
+		t.Fatalf("open transfers=%v, want none", batcher.transfers)
+	}
+}
+
+func waitForUploadBatchWindowSlots(t *testing.T, batcher *UploadBatcher, want int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		batcher.mu.Lock()
+		got := 0
+		for _, window := range batcher.windows {
+			got += len(window.slots)
+		}
+		batcher.mu.Unlock()
+		if got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("window slots=%d, want %d", got, want)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func waitForManualUploadBatchTimerFired(t *testing.T, clock *manualUploadBatchClock) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		clock.mu.Lock()
+		fired := false
+		for _, timer := range clock.timers {
+			fired = fired || timer.fired
+		}
+		clock.mu.Unlock()
+		if fired {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timer did not fire")
+		default:
+			runtime.Gosched()
+		}
+	}
 }
 
 func waitForUploadBatchFlush(t *testing.T, batcher *UploadBatcher) {

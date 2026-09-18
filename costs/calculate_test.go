@@ -258,8 +258,8 @@ func TestCalculateLifecycleReserveFunding_DoesNotModifyInputs(t *testing.T) {
 	}
 }
 
-func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) {
-	lockup, err := CalculateAdditionalLockupRequired(nil, nil, nil, nil, true, true)
+func TestCalculateAdditionalLockupRequired_NilPriceListUsesZeroValues(t *testing.T) {
+	lockup, err := CalculateAdditionalLockupRequired([]uint64{chain.MinUploadSize}, nil, nil, nil, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestCalculateAdditionalLockupRequired_NilInputsUseZeroValues(t *testing.T) 
 func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) {
 	priceList := defaultPriceList()
 	lockup, err := CalculateAdditionalLockupRequired(
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		nil,
 		priceList,
 		priceList.Lockups.DefaultLockupPeriod,
@@ -312,7 +312,7 @@ func TestCalculateAdditionalLockupRequired_NewCDNDataSetBreakdown(t *testing.T) 
 func TestCalculateAdditionalLockupRequired_ExistingDataSetUsesRateDeltaOnly(t *testing.T) {
 	priceList := defaultPriceList()
 	lockup, err := CalculateAdditionalLockupRequired(
-		[]uint64{chain.TiB},
+		[]uint64{chain.MaxUploadSize},
 		bi(chain.TiB),
 		priceList,
 		priceList.Lockups.DefaultLockupPeriod,

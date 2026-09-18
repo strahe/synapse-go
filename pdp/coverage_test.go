@@ -335,8 +335,8 @@ func TestAddPieces_EmptyExtraData(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not be called")
 	}))
-	info, _ := piece.CalculateFromBytes(make([]byte, 256))
-	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, nil)
+	info := testPieceInfoV2(t)
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv2}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty extraData") {
 		t.Errorf("want empty extraData error, got %v", err)
 	}
@@ -353,23 +353,23 @@ func TestAddPieces_UndefinedPieceCID(t *testing.T) {
 }
 
 func TestAddPieces_BadLocation(t *testing.T) {
-	info, _ := piece.CalculateFromBytes([]byte("hi"))
+	info := testPieceInfoV2(t)
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated) // no Location
 	}))
-	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv2}}, []byte{1})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Errorf("want ErrLocationHeader, got %v", err)
 	}
 }
 
 func TestAddPieces_ZeroTxHash(t *testing.T) {
-	info, _ := piece.CalculateFromBytes([]byte("hi"))
+	info := testPieceInfoV2(t)
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0x0000000000000000000000000000000000000000000000000000000000000000")
 		w.WriteHeader(http.StatusCreated)
 	}))
-	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv2}}, []byte{1})
 	if !errors.Is(err, ErrLocationHeader) {
 		t.Errorf("want ErrLocationHeader for zero hash, got %v", err)
 	}
@@ -870,11 +870,11 @@ func TestCreateDataSetAndAddPieces_LocationWithout0xPrefix(t *testing.T) {
 // ---------- AddPieces server error ----------
 
 func TestAddPieces_ServerError(t *testing.T) {
-	info, _ := piece.CalculateFromBytes([]byte("hi"))
+	info := testPieceInfoV2(t)
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv2}}, []byte{1})
 	if err == nil {
 		t.Error("expected server error")
 	}
@@ -988,13 +988,13 @@ func TestDownloadPiece_WithLogger(t *testing.T) {
 // ---------- NewTestClient with 0x-prefixed hash no leading 0x for add pieces ----------
 
 func TestAddPieces_LocationWithout0xPrefix(t *testing.T) {
-	info, _ := piece.CalculateFromBytes([]byte("hi"))
+	info := testPieceInfoV2(t)
 	hashHex := "dead000000000000000000000000000000000000000000000000000000000000"
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/"+hashHex)
 		w.WriteHeader(http.StatusCreated)
 	}))
-	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv1}}, []byte{1})
+	res, err := c.AddPieces(context.Background(), types.NewBigInt(5), []AddPieceInput{{PieceCID: info.CIDv2}}, []byte{1})
 	if err != nil {
 		t.Fatal(err)
 	}

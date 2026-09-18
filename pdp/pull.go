@@ -31,7 +31,8 @@ var ErrPullFailed = errors.New("pdp: pull failed")
 
 // PullPieceInput is one entry in a pull request.
 type PullPieceInput struct {
-	// PieceCID is the piece to pull.
+	// PieceCID is the piece to pull: a PieceCIDv2 whose raw size is between
+	// chain.MinUploadSize and chain.MaxUploadSize.
 	PieceCID cid.Cid
 	// SourceURL is an HTTPS URL ending in /piece/{pieceCid} on the source SP.
 	SourceURL string
@@ -110,8 +111,8 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 		wire.DataSetID = &ds
 	}
 
-	for _, p := range req.Pieces {
-		if err := validatePieceCIDV2("pdp.PullPieces", p.PieceCID); err != nil {
+	for i, p := range req.Pieces {
+		if err := validateUploadPieceCID("pdp.PullPieces", i, p.PieceCID); err != nil {
 			return nil, err
 		}
 		if p.SourceURL == "" {

@@ -13,6 +13,8 @@
 //     manager's Prepare flow.
 //   - [CalculateUploadFees] and [CalculateLifecycleReserveFunding] — pure
 //     helpers for fee and reserve simulations.
+//   - [PieceSizesToLeafCount] and [LeafCountToBillableBytes] — the size
+//     conversions to use when composing [CalculateEffectiveRate] directly.
 //
 // # Piece sizes and existing state
 //

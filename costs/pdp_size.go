@@ -10,6 +10,32 @@ import (
 
 const leavesPerFR32Block = (chain.MinUploadSize + 1) / chain.BytesPerLeaf
 
+// PieceSizesToLeafCount returns the PDP leaf count added by pieces with the
+// given raw sizes. Pass each piece's size: leaves are rounded per piece, so a
+// total size gives a different result. Every size must be between
+// chain.MinUploadSize and chain.MaxUploadSize; otherwise it returns
+// ErrInvalidArgument.
+func PieceSizesToLeafCount(pieceSizes []uint64) (*big.Int, error) {
+	if err := validatePieceSizes(pieceSizes); err != nil {
+		return nil, fmt.Errorf("costs.PieceSizesToLeafCount: %w", err)
+	}
+	return pieceSizesToLeafCount(pieceSizes), nil
+}
+
+// LeafCountToBillableBytes returns the billable size in bytes for a data set's
+// total leaf count, as expected by [CalculateEffectiveRate]. Convert the total,
+// current plus added, rather than individual pieces. A nil count is zero; a
+// negative count returns ErrInvalidArgument.
+func LeafCountToBillableBytes(leaves *big.Int) (*big.Int, error) {
+	if leaves == nil {
+		return new(big.Int), nil
+	}
+	if leaves.Sign() < 0 {
+		return nil, fmt.Errorf("costs.LeafCountToBillableBytes: %w: leaf count must be non-negative", ErrInvalidArgument)
+	}
+	return leafCountToBillableBytes(leaves), nil
+}
+
 // Partial leaves are charged per piece; byte conversion happens after summing
 // leaves so that rounding is applied only once to the complete dataset.
 func pieceSizesToLeafCount(pieceSizes []uint64) *big.Int {
