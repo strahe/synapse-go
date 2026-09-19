@@ -26,8 +26,9 @@ type AccountStateResolution struct {
 	// AvailableFunds is the balance available for withdrawal or new
 	// commitments at the resolved epoch.
 	AvailableFunds *big.Int
-	// RunwayInEpochs is the number of epochs until the account enters deficit.
-	// It is maxUint256 when LockupRate is zero.
+	// RunwayInEpochs is the number of epochs until the account enters deficit,
+	// and zero once it is in deficit. With a zero LockupRate it is maxUint256
+	// unless LockupCurrent already exceeds Funds.
 	RunwayInEpochs *big.Int
 	// GrossCoverageInEpochs is Funds / LockupRate, ignoring reserved lockup.
 	// It is maxUint256 when LockupRate is zero.
@@ -63,7 +64,9 @@ type AccountSummary struct {
 	// zero, in base units of the configured USDFC token.
 	TotalRateBasedLockup *big.Int
 	// RunwayInEpochs is the number of epochs from CurrentEpoch until the
-	// account enters deficit. It is maxUint256 when LockupRatePerEpoch is zero.
+	// account enters deficit, and zero once it is in deficit. With a zero
+	// LockupRatePerEpoch it is maxUint256 unless the account is already in
+	// deficit.
 	RunwayInEpochs *big.Int
 	// GrossCoverageInEpochs is Funds / LockupRatePerEpoch, ignoring reserved
 	// lockup. It is maxUint256 when LockupRatePerEpoch is zero.
@@ -93,6 +96,11 @@ func (a *AccountState) AvailableFunds() *big.Int {
 
 // ResolveAt projects the raw account fields to epoch. It ignores AccountInfo's
 // cached available funds so each projection uses the same source fields.
+//
+// Rate lockup is projected through epoch even after Funds are exhausted, so an
+// account in deficit reports zero AvailableFunds and [AccountState.DebtAt]
+// reports the full shortfall; no funds are counted as both available and
+// applied to debt.
 func (a *AccountState) ResolveAt(epoch *big.Int) AccountStateResolution {
 	funds, lockupCurrent, lockupRate, lockupLastSettledAt := accountStateParts(a)
 	current := copyBigOrZero(epoch)
