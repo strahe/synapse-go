@@ -8,6 +8,8 @@ import (
 	"path"
 
 	"github.com/ipfs/go-cid"
+
+	"github.com/strahe/synapse-go/internal/redact"
 )
 
 // DownloadPiece calls GET /piece/{pieceCid} and returns a streaming
@@ -45,12 +47,12 @@ func (c *Client) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (io.ReadCl
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("pdp request", "method", req.Method, "url", redactURL(req.URL))
+		c.logger.Debug("pdp request", "method", req.Method, "url", redact.URL(req.URL))
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("pdp: GET %s: %w", req.URL.Path, err)
+		return nil, 0, fmt.Errorf("pdp: GET %s: %w", req.URL.Path, redact.URLError(err))
 	}
 
 	if resp.StatusCode == http.StatusNotFound {

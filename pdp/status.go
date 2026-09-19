@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/strahe/synapse-go/internal/redact"
 )
 
 type transactionStatus uint8
@@ -178,10 +180,10 @@ func (c *Client) getStatusBody(ctx context.Context, op, statusURL string, expect
 
 func (c *Client) validateStatusURL(u *url.URL) error {
 	if u == nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redactURL(u))
+		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redact.URL(u))
 	}
 	if !sameOrigin(c.baseURL, u) {
-		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redactURL(u))
+		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redact.URL(u))
 	}
 	return nil
 }

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/strahe/synapse-go/internal/redact"
 )
 
 const (
@@ -35,11 +37,11 @@ func (c *Client) doPingWithClient(client *http.Client, req *http.Request) (*http
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("pdp request", "method", req.Method, "url", redactURL(req.URL))
+		c.logger.Debug("pdp request", "method", req.Method, "url", redact.URL(req.URL))
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		err = redactRequestError(err)
+		err = redact.URLError(err)
 		return nil, nil, fmt.Errorf("pdp: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()

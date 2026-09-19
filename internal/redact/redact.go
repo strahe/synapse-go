@@ -1,6 +1,9 @@
-package pdp
+// Package redact removes credentials from URLs before they are placed in
+// errors or logs.
+package redact
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 )
@@ -68,16 +71,16 @@ func isSensitiveQueryKey(k string) bool {
 	return false
 }
 
-// redactURL returns a string representation of u that is safe to log:
+// URL returns a string representation of u that is safe to log:
 //
 //   - any userinfo component is dropped entirely;
-//   - any query parameter whose name matches redactSensitiveKey has its
+//   - any query parameter whose name matches isSensitiveQueryKey has its
 //     value replaced with the literal "***";
 //   - the path, scheme, host, port, and non-sensitive query values are
 //     preserved so operators can still identify the endpoint.
 //
 // The original *url.URL is not mutated.
-func redactURL(u *url.URL) string {
+func URL(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
@@ -92,18 +95,18 @@ func redactURL(u *url.URL) string {
 }
 
 // redactRawQuery walks a raw "k=v&k=v" string and replaces the value of
-// every key matching redactSensitiveKey with "***". Using manual parsing
+// every key matching isSensitiveQueryKey with "***". Using manual parsing
 // (rather than url.Values.Encode) keeps the placeholder human-readable
 // instead of emitting "%2A%2A%2A".
 func redactRawQuery(raw string) string {
 	pairs := strings.Split(raw, "&")
 	for i, p := range pairs {
-		eq := strings.IndexByte(p, '=')
+		before, _, ok := strings.Cut(p, "=")
 		var k string
-		if eq < 0 {
+		if !ok {
 			k = p
 		} else {
-			k = p[:eq]
+			k = before
 		}
 		decoded, err := url.QueryUnescape(k)
 		if err == nil {
@@ -112,31 +115,55 @@ func redactRawQuery(raw string) string {
 		if !isSensitiveQueryKey(k) {
 			continue
 		}
-		if eq < 0 {
+		if !ok {
 			pairs[i] = p + "=***"
 		} else {
-			pairs[i] = p[:eq] + "=***"
+			pairs[i] = before + "=***"
 		}
 	}
 	return strings.Join(pairs, "&")
 }
 
-// redactURLString parses raw and returns the redacted form. If parsing fails
-// it strips any "user:pass@" userinfo substring as a best-effort fallback.
-func redactURLString(raw string) string {
+// URLString parses raw and returns the redacted form. If parsing fails it
+// splits raw the same way net/url does: the fragment is dropped, sensitive
+// query values are masked, and userinfo is removed from the authority only,
+// so an "@" in the path or query is left alone.
+func URLString(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	if u, err := url.Parse(raw); err == nil {
-		return redactURL(u)
+		return URL(u)
 	}
-	// Fallback: strip anything of the shape "scheme://user:pass@host/...".
-	if i := strings.Index(raw, "://"); i >= 0 {
-		rest := raw[i+3:]
-		if at := strings.Index(rest, "@"); at >= 0 {
-			// Drop the userinfo prefix only.
-			return raw[:i+3] + rest[at+1:]
+	rest, _, _ := strings.Cut(raw, "#")
+	rest, query, hasQuery := strings.Cut(rest, "?")
+	if scheme, afterScheme, ok := strings.Cut(rest, "://"); ok {
+		authority, path, hasPath := strings.Cut(afterScheme, "/")
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			authority = authority[at+1:]
+		}
+		rest = scheme + "://" + authority
+		if hasPath {
+			rest += "/" + path
 		}
 	}
-	return raw
+	if hasQuery {
+		rest += "?" + redactRawQuery(query)
+	}
+	return rest
+}
+
+// URLError returns a copy of the *url.Error in err's chain with its URL
+// redacted. The copy keeps Op and Err, so errors.Is and errors.As still reach
+// the underlying cause. Pass errors returned directly by net/http or net/url:
+// wrapping around the *url.Error is not preserved. Errors without a
+// *url.Error are returned unchanged.
+func URLError(err error) error {
+	urlErr, ok := errors.AsType[*url.Error](err)
+	if !ok {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = URLString(urlErr.URL)
+	return &redacted
 }

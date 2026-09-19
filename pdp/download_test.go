@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +43,27 @@ func TestDownloadPiece_OK(t *testing.T) {
 	}
 	if string(got) != string(payload) {
 		t.Errorf("body=%q want %q", got, payload)
+	}
+}
+
+func TestDownloadPiece_TransportErrorRedactsServiceURLUserinfo(t *testing.T) {
+	rt := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+	c, err := New("https://secretuser@provider.example", WithHTTPClient(&http.Client{Transport: rt}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, _, err = c.DownloadPiece(context.Background(), testPieceInfoV2(t).CIDv2)
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if _, ok := errors.AsType[*url.Error](err); !ok {
+		t.Fatalf("error=%T %v, want wrapped *url.Error", err, err)
+	}
+	if strings.Contains(err.Error(), "secretuser") {
+		t.Fatalf("error leaked service URL userinfo: %v", err)
 	}
 }
 

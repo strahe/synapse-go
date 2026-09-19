@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/internal/retry"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/pdp"
@@ -693,7 +694,7 @@ func (r *ServiceResolver) selectHealthyCandidates(
 					probeErrors[result.index] = fmt.Errorf(
 						"provider %s (%s): %w",
 						candidates[result.index].provider.Info.ID.String(),
-						candidates[result.index].provider.Offering.ServiceURL,
+						redact.URLString(candidates[result.index].provider.Offering.ServiceURL),
 						result.err,
 					)
 				}

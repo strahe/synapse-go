@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -660,6 +662,121 @@ func TestContextDownload_RejectsNonPieceCID(t *testing.T) {
 	_, err = ctx.Download(context.Background(), nonPiece)
 	if err == nil {
 		t.Fatal("expected error for non-piece CID, got nil")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func assertNoURLSecrets(t *testing.T, label, got string) {
+	t.Helper()
+	for _, secret := range []string{"secretuser", "secretpass", "secretquery"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("%s leaked %q: %s", label, secret, got)
+		}
+	}
+}
+
+func TestDownloadAndValidate_StatusErrorRedactsURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	data := bytes.Repeat([]byte("rs"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	rawURL := strings.Replace(server.URL, "://", "://secretuser:secretpass@", 1) + "/piece?token=secretquery&part=1"
+
+	mgr := mustNewService(t, Options{AllowPrivateNetworks: true})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: rawURL})
+	if err == nil {
+		t.Fatal("expected error for non-2xx status")
+	}
+	dlErr, ok := errors.AsType[*DownloadError](err)
+	if !ok {
+		t.Fatalf("want *DownloadError, got %T: %v", err, err)
+	}
+	if dlErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("StatusCode = %d, want %d", dlErr.StatusCode, http.StatusForbidden)
+	}
+	assertNoURLSecrets(t, "DownloadError.URL", dlErr.URL)
+	assertNoURLSecrets(t, "Error()", err.Error())
+	assertNoURLSecrets(t, "%#v", fmt.Sprintf("%#v", dlErr))
+	if !strings.Contains(dlErr.URL, "part=1") {
+		t.Fatalf("DownloadError.URL dropped non-sensitive query: %s", dlErr.URL)
+	}
+}
+
+func TestDownloadAndValidate_TransportErrorRedactsURL(t *testing.T) {
+	data := bytes.Repeat([]byte("rt"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	transportErr := errors.New("connection refused")
+	httpClient := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, transportErr
+	})}
+
+	mgr := mustNewService(t, Options{HTTPClient: httpClient})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{
+		URL: "https://secretuser:secretpass@provider.example/piece?token=secretquery&part=1",
+	})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	dlErr, ok := errors.AsType[*DownloadError](err)
+	if !ok {
+		t.Fatalf("want *DownloadError, got %T: %v", err, err)
+	}
+	urlErr, ok := errors.AsType[*url.Error](err)
+	if !ok {
+		t.Fatalf("want wrapped *url.Error, got %T: %v", err, err)
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("error should wrap transport cause: %v", err)
+	}
+	assertNoURLSecrets(t, "DownloadError.URL", dlErr.URL)
+	assertNoURLSecrets(t, "url.Error.URL", urlErr.URL)
+	assertNoURLSecrets(t, "Error()", err.Error())
+	assertNoURLSecrets(t, "%#v", fmt.Sprintf("%#v", dlErr))
+	if !strings.Contains(dlErr.URL, "part=1") {
+		t.Fatalf("DownloadError.URL dropped non-sensitive query: %s", dlErr.URL)
+	}
+}
+
+func TestDownloadAndValidate_MalformedURLRedactsQuery(t *testing.T) {
+	data := bytes.Repeat([]byte("mq"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+
+	mgr := mustNewService(t, Options{})
+	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{
+		URL: "https://secretuser:secretpass@provider.example/%zz?token=secretquery&part=1",
+	})
+	if err == nil {
+		t.Fatal("expected error for malformed URL")
+	}
+	dlErr, ok := errors.AsType[*DownloadError](err)
+	if !ok {
+		t.Fatalf("want *DownloadError, got %T: %v", err, err)
+	}
+	urlErr, ok := errors.AsType[*url.Error](err)
+	if !ok {
+		t.Fatalf("want wrapped *url.Error, got %T: %v", err, err)
+	}
+	assertNoURLSecrets(t, "DownloadError.URL", dlErr.URL)
+	assertNoURLSecrets(t, "url.Error.URL", urlErr.URL)
+	assertNoURLSecrets(t, "Error()", err.Error())
+	assertNoURLSecrets(t, "%#v", fmt.Sprintf("%#v", dlErr))
+	if !strings.Contains(dlErr.URL, "part=1") {
+		t.Fatalf("DownloadError.URL dropped non-sensitive query: %s", dlErr.URL)
 	}
 }
 

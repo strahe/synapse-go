@@ -10,6 +10,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -17,9 +18,9 @@ import (
 // Use errors.AsType[*pdp.HTTPError] to read StatusCode, Body, and RetryAfter
 // from wrapped errors.
 //
-// The URL field is always pre-redacted: userinfo is stripped and sensitive
-// query parameters (see sensitiveQueryKeys in redact.go) are masked as
-// "***". This removes the footgun where a caller logs `%+v` or JSON
+// The URL field is always pre-redacted: userinfo is stripped and the values
+// of sensitive query parameters such as token, signature, or api_key are
+// masked as "***". This removes the footgun where a caller logs `%+v` or JSON
 // marshals the struct and leaks credentials. The pre-redacted form is
 // sufficient for debugging — path, scheme, host and non-sensitive query
 // values are preserved.
@@ -37,7 +38,7 @@ type HTTPError struct {
 func newHTTPError(req *http.Request, resp *http.Response, body []byte) *HTTPError {
 	e := &HTTPError{
 		Method:     req.Method,
-		URL:        redactURL(req.URL),
+		URL:        redact.URL(req.URL),
 		StatusCode: resp.StatusCode,
 		Body:       strings.TrimSpace(string(body)),
 	}
