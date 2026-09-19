@@ -354,22 +354,3 @@ func requiredLockupPeriod(priceList *warmstorage.PriceList) *big.Int {
 	}
 	return big.NewInt(DefaultLockupPeriod)
 }
-
-func aggregateLockup(rateDelta, streaming, lifecycle, reserveReplenishment, cdn, cacheMiss, total *big.Int) AdditionalLockup {
-	rateDeltaOut := copyBigOrDefault(rateDelta, nil)
-	streamingOut := copyBigOrDefault(streaming, nil)
-	lifecycleOut := copyBigOrDefault(lifecycle, nil)
-	reserveReplenishmentOut := copyBigOrDefault(reserveReplenishment, nil)
-	cdnOut := copyBigOrDefault(cdn, nil)
-	cacheMissOut := copyBigOrDefault(cacheMiss, nil)
-	totalOut := copyBigOrDefault(total, nil)
-	return AdditionalLockup{
-		RateDeltaPerEpoch:    rateDeltaOut,
-		StreamingLockup:      streamingOut,
-		LifecycleLockup:      lifecycleOut,
-		ReserveReplenishment: reserveReplenishmentOut,
-		CDNLockup:            cdnOut,
-		CacheMissLockup:      cacheMissOut,
-		Total:                totalOut,
-	}
-}

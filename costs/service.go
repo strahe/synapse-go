@@ -152,10 +152,6 @@ func (s *Service) GetUploadCosts(
 	if opts.ExtraRunwayEpochs < 0 {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w: ExtraRunwayEpochs must be non-negative", ErrInvalidArgument)
 	}
-	options := *opts
-	opts = &options
-	pieceSizes = slices.Clone(pieceSizes)
-	runwayEpochs := opts.ExtraRunwayEpochs
 	bufferEpochs, err := resolveBufferEpochs(opts.BufferEpochs)
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
@@ -170,8 +166,186 @@ func (s *Service) GetUploadCosts(
 	if err != nil {
 		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
 	}
-	currentLeaves := dataSetState.leaves
 
+	totals, err := s.calculateUploadCosts(
+		ctx,
+		payer,
+		slices.Clone(pieceSizes),
+		[]uploadCostTarget{{isNewDataSet: opts.IsNewDataSet, withCDN: opts.EnableCDN, state: dataSetState}},
+		opts.ExtraRunwayEpochs,
+		bufferEpochs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
+	}
+	return &UploadCosts{
+		Rate:                 totals.rate,
+		Fees:                 totals.fees,
+		Lockup:               totals.lockup,
+		DepositNeeded:        totals.depositNeeded,
+		RequiredLockupPeriod: totals.requiredLockupPeriod,
+		NeedsFWSSMaxApproval: totals.needsApproval,
+		Ready:                totals.ready(),
+	}, nil
+}
+
+// uploadCostTarget is one validated upload target. For a new data set, state
+// holds zero values.
+type uploadCostTarget struct {
+	isNewDataSet bool
+	withCDN      bool
+	state        resolvedDataSetCostState
+}
+
+// uploadCostTotals sums per-target rates, fees and lockups. Debt, runway and
+// buffer are applied once to the payer account.
+type uploadCostTotals struct {
+	rate                 EffectiveRate
+	fees                 UploadFees
+	lockup               AdditionalLockup
+	depositNeeded        *big.Int
+	requiredLockupPeriod *big.Int
+	needsApproval        bool
+}
+
+func (t uploadCostTotals) ready() bool {
+	return t.depositNeeded.Sign() == 0 && !t.needsApproval
+}
+
+// calculateUploadCosts prices one upload of pieceSizes on every target. Inputs
+// must already be validated, and the caller owns pieceSizes and targets.
+func (s *Service) calculateUploadCosts(
+	ctx context.Context,
+	payer common.Address,
+	pieceSizes []uint64,
+	targets []uploadCostTarget,
+	extraRunwayEpochs int64,
+	bufferEpochs int64,
+) (uploadCostTotals, error) {
+	priceList, account, approval, err := s.readUploadCostInputs(ctx, payer)
+	if err != nil {
+		return uploadCostTotals{}, err
+	}
+
+	rateDelta := new(big.Int)
+	streamingLockup := new(big.Int)
+	lifecycleLockup := new(big.Int)
+	reserveReplenishment := new(big.Int)
+	cdnLockup := new(big.Int)
+	cacheMissLockup := new(big.Int)
+	totalLockup := new(big.Int)
+	ratePerEpoch := new(big.Int)
+	ratePerMonth := new(big.Int)
+	createDataSetFee := new(big.Int)
+	addPiecesFee := new(big.Int)
+	allNewDataSets := true
+	requiredLockupPeriod := requiredLockupPeriod(priceList)
+	addedLeaves := pieceSizesToLeafCount(pieceSizes)
+
+	for i, target := range targets {
+		if !target.isNewDataSet {
+			allNewDataSets = false
+		}
+		lockup := calculateAdditionalLockupRequired(
+			addedLeaves,
+			target.state.leaves,
+			priceList,
+			requiredLockupPeriod,
+			target.isNewDataSet,
+			target.withCDN,
+		)
+		fees, err := CalculateUploadFees(priceList, target.isNewDataSet, pieceSizes)
+		if err != nil {
+			return uploadCostTotals{}, fmt.Errorf("refs[%d]: %w", i, err)
+		}
+		reserveFunding, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
+			PriceList:                      priceList,
+			PieceSizes:                     pieceSizes,
+			IsNewDataSet:                   target.isNewDataSet,
+			CurrentLifecycleReserveBalance: target.state.reserveBalance,
+			PendingOneTimePayments:         target.state.pendingPayments,
+		})
+		if err != nil {
+			return uploadCostTotals{}, fmt.Errorf("refs[%d]: %w", i, err)
+		}
+		rate := CalculateEffectiveRate(
+			leafCountToBillableBytes(new(big.Int).Add(target.state.leaves, addedLeaves)),
+			priceList.Rates.StoragePerTiBPerMonth,
+			priceList.Rates.DatasetFeePerMonth,
+			chain.EpochsPerMonth,
+		)
+
+		rateDelta.Add(rateDelta, lockup.RateDeltaPerEpoch)
+		streamingLockup.Add(streamingLockup, lockup.StreamingLockup)
+		lifecycleLockup.Add(lifecycleLockup, lockup.LifecycleLockup)
+		reserveReplenishment.Add(reserveReplenishment, reserveFunding.ReserveReplenishment)
+		cdnLockup.Add(cdnLockup, lockup.CDNLockup)
+		cacheMissLockup.Add(cacheMissLockup, lockup.CacheMissLockup)
+		totalLockup.Add(totalLockup, lockup.Total)
+		totalLockup.Add(totalLockup, reserveFunding.ReserveReplenishment)
+		ratePerEpoch.Add(ratePerEpoch, rate.RatePerEpoch)
+		ratePerMonth.Add(ratePerMonth, rate.RatePerMonth)
+		createDataSetFee.Add(createDataSetFee, fees.CreateDataSetFee)
+		addPiecesFee.Add(addPiecesFee, fees.AddPiecesFee)
+	}
+
+	currentEpoch, err := s.currentEpoch(ctx)
+	if err != nil {
+		return uploadCostTotals{}, err
+	}
+	resolved := account.ResolveAt(currentEpoch)
+	currentRate := account.LockupRate
+	if currentRate == nil {
+		currentRate = new(big.Int)
+	}
+	depositNeeded := CalculateDepositNeeded(DepositCalculation{
+		AdditionalLockup:  totalLockup,
+		RateDelta:         rateDelta,
+		CurrentLockupRate: currentRate,
+		Debt:              account.DebtAt(currentEpoch),
+		AvailableFunds:    resolved.AvailableFunds,
+		RunwayInEpochs:    resolved.RunwayInEpochs,
+		ExtraRunwayEpochs: extraRunwayEpochs,
+		BufferEpochs:      bufferEpochs,
+		IsNewDataSet:      allNewDataSets,
+	})
+
+	needsApproval := !isFWSSMaxApproved(
+		approval.IsApproved,
+		approval.RateAllowance,
+		approval.LockupAllowance,
+		approval.MaxLockupPeriod,
+		requiredLockupPeriod,
+	)
+
+	return uploadCostTotals{
+		rate: EffectiveRate{RatePerEpoch: ratePerEpoch, RatePerMonth: ratePerMonth},
+		fees: UploadFees{
+			CreateDataSetFee: createDataSetFee,
+			AddPiecesFee:     addPiecesFee,
+			Total:            new(big.Int).Add(createDataSetFee, addPiecesFee),
+		},
+		lockup: AdditionalLockup{
+			RateDeltaPerEpoch:    rateDelta,
+			StreamingLockup:      streamingLockup,
+			LifecycleLockup:      lifecycleLockup,
+			ReserveReplenishment: reserveReplenishment,
+			CDNLockup:            cdnLockup,
+			CacheMissLockup:      cacheMissLockup,
+			Total:                totalLockup,
+		},
+		depositNeeded:        depositNeeded,
+		requiredLockupPeriod: requiredLockupPeriod,
+		needsApproval:        needsApproval,
+	}, nil
+}
+
+// readUploadCostInputs reads the price list, payer account and FWSS approval
+// concurrently. A nil price list is treated as zero-value prices.
+func (s *Service) readUploadCostInputs(
+	ctx context.Context,
+	payer common.Address,
+) (*warmstorage.PriceList, *payments.AccountState, *payments.OperatorApproval, error) {
 	var (
 		priceList *warmstorage.PriceList
 		account   *payments.AccountState
@@ -222,89 +396,12 @@ func (s *Service) GetUploadCosts(
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return nil, fmt.Errorf("costs.GetUploadCosts: %w", errors.Join(errs...))
+		return nil, nil, nil, errors.Join(errs...)
 	}
 	if priceList == nil {
 		priceList = &warmstorage.PriceList{}
 	}
-
-	addedLeaves := pieceSizesToLeafCount(pieceSizes)
-	rate := CalculateEffectiveRate(
-		leafCountToBillableBytes(new(big.Int).Add(currentLeaves, addedLeaves)),
-		priceList.Rates.StoragePerTiBPerMonth,
-		priceList.Rates.DatasetFeePerMonth,
-		chain.EpochsPerMonth,
-	)
-
-	fees, err := CalculateUploadFees(priceList, opts.IsNewDataSet, pieceSizes)
-	if err != nil {
-		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
-	}
-	reserveFunding, err := CalculateLifecycleReserveFunding(LifecycleReserveCalculation{
-		PriceList:                      priceList,
-		PieceSizes:                     pieceSizes,
-		IsNewDataSet:                   opts.IsNewDataSet,
-		CurrentLifecycleReserveBalance: dataSetState.reserveBalance,
-		PendingOneTimePayments:         dataSetState.pendingPayments,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
-	}
-	requiredLockupPeriod := requiredLockupPeriod(priceList)
-	lockup := calculateAdditionalLockupRequired(
-		addedLeaves,
-		currentLeaves,
-		priceList,
-		requiredLockupPeriod,
-		opts.IsNewDataSet,
-		opts.EnableCDN,
-	)
-	lockup.ReserveReplenishment = reserveFunding.ReserveReplenishment
-	lockup.Total.Add(lockup.Total, lockup.ReserveReplenishment)
-
-	currentEpoch, err := s.currentEpoch(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("costs.GetUploadCosts: %w", err)
-	}
-	resolved := account.ResolveAt(currentEpoch)
-	debt := account.DebtAt(currentEpoch)
-	avail := resolved.AvailableFunds
-
-	currentRate := account.LockupRate
-	if currentRate == nil {
-		currentRate = new(big.Int)
-	}
-
-	depositNeeded := CalculateDepositNeeded(DepositCalculation{
-		AdditionalLockup:  lockup.Total,
-		RateDelta:         lockup.RateDeltaPerEpoch,
-		CurrentLockupRate: currentRate,
-		Debt:              debt,
-		AvailableFunds:    avail,
-		RunwayInEpochs:    resolved.RunwayInEpochs,
-		ExtraRunwayEpochs: runwayEpochs,
-		BufferEpochs:      bufferEpochs,
-		IsNewDataSet:      opts.IsNewDataSet,
-	})
-
-	needsApproval := !isFWSSMaxApproved(
-		approval.IsApproved,
-		approval.RateAllowance,
-		approval.LockupAllowance,
-		approval.MaxLockupPeriod,
-		requiredLockupPeriod,
-	)
-	ready := depositNeeded.Sign() == 0 && !needsApproval
-
-	return &UploadCosts{
-		Rate:                 rate,
-		Fees:                 fees,
-		Lockup:               lockup,
-		DepositNeeded:        depositNeeded,
-		RequiredLockupPeriod: requiredLockupPeriod,
-		NeedsFWSSMaxApproval: needsApproval,
-		Ready:                ready,
-	}, nil
+	return priceList, account, approval, nil
 }
 
 func (s *Service) currentEpoch(ctx context.Context) (*big.Int, error) {
