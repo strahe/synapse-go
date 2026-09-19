@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/strahe/synapse-go/internal/redact"
 )
 
 // Upload stores a single copy and commits it to a new data set. opts may be
@@ -76,7 +78,7 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	if err != nil {
 		return nil, &StoreError{
 			ProviderID: copyBigInt(c.provider.ID),
-			Endpoint:   c.provider.ServiceURL,
+			Endpoint:   redact.URLString(c.provider.ServiceURL),
 			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}
@@ -115,7 +117,7 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	if err != nil {
 		return nil, &CommitError{
 			ProviderID: copyBigInt(c.provider.ID),
-			Endpoint:   c.provider.ServiceURL,
+			Endpoint:   redact.URLString(c.provider.ServiceURL),
 			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
+	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/internal/safehttp"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/signer"
@@ -490,7 +491,7 @@ func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader
 	if err != nil {
 		return nil, &StoreError{
 			ProviderID: primary.ProviderID(),
-			Endpoint:   primary.ServiceURL(),
+			Endpoint:   redact.URLString(primary.ServiceURL()),
 			Cause:      uploadBatchContextError(ctx, err),
 		}
 	}
@@ -850,7 +851,7 @@ secondariesLoop:
 	if len(copies) == 0 {
 		return nil, &CommitError{
 			ProviderID: primary.ProviderID(),
-			Endpoint:   primary.ServiceURL(),
+			Endpoint:   redact.URLString(primary.ServiceURL()),
 			Cause:      primaryCommitErr,
 		}
 	}

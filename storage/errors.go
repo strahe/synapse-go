@@ -127,7 +127,9 @@ func (e *TerminateServiceDebtError) Error() string {
 	return fmt.Sprintf("storage: terminate service requires settling existing payment debt: shortfall %s", e.Shortfall.String())
 }
 
-// StoreError is returned when the primary store operation fails.
+// StoreError is returned when the primary store operation fails. When the SDK
+// constructs it, Endpoint is redacted: userinfo is stripped and sensitive
+// query parameter values are masked as "***", so the value is safe to log.
 type StoreError struct {
 	ProviderID types.BigInt
 	Endpoint   string
@@ -153,6 +155,8 @@ func (e *StoreError) Unwrap() error {
 
 // CommitError is returned when all on-chain commit attempts fail and no copies
 // are stored. Individual per-provider failures are reported in UploadResult.FailedAttempts.
+// When the SDK constructs it, Endpoint is redacted in the same way as
+// [StoreError.Endpoint].
 type CommitError struct {
 	ProviderID types.BigInt
 	Endpoint   string
@@ -205,7 +209,8 @@ func (e *CommitError) Unwrap() error {
 
 // DownloadError is returned when an HTTP download request fails, either due to
 // a network error or a non-2xx HTTP status code. Use errors.AsType to access the
-// URL and status code.
+// URL and status code. URL, and the URL in any wrapped *url.Error, is redacted
+// in the same way as [StoreError.Endpoint]; the path is kept as-is.
 type DownloadError struct {
 	URL        string
 	StatusCode int   // zero when the failure occurred before receiving a response

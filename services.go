@@ -12,6 +12,7 @@ import (
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/internal/adapters"
 	"github.com/strahe/synapse-go/internal/contracts/pdpverifier"
+	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/sessionkey"
@@ -184,7 +185,7 @@ func (c *Client) initServices() error {
 		NewContext: func(provider storage.Provider, opts storage.ContextFactoryOptions) (*storage.ProviderContext, error) {
 			pdpClient, err := c.newPDPClient(provider.ServiceURL)
 			if err != nil {
-				return nil, fmt.Errorf("create PDP client for %s: %w", provider.ServiceURL, err)
+				return nil, fmt.Errorf("create PDP client for %s: %w", redact.URLString(provider.ServiceURL), err)
 			}
 			ctxOpts := []storage.ContextOption{
 				storage.WithPayer(rootAddress),

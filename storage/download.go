@@ -13,6 +13,7 @@ import (
 	commpwriter "github.com/filecoin-project/go-commp-utils/v2/writer"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/piece"
 )
 
@@ -145,30 +146,31 @@ func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid)
 }
 
 func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
+	safeURL := redact.URLString(rawURL)
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, &DownloadError{URL: rawURL, Cause: err}
+		return nil, &DownloadError{URL: safeURL, Cause: redact.URLError(err)}
 	}
 	switch parsed.Scheme {
 	case "http", "https":
 	default:
-		return nil, &DownloadError{URL: rawURL, Cause: fmt.Errorf("%w: %q", ErrUnsupportedScheme, parsed.Scheme)}
+		return nil, &DownloadError{URL: safeURL, Cause: fmt.Errorf("%w: %q", ErrUnsupportedScheme, parsed.Scheme)}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, &DownloadError{URL: rawURL, Cause: err}
+		return nil, &DownloadError{URL: safeURL, Cause: redact.URLError(err)}
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, &DownloadError{URL: rawURL, Cause: err}
+		return nil, &DownloadError{URL: safeURL, Cause: redact.URLError(err)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_ = resp.Body.Close()
-		return nil, &DownloadError{URL: rawURL, StatusCode: resp.StatusCode}
+		return nil, &DownloadError{URL: safeURL, StatusCode: resp.StatusCode}
 	}
 	if s.downloadMaxBytes > 0 && resp.ContentLength > s.downloadMaxBytes {
 		_ = resp.Body.Close()
-		return nil, &DownloadError{URL: rawURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, s.downloadMaxBytes)}
+		return nil, &DownloadError{URL: safeURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, s.downloadMaxBytes)}
 	}
 	maxBytes := uint64(0)
 	if s.downloadMaxBytes > 0 {

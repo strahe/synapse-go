@@ -1,11 +1,12 @@
-package pdp
+package redact
 
 import (
+	"errors"
 	"net/url"
 	"testing"
 )
 
-func TestRedactURL(t *testing.T) {
+func TestURL(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -81,7 +82,6 @@ func TestRedactURL(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			u, err := url.Parse(tc.in)
@@ -90,28 +90,28 @@ func TestRedactURL(t *testing.T) {
 			}
 			origQuery := u.RawQuery
 			origUser := u.User
-			got := redactURL(u)
+			got := URL(u)
 			if got != tc.want {
-				t.Errorf("redactURL(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("URL(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 			if u.RawQuery != origQuery {
-				t.Errorf("redactURL mutated RawQuery: before=%q after=%q", origQuery, u.RawQuery)
+				t.Errorf("URL mutated RawQuery: before=%q after=%q", origQuery, u.RawQuery)
 			}
 			if u.User != origUser {
-				t.Errorf("redactURL mutated User: before=%v after=%v", origUser, u.User)
+				t.Errorf("URL mutated User: before=%v after=%v", origUser, u.User)
 			}
 		})
 	}
 }
 
-func TestRedactURL_Nil(t *testing.T) {
+func TestURL_Nil(t *testing.T) {
 	t.Parallel()
-	if got := redactURL(nil); got != "" {
-		t.Errorf("redactURL(nil) = %q, want empty", got)
+	if got := URL(nil); got != "" {
+		t.Errorf("URL(nil) = %q, want empty", got)
 	}
 }
 
-func TestRedactURLString(t *testing.T) {
+func TestURLString(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -126,14 +126,78 @@ func TestRedactURLString(t *testing.T) {
 			in:   "https://user:p\x7fass@host/path",
 			want: "https://host/path",
 		},
+		{
+			name: "unparseable masks sensitive query values",
+			in:   "https://host/%zz?token=secretquery&part=1",
+			want: "https://host/%zz?token=***&part=1",
+		},
+		{
+			name: "unparseable strips userinfo and masks query",
+			in:   "https://secretuser:secretpass@host/%zz?token=secretquery&part=1",
+			want: "https://host/%zz?token=***&part=1",
+		},
+		{
+			name: "unparseable only strips userinfo from the authority",
+			in:   "https://host/p%zz?email=a@b.com&token=secretquery",
+			want: "https://host/p%zz?email=a@b.com&token=***",
+		},
+		{
+			name: "unparseable drops the fragment",
+			in:   "https://secretuser:secretpass@host/\x7f#access_token=secretquery",
+			want: "https://host/\x7f",
+		},
+		{
+			name: "unparseable without scheme masks query",
+			in:   "%zz?token=secretquery",
+			want: "%zz?token=***",
+		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := redactURLString(tc.in); got != tc.want {
-				t.Errorf("redactURLString(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := URLString(tc.in); got != tc.want {
+				t.Errorf("URLString(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestURLError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("connection refused")
+	orig := &url.Error{Op: "Get", URL: "https://user@host/path?token=secret&part=1", Err: cause}
+
+	got := URLError(orig)
+	urlErr, ok := errors.AsType[*url.Error](got)
+	if !ok {
+		t.Fatalf("URLError returned %T, want *url.Error", got)
+	}
+	if urlErr == orig {
+		t.Fatal("URLError returned the original *url.Error instead of a copy")
+	}
+	if want := "https://host/path?token=***&part=1"; urlErr.URL != want {
+		t.Errorf("URL = %q, want %q", urlErr.URL, want)
+	}
+	if urlErr.Op != "Get" {
+		t.Errorf("Op = %q, want Get", urlErr.Op)
+	}
+	if !errors.Is(got, cause) {
+		t.Error("redacted error no longer matches the underlying cause")
+	}
+	if orig.URL != "https://user@host/path?token=secret&part=1" {
+		t.Errorf("URLError mutated the original URL: %q", orig.URL)
+	}
+}
+
+func TestURLError_NonURLError(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("plain")
+	if got := URLError(err); !errors.Is(got, err) {
+		t.Errorf("URLError(%v) = %v, want the same error", err, got)
+	}
+	if got := URLError(nil); got != nil {
+		t.Errorf("URLError(nil) = %v, want nil", got)
 	}
 }

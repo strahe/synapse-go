@@ -553,6 +553,66 @@ func TestPrepareExecute_UsesComputedApprovalOptionsWithCallerWriteOptions(t *tes
 	}
 }
 
+type mutatingFunder struct {
+	amounts   []*big.Int
+	optCounts []int
+}
+
+func (f *mutatingFunder) FundSync(_ context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error) {
+	f.amounts = append(f.amounts, new(big.Int).Set(amount))
+	f.optCounts = append(f.optCounts, len(opts))
+	amount.SetInt64(0)
+	return &sdktypes.WriteResult{Hash: common.HexToHash("0xdeadbeef")}, nil
+}
+
+func TestPrepareExecute_UsesValuesFixedAtPrepare(t *testing.T) {
+	funder := &mutatingFunder{}
+	svc := newTestService()
+	svc.funder = funder
+	svc.payerAddr = testPayer()
+
+	input := &costs.MultiContextCosts{
+		Ready:                false,
+		DepositNeeded:        big.NewInt(1234),
+		NeedsFWSSMaxApproval: true,
+		RequiredLockupPeriod: big.NewInt(456),
+	}
+	res, err := svc.Prepare(context.Background(), &PrepareOptions{Costs: input})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	input.DepositNeeded.SetInt64(1)
+	res.Transaction.DepositAmount.SetInt64(2)
+	res.Costs.RequiredLockupPeriod.SetInt64(3)
+
+	callerOpts := make([]payments.WriteOption, 1, 4)
+	callerOpts[0] = payments.WithWait(time.Second)
+	for range 2 {
+		if _, err := res.Transaction.Execute(context.Background(), callerOpts...); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+	}
+
+	if len(funder.amounts) != 2 {
+		t.Fatalf("funder called %d times, want 2", len(funder.amounts))
+	}
+	for i, got := range funder.amounts {
+		if got.Int64() != 1234 {
+			t.Fatalf("Execute call %d funded %s, want 1234", i, got)
+		}
+	}
+	for i, got := range funder.optCounts {
+		if got != 3 {
+			t.Fatalf("Execute call %d passed %d opts, want 3 (caller + approval decision + lockup period)", i, got)
+		}
+	}
+	for i, opt := range callerOpts[1:cap(callerOpts)] {
+		if opt != nil {
+			t.Fatalf("Execute wrote approval option into caller slice spare capacity at index %d", i+1)
+		}
+	}
+}
+
 func TestPrepare_RejectsInvalidNotReadyCosts(t *testing.T) {
 	uploadCtx := &fakeUploadContext{id: sdktypes.NewBigInt(1)}
 	tests := []struct {

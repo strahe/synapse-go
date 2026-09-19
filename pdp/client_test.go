@@ -74,6 +74,23 @@ func TestNew_Validation(t *testing.T) {
 	}
 }
 
+func TestNew_ParseErrorRedactsURL(t *testing.T) {
+	for _, serviceURL := range []string{
+		"https://secretuser:secretpass@provider.example/\x7f",
+		"https://secretuser:secretpass@provider.example/%zz?token=secretquery",
+	} {
+		_, err := New(serviceURL)
+		if err == nil {
+			t.Fatalf("New(%q): expected parse error", serviceURL)
+		}
+		for _, secret := range []string{"secretuser", "secretpass", "secretquery"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("New(%q) error leaked %q: %v", serviceURL, secret, err)
+			}
+		}
+	}
+}
+
 func TestPing_OK(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/pdp/ping" {

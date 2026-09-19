@@ -430,7 +430,7 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	want := errors.New("store failed")
 	primary := &fakeUploadContext{
 		id:       types.NewBigInt(101),
-		endpoint: "https://primary.example.com",
+		endpoint: "https://secretuser:secretpass@primary.example.com/?token=secretquery",
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return nil, want
 		},
@@ -452,6 +452,8 @@ func TestManagerUpload_PrimaryStoreFailureReturnsStoreError(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Fatalf("error should wrap original cause: %v", err)
 	}
+	assertNoURLSecrets(t, "StoreError.Endpoint", got.Endpoint)
+	assertNoURLSecrets(t, "Error()", err.Error())
 }
 
 func TestManagerUpload_PartialSuccessReturnsIncompleteResult(t *testing.T) {
@@ -529,7 +531,7 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 
 	primary := &fakeUploadContext{
 		id:       types.NewBigInt(101),
-		endpoint: "https://primary.example.com",
+		endpoint: "https://secretuser:secretpass@primary.example.com/?token=secretquery",
 		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
 		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
@@ -568,6 +570,8 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	if !got.ProviderID.Equal(primary.id) {
 		t.Fatalf("providerID=%s want %s", got.ProviderID.String(), primary.id.String())
 	}
+	assertNoURLSecrets(t, "CommitError.Endpoint", got.Endpoint)
+	assertNoURLSecrets(t, "Error()", err.Error())
 }
 
 func TestUploadToContextsKeepsCommitResultWhenCommitIgnoresCanceledContext(t *testing.T) {

@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+
+	"github.com/strahe/synapse-go/internal/redact"
 )
 
 // DefaultUserAgent is set on every outgoing request unless overridden.
@@ -96,7 +98,7 @@ func New(serviceURL string, opts ...Option) (*Client, error) {
 	}
 	u, err := url.Parse(serviceURL)
 	if err != nil {
-		return nil, fmt.Errorf("pdp.New: parse serviceURL: %w", err)
+		return nil, fmt.Errorf("pdp.New: parse serviceURL: %w", redact.URLError(err))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("pdp.New: unsupported scheme %q", u.Scheme)
@@ -145,11 +147,11 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	if c.logger != nil {
-		c.logger.Debug("pdp request", "method", req.Method, "url", redactURL(req.URL))
+		c.logger.Debug("pdp request", "method", req.Method, "url", redact.URL(req.URL))
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		err = redactRequestError(err)
+		err = redact.URLError(err)
 		return nil, nil, fmt.Errorf("pdp: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -252,16 +254,6 @@ func isRetryable(ctx context.Context, err error) bool {
 	}
 	// Unknown error type: do not retry. Safer than optimistic retry.
 	return false
-}
-
-func redactRequestError(err error) error {
-	urlErr, ok := errors.AsType[*url.Error](err)
-	if !ok {
-		return err
-	}
-	redacted := *urlErr
-	redacted.URL = redactURLString(urlErr.URL)
-	return &redacted
 }
 
 // httpRetryDelay returns the delay to wait before the next retry attempt.

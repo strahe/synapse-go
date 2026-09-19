@@ -44,15 +44,18 @@ type PrepareOptions struct {
 // when the account is not yet Ready. Execute performs the top-up.
 type PrepareTransaction struct {
 	// DepositAmount is the USDFC amount that will be moved into the
-	// payments account.
+	// payments account. It is a copy; modifying it does not change what
+	// Execute sends.
 	DepositAmount *big.Int
 	// IncludesApproval reports whether the call will also set the FWSS
 	// operator to max allowance.
 	IncludesApproval bool
-	// Execute performs the funding operation. When approval is required,
-	// Prepare fixes the approval decision and max lockup period from Costs;
-	// caller-provided payments.WriteOption values should be limited to write
-	// controls such as wait, confirmations, or precheck behavior.
+	// Execute performs the funding operation. Prepare fixes the deposit
+	// amount, approval decision, and max lockup period when it returns; later
+	// changes to DepositAmount, PrepareResult.Costs, or PrepareOptions.Costs
+	// do not affect Execute. Caller-provided payments.WriteOption values
+	// should be limited to write controls such as wait, confirmations, or
+	// precheck behavior.
 	Execute func(ctx context.Context, opts ...payments.WriteOption) (*types.WriteResult, error)
 }
 
@@ -118,27 +121,29 @@ func (s *Service) Prepare(ctx context.Context, opts *PrepareOptions) (*PrepareRe
 		return nil, fmt.Errorf("storage.Service.Prepare: %w: no PaymentsFunder configured", ErrUninitialized)
 	}
 
-	deposit := summary.DepositNeeded
+	// Execute works from a private snapshot so later changes to the returned
+	// Costs, DepositAmount, or caller-owned opts.Costs cannot alter the payment.
+	deposit := new(big.Int).Set(summary.DepositNeeded)
 	needsApproval := summary.NeedsFWSSMaxApproval
+	var approvalOpts []payments.WriteOption
+	if needsApproval {
+		approvalOpts = append(approvalOpts, payments.WithFundNeedsFwssApproval(true))
+		if summary.RequiredLockupPeriod != nil {
+			approvalOpts = append(approvalOpts, payments.WithFundApprovalLockupPeriod(new(big.Int).Set(summary.RequiredLockupPeriod)))
+		}
+	}
 	funder := s.funder
 
 	return &PrepareResult{
 		Costs: summary,
 		Transaction: &PrepareTransaction{
-			DepositAmount:    deposit,
+			DepositAmount:    new(big.Int).Set(deposit),
 			IncludesApproval: needsApproval,
 			Execute: func(ctx context.Context, extraOpts ...payments.WriteOption) (*types.WriteResult, error) {
 				if err := s.checkInit(); err != nil {
 					return nil, err
 				}
-				optsOut := extraOpts
-				if needsApproval {
-					optsOut = append(optsOut, payments.WithFundNeedsFwssApproval(true))
-					if summary.RequiredLockupPeriod != nil {
-						optsOut = append(optsOut, payments.WithFundApprovalLockupPeriod(summary.RequiredLockupPeriod))
-					}
-				}
-				return funder.FundSync(ctx, deposit, optsOut...)
+				return funder.FundSync(ctx, new(big.Int).Set(deposit), slices.Concat(extraOpts, approvalOpts)...)
 			},
 		},
 	}, nil

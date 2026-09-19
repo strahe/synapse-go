@@ -321,7 +321,7 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 		resolver := newTestServiceResolver(t, serviceResolverFixture{
 			approvedProviderIDs: []types.BigInt{testID(1), testID(2)},
 			activeProviders: []spregistry.PDPProvider{
-				testPDPProvider(testID(1), "https://sp-1.example.com"),
+				testPDPProvider(testID(1), "https://secretuser:secretpass@sp-1.example.com/?token=secretquery"),
 				testPDPProvider(testID(2), "https://sp-2.example.com"),
 			},
 			providerPing: func(context.Context, string) error {
@@ -338,6 +338,10 @@ func TestServiceResolverResolveUploadContexts_HealthChecksAutoSelectedProviders(
 		}
 		if !strings.Contains(err.Error(), "provider IDs: 1, 2") {
 			t.Fatalf("ResolveUploadContexts error=%q want failed provider IDs", err)
+		}
+		assertNoURLSecrets(t, "health-check error", err.Error())
+		if !strings.Contains(err.Error(), "sp-1.example.com") {
+			t.Fatalf("ResolveUploadContexts error=%q want redacted provider endpoint", err)
 		}
 	})
 
