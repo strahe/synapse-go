@@ -254,8 +254,7 @@ guaranteed to share a transaction. Each caller still receives callbacks and
 the PieceID only for its own piece; pieces in one batch report the same
 transaction ID.
 
-Low-level `Store`, `Pull`, `PresignForCommit`, `Commit`, `SubmitCommit`, and
-`WaitForCommit` calls remain immediate and are never implicitly batched.
+Low-level context operations remain immediate and are never implicitly batched.
 Standalone users opt in by constructing `storage.NewUploadBatcher`, injecting
 it through `storage.Options.UploadBatcher` or `storage.WithUploadBatcher`, and
 owning its Flush and Close lifecycle.
@@ -389,10 +388,16 @@ before account or pricing reads.
 
 There are two immutable context types:
 
-- `ProviderContext` identifies one provider and no dataset. `Commit` and
+- `ProviderContext` identifies one provider and no dataset. `CreateAndAdd` and
   `Pull` create a new dataset.
 - `DataSetContext` identifies one provider and one existing dataset. `Commit`
   and `Pull` always target that dataset.
+
+`StorageContext` is the sealed mixed-target interface used by selection,
+`Prepare`, and `UploadToContexts`. It exposes only capabilities that have the
+same meaning for both target kinds. Applications can receive, store, and pass
+SDK-created values in `[]StorageContext`, but commit lifecycles and direct
+single-context `Upload` remain on the concrete context types.
 
 Provider-scoped methods such as `Store` and `Download` are shared. For example,
 both `ProviderContext.Download` and `DataSetContext.Download` retrieve a piece
@@ -502,13 +507,85 @@ fmt.Println("dataset:", dataSetCtx.DataSetID())
 The receiver never binds or changes target after creation. Concurrent creates
 on one `ProviderContext` are independent; adds on one `DataSetContext` may run
 in parallel. Advanced callers can split a context upload into `Store`, `Pull`,
-`PresignForCommit`, and `Commit`.
+`PresignForCommit`, and either `CreateAndAdd` or `Commit`.
 
-One direct `Commit` or `Pull` request can contain at most 40 pieces and must fit
-the encoded add-pieces message limit. Oversized requests return
-`pdp.ErrAddPiecesMessageTooLarge` before provider submission. Split direct
-requests into smaller requests; low-level context methods do not split them
-automatically.
+One direct `CreateAndAdd`, `Commit`, or `Pull` request can contain at most 40
+pieces and must fit the encoded add-pieces message limit. Oversized requests
+return `pdp.ErrAddPiecesMessageTooLarge` before provider submission. Split
+direct requests into smaller requests; low-level context methods do not split
+them automatically.
+
+### Recovering create-and-add and add-pieces submissions
+
+`CreateAndAddRequest.OnSubmitted` and `CommitRequest.OnSubmitted` receive an
+independent copy of the complete, JSON-serializable `CommitSubmission` after
+the provider handle has been validated and before confirmation begins. A
+single-step call can therefore preserve its handle even when the later wait
+fails:
+
+```go
+var submitted storage.CommitSubmission
+
+result, err := providerCtx.CreateAndAdd(ctx, storage.CreateAndAddRequest{
+    Pieces: pieces,
+    OnSubmitted: func(s storage.CommitSubmission) {
+        submitted = s // persist all fields here
+    },
+})
+if err != nil {
+    if submitted.TransactionID == "" {
+        return err
+    }
+    recoveryCtx, cancel := context.WithTimeout(context.Background(), 3 * time.Minute)
+    defer cancel()
+
+    fresh, openErr := client.Storage().NewProviderContext(
+        recoveryCtx,
+        submitted.ProviderID,
+        storage.NewProviderContextOptions{},
+    )
+    if openErr != nil {
+        return openErr
+    }
+    result, err = fresh.WaitForCreateAndAdd(recoveryCtx, submitted)
+}
+if err != nil {
+    return err
+}
+fmt.Println("dataset:", result.DataSet.DataSetID())
+```
+
+For restart-safe workflows, prefer splitting submission from confirmation so
+the application can persist the handle before it starts waiting:
+
+```go
+submitted, err := providerCtx.SubmitCreateAndAdd(ctx, storage.CreateAndAddRequest{
+    Pieces: pieces,
+})
+if err != nil {
+    return err
+}
+// Persist submitted before waiting.
+result, err := providerCtx.WaitForCreateAndAdd(ctx, *submitted)
+```
+
+For an existing dataset, use `DataSetContext.SubmitCommit`,
+`GetCommitStatus`, and `WaitForCommit` in the same pattern. Use
+`ProviderContext.GetCreateAndAddStatus` and `WaitForCreateAndAdd` for a new
+dataset. High-level upload recovery continues to use
+`FailedAttempt.Submission`; `OnPiecesAdded` remains a transaction progress
+event and still receives a transaction hash rather than a recovery handle.
+
+Migration from the previous context API:
+
+| Previous API | Updated API |
+|---|---|
+| `provider.Commit(req)` | `provider.CreateAndAdd(storage.CreateAndAddRequest{...})` |
+| `provider.SubmitCommit(req)` | `provider.SubmitCreateAndAdd(storage.CreateAndAddRequest{...})` |
+| `provider.GetCommitStatus(submission)` | `provider.GetCreateAndAddStatus(submission)` |
+| `provider.WaitForCommit(submission)` | `provider.WaitForCreateAndAdd(submission)` |
+| `CommitRequest.ClientDataSetID` | `CreateAndAddRequest.ClientDataSetID` |
+| `CommitRequest.OnSubmitted: func(txHash string)` | `CreateAndAddRequest.OnSubmitted` and `CommitRequest.OnSubmitted`: `func(submission storage.CommitSubmission)` |
 
 ## Discovery And Lifecycle
 

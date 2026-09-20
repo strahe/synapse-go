@@ -1248,6 +1248,7 @@ type fakeUploadContext struct {
 	pullFn          func(context.Context, PullRequest) (*PullResult, error)
 	commitFn        func(context.Context, CommitRequest) (*CommitResult, error)
 	submitCommitFn  func(context.Context, CommitRequest) (*CommitSubmission, error)
+	commitRequestFn func(context.Context, commitRequest) (*CommitSubmission, error)
 	waitCommitFn    func(context.Context, CommitSubmission) (*CommitResult, error)
 	findDataSetFn   func(context.Context, types.BigInt) (DataSetRef, bool, error)
 	identity        *ContextIdentity
@@ -1297,11 +1298,19 @@ func (c *fakeUploadContext) PresignForCommit(ctx context.Context, pieces []Piece
 	return c.presignFn(ctx, pieces)
 }
 
+func (c *fakeUploadContext) presignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+	return c.PresignForCommit(ctx, pieces)
+}
+
 func (c *fakeUploadContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	if c.pullFn == nil {
 		return nil, fmt.Errorf("unexpected pull")
 	}
 	return c.pullFn(ctx, req)
+}
+
+func (c *fakeUploadContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	return c.Pull(ctx, req)
 }
 
 func (c *fakeUploadContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
@@ -1321,21 +1330,37 @@ var (
 // SubmitCommit uses submitCommitFn when set. Otherwise a commitFn models the
 // whole commit: it runs here, and WaitForCommit returns its result.
 func (c *fakeUploadContext) SubmitCommit(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
-	if c.submitCommitFn != nil {
-		return c.submitCommitFn(ctx, req)
+	return c.submitCommit(ctx, commitRequest{CommitRequest: req})
+}
+
+func (c *fakeUploadContext) submitCommit(ctx context.Context, req commitRequest) (*CommitSubmission, error) {
+	var submission *CommitSubmission
+	var err error
+	switch {
+	case c.commitRequestFn != nil:
+		submission, err = c.commitRequestFn(ctx, req)
+	case c.submitCommitFn != nil:
+		submission, err = c.submitCommitFn(ctx, req.CommitRequest)
+	default:
+		if c.commitFn == nil {
+			return nil, fmt.Errorf("unexpected SubmitCommit")
+		}
+		var result *CommitResult
+		result, err = c.commitFn(ctx, req.CommitRequest)
+		if err == nil {
+			statusURL := fmt.Sprintf("fake-commit://%d", fakeCommitSeq.Add(1))
+			fakeCommitResults.Store(statusURL, result)
+			submission = &CommitSubmission{StatusURL: statusURL, ProviderID: c.id}
+			if result != nil {
+				submission.TransactionID = result.TransactionID
+			}
+		}
 	}
-	if c.commitFn == nil {
-		return nil, fmt.Errorf("unexpected SubmitCommit")
+	if err != nil || submission == nil {
+		return submission, err
 	}
-	result, err := c.commitFn(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	statusURL := fmt.Sprintf("fake-commit://%d", fakeCommitSeq.Add(1))
-	fakeCommitResults.Store(statusURL, result)
-	submission := &CommitSubmission{StatusURL: statusURL, ProviderID: c.id}
-	if result != nil {
-		submission.TransactionID = result.TransactionID
+	if req.OnSubmitted != nil {
+		req.OnSubmitted(copyCommitSubmission(*submission))
 	}
 	return submission, nil
 }
@@ -1348,6 +1373,10 @@ func (c *fakeUploadContext) WaitForCommit(ctx context.Context, submission Commit
 		return result.(*CommitResult), nil
 	}
 	return nil, fmt.Errorf("unexpected WaitForCommit")
+}
+
+func (c *fakeUploadContext) waitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+	return c.WaitForCommit(ctx, submission)
 }
 
 func (c *fakeUploadContext) Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error) {

@@ -3,8 +3,8 @@
 //
 // # Contexts
 //
-// [ProviderContext] identifies one provider but no data set. Its Commit and
-// Pull operations create a new data set. [DataSetContext] identifies one
+// [ProviderContext] identifies one provider but no data set. Its CreateAndAdd
+// and Pull operations create a new data set. [DataSetContext] identifies one
 // provider and one existing data set; its Commit and Pull operations always
 // use that data set. Neither type changes target after construction.
 //
@@ -90,9 +90,8 @@
 //
 // During a multi-copy Service upload, the primary and every secondary
 // participate in batching. Replicas from one Upload call are not guaranteed to
-// share a transaction. Store, Pull, PresignForCommit, Commit, SubmitCommit, and
-// WaitForCommit keep their direct behavior; only high-level Upload methods opt
-// into the coordinator.
+// share a transaction. Low-level Store, Pull, and commit lifecycle methods keep
+// their direct behavior; only high-level Upload methods use the coordinator.
 //
 // The Go API intentionally uses an explicitly owned coordinator, functional
 // options, context-aware Flush, and immutable context injection rather than
@@ -171,9 +170,11 @@
 // UploadToContexts does not select replacements. The first context stores the
 // reader; later contexts pull from it. Configure this path with
 // [UploadToContextsOptions]. Service.Upload retains automatic replacement for
-// failed secondary copies. Direct [ProviderContext.Upload],
-// [DataSetContext.Upload], and [StorageContext.Upload] calls store one copy and
-// accept [ContextUploadOptions].
+// failed secondary copies. Direct [ProviderContext.Upload] and
+// [DataSetContext.Upload] calls store one copy and accept [ContextUploadOptions].
+// [StorageContext] is the sealed, ordered mixed-target view used by selection,
+// preparation, and UploadToContexts; commit lifecycle methods remain on the
+// concrete context whose target determines their meaning.
 //
 // Contexts carry an immutable [ContextIdentity] containing payer, chain, and
 // record-keeper identities. Service validates this identity before cost
@@ -197,7 +198,7 @@
 //	// After an ambiguous error, rebuild the same provider context and poll:
 //	ref, found, err := freshProviderContext.FindDataSetByClientDataSetID(ctx, clientDataSetID)
 //
-// A create-and-add request uses [CommitRequest.ClientDataSetID] in the same
+// A create-and-add request uses [CreateAndAddRequest.ClientDataSetID] in the same
 // way. Persist the operation kind and piece CIDs as application state too,
 // because finding the data set does not prove that its pieces were added.
 // A false found result means the matching data set is not visible in the
@@ -218,27 +219,31 @@
 // the returned DataSetRef to [ProviderContext.ForDataSet] to obtain a
 // DataSetContext.
 //
-// [ProviderContext.Commit] and [DataSetContext.Commit] are convenience methods
-// that submit once and wait for confirmation. Applications that must survive
-// process restarts can split that lifecycle with SubmitCommit,
-// GetCommitStatus, and WaitForCommit on the same concrete context type.
-// Persist the complete [CommitSubmission] returned by SubmitCommit before
-// waiting. A fresh context for the same immutable target can resume that
-// submission without signing or submitting another transaction.
+// [ProviderContext.CreateAndAdd] and [DataSetContext.Commit] are convenience
+// methods that submit once and wait for confirmation. Their OnSubmitted
+// callback receives an independent, complete [CommitSubmission] after the
+// provider handle is validated and before confirmation starts. Persisting that
+// value allows a failed wait to resume on a fresh context for the same target.
+// For explicit recovery control, prefer SubmitCreateAndAdd followed by
+// WaitForCreateAndAdd on ProviderContext, or SubmitCommit followed by
+// WaitForCommit on DataSetContext, and persist the returned submission between
+// those calls.
 //
-// GetCommitStatus performs one logical status check and returns
-// [CommitStatePending], [CommitStateConfirmed], or [CommitStateRejected]. A
-// rejected status is returned without an error; WaitForCommit reports the same
-// terminal state as [CommitRejectedError].
+// GetCreateAndAddStatus and GetCommitStatus perform one logical status check
+// and return [CommitStatePending], [CommitStateConfirmed], or
+// [CommitStateRejected]. A rejected status is returned without an error;
+// WaitForCreateAndAdd and WaitForCommit report the same terminal state as
+// [CommitRejectedError].
 //
 // Uploads keep the same handle. When an upload commit fails after the provider
 // accepted its submission, including a failed or timed-out wait, the
 // [FailedAttempt] in [UploadResult.FailedAttempts] or
 // [CommitError.FailedAttempts] carries it as Submission. Resume a
-// create-and-add submission on [Service.NewProviderContext] for its ProviderID,
-// or an add-pieces submission on [Service.NewDataSetContext] for its DataSet,
-// then call WaitForCommit. A batched submission can include other uploads'
-// pieces; the result's PieceIDs follow the order of Submission.PieceCIDs.
+// create-and-add submission on [Service.NewProviderContext] for its ProviderID
+// and call WaitForCreateAndAdd, or open an add-pieces submission's DataSet with
+// [Service.NewDataSetContext] and call WaitForCommit. A batched submission can
+// include other uploads' pieces; the result's PieceIDs follow the order of
+// Submission.PieceCIDs.
 //
 // # Service termination
 //
@@ -278,14 +283,12 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [StorageContext], [PDPProviderClient], [PDPVerifierReader],
-// [FWSSDataSetReader], [FWSSTerminator], and [MultiCostCalculator] are SDK
-// assembly interfaces. The supported StorageContext implementations are
-// [ProviderContext] and [DataSetContext]; custom resolvers can return those
-// built-in contexts. External implementations of the complete StorageContext
-// method set are not compatibility targets. Other assembly interfaces are
-// implemented by [pdp.Client], [costs.Service], and adapters assembled by the
-// root SDK client.
+// [StorageContext] is sealed and implemented only by [ProviderContext] and
+// [DataSetContext]. Custom resolvers may return those built-in contexts but
+// cannot provide their own implementation. [PDPProviderClient],
+// [PDPVerifierReader], [FWSSDataSetReader], [FWSSTerminator], and
+// [MultiCostCalculator] are SDK assembly interfaces implemented by [pdp.Client],
+// [costs.Service], and adapters assembled by the root SDK client.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts

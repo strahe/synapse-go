@@ -94,12 +94,16 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 		PieceMetadata: cloneMetadata(uploadOpts),
 	}}
 
-	var onSubmitted func(string)
+	var onBatchSubmitted func(string)
+	var onCommitSubmitted func(CommitSubmission)
 	if uploadOpts != nil && uploadOpts.OnPiecesAdded != nil {
 		pieceCID := storeResult.PieceCID
 		providerID := copyBigInt(c.provider.ID)
-		onSubmitted = func(txHash string) {
+		onBatchSubmitted = func(txHash string) {
 			uploadOpts.OnPiecesAdded(txHash, providerID, []SubmittedPiece{{PieceCID: pieceCID}})
+		}
+		onCommitSubmitted = func(submission CommitSubmission) {
+			uploadOpts.OnPiecesAdded(submission.TransactionID, submission.ProviderID, []SubmittedPiece{{PieceCID: pieceCID}})
 		}
 	}
 
@@ -109,7 +113,10 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	)
 	batched := c.uploadBatcher != nil
 	if !batched {
-		submission, err = c.submitCommit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
+		submission, err = c.submitCommit(ctx, op, ref, commitRequest{CommitRequest: CommitRequest{
+			Pieces:      pieceInputs,
+			OnSubmitted: onCommitSubmitted,
+		}})
 		if err == nil {
 			commit, err = c.waitForCommit(ctx, op, ref, *submission)
 		}
@@ -119,7 +126,7 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 		if enqueueErr != nil {
 			err = enqueueErr
 		} else {
-			commit, submission, err = task.wait(ctx, onSubmitted)
+			commit, submission, err = task.wait(ctx, onBatchSubmitted)
 		}
 	}
 	if err != nil {

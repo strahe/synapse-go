@@ -32,12 +32,19 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// StorageContext is the SDK-owned composition interface for an immutable
-// provider or data-set upload target. Its supported implementations are
-// [ProviderContext] and [DataSetContext]. Custom resolvers may return those
-// built-in contexts; external implementations of the complete method set are
-// not compatibility targets during the 0.x phase.
+// storageContextOps seals StorageContext and defines its internal orchestration.
+type storageContextOps interface {
+	presignForCommit(context.Context, []PieceInput) ([]byte, error)
+	pull(context.Context, PullRequest) (*PullResult, error)
+	submitCommit(context.Context, commitRequest) (*CommitSubmission, error)
+	waitForCommit(context.Context, CommitSubmission) (*CommitResult, error)
+}
+
+// StorageContext is a sealed immutable upload target implemented by
+// [ProviderContext] and [DataSetContext]. Callers may inspect and pass
+// SDK-created values but cannot implement the interface.
 type StorageContext interface {
+	storageContextOps
 	ContextIdentity() ContextIdentity
 	ProviderID() types.BigInt
 	GetProviderInfo() Provider
@@ -49,14 +56,12 @@ type StorageContext interface {
 	PieceURL(cid.Cid) string
 	Store(context.Context, io.Reader, *StoreOptions) (*StoreResult, error)
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
-	PresignForCommit(context.Context, []PieceInput) ([]byte, error)
-	Pull(context.Context, PullRequest) (*PullResult, error)
-	Commit(context.Context, CommitRequest) (*CommitResult, error)
-	SubmitCommit(context.Context, CommitRequest) (*CommitSubmission, error)
-	WaitForCommit(context.Context, CommitSubmission) (*CommitResult, error)
-	// Upload stores and commits one copy. Its options may be nil.
-	Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error)
 }
+
+var (
+	_ StorageContext = (*ProviderContext)(nil)
+	_ StorageContext = (*DataSetContext)(nil)
+)
 
 // UploadResolver selects provider contexts for upload operations and provides
 // replacement candidates when a secondary provider fails. Implementations must
@@ -561,7 +566,7 @@ secondariesLoop:
 					pullTarget, extraData, presignErr = s.uploadBatcher.authorizePull(ctx, current, pieceInputs)
 				}
 			} else {
-				extraData, presignErr = current.PresignForCommit(ctx, pieceInputs)
+				extraData, presignErr = current.presignForCommit(ctx, pieceInputs)
 			}
 			if admittedBatchWork {
 				if err := uploadBatchContextError(ctx, nil); err != nil {
@@ -576,7 +581,7 @@ secondariesLoop:
 						opts.OnPullProgress(pullProviderID, pieceCID, status)
 					}
 				}
-				pullResult, pullErr := pullTarget.Pull(ctx, PullRequest{
+				pullResult, pullErr := pullTarget.pull(ctx, PullRequest{
 					Pieces:     []cid.Cid{storeResult.PieceCID},
 					From:       primary.PieceURL,
 					ExtraData:  extraData,
@@ -743,16 +748,19 @@ secondariesLoop:
 				outcomes[idx].err = target.err
 				return
 			}
-			var onSubmitted func(string)
+			var onBatchSubmitted func(string)
+			var onCommitSubmitted func(CommitSubmission)
 			if opts != nil && opts.OnPiecesAdded != nil {
-				commitProviderID := target.ctx.ProviderID()
 				commitPieceCID := storeResult.PieceCID
-				onSubmitted = func(txHash string) {
-					opts.OnPiecesAdded(txHash, commitProviderID, []SubmittedPiece{{PieceCID: commitPieceCID}})
+				onBatchSubmitted = func(txHash string) {
+					opts.OnPiecesAdded(txHash, target.ctx.ProviderID(), []SubmittedPiece{{PieceCID: commitPieceCID}})
+				}
+				onCommitSubmitted = func(submission CommitSubmission) {
+					opts.OnPiecesAdded(submission.TransactionID, submission.ProviderID, []SubmittedPiece{{PieceCID: commitPieceCID}})
 				}
 			}
 			if target.task != nil {
-				outcomes[idx].result, outcomes[idx].submission, outcomes[idx].err = target.task.wait(ctx, onSubmitted)
+				outcomes[idx].result, outcomes[idx].submission, outcomes[idx].err = target.task.wait(ctx, onBatchSubmitted)
 				return
 			}
 			select {
@@ -768,17 +776,17 @@ secondariesLoop:
 			}
 			// Submit and wait separately so an accepted submission survives a
 			// failed wait.
-			submission, err := target.ctx.SubmitCommit(ctx, CommitRequest{
+			submission, err := target.ctx.submitCommit(ctx, commitRequest{CommitRequest: CommitRequest{
 				Pieces:      pieceInputs,
 				ExtraData:   target.extraData,
-				OnSubmitted: onSubmitted,
-			})
+				OnSubmitted: onCommitSubmitted,
+			}})
 			if err == nil && submission == nil {
 				err = errors.New("submit commit returned nil submission")
 			}
 			if err == nil {
 				outcomes[idx].submission = submission
-				outcomes[idx].result, err = target.ctx.WaitForCommit(ctx, *submission)
+				outcomes[idx].result, err = target.ctx.waitForCommit(ctx, *submission)
 			}
 			if err != nil {
 				outcomes[idx].err = uploadBatchContextError(ctx, err)

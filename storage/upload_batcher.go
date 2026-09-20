@@ -893,10 +893,12 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 	}
 	var submission *CommitSubmission
 	if err == nil {
-		submission, err = target.SubmitCommit(b.ctx, CommitRequest{
-			Pieces:          pieces,
-			ExtraData:       extraData,
-			ClientDataSetID: copyBigIntPtr(clientDataSetID),
+		submission, err = target.submitCommit(b.ctx, commitRequest{
+			CommitRequest: CommitRequest{
+				Pieces:    pieces,
+				ExtraData: extraData,
+			},
+			clientDataSetID: copyBigIntPtr(clientDataSetID),
 		})
 	}
 	if create != nil && err == nil {
@@ -920,7 +922,7 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 		return nil, err
 	}
 	b.publishSubmission(flight, *submission)
-	result, err := target.WaitForCommit(b.ctx, *submission)
+	result, err := target.waitForCommit(b.ctx, *submission)
 	err = uploadBatchContextError(b.ctx, err)
 	if err == nil {
 		if result == nil {

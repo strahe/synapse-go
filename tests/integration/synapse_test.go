@@ -312,7 +312,15 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 
 	start := time.Now()
 	t.Log("start CDNContextDownload Upload")
-	result, err := uploadCtx.Upload(cctx, bytes.NewReader(data), tracedContextUploadOptions(t, "CDNContextDownload", nil))
+	var result *storage.UploadResult
+	switch concrete := uploadCtx.(type) {
+	case *storage.ProviderContext:
+		result, err = concrete.Upload(cctx, bytes.NewReader(data), tracedContextUploadOptions(t, "CDNContextDownload", nil))
+	case *storage.DataSetContext:
+		result, err = concrete.Upload(cctx, bytes.NewReader(data), tracedContextUploadOptions(t, "CDNContextDownload", nil))
+	default:
+		t.Fatalf("selected context has unsupported type %T", uploadCtx)
+	}
 	t.Logf("done CDNContextDownload Upload elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)

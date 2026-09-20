@@ -242,10 +242,7 @@ func callbackPanicUploadFixture(t *testing.T) ([]byte, *fakeResolver) {
 			}
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
-		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-			if req.OnSubmitted != nil {
-				req.OnSubmitted("0xprimary")
-			}
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xprimary",
 				DataSet:       testCommitDataSetRef(101, 1001),
@@ -281,10 +278,7 @@ func callbackPanicUploadFixture(t *testing.T) ([]byte, *fakeResolver) {
 				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
 			}, nil
 		},
-		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-			if req.OnSubmitted != nil {
-				req.OnSubmitted("0xreplacement")
-			}
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xreplacement",
 				DataSet:       testCommitDataSetRef(303, 1002),
@@ -681,10 +675,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 			_, _ = io.Copy(io.Discard, r)
 			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
-		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-			if req.OnSubmitted != nil {
-				req.OnSubmitted("0xprimary")
-			}
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xprimary",
 				DataSet:       testCommitDataSetRef(101, 1001),
@@ -721,10 +712,7 @@ func TestManagerUpload_CallbacksAcrossPrimaryAndReplacement(t *testing.T) {
 				Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
 			}, nil
 		},
-		commitFn: func(_ context.Context, req CommitRequest) (*CommitResult, error) {
-			if req.OnSubmitted != nil {
-				req.OnSubmitted("0xreplacement")
-			}
+		commitFn: func(_ context.Context, _ CommitRequest) (*CommitResult, error) {
 			return &CommitResult{
 				TransactionID: "0xreplacement",
 				DataSet:       testCommitDataSetRef(303, 1002),
@@ -916,10 +904,11 @@ func TestManagerUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 }
 
 // Compile-time contract check: PullRequest.OnProgress and
-// CommitRequest.OnSubmitted must exist with the expected signatures.
+// Commit request callbacks must exist with the expected signatures.
 // Keep these low-level hooks pinned in the public surface even if future test
 // refactors stop exercising them through the higher-level upload flows.
 var (
 	_ = PullRequest{OnProgress: func(cid.Cid, PullStatus) {}}
-	_ = CommitRequest{OnSubmitted: func(string) {}}
+	_ = CommitRequest{OnSubmitted: func(CommitSubmission) {}}
+	_ = CreateAndAddRequest{OnSubmitted: func(CommitSubmission) {}}
 )

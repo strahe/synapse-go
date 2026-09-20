@@ -121,22 +121,34 @@ type PullResult struct {
 	Pieces []PullPieceResult
 }
 
-// CommitRequest triggers on-chain registration of pieces for one provider.
-type CommitRequest struct {
+// CreateAndAddRequest creates a data set for a provider and adds pieces to it.
+type CreateAndAddRequest struct {
 	Pieces []PieceInput
-	// ExtraData is an EIP-712 signed payload. Leave it nil to let a
-	// ProviderContext sign a create-and-add request. Payloads whose encoded
+	// ExtraData is an EIP-712 signed create-and-add payload. Leave it nil to
+	// let the ProviderContext sign the request. Payloads whose encoded
 	// add-pieces calldata exceeds pdp.MaxAddPiecesMessageSize are rejected.
 	ExtraData []byte
-	// ClientDataSetID is the caller-owned uint256 used when a ProviderContext
-	// creates a data set. Nil generates a random ID. When ExtraData is set,
-	// the value must match the ID embedded in its create payload.
-	// DataSetContext commits must leave this nil.
+	// ClientDataSetID is the caller-owned uint256 used when creating the data
+	// set. Nil generates a random ID. When ExtraData is set, the value must
+	// match the ID embedded in its create payload.
 	ClientDataSetID *types.BigInt
-	// OnSubmitted is invoked with the original transaction hash immediately
-	// after the provider returns a valid submission handle, before confirmation.
-	// It may be nil. Direct Commit calls do not recover callback panics.
-	OnSubmitted func(txHash string)
+	// OnSubmitted is invoked with a persistable copy of the complete submission
+	// immediately after the provider returns a valid handle, before confirmation.
+	// It may be nil. Direct calls do not recover callback panics.
+	OnSubmitted func(CommitSubmission)
+}
+
+// CommitRequest adds pieces to an existing data set.
+type CommitRequest struct {
+	Pieces []PieceInput
+	// ExtraData is an EIP-712 signed add-pieces payload. Leave it nil to let the
+	// DataSetContext sign the request. Payloads whose encoded add-pieces calldata
+	// exceeds pdp.MaxAddPiecesMessageSize are rejected.
+	ExtraData []byte
+	// OnSubmitted is invoked with a persistable copy of the complete submission
+	// immediately after the provider returns a valid handle, before confirmation.
+	// It may be nil. Direct calls do not recover callback panics.
+	OnSubmitted func(CommitSubmission)
 }
 
 // CommitKind identifies whether a submission creates a data set or adds to an
@@ -187,7 +199,7 @@ type CommitStatus struct {
 	PieceIDs               []types.BigInt `json:"pieceIds"`
 }
 
-// CommitResult is returned by a successful Commit call.
+// CommitResult is returned by a successful create-and-add or commit call.
 type CommitResult struct {
 	TransactionID          string         `json:"transactionId"`          // transaction hash from the provider submission
 	ConfirmedTransactionID string         `json:"confirmedTransactionId"` // actual on-chain hash, when reported by the provider
@@ -245,9 +257,9 @@ type FailedAttempt struct {
 	Err        error
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
 	// Submission is set when the provider accepted a commit submission for
-	// this attempt, even if confirmation later failed or timed out. Pass it to
-	// WaitForCommit to learn the outcome; see Submission recovery in the
-	// package documentation.
+	// this attempt, even if confirmation later failed or timed out. Resume it
+	// with ProviderContext.WaitForCreateAndAdd or DataSetContext.WaitForCommit,
+	// according to its Kind; see Submission recovery in the package documentation.
 	Submission *CommitSubmission
 }
 
@@ -433,9 +445,9 @@ type UploadToContextsOptions struct {
 	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
 }
 
-// ContextUploadOptions configures [ProviderContext.Upload],
-// [DataSetContext.Upload], and [StorageContext.Upload]. Context uploads store
-// and commit one copy and do not perform provider selection or secondary pulls.
+// ContextUploadOptions configures [ProviderContext.Upload] and
+// [DataSetContext.Upload]. Context uploads store and commit one copy and do not
+// perform provider selection or secondary pulls.
 //
 // Callbacks may be invoked from internal goroutines. Handlers that share
 // mutable state must be concurrency-safe. Callback panics are handled as

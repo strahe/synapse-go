@@ -217,8 +217,12 @@ var (
 import (
 	"context"
 	"io"
+	"reflect"
+	"testing"
 
+	"github.com/ipfs/go-cid"
 	"github.com/strahe/synapse-go/storage"
+	"github.com/strahe/synapse-go/types"
 )
 
 type uploadResolver struct{}
@@ -237,13 +241,42 @@ var (
 
 	_ func(*storage.Service, context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error) = (*storage.Service).Upload
 	_ func(*storage.Service, context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error) = (*storage.Service).UploadToContexts
-	_ func(storage.StorageContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = storage.StorageContext.Upload
+	_ func(storage.StorageContext) storage.ContextIdentity = storage.StorageContext.ContextIdentity
+	_ func(storage.StorageContext) types.BigInt = storage.StorageContext.ProviderID
+	_ func(storage.StorageContext) storage.Provider = storage.StorageContext.GetProviderInfo
+	_ func(storage.StorageContext) (storage.DataSetRef, bool) = storage.StorageContext.DataSetRef
 	_ func(storage.StorageContext) map[string]string = storage.StorageContext.DataSetMetadata
-	_ func(storage.StorageContext, context.Context, storage.CommitRequest) (*storage.CommitSubmission, error) = storage.StorageContext.SubmitCommit
-	_ func(storage.StorageContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = storage.StorageContext.WaitForCommit
+	_ func(storage.StorageContext) string = storage.StorageContext.ServiceURL
+	_ func(storage.StorageContext) bool = storage.StorageContext.CDNEnabled
+	_ func(storage.StorageContext, cid.Cid) string = storage.StorageContext.PieceURL
+	_ func(storage.StorageContext, context.Context, io.Reader, *storage.StoreOptions) (*storage.StoreResult, error) = storage.StorageContext.Store
+	_ func(storage.StorageContext, context.Context, cid.Cid) (io.ReadCloser, error) = storage.StorageContext.Download
+
+	_ func(*storage.ProviderContext, context.Context, storage.CreateAndAddRequest) (*storage.CommitResult, error) = (*storage.ProviderContext).CreateAndAdd
+	_ func(*storage.ProviderContext, context.Context, storage.CreateAndAddRequest) (*storage.CommitSubmission, error) = (*storage.ProviderContext).SubmitCreateAndAdd
+	_ func(*storage.ProviderContext, context.Context, storage.CommitSubmission) (*storage.CommitStatus, error) = (*storage.ProviderContext).GetCreateAndAddStatus
+	_ func(*storage.ProviderContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = (*storage.ProviderContext).WaitForCreateAndAdd
+	_ func(*storage.DataSetContext, context.Context, storage.CommitRequest) (*storage.CommitResult, error) = (*storage.DataSetContext).Commit
+	_ func(*storage.DataSetContext, context.Context, storage.CommitRequest) (*storage.CommitSubmission, error) = (*storage.DataSetContext).SubmitCommit
+	_ func(*storage.DataSetContext, context.Context, storage.CommitSubmission) (*storage.CommitStatus, error) = (*storage.DataSetContext).GetCommitStatus
+	_ func(*storage.DataSetContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = (*storage.DataSetContext).WaitForCommit
 	_ func(*storage.ProviderContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.ProviderContext).Upload
 	_ func(*storage.DataSetContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.DataSetContext).Upload
+
+	_ storage.StorageContext = (*storage.ProviderContext)(nil)
+	_ storage.StorageContext = (*storage.DataSetContext)(nil)
 )
+
+func keepStorageContext(ctx storage.StorageContext) storage.StorageContext { return ctx }
+
+func TestStorageContextDoesNotExposeOrchestrationMethods(t *testing.T) {
+	contextType := reflect.TypeOf((*storage.StorageContext)(nil)).Elem()
+	for _, name := range []string{"PresignForCommit", "Pull", "Commit", "SubmitCommit", "WaitForCommit", "Upload"} {
+		if _, ok := contextType.MethodByName(name); ok {
+			t.Fatalf("StorageContext unexpectedly exposes %s", name)
+		}
+	}
+}
 `)
 
 	writeFile(t, filepath.Join(dir, "storage_signer_test.go"), `package apiconfigtest
