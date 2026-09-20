@@ -90,9 +90,8 @@
 //
 // During a multi-copy Service upload, the primary and every secondary
 // participate in batching. Replicas from one Upload call are not guaranteed to
-// share a transaction. Store, Pull, PresignForCommit, CreateAndAdd, Commit,
-// SubmitCreateAndAdd, SubmitCommit, WaitForCreateAndAdd, and WaitForCommit keep
-// their direct behavior; only high-level Upload methods opt into the coordinator.
+// share a transaction. Low-level Store, Pull, and commit lifecycle methods keep
+// their direct behavior; only high-level Upload methods use the coordinator.
 //
 // The Go API intentionally uses an explicitly owned coordinator, functional
 // options, context-aware Flush, and immutable context injection rather than
@@ -284,14 +283,12 @@
 // # Stability
 //
 // During the 0.x phase, public APIs may change between minor releases.
-// [StorageContext], [PDPProviderClient], [PDPVerifierReader],
-// [FWSSDataSetReader], [FWSSTerminator], and [MultiCostCalculator] are SDK
-// assembly interfaces. The supported StorageContext implementations are
-// [ProviderContext] and [DataSetContext]; custom resolvers can return those
-// built-in contexts. External implementations of the complete StorageContext
-// method set are not compatibility targets. Other assembly interfaces are
-// implemented by [pdp.Client], [costs.Service], and adapters assembled by the
-// root SDK client.
+// [StorageContext] is sealed and implemented only by [ProviderContext] and
+// [DataSetContext]. Custom resolvers may return those built-in contexts but
+// cannot provide their own implementation. [PDPProviderClient],
+// [PDPVerifierReader], [FWSSDataSetReader], [FWSSTerminator], and
+// [MultiCostCalculator] are SDK assembly interfaces implemented by [pdp.Client],
+// [costs.Service], and adapters assembled by the root SDK client.
 //
 // [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts

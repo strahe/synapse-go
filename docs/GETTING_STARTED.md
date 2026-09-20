@@ -254,9 +254,7 @@ guaranteed to share a transaction. Each caller still receives callbacks and
 the PieceID only for its own piece; pieces in one batch report the same
 transaction ID.
 
-Low-level `Store`, `Pull`, `PresignForCommit`, `CreateAndAdd`, `Commit`,
-`SubmitCreateAndAdd`, `SubmitCommit`, `WaitForCreateAndAdd`, and
-`WaitForCommit` calls remain immediate and are never implicitly batched.
+Low-level context operations remain immediate and are never implicitly batched.
 Standalone users opt in by constructing `storage.NewUploadBatcher`, injecting
 it through `storage.Options.UploadBatcher` or `storage.WithUploadBatcher`, and
 owning its Flush and Close lifecycle.
@@ -538,12 +536,18 @@ if err != nil {
     if submitted.TransactionID == "" {
         return err
     }
-    fresh, openErr := client.Storage().NewProviderContext(ctx, submitted.ProviderID,
-        storage.NewProviderContextOptions{})
+    recoveryCtx, cancel := context.WithTimeout(context.Background(), 3 * time.Minute)
+    defer cancel()
+
+    fresh, openErr := client.Storage().NewProviderContext(
+        recoveryCtx,
+        submitted.ProviderID,
+        storage.NewProviderContextOptions{},
+    )
     if openErr != nil {
         return openErr
     }
-    result, err = fresh.WaitForCreateAndAdd(ctx, submitted)
+    result, err = fresh.WaitForCreateAndAdd(recoveryCtx, submitted)
 }
 if err != nil {
     return err
@@ -572,15 +576,16 @@ dataset. High-level upload recovery continues to use
 `FailedAttempt.Submission`; `OnPiecesAdded` remains a transaction progress
 event and still receives a transaction hash rather than a recovery handle.
 
-Migration from the pre-1.0 provider API:
+Migration from the previous context API:
 
-| Before | 1.0 API |
+| Previous API | Updated API |
 |---|---|
 | `provider.Commit(req)` | `provider.CreateAndAdd(storage.CreateAndAddRequest{...})` |
 | `provider.SubmitCommit(req)` | `provider.SubmitCreateAndAdd(storage.CreateAndAddRequest{...})` |
 | `provider.GetCommitStatus(submission)` | `provider.GetCreateAndAddStatus(submission)` |
 | `provider.WaitForCommit(submission)` | `provider.WaitForCreateAndAdd(submission)` |
-| `OnSubmitted: func(txHash string)` | `OnSubmitted: func(submission storage.CommitSubmission)` |
+| `CommitRequest.ClientDataSetID` | `CreateAndAddRequest.ClientDataSetID` |
+| `CommitRequest.OnSubmitted: func(txHash string)` | `CreateAndAddRequest.OnSubmitted` and `CommitRequest.OnSubmitted`: `func(submission storage.CommitSubmission)` |
 
 ## Discovery And Lifecycle
 

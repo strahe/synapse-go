@@ -32,10 +32,7 @@ const commitConcurrencyDefault = 4
 // over a typical storage network while preventing indefinite hangs.
 const defaultDownloadTimeout = 24 * time.Hour
 
-// storageContextOps is the package-private orchestration contract shared by
-// the SDK-owned storage contexts. Keeping it unexported prevents callers from
-// implementing StorageContext while leaving its public method set focused on
-// operations with the same meaning for every target.
+// storageContextOps seals StorageContext and defines its internal orchestration.
 type storageContextOps interface {
 	presignForCommit(context.Context, []PieceInput) ([]byte, error)
 	pull(context.Context, PullRequest) (*PullResult, error)
@@ -43,11 +40,9 @@ type storageContextOps interface {
 	waitForCommit(context.Context, CommitSubmission) (*CommitResult, error)
 }
 
-// StorageContext is the SDK-owned interface for an immutable provider or
-// data-set upload target. Its implementations are [ProviderContext] and
-// [DataSetContext]. Custom resolvers return those built-in contexts; callers
-// can inspect and pass them as StorageContext values but cannot implement this
-// sealed interface themselves.
+// StorageContext is a sealed immutable upload target implemented by
+// [ProviderContext] and [DataSetContext]. Callers may inspect and pass
+// SDK-created values but cannot implement the interface.
 type StorageContext interface {
 	storageContextOps
 	ContextIdentity() ContextIdentity
