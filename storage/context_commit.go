@@ -20,38 +20,66 @@ import (
 
 const commitPollInterval = 4 * time.Second
 
-// SubmitCommit submits one create-and-add transaction and returns without
-// waiting for confirmation.
-func (c *ProviderContext) SubmitCommit(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
-	if c == nil || c.core == nil {
-		return nil, fmt.Errorf("storage.ProviderContext.SubmitCommit: %w: nil context", ErrInvalidArgument)
-	}
-	return c.core.submitCommit(ctx, "storage.ProviderContext.SubmitCommit", nil, req)
+type commitRequest struct {
+	CommitRequest
+	clientDataSetID *types.BigInt
 }
 
-// GetCommitStatus checks a create-and-add submission once. A caller-supplied
-// status URL outside the provider origin returns an error matching both
-// [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *ProviderContext) GetCommitStatus(ctx context.Context, submission CommitSubmission) (*CommitStatus, error) {
-	if c == nil || c.core == nil {
-		return nil, fmt.Errorf("storage.ProviderContext.GetCommitStatus: %w: nil context", ErrInvalidArgument)
+func createAndAddCommitRequest(req CreateAndAddRequest) commitRequest {
+	return commitRequest{
+		CommitRequest: CommitRequest{
+			Pieces:      req.Pieces,
+			ExtraData:   req.ExtraData,
+			OnSubmitted: req.OnSubmitted,
+		},
+		clientDataSetID: req.ClientDataSetID,
 	}
-	return c.core.getCommitStatus(ctx, "storage.ProviderContext.GetCommitStatus", nil, submission)
 }
 
-// WaitForCommit waits for a create-and-add submission to confirm or reject. A
+// SubmitCreateAndAdd submits one create-and-add transaction and returns
+// without waiting for confirmation.
+func (c *ProviderContext) SubmitCreateAndAdd(ctx context.Context, req CreateAndAddRequest) (*CommitSubmission, error) {
+	return c.submitCommit(ctx, createAndAddCommitRequest(req))
+}
+
+func (c *ProviderContext) submitCommit(ctx context.Context, req commitRequest) (*CommitSubmission, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.SubmitCreateAndAdd: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.submitCommit(ctx, "storage.ProviderContext.SubmitCreateAndAdd", nil, req)
+}
+
+// GetCreateAndAddStatus checks a create-and-add submission once. A
 // caller-supplied status URL outside the provider origin returns an error
 // matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *ProviderContext) WaitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+func (c *ProviderContext) GetCreateAndAddStatus(ctx context.Context, submission CommitSubmission) (*CommitStatus, error) {
 	if c == nil || c.core == nil {
-		return nil, fmt.Errorf("storage.ProviderContext.WaitForCommit: %w: nil context", ErrInvalidArgument)
+		return nil, fmt.Errorf("storage.ProviderContext.GetCreateAndAddStatus: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.waitForCommit(ctx, "storage.ProviderContext.WaitForCommit", nil, submission)
+	return c.core.getCommitStatus(ctx, "storage.ProviderContext.GetCreateAndAddStatus", nil, submission)
+}
+
+// WaitForCreateAndAdd waits for a create-and-add submission to confirm or
+// reject. A caller-supplied status URL outside the provider origin returns an
+// error matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
+func (c *ProviderContext) WaitForCreateAndAdd(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+	return c.waitForCommit(ctx, submission)
+}
+
+func (c *ProviderContext) waitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.WaitForCreateAndAdd: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.waitForCommit(ctx, "storage.ProviderContext.WaitForCreateAndAdd", nil, submission)
 }
 
 // SubmitCommit submits one add-pieces transaction and returns without waiting
 // for confirmation.
 func (c *DataSetContext) SubmitCommit(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
+	return c.submitCommit(ctx, commitRequest{CommitRequest: req})
+}
+
+func (c *DataSetContext) submitCommit(ctx context.Context, req commitRequest) (*CommitSubmission, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.DataSetContext.SubmitCommit: %w: nil context", ErrInvalidArgument)
 	}
@@ -72,6 +100,10 @@ func (c *DataSetContext) GetCommitStatus(ctx context.Context, submission CommitS
 // caller-supplied status URL outside the provider origin returns an error
 // matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
 func (c *DataSetContext) WaitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+	return c.waitForCommit(ctx, submission)
+}
+
+func (c *DataSetContext) waitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.DataSetContext.WaitForCommit: %w: nil context", ErrInvalidArgument)
 	}
@@ -82,12 +114,12 @@ func (c *contextCore) submitCommit(
 	ctx context.Context,
 	op string,
 	ref *DataSetRef,
-	req CommitRequest,
+	req commitRequest,
 ) (*CommitSubmission, error) {
-	if ref != nil && req.ClientDataSetID != nil {
+	if ref != nil && req.clientDataSetID != nil {
 		return nil, fmt.Errorf("%s: %w: ClientDataSetID is only valid when creating a data set", op, ErrInvalidArgument)
 	}
-	pieceCIDs, err := validateCommitRequest(op, req)
+	pieceCIDs, err := validateCommitRequest(op, req.CommitRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +130,7 @@ func (c *contextCore) submitCommit(
 	extraData := append([]byte(nil), req.ExtraData...)
 	var clientDataSetID *types.BigInt
 	if len(extraData) == 0 {
-		extraData, clientDataSetID, err = c.presignForCommit(ctx, op, ref, req.Pieces, req.ClientDataSetID)
+		extraData, clientDataSetID, err = c.presignForCommit(ctx, op, ref, req.Pieces, req.clientDataSetID)
 		if err != nil {
 			return nil, err
 		}
@@ -110,12 +142,12 @@ func (c *contextCore) submitCommit(
 		if err != nil {
 			return nil, err
 		}
-		if req.ClientDataSetID != nil && !req.ClientDataSetID.Equal(*clientDataSetID) {
+		if req.clientDataSetID != nil && !req.clientDataSetID.Equal(*clientDataSetID) {
 			return nil, fmt.Errorf(
 				"%s: %w: ClientDataSetID %s does not match create-and-add extraData ID %s",
 				op,
 				ErrInvalidArgument,
-				req.ClientDataSetID.String(),
+				req.clientDataSetID.String(),
 				clientDataSetID.String(),
 			)
 		}
@@ -168,7 +200,7 @@ func (c *contextCore) submitCommit(
 		return nil, err
 	}
 	if req.OnSubmitted != nil {
-		req.OnSubmitted(validated.TransactionID)
+		req.OnSubmitted(copyCommitSubmission(validated))
 	}
 	out := copyCommitSubmission(validated)
 	return &out, nil

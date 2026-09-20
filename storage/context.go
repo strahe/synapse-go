@@ -94,8 +94,8 @@ type Provider struct {
 // ContextOption configures provider and data-set contexts during construction.
 type ContextOption func(*contextCore)
 
-// ProviderContext represents one provider without a bound data set. Commit and
-// Pull operations on a ProviderContext create a new data set. It is safe for
+// ProviderContext represents one provider without a bound data set.
+// CreateAndAdd and Pull operations create a new data set. It is safe for
 // concurrent use; concurrent create operations are independent.
 type ProviderContext struct {
 	core *contextCore
@@ -141,7 +141,7 @@ type contextCore struct {
 }
 
 // NewProviderContext creates an immutable context for the given provider and
-// PDP client. Commit and Pull create a new data set.
+// PDP client. CreateAndAdd and Pull create a new data set.
 // provider.ID, provider.ServiceURL, and client are validated here. storageSigner
 // may be nil or typed-nil; signing prerequisites (such as a non-nil signer plus
 // chain/payer/record-keeper options) are validated by the write paths that need
@@ -394,10 +394,18 @@ func (c *ProviderContext) PresignForCommit(ctx context.Context, pieces []PieceIn
 	return extraData, err
 }
 
+func (c *ProviderContext) presignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+	return c.PresignForCommit(ctx, pieces)
+}
+
 // PresignForCommit signs an add-pieces payload for the bound data set.
 func (c *DataSetContext) PresignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
 	extraData, _, err := c.core.presignForCommit(ctx, "storage.DataSetContext.PresignForCommit", &c.ref, pieces, nil)
 	return extraData, err
+}
+
+func (c *DataSetContext) presignForCommit(ctx context.Context, pieces []PieceInput) ([]byte, error) {
+	return c.PresignForCommit(ctx, pieces)
 }
 
 func (c *contextCore) presignForCommit(
@@ -555,9 +563,17 @@ func (c *ProviderContext) Pull(ctx context.Context, req PullRequest) (*PullResul
 	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req)
 }
 
+func (c *ProviderContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	return c.Pull(ctx, req)
+}
+
 // Pull asks this provider to fetch pieces for the bound data set.
 func (c *DataSetContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req)
+}
+
+func (c *DataSetContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	return c.Pull(ctx, req)
 }
 
 func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req PullRequest) (*PullResult, error) {
@@ -630,13 +646,13 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 	return out, nil
 }
 
-// Commit creates a data set, adds pieces, and waits for confirmation.
-func (c *ProviderContext) Commit(ctx context.Context, req CommitRequest) (*CommitResult, error) {
-	submission, err := c.SubmitCommit(ctx, req)
+// CreateAndAdd creates a data set, adds pieces, and waits for confirmation.
+func (c *ProviderContext) CreateAndAdd(ctx context.Context, req CreateAndAddRequest) (*CommitResult, error) {
+	submission, err := c.SubmitCreateAndAdd(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return c.WaitForCommit(ctx, *submission)
+	return c.WaitForCreateAndAdd(ctx, *submission)
 }
 
 // Commit adds pieces to the bound data set and waits for confirmation.

@@ -137,7 +137,7 @@ func recoverDelegatedPresigners(t *testing.T, client *synapse.Client, uploadCtx 
 	return createValues[0].(common.Address), createSigner, addSigner
 }
 
-func selectUnboundDelegatedContext(t *testing.T, ctx context.Context, client *synapse.Client, run string) storage.StorageContext {
+func selectUnboundDelegatedContext(t *testing.T, ctx context.Context, client *synapse.Client, run string) *storage.ProviderContext {
 	t.Helper()
 	selection, err := client.Storage().SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{
 		Copies: 1,
@@ -155,7 +155,11 @@ func selectUnboundDelegatedContext(t *testing.T, ctx context.Context, client *sy
 	if _, bound := uploadCtx.DataSetRef(); bound {
 		t.Fatal("selected upload context unexpectedly reused an existing data set")
 	}
-	return uploadCtx
+	providerCtx, ok := uploadCtx.(*storage.ProviderContext)
+	if !ok {
+		t.Fatalf("selected unbound context has type %T, want *storage.ProviderContext", uploadCtx)
+	}
+	return providerCtx
 }
 
 func TestIntegration_DelegatedStorageSigner(t *testing.T) {
@@ -305,10 +309,7 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 	}
 
-	providerCtx, ok := uploadCtx.(*storage.ProviderContext)
-	if !ok {
-		t.Fatalf("selected unbound context has type %T, want *storage.ProviderContext", uploadCtx)
-	}
+	providerCtx := uploadCtx
 	storeResult, err := providerCtx.Store(ctx, bytes.NewReader(data), &storage.StoreOptions{PieceCID: pieceInfo.CIDv2})
 	if err != nil {
 		t.Fatalf("Store: %v", err)
@@ -316,28 +317,28 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 	if storeResult == nil || !storeResult.PieceCID.Equals(pieceInfo.CIDv2) {
 		t.Fatalf("Store PieceCID=%v want %s", storeResult, pieceInfo.CIDv2)
 	}
-	commitSubmission, err := providerCtx.SubmitCommit(ctx, storage.CommitRequest{
+	commitSubmission, err := providerCtx.SubmitCreateAndAdd(ctx, storage.CreateAndAddRequest{
 		Pieces: []storage.PieceInput{{PieceCID: storeResult.PieceCID}},
 	})
 	if err != nil {
-		t.Fatalf("SubmitCommit: %v", err)
+		t.Fatalf("SubmitCreateAndAdd: %v", err)
 	}
 	if commitSubmission == nil {
-		t.Fatal("SubmitCommit returned nil submission")
+		t.Fatal("SubmitCreateAndAdd returned nil submission")
 	}
 	var dataSetID types.BigInt
 	t.Cleanup(func() {
 		cleanupDataSetID := dataSetID
 		if cleanupDataSetID.IsZero() {
 			waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			commitResult, waitErr := providerCtx.WaitForCommit(waitCtx, *commitSubmission)
+			commitResult, waitErr := providerCtx.WaitForCreateAndAdd(waitCtx, *commitSubmission)
 			waitCancel()
 			if waitErr != nil {
-				t.Errorf("cleanup WaitForCommit(submission=%+v session=%s): %v", *commitSubmission, delegatedAddress, waitErr)
+				t.Errorf("cleanup WaitForCreateAndAdd(submission=%+v session=%s): %v", *commitSubmission, delegatedAddress, waitErr)
 				return
 			}
 			if commitResult == nil || commitResult.DataSet.DataSetID().IsZero() {
-				t.Errorf("cleanup WaitForCommit(submission=%+v session=%s) result=%+v", *commitSubmission, delegatedAddress, commitResult)
+				t.Errorf("cleanup WaitForCreateAndAdd(submission=%+v session=%s) result=%+v", *commitSubmission, delegatedAddress, commitResult)
 				return
 			}
 			cleanupDataSetID = commitResult.DataSet.DataSetID()
@@ -366,16 +367,16 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 	})
 
-	commitResult, err := providerCtx.WaitForCommit(ctx, *commitSubmission)
+	commitResult, err := providerCtx.WaitForCreateAndAdd(ctx, *commitSubmission)
 	if err != nil {
-		t.Fatalf("WaitForCommit: %v", err)
+		t.Fatalf("WaitForCreateAndAdd: %v", err)
 	}
 	if commitResult == nil || commitResult.DataSet.DataSetID().IsZero() {
-		t.Fatalf("WaitForCommit returned no data set: %+v", commitResult)
+		t.Fatalf("WaitForCreateAndAdd returned no data set: %+v", commitResult)
 	}
 	dataSetID = commitResult.DataSet.DataSetID()
 	if !commitResult.IsNewDataSet {
-		t.Fatalf("WaitForCommit IsNewDataSet=false for data set %s", dataSetID)
+		t.Fatalf("WaitForCreateAndAdd IsNewDataSet=false for data set %s", dataSetID)
 	}
 	dataSet, err := client.WarmStorage().GetDataSet(ctx, dataSetID)
 	if err != nil {

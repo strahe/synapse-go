@@ -22,7 +22,7 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-func TestProviderContextSubmitCommitUsesRequestedClientDataSetIDInBothSignatures(t *testing.T) {
+func TestProviderContextSubmitCreateAndAddUsesRequestedClientDataSetIDInBothSignatures(t *testing.T) {
 	maxValue := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	requested, err := types.BigIntFromBig(maxValue)
 	if err != nil {
@@ -57,12 +57,12 @@ func TestProviderContextSubmitCommitUsesRequestedClientDataSetIDInBothSignatures
 		t.Fatalf("NewProviderContext: %v", err)
 	}
 
-	submission, err := ctx.SubmitCommit(context.Background(), CommitRequest{
+	submission, err := ctx.SubmitCreateAndAdd(context.Background(), CreateAndAddRequest{
 		Pieces:          []PieceInput{{PieceCID: pieceInfo.CIDv2}},
 		ClientDataSetID: &requested,
 	})
 	if err != nil {
-		t.Fatalf("SubmitCommit: %v", err)
+		t.Fatalf("SubmitCreateAndAdd: %v", err)
 	}
 	if submission.ClientDataSetID == nil || !submission.ClientDataSetID.Equal(want) {
 		t.Fatalf("submission clientDataSetID=%v want %s", submission.ClientDataSetID, want.String())

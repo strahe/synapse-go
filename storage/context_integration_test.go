@@ -161,20 +161,20 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 		t.Fatalf("primary PresignForCommit: %v", err)
 	}
 	start = time.Now()
-	t.Log("start storage staged primary Commit")
-	primaryCommit, err := primary.Commit(ctx, storage.CommitRequest{
+	t.Log("start storage staged primary CreateAndAdd")
+	primaryCommit, err := primary.CreateAndAdd(ctx, storage.CreateAndAddRequest{
 		Pieces:    []storage.PieceInput{primaryPiece},
 		ExtraData: primaryExtra,
 	})
-	t.Logf("done storage staged primary Commit elapsed=%s", time.Since(start).Round(time.Second))
+	t.Logf("done storage staged primary CreateAndAdd elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
-		t.Fatalf("primary Commit: %v", err)
+		t.Fatalf("primary CreateAndAdd: %v", err)
 	}
 	if primaryCommit.DataSet.DataSetID().IsZero() || !primaryCommit.IsNewDataSet {
-		t.Fatalf("primary Commit = %+v, want a new non-zero data set", primaryCommit)
+		t.Fatalf("primary CreateAndAdd = %+v, want a new non-zero data set", primaryCommit)
 	}
 	if len(primaryCommit.PieceIDs) != 1 {
-		t.Fatalf("primary Commit PieceIDs = %d, want 1", len(primaryCommit.PieceIDs))
+		t.Fatalf("primary CreateAndAdd PieceIDs = %d, want 1", len(primaryCommit.PieceIDs))
 	}
 	primaryURL := primary.PieceURL(primaryStore.PieceCID)
 	if primaryURL == "" {

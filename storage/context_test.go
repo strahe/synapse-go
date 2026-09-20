@@ -554,12 +554,12 @@ func TestContextCommitRoutesByConcreteTypeAndPreservesExtraData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
 	}
-	result, err = providerCtx.Commit(context.Background(), CommitRequest{
+	result, err = providerCtx.CreateAndAdd(context.Background(), CreateAndAddRequest{
 		Pieces:    []PieceInput{{PieceCID: info.CIDv2}},
 		ExtraData: providerExtraData,
 	})
 	if err != nil {
-		t.Fatalf("ProviderContext.Commit: %v", err)
+		t.Fatalf("ProviderContext.CreateAndAdd: %v", err)
 	}
 	if !result.IsNewDataSet || addCalls != 1 || createCalls != 1 {
 		t.Fatalf("provider result=%+v addCalls=%d createCalls=%d", result, addCalls, createCalls)
@@ -637,7 +637,7 @@ func TestProviderContextConcurrentCommitsCreateIndependently(t *testing.T) {
 	errCh := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := c.Commit(context.Background(), CommitRequest{
+			_, err := c.CreateAndAdd(context.Background(), CreateAndAddRequest{
 				Pieces: []PieceInput{{PieceCID: info.CIDv2}},
 			})
 			errCh <- err
@@ -1316,7 +1316,7 @@ func TestContextValidationErrors(t *testing.T) {
 		t.Fatalf("nil client error=%v", err)
 	}
 	c := mustProviderContext(t, &fakePDPProviderClient{})
-	_, err = c.Commit(context.Background(), CommitRequest{})
+	_, err = c.CreateAndAdd(context.Background(), CreateAndAddRequest{})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty commit error=%v", err)
 	}
@@ -1396,7 +1396,7 @@ func TestContextRejectsPieceCIDsOutsideUploadBounds(t *testing.T) {
 			if !tt.wantErr {
 				return
 			}
-			_, err = c.Commit(context.Background(), CommitRequest{Pieces: pieces, ExtraData: []byte{0x01}})
+			_, err = c.CreateAndAdd(context.Background(), CreateAndAddRequest{Pieces: pieces, ExtraData: []byte{0x01}})
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Commit error=%v, want ErrInvalidArgument", err)
 			}
@@ -1465,7 +1465,7 @@ func TestContextErrorWrappingRetainsCause(t *testing.T) {
 		},
 	}
 	c := mustWritableProviderContext(t, client)
-	_, err := c.Commit(context.Background(), CommitRequest{
+	_, err := c.CreateAndAdd(context.Background(), CreateAndAddRequest{
 		Pieces: []PieceInput{{PieceCID: mustPieceInfo(t).CIDv2}},
 	})
 	if !errors.Is(err, boom) {

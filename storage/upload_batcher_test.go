@@ -1486,8 +1486,8 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringAnotherCommi
 	secondary.pullFn = func(context.Context, PullRequest) (*PullResult, error) {
 		return &PullResult{Status: PullStatusComplete}, nil
 	}
-	secondary.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
-		return &CommitSubmission{TransactionID: "0xsecondary", PieceCIDs: pieceCIDs(req.Pieces), ClientDataSetID: copyBigIntPtr(req.ClientDataSetID)}, nil
+	secondary.commitRequestFn = func(_ context.Context, req commitRequest) (*CommitSubmission, error) {
+		return &CommitSubmission{TransactionID: "0xsecondary", PieceCIDs: pieceCIDs(req.Pieces), ClientDataSetID: copyBigIntPtr(req.clientDataSetID)}, nil
 	}
 	secondaryCommitStarted := make(chan struct{})
 	secondary.waitCommitFn = func(ctx context.Context, _ CommitSubmission) (*CommitResult, error) {
@@ -2673,10 +2673,10 @@ type sharedBatchCommits struct {
 // recordSharedBatchCommits creates data sets 101, 102, ... and adds to the latest.
 func recordSharedBatchCommits(target *fakeUploadContext) *sharedBatchCommits {
 	rec := &sharedBatchCommits{providerID: target.id}
-	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
-		commit := sharedBatchCommit{create: req.ClientDataSetID != nil, pieces: len(req.Pieces)}
+	target.commitRequestFn = func(_ context.Context, req commitRequest) (*CommitSubmission, error) {
+		commit := sharedBatchCommit{create: req.clientDataSetID != nil, pieces: len(req.Pieces)}
 		if commit.create {
-			commit.clientDataSetID = copyBigInt(*req.ClientDataSetID)
+			commit.clientDataSetID = copyBigInt(*req.clientDataSetID)
 		}
 		rec.mu.Lock()
 		rec.commits = append(rec.commits, commit)
@@ -2690,7 +2690,7 @@ func recordSharedBatchCommits(target *fakeUploadContext) *sharedBatchCommits {
 		return &CommitSubmission{
 			TransactionID:   fmt.Sprintf("0x%x", len(rec.snapshot())),
 			PieceCIDs:       pieceCIDs(req.Pieces),
-			ClientDataSetID: copyBigIntPtr(req.ClientDataSetID),
+			ClientDataSetID: copyBigIntPtr(req.clientDataSetID),
 		}, nil
 	}
 	target.waitCommitFn = func(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
