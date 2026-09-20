@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/ipfs/go-cid"
@@ -10,47 +13,78 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-const uploadCallbackPanicMessage = "storage upload callback panic ignored"
+// errUploadCallbackPanicked cancels the rest of an upload after a callback
+// panics.
+var errUploadCallbackPanicked = errors.New("storage: upload callback panicked")
 
+// uploadCallbackGuard runs upload callbacks, which may execute on internal
+// goroutines where a panic cannot reach the caller. The first panic cancels
+// the upload and suppresses later callbacks; rethrow re-raises it with its
+// original value on the caller's goroutine after the upload has unwound.
 type uploadCallbackGuard struct {
+	op     string
 	logger *slog.Logger
+	cancel context.CancelCauseFunc
 
-	mu     sync.Mutex
-	warned map[string]struct{}
+	mu   sync.Mutex
+	done bool
+	// panicValue is the first recovered panic value; recover never returns
+	// nil for a panic.
+	panicValue any
 }
 
-func newUploadCallbackGuard(logger *slog.Logger) *uploadCallbackGuard {
-	return &uploadCallbackGuard{logger: logger}
+// newUploadCallbackGuard returns a context that the guard cancels when a
+// callback panics. Callers must defer rethrow.
+func newUploadCallbackGuard(ctx context.Context, op string, logger *slog.Logger) (context.Context, *uploadCallbackGuard) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	return ctx, &uploadCallbackGuard{op: op, logger: logger, cancel: cancel}
 }
 
 func (g *uploadCallbackGuard) safeInvoke(name string, fn func()) {
 	if fn == nil {
 		return
 	}
+	g.mu.Lock()
+	skip := g.done || g.panicValue != nil
+	g.mu.Unlock()
+	if skip {
+		return
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			g.warnOnce(name, recovered)
+			g.record(name, recovered, debug.Stack())
 		}
 	}()
 	fn()
 }
 
-func (g *uploadCallbackGuard) warnOnce(name string, recovered any) {
-	if g.logger == nil {
-		return
-	}
+func (g *uploadCallbackGuard) record(name string, value any, stack []byte) {
 	g.mu.Lock()
-	if g.warned == nil {
-		g.warned = make(map[string]struct{})
+	first := g.panicValue == nil
+	if first {
+		g.panicValue = value
 	}
-	if _, ok := g.warned[name]; ok {
-		g.mu.Unlock()
+	g.mu.Unlock()
+	if !first {
 		return
 	}
-	g.warned[name] = struct{}{}
-	g.mu.Unlock()
+	g.cancel(errUploadCallbackPanicked)
+	if g.logger != nil {
+		g.logger.Error(g.op+": callback panicked",
+			"callback", name, "panic", fmt.Sprint(value), "stack", string(stack))
+	}
+}
 
-	g.logger.Warn(uploadCallbackPanicMessage, "callback", name, "panic", fmt.Sprint(recovered))
+// rethrow stops later callbacks and re-raises the first recorded panic.
+func (g *uploadCallbackGuard) rethrow() {
+	g.mu.Lock()
+	g.done = true
+	panicValue := g.panicValue
+	g.mu.Unlock()
+	g.cancel(nil)
+	if panicValue != nil {
+		panic(panicValue)
+	}
 }
 
 func (g *uploadCallbackGuard) wrapUploadOptions(opts *UploadOptions) *UploadOptions {

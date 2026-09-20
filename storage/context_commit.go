@@ -78,14 +78,6 @@ func (c *DataSetContext) WaitForCommit(ctx context.Context, submission CommitSub
 	return c.core.waitForCommit(ctx, "storage.DataSetContext.WaitForCommit", &c.ref, submission)
 }
 
-func (c *contextCore) commit(ctx context.Context, op string, ref *DataSetRef, req CommitRequest) (*CommitResult, error) {
-	submission, err := c.submitCommit(ctx, op, ref, req)
-	if err != nil {
-		return nil, err
-	}
-	return c.waitForCommit(ctx, op, ref, *submission)
-}
-
 func (c *contextCore) submitCommit(
 	ctx context.Context,
 	op string,

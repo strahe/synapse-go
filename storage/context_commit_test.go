@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
@@ -819,5 +822,65 @@ func TestCommitLifecycleRejectsNilConcreteContexts(t *testing.T) {
 				t.Fatalf("error=%v want ErrInvalidArgument", err)
 			}
 		})
+	}
+}
+
+func TestProviderContextUploadCommitFailureKeepsSubmission(t *testing.T) {
+	data := bytes.Repeat([]byte("keep-context-submission"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalTx := common.HexToHash("0x46")
+	var statusAvailable atomic.Bool
+	client := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error { return nil },
+		createAndAddFn: func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{TxHash: originalTx, StatusURL: "https://sp.example.com/status/create"}, nil
+		},
+		waitForCreateAndAddFn: func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error) {
+			if !statusAvailable.Load() {
+				return nil, errors.New("status unavailable")
+			}
+			return &pdp.AddPiecesStatus{
+				TxHash:            originalTx,
+				DataSetID:         types.NewBigInt(55),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(77)},
+			}, nil
+		},
+	}
+
+	_, err = mustWritableProviderContext(t, client).Upload(context.Background(), bytes.NewReader(data), nil)
+	commitErr, ok := errors.AsType[*CommitError](err)
+	if !ok {
+		t.Fatalf("Upload error=%v, want CommitError", err)
+	}
+	if commitErr.PieceCID != info.CIDv2 || commitErr.Size != int64(len(data)) {
+		t.Fatalf("CommitError piece=%s size=%d, want %s and %d", commitErr.PieceCID, commitErr.Size, info.CIDv2, len(data))
+	}
+	if len(commitErr.FailedAttempts) != 1 {
+		t.Fatalf("FailedAttempts=%+v, want one", commitErr.FailedAttempts)
+	}
+	attempt := commitErr.FailedAttempts[0]
+	if attempt.Role != CopyRolePrimary || attempt.Stage != CopyStageCommit || !attempt.Explicit || attempt.Err == nil {
+		t.Fatalf("FailedAttempt=%+v, want an explicit primary commit failure", attempt)
+	}
+	if attempt.Submission == nil || attempt.Submission.TransactionID != originalTx.Hex() {
+		t.Fatalf("Submission=%+v, want transaction %s", attempt.Submission, originalTx.Hex())
+	}
+
+	// A fresh context for the same provider resumes the kept submission.
+	statusAvailable.Store(true)
+	result, err := mustWritableProviderContext(t, client).WaitForCommit(context.Background(), *attempt.Submission)
+	if err != nil {
+		t.Fatalf("WaitForCommit: %v", err)
+	}
+	if !result.DataSet.DataSetID().Equal(types.NewBigInt(55)) || len(result.PieceIDs) != 1 || !result.PieceIDs[0].Equal(types.NewBigInt(77)) {
+		t.Fatalf("resumed result=%+v, want data set 55 with piece 77", result)
 	}
 }

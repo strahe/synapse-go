@@ -919,10 +919,7 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 	if err := validateUploadBatchSubmissionPieces(pieces, submission.PieceCIDs); err != nil {
 		return nil, err
 	}
-	for _, slot := range flight.slots {
-		copySubmission := copyCommitSubmission(*submission)
-		b.sendSlotEvent(slot, uploadBatchEvent{submission: &copySubmission})
-	}
+	b.publishSubmission(flight, *submission)
 	result, err := target.WaitForCommit(b.ctx, *submission)
 	err = uploadBatchContextError(b.ctx, err)
 	if err == nil {
@@ -1215,14 +1212,20 @@ func (b *UploadBatcher) finishFlight(flight *uploadBatchFlight, result *CommitRe
 	b.mu.Unlock()
 }
 
-func (b *UploadBatcher) sendSlotEvent(slot *uploadBatchSlot, event uploadBatchEvent) {
+// publishSubmission sends the accepted submission to the flight's waiters. The
+// done check and the send share one lock hold, or a concurrent Close queues its
+// terminal event first and the waiter stops there without reading the
+// submission behind it. Slot buffers hold both events, so the send cannot block.
+func (b *UploadBatcher) publishSubmission(flight *uploadBatchFlight, submission CommitSubmission) {
 	b.mu.Lock()
-	if slot.done {
-		b.mu.Unlock()
-		return
+	defer b.mu.Unlock()
+	for _, slot := range flight.slots {
+		if slot.done {
+			continue
+		}
+		copySubmission := copyCommitSubmission(submission)
+		slot.events <- uploadBatchEvent{submission: &copySubmission}
 	}
-	b.mu.Unlock()
-	slot.events <- event
 }
 
 func (b *UploadBatcher) observeSlot(slot *uploadBatchSlot) {
@@ -1247,26 +1250,33 @@ func (b *UploadBatcher) observeSlot(slot *uploadBatchSlot) {
 	delete(b.failedFlights, flight.seq)
 }
 
-func (task *uploadBatchTask) wait(ctx context.Context, onSubmitted func(string)) (*CommitResult, error) {
+// wait returns the commit outcome and the submission the batch published. The
+// submission is set once the provider accepted it, even if the wait then fails,
+// and nil when cancellation or Close releases the waiter first.
+func (task *uploadBatchTask) wait(ctx context.Context, onSubmitted func(string)) (*CommitResult, *CommitSubmission, error) {
 	if task == nil || task.slot == nil {
-		return nil, fmt.Errorf("storage.UploadBatcher.wait: %w: nil task", ErrInvalidArgument)
+		return nil, nil, fmt.Errorf("storage.UploadBatcher.wait: %w: nil task", ErrInvalidArgument)
 	}
 	var batcherDone <-chan struct{}
 	if task.batcher != nil {
 		batcherDone = task.batcher.ctx.Done()
 	}
-	observeFinal := func(result *CommitResult, err error) (*CommitResult, error) {
+	var submission *CommitSubmission
+	observeFinal := func(result *CommitResult, err error) (*CommitResult, *CommitSubmission, error) {
 		if task.batcher != nil {
 			task.batcher.observeSlot(task.slot)
 		}
-		return result, err
+		return result, submission, err
 	}
 	handleEvent := func(event uploadBatchEvent, allowCallback bool) (*CommitResult, error, bool) {
 		if event.final {
 			return event.result, event.err, true
 		}
-		if allowCallback && event.submission != nil && onSubmitted != nil {
-			onSubmitted(event.submission.TransactionID)
+		if event.submission != nil {
+			submission = event.submission
+			if allowCallback && onSubmitted != nil {
+				onSubmitted(event.submission.TransactionID)
+			}
 		}
 		return nil, nil, false
 	}
@@ -1288,22 +1298,22 @@ func (task *uploadBatchTask) wait(ctx context.Context, onSubmitted func(string))
 			return observeFinal(result, err)
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, uploadBatchContextError(ctx, err)
+			return nil, submission, uploadBatchContextError(ctx, err)
 		}
 		if task.batcher != nil && task.batcher.ctx.Err() != nil {
-			return nil, ErrClosed
+			return nil, submission, ErrClosed
 		}
 		select {
 		case <-ctx.Done():
 			if result, err, final := drainEvents(false); final {
 				return observeFinal(result, err)
 			}
-			return nil, uploadBatchContextError(ctx, ctx.Err())
+			return nil, submission, uploadBatchContextError(ctx, ctx.Err())
 		case <-batcherDone:
 			if result, err, final := drainEvents(false); final {
 				return observeFinal(result, err)
 			}
-			return nil, ErrClosed
+			return nil, submission, ErrClosed
 		case event := <-task.slot.events:
 			allowCallback := ctx.Err() == nil && (task.batcher == nil || task.batcher.ctx.Err() == nil)
 			if result, err, final := handleEvent(event, allowCallback); final {

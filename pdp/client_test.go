@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -396,6 +399,104 @@ func TestUploadPieceStreaming_OnProgressMonotonic(t *testing.T) {
 	}
 	if seen[len(seen)-1] != int64(len(payload)) {
 		t.Errorf("final progress=%d want %d", seen[len(seen)-1], len(payload))
+	}
+}
+
+type recordingLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingLogHandler) errorAttr(key string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, record := range h.records {
+		if record.Level != slog.LevelError {
+			continue
+		}
+		var value string
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == key {
+				value = attr.Value.String()
+				return false
+			}
+			return true
+		})
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func TestUploadPieceStreaming_ProgressPanicReachesCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		http2     bool
+		wantProto int
+	}{
+		{name: "HTTP/1.1", wantProto: 1},
+		{name: "HTTP/2", http2: true, wantProto: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var proto atomic.Int32
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
+					proto.Store(int32(r.ProtoMajor))
+					w.Header().Set("Location", "/pdp/piece/uploads/panic-uuid")
+					w.WriteHeader(http.StatusCreated)
+				case r.Method == http.MethodPut:
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Errorf("unexpected %s %s after progress panic", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			if tc.http2 {
+				srv.EnableHTTP2 = true
+				srv.StartTLS()
+			} else {
+				srv.Start()
+			}
+			t.Cleanup(srv.Close)
+
+			logs := &recordingLogHandler{}
+			c, err := New(srv.URL, WithHTTPClient(srv.Client()), WithLogger(slog.New(logs)))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			sentinel := &struct{ name string }{name: "progress panic"}
+			recovered := func() (recovered any) {
+				defer func() { recovered = recover() }()
+				_, _ = c.UploadPieceStreaming(context.Background(), bytes.NewReader(bytes.Repeat([]byte{0x5a}, 1<<20)), UploadPieceStreamingOptions{
+					OnProgress: func(int64) { panic(sentinel) },
+				})
+				return nil
+			}()
+			if recovered != sentinel {
+				t.Fatalf("recovered %v, want the OnProgress panic value", recovered)
+			}
+			if got := proto.Load(); got != int32(tc.wantProto) {
+				t.Fatalf("server saw HTTP/%d, want HTTP/%d", got, tc.wantProto)
+			}
+			if stack := logs.errorAttr("stack"); !strings.Contains(stack, "TestUploadPieceStreaming_ProgressPanicReachesCaller") {
+				t.Fatalf("error log stack does not include the callback frame:\n%s", stack)
+			}
+		})
 	}
 }
 
