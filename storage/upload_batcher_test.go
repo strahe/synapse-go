@@ -181,11 +181,11 @@ func TestUploadBatcherFlushCombinesCompatiblePieces(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 	var txA, txB string
-	resultA, err := taskA.wait(context.Background(), func(tx string) { txA = tx })
+	resultA, _, err := taskA.wait(context.Background(), func(tx string) { txA = tx })
 	if err != nil {
 		t.Fatalf("wait A: %v", err)
 	}
-	resultB, err := taskB.wait(context.Background(), func(tx string) { txB = tx })
+	resultB, _, err := taskB.wait(context.Background(), func(tx string) { txB = tx })
 	if err != nil {
 		t.Fatalf("wait B: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestUploadBatcherWaitConsumesFailedFlightForLaterFlush(t *testing.T) {
 		return nil, failure
 	}
 	task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "observed-failure"))
-	if _, err := task.wait(context.Background(), nil); !errors.Is(err, failure) {
+	if _, _, err := task.wait(context.Background(), nil); !errors.Is(err, failure) {
 		t.Fatalf("wait error=%v, want observed failure", err)
 	}
 	if err := batcher.Flush(context.Background()); err != nil {
@@ -348,7 +348,7 @@ func TestUploadBatcherFlushReportsFailureWhenWaitMissesTerminalEvent(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	waitDone := make(chan error, 1)
 	go func() {
-		_, err := task.wait(ctx, nil)
+		_, _, err := task.wait(ctx, nil)
 		waitDone <- err
 	}()
 	cancel()
@@ -428,7 +428,7 @@ func TestUploadBatcherFlushMayIncludeCompatiblePostBarrierSlot(t *testing.T) {
 		t.Fatal("shared window was not submitted")
 	}
 	for name, task := range map[string]*uploadBatchTask{"first": first, "second": second} {
-		result, err := task.wait(context.Background(), nil)
+		result, _, err := task.wait(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("wait %s: %v", name, err)
 		}
@@ -459,7 +459,7 @@ func TestUploadBatcherRejectsReorderedSubmissionForWholeBatch(t *testing.T) {
 		t.Fatalf("Flush error=%v, want submission piece order error", err)
 	}
 	for i, task := range tasks {
-		if _, err := task.wait(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "submission piece order") {
+		if _, _, err := task.wait(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "submission piece order") {
 			t.Fatalf("task %d error=%v, want whole-batch order error", i, err)
 		}
 	}
@@ -1001,7 +1001,7 @@ func TestUploadBatcherCancellationRetainsAcceptedSlotAndOriginalMaxWait(t *testi
 		t.Fatalf("enqueue first: %v", err)
 	}
 	cancel()
-	if _, err := first.wait(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, _, err := first.wait(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first wait error=%v, want context.Canceled", err)
 	}
 	clock.Advance(6 * time.Second)
@@ -1130,7 +1130,7 @@ func TestUploadBatcherCallerCancellationWhileWaitingForSubmissionSlotDoesNotAbor
 		t.Fatalf("enqueue second: %v", err)
 	}
 	cancel()
-	if _, err := task.wait(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, _, err := task.wait(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("second wait error=%v, want context.Canceled", err)
 	}
 	flushDone := make(chan error, 1)
@@ -1180,7 +1180,7 @@ func TestUploadBatcherCallerCancellationDuringSigningDoesNotAbortFlight(t *testi
 		t.Fatal("signer did not start")
 	}
 	cancel()
-	if _, err := task.wait(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, _, err := task.wait(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error=%v, want context.Canceled", err)
 	}
 	flushDone := make(chan error, 1)
@@ -1211,7 +1211,7 @@ func TestUploadBatchTaskPublishedTerminalResultWinsCancellationAndClose(t *testi
 		t.Fatalf("Close: %v", err)
 	}
 	callbackCalled := false
-	result, err := task.wait(ctx, func(string) { callbackCalled = true })
+	result, _, err := task.wait(ctx, func(string) { callbackCalled = true })
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -1220,6 +1220,48 @@ func TestUploadBatchTaskPublishedTerminalResultWinsCancellationAndClose(t *testi
 	}
 	if callbackCalled {
 		t.Fatal("submission callback ran after caller cancellation")
+	}
+}
+
+// Pins the contract rather than the interleaving: it does not reproduce a Close
+// that races the publish itself.
+func TestUploadBatcherCloseKeepsAcceptedSubmission(t *testing.T) {
+	identity := serviceTestIdentity()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+		return &CommitSubmission{TransactionID: "0xaccepted", PieceCIDs: pieceCIDs(req.Pieces)}, nil
+	}
+	target.waitCommitFn = func(ctx context.Context, _ CommitSubmission) (*CommitResult, error) {
+		close(accepted)
+		<-release
+		return nil, ctx.Err()
+	}
+
+	task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "accepted-then-close"))
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- batcher.Flush(context.Background()) }()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not accept the batch")
+	}
+	if err := batcher.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(release)
+
+	_, submission, err := task.wait(context.Background(), nil)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("wait error=%v, want ErrClosed", err)
+	}
+	if submission == nil || submission.TransactionID != "0xaccepted" {
+		t.Fatalf("submission=%+v, want the accepted transaction 0xaccepted", submission)
+	}
+	if err := <-flushDone; !errors.Is(err, ErrClosed) {
+		t.Fatalf("Flush error=%v, want ErrClosed", err)
 	}
 }
 
@@ -1249,7 +1291,7 @@ func TestUploadBatcherCloseUnblocksWaitersDuringSigning(t *testing.T) {
 	if err := batcher.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrClosed) {
+	if _, _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("task error=%v, want ErrClosed", err)
 	}
 	if err := <-flushDone; !errors.Is(err, ErrClosed) {
@@ -1308,7 +1350,7 @@ func TestUploadBatchTaskCancellationSuppressesQueuedSubmissionCallback(t *testin
 	}
 	cancel()
 	callbackCalled := false
-	if _, err := task.wait(ctx, func(string) { callbackCalled = true }); !errors.Is(err, context.Canceled) {
+	if _, _, err := task.wait(ctx, func(string) { callbackCalled = true }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error=%v, want context.Canceled", err)
 	}
 	if callbackCalled {
@@ -1438,9 +1480,7 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringAnotherCommi
 		return &StoreResult{PieceCID: pieceInput.PieceCID, Size: 1}, nil
 	}
 	configureBatchTargetCommit(primary, primaryRef, nil)
-	primary.commitFn = func(context.Context, CommitRequest) (*CommitResult, error) {
-		return nil, errors.New("primary must use the batcher")
-	}
+	requireBatchedSubmit(primary)
 
 	secondary := sharedBatchTestTarget(identity, 2)
 	secondary.pullFn = func(context.Context, PullRequest) (*PullResult, error) {
@@ -1505,9 +1545,7 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringSecondaryPul
 		return &StoreResult{PieceCID: pieceInput.PieceCID, Size: 1}, nil
 	}
 	configureBatchTargetCommit(primary, primaryRef, nil)
-	primary.commitFn = func(context.Context, CommitRequest) (*CommitResult, error) {
-		return nil, errors.New("primary must use the batcher")
-	}
+	requireBatchedSubmit(primary)
 
 	secondary := batchTestTarget(identity, DataSetRef{})
 	secondary.id = types.NewBigInt(2)
@@ -1710,6 +1748,13 @@ func TestDataSetContextUploadKeepsBatchedCommitRejectionWhenCallerCancelsAfterSu
 	if errors.Is(err, context.Canceled) {
 		t.Fatalf("published rejection was replaced by context.Canceled")
 	}
+	commitErr, ok := errors.AsType[*CommitError](err)
+	if !ok || len(commitErr.FailedAttempts) != 1 {
+		t.Fatalf("Upload error=%#v, want CommitError with one failed attempt", err)
+	}
+	if got := commitErr.FailedAttempts[0].Submission; got == nil || got.TransactionID != originalTx.Hex() {
+		t.Fatalf("Submission=%+v, want the batched submission %s", got, originalTx.Hex())
+	}
 }
 
 func TestDataSetContextUploadKeepsConfirmedResultWhenCallerCancelsAfterSubmit(t *testing.T) {
@@ -1869,9 +1914,7 @@ func TestServiceUploadToContextsBatchesConcurrentCommits(t *testing.T) {
 		}
 		return &CommitResult{TransactionID: submission.TransactionID, DataSet: ref, PieceIDs: pieceIDs}, nil
 	}
-	target.commitFn = func(context.Context, CommitRequest) (*CommitResult, error) {
-		return nil, errors.New("direct Commit must not be called")
-	}
+	requireBatchedSubmit(target)
 	service := mustNewService(t, Options{UploadBatcher: batcher})
 
 	type outcome struct {
@@ -1951,9 +1994,7 @@ func TestServiceUploadToContextsWaitsForInProgressStore(t *testing.T) {
 		return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 	}
 	submitted := captureBatchTestSubmissions(target)
-	target.commitFn = func(context.Context, CommitRequest) (*CommitResult, error) {
-		return nil, errors.New("direct Commit must not be called")
-	}
+	requireBatchedSubmit(target)
 	service := mustNewService(t, Options{UploadBatcher: batcher})
 
 	outcomes := make(chan error, 2)
@@ -2111,7 +2152,7 @@ func TestUploadBatcherSharesNewDataSetAcrossPieceLimit(t *testing.T) {
 		t.Fatalf("commits=%+v, want one full create-and-add followed by one add-pieces", got)
 	}
 	for i, task := range tasks {
-		result, err := task.wait(context.Background(), nil)
+		result, _, err := task.wait(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("wait %d: %v", i, err)
 		}
@@ -2153,11 +2194,11 @@ func TestUploadBatcherLaterWindowWaitsForPendingCreate(t *testing.T) {
 	if err := batcher.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	firstResult, err := first.wait(context.Background(), nil)
+	firstResult, _, err := first.wait(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("wait first: %v", err)
 	}
-	secondResult, err := second.wait(context.Background(), nil)
+	secondResult, _, err := second.wait(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("wait second: %v", err)
 	}
@@ -2186,7 +2227,7 @@ func TestUploadBatcherReusesSharedDataSetForLaterUploads(t *testing.T) {
 				if err := batcher.Flush(context.Background()); err != nil {
 					t.Fatalf("Flush: %v", err)
 				}
-				result, err := task.wait(context.Background(), nil)
+				result, _, err := task.wait(context.Background(), nil)
 				if err != nil {
 					t.Fatalf("wait: %v", err)
 				}
@@ -2270,7 +2311,7 @@ func TestUploadBatcherRecoversSharedDataSetAfterFailedCreate(t *testing.T) {
 			if err := batcher.Flush(context.Background()); err != nil {
 				t.Fatalf("Flush after recovery: %v", err)
 			}
-			result, err := task.wait(context.Background(), nil)
+			result, _, err := task.wait(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("wait: %v", err)
 			}
@@ -2312,7 +2353,7 @@ func TestUploadBatcherWaitsForCreatedDataSetVisibility(t *testing.T) {
 		if err := batcher.Flush(context.Background()); err != nil {
 			t.Fatalf("Flush second: %v", err)
 		}
-		if _, err := task.wait(context.Background(), nil); err != nil {
+		if _, _, err := task.wait(context.Background(), nil); err != nil {
 			t.Fatalf("wait: %v", err)
 		}
 		if got := lookups.Load(); got != 3 {
@@ -2338,7 +2379,7 @@ func TestUploadBatcherWaitsForCreatedDataSetVisibility(t *testing.T) {
 		if err := batcher.Flush(context.Background()); !errors.Is(err, ErrDataSetUnavailable) {
 			t.Fatalf("Flush error=%v, want ErrDataSetUnavailable", err)
 		}
-		if _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrDataSetUnavailable) {
+		if _, _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrDataSetUnavailable) {
 			t.Fatalf("wait error=%v, want ErrDataSetUnavailable", err)
 		}
 		enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "hidden-third"))
@@ -2355,7 +2396,7 @@ func TestUploadBatcherWaitsForCreatedDataSetVisibility(t *testing.T) {
 		if err := batcher.Flush(context.Background()); err != nil {
 			t.Fatalf("Flush after visibility: %v", err)
 		}
-		result, err := visible.wait(context.Background(), nil)
+		result, _, err := visible.wait(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("wait after visibility: %v", err)
 		}
@@ -2385,7 +2426,7 @@ func TestUploadBatcherReplacesTerminatedSharedDataSet(t *testing.T) {
 	if err := batcher.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush second: %v", err)
 	}
-	result, err := task.wait(context.Background(), nil)
+	result, _, err := task.wait(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -2424,7 +2465,7 @@ func TestUploadBatcherCloseStopsWindowsWaitingForCreate(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	for name, task := range map[string]*uploadBatchTask{"first": first, "second": second} {
-		if _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrClosed) {
+		if _, _, err := task.wait(context.Background(), nil); !errors.Is(err, ErrClosed) {
 			t.Fatalf("wait %s error=%v, want ErrClosed", name, err)
 		}
 	}
@@ -2915,6 +2956,18 @@ func configureBatchTargetCommit(target *fakeUploadContext, ref DataSetRef, extra
 	}
 	target.waitCommitFn = func(_ context.Context, submission CommitSubmission) (*CommitResult, error) {
 		return &CommitResult{TransactionID: submission.TransactionID, DataSet: ref, PieceIDs: []types.BigInt{types.NewBigInt(1)}}, nil
+	}
+}
+
+// requireBatchedSubmit rejects commits that bypass the batcher. The batcher
+// always submits its own signed extraData; a batched Service passes none.
+func requireBatchedSubmit(target *fakeUploadContext) {
+	submit := target.submitCommitFn
+	target.submitCommitFn = func(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
+		if len(req.ExtraData) == 0 {
+			return nil, errors.New("commit must use the batcher")
+		}
+		return submit(ctx, req)
 	}
 }
 

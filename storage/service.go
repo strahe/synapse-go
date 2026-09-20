@@ -460,7 +460,9 @@ func (s *Service) UploadToContexts(ctx context.Context, r io.Reader, contexts []
 }
 
 func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader, contexts []StorageContext, opts *UploadOptions, requestedCopies int, allowReplacement bool, reservation *uploadReservation) (*UploadResult, error) {
-	opts = newUploadCallbackGuard(s.logger).wrapUploadOptions(opts)
+	ctx, guard := newUploadCallbackGuard(ctx, op, s.logger)
+	defer guard.rethrow()
+	opts = guard.wrapUploadOptions(opts)
 	explicitProviders := !allowReplacement
 	if s.uploadBatcher != nil {
 		for _, target := range contexts {
@@ -700,8 +702,9 @@ secondariesLoop:
 		err       error
 	}
 	type commitOutcome struct {
-		result *CommitResult
-		err    error
+		result     *CommitResult
+		submission *CommitSubmission
+		err        error
 	}
 
 	targets := make([]commitTarget, 0, 1+len(successfulSecondaries))
@@ -749,7 +752,7 @@ secondariesLoop:
 				}
 			}
 			if target.task != nil {
-				outcomes[idx].result, outcomes[idx].err = target.task.wait(ctx, onSubmitted)
+				outcomes[idx].result, outcomes[idx].submission, outcomes[idx].err = target.task.wait(ctx, onSubmitted)
 				return
 			}
 			select {
@@ -763,12 +766,20 @@ secondariesLoop:
 				outcomes[idx].err = uploadBatchContextError(ctx, err)
 				return
 			}
-			result, err := target.ctx.Commit(ctx, CommitRequest{
+			// Submit and wait separately so an accepted submission survives a
+			// failed wait.
+			submission, err := target.ctx.SubmitCommit(ctx, CommitRequest{
 				Pieces:      pieceInputs,
 				ExtraData:   target.extraData,
 				OnSubmitted: onSubmitted,
 			})
-			outcomes[idx].result = result
+			if err == nil && submission == nil {
+				err = errors.New("submit commit returned nil submission")
+			}
+			if err == nil {
+				outcomes[idx].submission = submission
+				outcomes[idx].result, err = target.ctx.WaitForCommit(ctx, *submission)
+			}
 			if err != nil {
 				outcomes[idx].err = uploadBatchContextError(ctx, err)
 			}
@@ -790,6 +801,7 @@ secondariesLoop:
 				Stage:      CopyStageCommit,
 				Err:        outcome.err,
 				Explicit:   explicitProviders,
+				Submission: outcome.submission,
 			})
 			continue
 		}
@@ -814,6 +826,7 @@ secondariesLoop:
 				Stage:      CopyStageCommit,
 				Err:        err,
 				Explicit:   explicitProviders,
+				Submission: outcome.submission,
 			})
 			continue
 		}
@@ -827,6 +840,7 @@ secondariesLoop:
 				Stage:      CopyStageCommit,
 				Err:        err,
 				Explicit:   explicitProviders,
+				Submission: outcome.submission,
 			})
 			continue
 		}
@@ -850,9 +864,12 @@ secondariesLoop:
 
 	if len(copies) == 0 {
 		return nil, &CommitError{
-			ProviderID: primary.ProviderID(),
-			Endpoint:   redact.URLString(primary.ServiceURL()),
-			Cause:      primaryCommitErr,
+			ProviderID:     primary.ProviderID(),
+			Endpoint:       redact.URLString(primary.ServiceURL()),
+			Cause:          primaryCommitErr,
+			PieceCID:       storeResult.PieceCID,
+			Size:           storeResult.Size,
+			FailedAttempts: failedAttempts,
 		}
 	}
 

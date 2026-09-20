@@ -45,8 +45,10 @@ type StoreOptions struct {
 	// verifies the uploaded bytes match this value.
 	PieceCID cid.Cid
 	// OnProgress is invoked after each non-empty Read from the reader, with
-	// the cumulative bytes sent so far. It may be nil. Direct Store calls do
-	// not recover callback panics.
+	// the cumulative bytes sent so far. It may be nil. It can run on the HTTP
+	// transport goroutine; a panic aborts the upload and is re-raised with the
+	// same value on the goroutine that called Store. The PDP client logs the
+	// original stack at Error level when it has a logger.
 	OnProgress func(bytesUploaded int64)
 }
 
@@ -242,6 +244,11 @@ type FailedAttempt struct {
 	Stage      CopyStage // pipeline stage where the failure occurred
 	Err        error
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
+	// Submission is set when the provider accepted a commit submission for
+	// this attempt, even if confirmation later failed or timed out. Pass it to
+	// WaitForCommit to learn the outcome; see Submission recovery in the
+	// package documentation.
+	Submission *CommitSubmission
 }
 
 // UploadResult is returned by a successful Upload call.
@@ -323,10 +330,11 @@ func (r *UploadResult) PartialSuccess() bool {
 // UploadOptions configures [Service.Upload]. Copies must be positive.
 //
 // Lifecycle callbacks may be invoked from internal orchestration goroutines.
-// Handlers that share mutable state must be concurrency-safe. Callback panics
-// are recovered and ignored; when a logger is configured, the first panic per
-// callback name in an upload logs a warning. This recovery does not apply to
-// direct StoreOptions, PullRequest, or CommitRequest hooks.
+// Handlers that share mutable state must be concurrency-safe. A callback panic
+// stops the upload as if ctx were canceled and suppresses later callbacks; once
+// the upload has unwound, Upload re-panics with the same value on the calling
+// goroutine. When a logger is configured, the original stack is logged at Error
+// level first. Work already handed to a batcher may still commit.
 type UploadOptions struct {
 	// Copies is the number of provider copies to store. It must be positive.
 	Copies int
@@ -391,9 +399,7 @@ type UploadOptions struct {
 //
 // Lifecycle callbacks may be invoked from internal orchestration goroutines.
 // Handlers that share mutable state must be concurrency-safe. Callback panics
-// are recovered and ignored; when a logger is configured, the first panic per
-// callback name in an upload logs a warning. This recovery does not apply to
-// direct StoreOptions, PullRequest, or CommitRequest hooks.
+// are handled as described for [UploadOptions].
 type UploadToContextsOptions struct {
 	// PieceMetadata is validated, signed, and emitted in the FWSS PieceAdded
 	// event. FWSS does not persist it in contract state.
@@ -432,10 +438,8 @@ type UploadToContextsOptions struct {
 // and commit one copy and do not perform provider selection or secondary pulls.
 //
 // Callbacks may be invoked from internal goroutines. Handlers that share
-// mutable state must be concurrency-safe.
-// Callback panics are recovered and ignored; when a logger is configured, the
-// first panic per callback name in an upload logs a warning. This recovery does
-// not apply to direct StoreOptions or CommitRequest hooks.
+// mutable state must be concurrency-safe. Callback panics are handled as
+// described for [UploadOptions].
 type ContextUploadOptions struct {
 	// PieceMetadata is validated, signed, and emitted in the FWSS PieceAdded
 	// event. FWSS does not persist it in contract state.

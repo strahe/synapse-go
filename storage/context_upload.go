@@ -40,7 +40,9 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 	if r == nil {
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
-	uploadOpts := newUploadCallbackGuard(c.logger).wrapUploadOptions(uploadOptionsFromContext(opts))
+	ctx, guard := newUploadCallbackGuard(ctx, op, c.logger)
+	defer guard.rethrow()
+	uploadOpts := guard.wrapUploadOptions(uploadOptionsFromContext(opts))
 	var reservation *uploadReservation
 	if c.uploadBatcher != nil {
 		if err := c.uploadBatcher.validateTarget(target); err != nil {
@@ -101,24 +103,41 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 		}
 	}
 
-	var commit *CommitResult
+	var (
+		commit     *CommitResult
+		submission *CommitSubmission
+	)
 	batched := c.uploadBatcher != nil
 	if !batched {
-		commit, err = c.commit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
+		submission, err = c.submitCommit(ctx, op, ref, CommitRequest{Pieces: pieceInputs, OnSubmitted: onSubmitted})
+		if err == nil {
+			commit, err = c.waitForCommit(ctx, op, ref, *submission)
+		}
 	} else {
 		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0], transfer)
 		reservation.release()
 		if enqueueErr != nil {
 			err = enqueueErr
 		} else {
-			commit, err = task.wait(ctx, onSubmitted)
+			commit, submission, err = task.wait(ctx, onSubmitted)
 		}
 	}
 	if err != nil {
+		err = uploadBatchContextError(ctx, err)
 		return nil, &CommitError{
 			ProviderID: copyBigInt(c.provider.ID),
 			Endpoint:   redact.URLString(c.provider.ServiceURL),
-			Cause:      uploadBatchContextError(ctx, err),
+			Cause:      err,
+			PieceCID:   storeResult.PieceCID,
+			Size:       storeResult.Size,
+			FailedAttempts: []FailedAttempt{{
+				ProviderID: copyBigInt(c.provider.ID),
+				Role:       CopyRolePrimary,
+				Stage:      CopyStageCommit,
+				Err:        err,
+				Explicit:   true,
+				Submission: submission,
+			}},
 		}
 	}
 

@@ -157,8 +157,12 @@ uncapped. Standalone `storage.Service` users can set
 - `OnProgress`, `OnStored`, `OnCopyComplete`, `OnCopyFailed`,
   `OnPullProgress`, `OnPiecesAdded`, `OnPiecesConfirmed`: lifecycle callbacks.
 
-High-level upload callbacks are isolated from the upload flow: a callback panic
-does not interrupt the upload, and a configured logger records a warning.
+Callbacks may run on internal goroutines. If a callback panics, the upload
+stops as if its context were canceled, later callbacks are suppressed (ones
+already running are not interrupted), and `Upload` re-panics with the same
+value on your goroutine, where your own `recover` can handle it. A configured
+logger records the original stack first. A piece already handed to the commit
+batcher may still be committed.
 
 `Upload` succeeds when at least one copy is confirmed on-chain. If you do not
 cancel the call, it waits for every commit it started. Check

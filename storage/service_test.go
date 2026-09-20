@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -570,8 +571,132 @@ func TestManagerUpload_AllCommitsFailReturnsCommitError(t *testing.T) {
 	if !got.ProviderID.Equal(primary.id) {
 		t.Fatalf("providerID=%s want %s", got.ProviderID.String(), primary.id.String())
 	}
+	if got.Cause == nil || got.Cause.Error() != "primary commit failed" {
+		t.Fatalf("Cause=%v, want the primary commit failure", got.Cause)
+	}
+	if got.PieceCID != info.CIDv2 || got.Size != int64(len(data)) {
+		t.Fatalf("CommitError piece=%s size=%d, want %s and %d", got.PieceCID, got.Size, info.CIDv2, len(data))
+	}
+	if len(got.FailedAttempts) != 2 ||
+		!got.FailedAttempts[0].ProviderID.Equal(primary.id) || got.FailedAttempts[0].Stage != CopyStageCommit ||
+		!got.FailedAttempts[1].ProviderID.Equal(secondary.id) || got.FailedAttempts[1].Stage != CopyStageCommit {
+		t.Fatalf("FailedAttempts=%+v, want primary and secondary commit failures", got.FailedAttempts)
+	}
 	assertNoURLSecrets(t, "CommitError.Endpoint", got.Endpoint)
 	assertNoURLSecrets(t, "Error()", err.Error())
+}
+
+func TestManagerUpload_CommitWaitFailureKeepsSubmission(t *testing.T) {
+	data := bytes.Repeat([]byte("keep-submission"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	storeFn := func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+		return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+	}
+	submitted := func(tx string) func(context.Context, CommitRequest) (*CommitSubmission, error) {
+		return func(context.Context, CommitRequest) (*CommitSubmission, error) {
+			return &CommitSubmission{TransactionID: tx, StatusURL: "https://sp.example.com/status/" + tx}, nil
+		}
+	}
+
+	t.Run("primary wait fails", func(t *testing.T) {
+		primary := &fakeUploadContext{
+			id:             types.NewBigInt(101),
+			endpoint:       "https://primary.example.com",
+			storeFn:        storeFn,
+			submitCommitFn: submitted("0xprimary"),
+			waitCommitFn: func(context.Context, CommitSubmission) (*CommitResult, error) {
+				return nil, context.DeadlineExceeded
+			},
+		}
+		mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
+		_, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Upload error=%v, want context.DeadlineExceeded", err)
+		}
+		commitErr, ok := errors.AsType[*CommitError](err)
+		if !ok || len(commitErr.FailedAttempts) != 1 {
+			t.Fatalf("Upload error=%#v, want CommitError with one failed attempt", err)
+		}
+		if got := commitErr.FailedAttempts[0].Submission; got == nil || got.TransactionID != "0xprimary" {
+			t.Fatalf("Submission=%+v, want the primary submission", got)
+		}
+	})
+
+	t.Run("secondary wait fails", func(t *testing.T) {
+		primary := &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://primary.example.com",
+			pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+			storeFn:  storeFn,
+			commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+				return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(1)}}, nil
+			},
+		}
+		secondary := &fakeUploadContext{
+			id:       types.NewBigInt(202),
+			endpoint: "https://secondary.example.com",
+			presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+				return []byte{0x01}, nil
+			},
+			pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+				return &PullResult{Status: PullStatusComplete}, nil
+			},
+			submitCommitFn: submitted("0xsecondary"),
+			waitCommitFn: func(context.Context, CommitSubmission) (*CommitResult, error) {
+				return nil, errors.New("status unavailable")
+			},
+		}
+		mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary, secondary}}})
+		result, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		if result.Complete || len(result.FailedAttempts) != 1 {
+			t.Fatalf("result=%+v, want one failed secondary commit", result)
+		}
+		if got := result.FailedAttempts[0].Submission; got == nil || got.TransactionID != "0xsecondary" {
+			t.Fatalf("Submission=%+v, want the secondary submission", got)
+		}
+	})
+
+	t.Run("submit fails", func(t *testing.T) {
+		primary := &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://primary.example.com",
+			storeFn:  storeFn,
+			submitCommitFn: func(context.Context, CommitRequest) (*CommitSubmission, error) {
+				return nil, errors.New("provider rejected the request")
+			},
+		}
+		mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
+		_, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+		commitErr, ok := errors.AsType[*CommitError](err)
+		if !ok || len(commitErr.FailedAttempts) != 1 {
+			t.Fatalf("Upload error=%#v, want CommitError with one failed attempt", err)
+		}
+		if got := commitErr.FailedAttempts[0].Submission; got != nil {
+			t.Fatalf("Submission=%+v, want nil when nothing was submitted", got)
+		}
+	})
+
+	t.Run("nil submission", func(t *testing.T) {
+		primary := &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://primary.example.com",
+			storeFn:  storeFn,
+			submitCommitFn: func(context.Context, CommitRequest) (*CommitSubmission, error) {
+				return nil, nil
+			},
+		}
+		mgr := mustNewService(t, Options{Resolver: &fakeResolver{contexts: []StorageContext{primary}}})
+		_, err := mgr.Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 1})
+		if _, ok := errors.AsType[*CommitError](err); !ok || !strings.Contains(err.Error(), "nil submission") {
+			t.Fatalf("Upload error=%v, want CommitError for a nil submission", err)
+		}
+	})
 }
 
 func TestUploadToContextsKeepsCommitResultWhenCommitIgnoresCanceledContext(t *testing.T) {
@@ -1186,18 +1311,43 @@ func (c *fakeUploadContext) Commit(ctx context.Context, req CommitRequest) (*Com
 	return c.commitFn(ctx, req)
 }
 
+// fakeCommitResults holds results of commitFn-backed submissions until the
+// matching WaitForCommit, keyed by the synthetic status URL.
+var (
+	fakeCommitResults sync.Map
+	fakeCommitSeq     atomic.Uint64
+)
+
+// SubmitCommit uses submitCommitFn when set. Otherwise a commitFn models the
+// whole commit: it runs here, and WaitForCommit returns its result.
 func (c *fakeUploadContext) SubmitCommit(ctx context.Context, req CommitRequest) (*CommitSubmission, error) {
-	if c.submitCommitFn == nil {
+	if c.submitCommitFn != nil {
+		return c.submitCommitFn(ctx, req)
+	}
+	if c.commitFn == nil {
 		return nil, fmt.Errorf("unexpected SubmitCommit")
 	}
-	return c.submitCommitFn(ctx, req)
+	result, err := c.commitFn(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	statusURL := fmt.Sprintf("fake-commit://%d", fakeCommitSeq.Add(1))
+	fakeCommitResults.Store(statusURL, result)
+	submission := &CommitSubmission{StatusURL: statusURL, ProviderID: c.id}
+	if result != nil {
+		submission.TransactionID = result.TransactionID
+	}
+	return submission, nil
 }
 
 func (c *fakeUploadContext) WaitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
-	if c.waitCommitFn == nil {
-		return nil, fmt.Errorf("unexpected WaitForCommit")
+	if c.waitCommitFn != nil {
+		return c.waitCommitFn(ctx, submission)
 	}
-	return c.waitCommitFn(ctx, submission)
+	if result, ok := fakeCommitResults.LoadAndDelete(submission.StatusURL); ok {
+		return result.(*CommitResult), nil
+	}
+	return nil, fmt.Errorf("unexpected WaitForCommit")
 }
 
 func (c *fakeUploadContext) Upload(context.Context, io.Reader, *ContextUploadOptions) (*UploadResult, error) {

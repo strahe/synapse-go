@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
@@ -29,7 +31,10 @@ type UploadPieceStreamingOptions struct {
 	// this value during finalize; a mismatch yields an HTTP error.
 	PieceCID cid.Cid
 	// OnProgress is invoked after each non-empty Read from the data reader,
-	// with the cumulative byte count sent so far. It may be nil.
+	// with the cumulative byte count sent so far. It may be nil. It can run on
+	// the HTTP transport goroutine; a panic aborts the upload and is re-raised
+	// with the same value on the calling goroutine, after logging the original
+	// stack at Error level when a logger is configured.
 	OnProgress func(bytesUploaded int64)
 }
 
@@ -126,8 +131,17 @@ func (c *Client) UploadPieceStreaming(
 		cloned.Timeout = 0
 		putClient = &cloned
 	}
-	if _, _, err := c.doWithClient(putClient, putReq, http.StatusNoContent); err != nil {
-		return nil, fmt.Errorf("pdp.UploadPieceStreaming: PUT: %w", err)
+	_, _, putErr := c.doWithClient(putClient, putReq, http.StatusNoContent)
+	uploaded, progressPanic := counted.finish()
+	if progressPanic != nil {
+		if c.logger != nil {
+			c.logger.Error("pdp.UploadPieceStreaming: callback panicked",
+				"callback", "OnProgress", "panic", fmt.Sprint(progressPanic.value), "stack", string(progressPanic.stack))
+		}
+		panic(progressPanic.value)
+	}
+	if putErr != nil {
+		return nil, fmt.Errorf("pdp.UploadPieceStreaming: PUT: %w", putErr)
 	}
 	// Note: if the PUT fails, the upload session is left on the server.
 	// The provider has no HTTP DELETE endpoint for sessions; orphaned sessions are
@@ -162,31 +176,77 @@ func (c *Client) UploadPieceStreaming(
 		return nil, fmt.Errorf("pdp.UploadPieceStreaming: finalize: %w", err)
 	}
 
-	return &UploadStreamingResult{PieceCID: pieceCID, Size: counted.n}, nil
+	return &UploadStreamingResult{PieceCID: pieceCID, Size: uploaded}, nil
+}
+
+// errProgressCallbackPanicked aborts the request body after OnProgress panics.
+var errProgressCallbackPanicked = errors.New("pdp.UploadPieceStreaming: OnProgress panicked")
+
+// callbackPanic is a recovered callback panic and the stack where it occurred.
+type callbackPanic struct {
+	value any
+	stack []byte
 }
 
 // countingReader wraps an io.Reader to track the number of bytes read and
 // optionally report progress via a callback. When max > 0, reads that push
 // the cumulative total past max return an error.
+//
+// net/http reads the body on its own goroutine, which can keep reading after
+// the response when the server replies early. A callback panic is therefore
+// recorded and ends the body, and finish stops later callbacks so no panic is
+// recorded after the caller has checked.
 type countingReader struct {
 	r          io.Reader
-	n          int64
 	max        int64 // 0 = no limit
 	onProgress func(int64)
+
+	mu       sync.Mutex
+	n        int64
+	finished bool
+	panicked *callbackPanic
 }
 
 func (cr *countingReader) Read(p []byte) (int, error) {
 	n, err := cr.r.Read(p)
-	if n > 0 {
-		cr.n += int64(n)
-		if cr.max > 0 && cr.n > cr.max {
-			return 0, fmt.Errorf("pdp.UploadPieceStreaming: payload exceeds maximum size %d bytes", cr.max)
-		}
-		if cr.onProgress != nil {
-			cr.onProgress(cr.n)
-		}
+	if n <= 0 {
+		return n, err
+	}
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if cr.panicked != nil {
+		return 0, errProgressCallbackPanicked
+	}
+	cr.n += int64(n)
+	if cr.max > 0 && cr.n > cr.max {
+		return 0, fmt.Errorf("pdp.UploadPieceStreaming: payload exceeds maximum size %d bytes", cr.max)
+	}
+	if cr.onProgress != nil && !cr.finished && !cr.reportProgress() {
+		return 0, errProgressCallbackPanicked
 	}
 	return n, err
+}
+
+// reportProgress calls onProgress with cr.mu held and reports false if it
+// panicked.
+func (cr *countingReader) reportProgress() (ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			cr.panicked = &callbackPanic{value: recovered, stack: debug.Stack()}
+			ok = false
+		}
+	}()
+	cr.onProgress(cr.n)
+	return true
+}
+
+// finish stops further progress callbacks and returns the bytes read and any
+// recorded callback panic.
+func (cr *countingReader) finish() (int64, *callbackPanic) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	cr.finished = true
+	return cr.n, cr.panicked
 }
 
 // FindPieceResult mirrors the JSON body of GET /pdp/piece?pieceCid=...

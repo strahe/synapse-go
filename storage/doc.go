@@ -231,6 +231,15 @@
 // rejected status is returned without an error; WaitForCommit reports the same
 // terminal state as [CommitRejectedError].
 //
+// Uploads keep the same handle. When an upload commit fails after the provider
+// accepted its submission, including a failed or timed-out wait, the
+// [FailedAttempt] in [UploadResult.FailedAttempts] or
+// [CommitError.FailedAttempts] carries it as Submission. Resume a
+// create-and-add submission on [Service.NewProviderContext] for its ProviderID,
+// or an add-pieces submission on [Service.NewDataSetContext] for its DataSet,
+// then call WaitForCommit. A batched submission can include other uploads'
+// pieces; the result's PieceIDs follow the order of Submission.PieceCIDs.
+//
 // # Service termination
 //
 // [Service.TerminateService] and [DataSetContext.TerminateService] wait for
