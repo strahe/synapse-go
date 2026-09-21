@@ -131,6 +131,10 @@ var ErrTxRejected = errors.New("pdp: transaction rejected")
 // incomplete, or internally inconsistent.
 var ErrInvalidStatus = errors.New("pdp: invalid status response")
 
+// ErrInvalidStatusURL is returned when a provider status URL is malformed or
+// does not identify a transaction status resource.
+var ErrInvalidStatusURL = errors.New("pdp: invalid status URL")
+
 // ErrPingResponseMismatch is returned when /pdp/ping responds successfully
 // but its bounded response body is not the Curio PDP identity token.
 var ErrPingResponseMismatch = errors.New("pdp: ping response mismatch")

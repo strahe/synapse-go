@@ -118,7 +118,7 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 			OnSubmitted: onCommitSubmitted,
 		}})
 		if err == nil {
-			commit, err = c.waitForCommit(ctx, op, ref, *submission)
+			commit, err = c.waitForSubmission(ctx, op, ref, *submission)
 		}
 	} else {
 		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0], transfer)

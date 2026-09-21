@@ -784,7 +784,7 @@ func TestWaitForDataSetCreated(t *testing.T) {
 		}
 		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":42}`)
 	}))
-	status, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1", 10*time.Millisecond)
+	status, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/"+testTxOne, 10*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,7 +799,7 @@ func TestGetDataSetCreationStatus_Accepts202(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"pending","dataSetCreated":false,"ok":null}`)
 	}))
-	status, err := c.GetDataSetCreationStatus(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1")
+	status, err := c.GetDataSetCreationStatus(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/"+testTxOne)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +819,7 @@ func TestWaitForDataSetCreated_ConfirmedWithoutResultStillPending(t *testing.T) 
 		}
 		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":42}`)
 	}))
-	status, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1", time.Millisecond)
+	status, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/"+testTxOne, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ func TestWaitForDataSetCreated_Rejected(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"createMessageHash":"0x0000000000000000000000000000000000000000000000000000000000000001","service":"svc","txStatus":"rejected","dataSetCreated":false,"ok":false}`)
 	}))
-	_, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1", 10*time.Millisecond)
+	_, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/"+testTxOne, 10*time.Millisecond)
 	if !errors.Is(err, ErrTxRejected) {
 		t.Fatalf("want ErrTxRejected, got %v", err)
 	}
@@ -843,7 +843,7 @@ func TestWaitForDataSetCreated_404ReturnsHTTPError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusNotFound)
 	}))
-	_, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/0x1", 10*time.Millisecond)
+	_, err := c.WaitForDataSetCreated(context.Background(), c.BaseURL().String()+"pdp/data-sets/created/"+testTxOne, 10*time.Millisecond)
 	he, ok := errors.AsType[*HTTPError](err)
 	if !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
@@ -1054,9 +1054,9 @@ func TestWaitForPiecesAdded(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"pending","dataSetId":5,"pieceCount":1,"addMessageOk":null,"piecesAdded":false}`)
 			return
 		}
-		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10,11]}`)
+		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":2,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10,11]}`)
 	}))
-	status, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", 10*time.Millisecond)
+	status, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status/"+testTxOne, 10*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1071,7 @@ func TestGetAddPiecesStatus_Accepts202(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"pending","dataSetId":5,"pieceCount":1,"addMessageOk":null,"piecesAdded":false}`)
 	}))
-	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
+	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1091,7 @@ func TestWaitForPiecesAdded_ConfirmedWithoutResultStillPending(t *testing.T) {
 		}
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10]}`)
 	}))
-	status, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", time.Millisecond)
+	status, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status/"+testTxOne, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,7 +1104,7 @@ func TestWaitForPiecesAdded_404ReturnsHTTPError(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusNotFound)
 	}))
-	_, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status", 10*time.Millisecond)
+	_, err := c.WaitForPiecesAdded(context.Background(), c.BaseURL().String()+"status/"+testTxOne, 10*time.Millisecond)
 	he, ok := errors.AsType[*HTTPError](err)
 	if !ok {
 		t.Fatalf("want HTTPError, got %T (%v)", err, err)
@@ -1119,7 +1119,7 @@ func TestGetAddPiecesStatus_LargeUint64DataSetID(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":9223372036854775808,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[10]}`)
 	}))
-	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status")
+	status, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
 	if err != nil {
 		t.Fatal(err)
 	}

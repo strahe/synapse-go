@@ -28,13 +28,31 @@ func (c *ProviderContext) CreateDataSet(ctx context.Context, opts *CreateDataSet
 	if opts != nil && opts.OnSubmitted != nil {
 		opts.OnSubmitted(copyCreateDataSetSubmission(submission))
 	}
-	return c.waitForDataSetCreated(ctx, "storage.ProviderContext.CreateDataSet", submission)
+	return c.waitForDataSetCreated(
+		ctx,
+		"storage.ProviderContext.CreateDataSet",
+		submission.StatusURL,
+		submission.ClientDataSetID,
+	)
 }
 
-// WaitForDataSetCreated waits for a previously submitted create-dataset
-// transaction. The receiver remains unbound.
-func (c *ProviderContext) WaitForDataSetCreated(ctx context.Context, submission CreateDataSetSubmission) (*CreateDataSetResult, error) {
-	return c.waitForDataSetCreated(ctx, "storage.ProviderContext.WaitForDataSetCreated", submission)
+// WaitForDataSetCreated waits for a previously submitted create-dataset status
+// URL. ClientDataSetID must be the value used for the original submission; zero
+// is valid only when that original value was zero. The receiver remains unbound.
+func (c *ProviderContext) WaitForDataSetCreated(
+	ctx context.Context,
+	statusURL string,
+	clientDataSetID types.BigInt,
+) (*CreateDataSetResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.WaitForDataSetCreated: %w: nil context", ErrInvalidArgument)
+	}
+	return c.waitForDataSetCreated(
+		ctx,
+		"storage.ProviderContext.WaitForDataSetCreated",
+		statusURL,
+		clientDataSetID,
+	)
 }
 
 // FindDataSetByClientDataSetID checks whether a data set created with the
@@ -168,7 +186,7 @@ func (c *ProviderContext) submitCreateDataSet(ctx context.Context, requestedClie
 		ProviderID:      copyBigInt(c.core.provider.ID),
 		TransactionID:   created.TxHash.Hex(),
 		StatusURL:       created.StatusURL,
-		ClientDataSetID: copyClientDataSetIDPtr(clientDataSetID),
+		ClientDataSetID: copyBigInt(clientDataSetID),
 	}, nil
 }
 
@@ -215,15 +233,19 @@ func (c *ProviderContext) signCreateDataSet(ctx context.Context, op string, requ
 	return extraData, clientDataSetID, nil
 }
 
-func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, submission CreateDataSetSubmission) (*CreateDataSetResult, error) {
-	submission, err := validateCreateDataSetSubmission(op, c.core.provider, submission)
-	if err != nil {
+func (c *ProviderContext) waitForDataSetCreated(
+	ctx context.Context,
+	op string,
+	statusURL string,
+	clientDataSetID types.BigInt,
+) (*CreateDataSetResult, error) {
+	if err := validateRecoveryStatusURL(op, c.core.provider.ServiceURL, statusURL); err != nil {
 		return nil, err
 	}
 
-	status, err := c.core.client.WaitForDataSetCreated(ctx, submission.StatusURL, 0)
+	status, err := c.core.client.WaitForDataSetCreated(ctx, statusURL, 0)
 	if err != nil {
-		return nil, fmt.Errorf("%s: wait dataset created: %w", op, err)
+		return nil, wrapRecoveryStatusError(op, "wait dataset created", err)
 	}
 	if status == nil {
 		return nil, errors.New(op + ": wait dataset created returned nil status")
@@ -231,70 +253,24 @@ func (c *ProviderContext) waitForDataSetCreated(ctx context.Context, op string, 
 	if status.DataSetID == nil || status.DataSetID.IsZero() {
 		return nil, errors.New(op + ": server returned zero dataSetID")
 	}
-	wantTransactionID := common.HexToHash(submission.TransactionID)
-	if got := status.CreateMessageHash; got != wantTransactionID {
-		return nil, fmt.Errorf(
-			"%s: %w: server returned mismatched transactionID: got %s want %s",
-			op,
-			pdp.ErrInvalidStatus,
-			got.Hex(),
-			wantTransactionID.Hex(),
-		)
+	if status.CreateMessageHash == (common.Hash{}) {
+		return nil, fmt.Errorf("%s: %w: server returned zero transactionID", op, pdp.ErrInvalidStatus)
 	}
 
-	ref, err := NewDataSetRef(c.core.provider.ID, *status.DataSetID, *submission.ClientDataSetID)
+	ref, err := NewDataSetRef(c.core.provider.ID, *status.DataSetID, clientDataSetID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return &CreateDataSetResult{
-		TransactionID:          submission.TransactionID,
+		TransactionID:          status.CreateMessageHash.Hex(),
 		ConfirmedTransactionID: optionalHashString(status.ConfirmedTxHash),
 		DataSet:                ref,
 	}, nil
 }
 
-func validateCreateDataSetSubmission(op string, provider Provider, submission CreateDataSetSubmission) (CreateDataSetSubmission, error) {
-	submission = copyCreateDataSetSubmission(submission)
-	if submission.ProviderID.IsZero() {
-		submission.ProviderID = copyBigInt(provider.ID)
-	}
-	if submission.ProviderID.IsZero() {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: zero providerID", op, ErrInvalidArgument)
-	}
-	if !submission.ProviderID.Equal(provider.ID) {
-		return CreateDataSetSubmission{}, fmt.Errorf(
-			"%s: %w: submission providerID %s does not match context providerID %s",
-			op,
-			ErrInvalidArgument,
-			submission.ProviderID.String(),
-			provider.ID.String(),
-		)
-	}
-	if submission.TransactionID == "" {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: empty transactionID", op, ErrInvalidArgument)
-	}
-	if !common.IsHexHash(submission.TransactionID) {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: invalid transactionID %q", op, ErrInvalidArgument, submission.TransactionID)
-	}
-	wantTransactionID := common.HexToHash(submission.TransactionID)
-	if wantTransactionID == (common.Hash{}) {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: invalid transactionID %q", op, ErrInvalidArgument, submission.TransactionID)
-	}
-	if submission.StatusURL == "" {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: empty statusURL", op, ErrInvalidArgument)
-	}
-	if err := validateProviderStatusURL(provider.ServiceURL, submission.StatusURL); err != nil {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, err)
-	}
-	if submission.ClientDataSetID == nil {
-		return CreateDataSetSubmission{}, fmt.Errorf("%s: %w: missing clientDataSetID", op, ErrInvalidArgument)
-	}
-	return submission, nil
-}
-
 func copyCreateDataSetSubmission(in CreateDataSetSubmission) CreateDataSetSubmission {
 	out := in
 	out.ProviderID = copyBigInt(in.ProviderID)
-	out.ClientDataSetID = copyBigIntPtr(in.ClientDataSetID)
+	out.ClientDataSetID = copyBigInt(in.ClientDataSetID)
 	return out
 }

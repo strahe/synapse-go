@@ -600,6 +600,59 @@ func TestContextUpload_Callbacks(t *testing.T) {
 	}
 }
 
+func TestContextUploadRejectsUnexpectedConfirmedPieceCount(t *testing.T) {
+	data := bytes.Repeat([]byte("count"), 64)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakePDPProviderClient{
+		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+			_, _ = io.Copy(io.Discard, r)
+			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+		},
+		waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error { return nil },
+		createAndAddFn: func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+			return &pdp.CreateDataSetResult{
+				TxHash:    common.HexToHash("0xabc"),
+				StatusURL: "https://sp.example.com/status",
+			}, nil
+		},
+		waitForCreateAndAddFn: func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            common.HexToHash("0xabc"),
+				DataSetID:         types.NewBigInt(55),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(77), types.NewBigInt(78)},
+			}, nil
+		},
+	}
+	ctx, err := NewProviderContext(
+		testProvider(),
+		client,
+		mustTestSigner(t),
+		WithPayer(testPayer()),
+		WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmedCalls := 0
+	result, err := ctx.Upload(context.Background(), bytes.NewReader(data), &ContextUploadOptions{
+		OnPiecesConfirmed: func(types.BigInt, types.BigInt, []ConfirmedPiece) {
+			confirmedCalls++
+		},
+	})
+	var commitErr *CommitError
+	if result != nil || !errors.As(err, &commitErr) || !errors.Is(err, pdp.ErrInvalidStatus) {
+		t.Fatalf("result=%+v error=%v want CommitError wrapping ErrInvalidStatus", result, err)
+	}
+	if confirmedCalls != 0 {
+		t.Fatalf("OnPiecesConfirmed calls=%d want 0", confirmedCalls)
+	}
+}
+
 func TestContextUpload_CallbacksAllowZeroPieceID(t *testing.T) {
 	data := bytes.Repeat([]byte("cz"), 128)
 	info, err := piece.CalculateFromBytes(data)

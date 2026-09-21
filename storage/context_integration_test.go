@@ -206,13 +206,13 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if submission.StatusURL == "" {
 		t.Fatal("CreateDataSet submission missing StatusURL")
 	}
-	if submission.ClientDataSetID == nil || submission.ClientDataSetID.IsZero() {
+	if submission.ClientDataSetID.IsZero() {
 		t.Fatal("CreateDataSet submission missing ClientDataSetID")
 	}
 
 	start = time.Now()
 	t.Log("start storage staged WaitForDataSetCreated")
-	created, err := secondary.WaitForDataSetCreated(ctx, submission)
+	created, err := secondary.WaitForDataSetCreated(ctx, submission.StatusURL, submission.ClientDataSetID)
 	t.Logf("done storage staged WaitForDataSetCreated elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
@@ -220,7 +220,7 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if created.DataSet.DataSetID().IsZero() {
 		t.Fatal("WaitForDataSetCreated returned zero DataSetID")
 	}
-	if !created.DataSet.ClientDataSetID().Equal(*submission.ClientDataSetID) {
+	if !created.DataSet.ClientDataSetID().Equal(submission.ClientDataSetID) {
 		t.Fatalf("ClientDataSetID mismatch: got %v want %v", created.DataSet.ClientDataSetID(), submission.ClientDataSetID)
 	}
 	recovered, err := secondary.ForDataSet(created.DataSet)

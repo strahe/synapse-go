@@ -95,28 +95,6 @@ func (i *ContextIdentity) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (s *CommitSubmission) UnmarshalJSON(data []byte) error {
-	if s == nil {
-		return fmt.Errorf("storage.CommitSubmission.UnmarshalJSON: %w: nil receiver", ErrInvalidArgument)
-	}
-	type wireSubmission CommitSubmission
-	var wire wireSubmission
-	if err := decodeLifecycleJSON(data, "storage.CommitSubmission.UnmarshalJSON", &wire, []lifecycleJSONField{
-		{name: "kind"},
-		{name: "transactionId"},
-		{name: "statusUrl"},
-		{name: "providerId"},
-		{name: "identity"},
-		{name: "dataSet", nullable: true},
-		{name: "clientDataSetId", nullable: true},
-		{name: "pieceCids"},
-	}); err != nil {
-		return err
-	}
-	*s = copyCommitSubmission(CommitSubmission(wire))
-	return nil
-}
-
 func (s *CommitStatus) UnmarshalJSON(data []byte) error {
 	if s == nil {
 		return fmt.Errorf("storage.CommitStatus.UnmarshalJSON: %w: nil receiver", ErrInvalidArgument)
@@ -155,26 +133,6 @@ func (r *CommitResult) UnmarshalJSON(data []byte) error {
 	*r = CommitResult(wire)
 	r.DataSet = copyDataSetRef(r.DataSet)
 	r.PieceIDs = copyBigInts(r.PieceIDs)
-	return nil
-}
-
-func (s *CreateDataSetSubmission) UnmarshalJSON(data []byte) error {
-	if s == nil {
-		return fmt.Errorf("storage.CreateDataSetSubmission.UnmarshalJSON: %w: nil receiver", ErrInvalidArgument)
-	}
-	type wireSubmission CreateDataSetSubmission
-	var wire wireSubmission
-	if err := decodeLifecycleJSON(data, "storage.CreateDataSetSubmission.UnmarshalJSON", &wire, []lifecycleJSONField{
-		{name: "providerId"},
-		{name: "transactionId"},
-		{name: "statusUrl"},
-		{name: "clientDataSetId"},
-	}); err != nil {
-		return err
-	}
-	*s = CreateDataSetSubmission(wire)
-	s.ProviderID = copyBigInt(s.ProviderID)
-	s.ClientDataSetID = copyBigIntPtr(s.ClientDataSetID)
 	return nil
 }
 

@@ -99,10 +99,12 @@ type rawCreateDataSetStatus struct {
 // GetDataSetCreationStatus polls the status URL once. Providers may return
 // either HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string) (*CreateDataSetStatus, error) {
-	if statusURL == "" {
-		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: %w: empty statusURL", ErrStatusURLOrigin)
+	const op = "pdp.GetDataSetCreationStatus"
+	expectedHash, err := c.statusURLTransactionHash(op, statusURL)
+	if err != nil {
+		return nil, err
 	}
-	body, err := c.getStatusBody(ctx, "pdp.GetDataSetCreationStatus", statusURL, http.StatusOK, http.StatusAccepted)
+	body, err := c.getStatusBody(ctx, op, statusURL, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +115,9 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 	createMessageHash, err := parseRequiredStatusHash("pdp.GetDataSetCreationStatus", "createMessageHash", raw.CreateMessageHash)
 	if err != nil {
 		return nil, err
+	}
+	if createMessageHash != expectedHash {
+		return nil, invalidStatusf(op, "createMessageHash does not match status URL")
 	}
 	confirmedTxHash, err := parseOptionalStatusHash("pdp.GetDataSetCreationStatus", "confirmedTxHash", raw.ConfirmedTxHash)
 	if err != nil {

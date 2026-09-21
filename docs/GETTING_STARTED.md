@@ -471,15 +471,19 @@ if err != nil {
 fmt.Println("dataset:", ref.DataSetID())
 ```
 
-To create an empty dataset first, persist the submission if the process may
-restart before confirmation. Creation is available only on `ProviderContext`.
+To create an empty dataset first, save the status URL and original client
+dataset ID if the process may restart before confirmation. Creation is
+available only on `ProviderContext`.
 
 ```go
-var submitted storage.CreateDataSetSubmission
+var statusURL string
+var clientDataSetID types.BigInt
 
 created, err := providerCtx.CreateDataSet(ctx, &storage.CreateDataSetOptions{
     OnSubmitted: func(s storage.CreateDataSetSubmission) {
-        submitted = s
+        statusURL = s.StatusURL
+        clientDataSetID = s.ClientDataSetID
+        // Save both values before this callback returns.
     },
 })
 if err != nil {
@@ -490,10 +494,12 @@ fmt.Println("dataset:", created.DataSet.DataSetID())
 
 Resume a submitted create transaction with any fresh `ProviderContext` for the
 same provider, then convert the returned reference without mutating that
-context:
+context. Pass the exact client dataset ID used for the original submission;
+zero is valid only if that original ID was zero. The status URL alone cannot
+recover a lost client dataset ID:
 
 ```go
-created, err := providerCtx.WaitForDataSetCreated(ctx, submitted)
+created, err := providerCtx.WaitForDataSetCreated(ctx, statusURL, clientDataSetID)
 if err != nil {
     return err
 }
@@ -518,22 +524,31 @@ them automatically.
 ### Recovering create-and-add and add-pieces submissions
 
 `CreateAndAddRequest.OnSubmitted` and `CommitRequest.OnSubmitted` receive an
-independent copy of the complete, JSON-serializable `CommitSubmission` after
-the provider handle has been validated and before confirmation begins. A
-single-step call can therefore preserve its handle even when the later wait
-fails:
+independent `CommitSubmission` after the provider accepts the request and
+before confirmation begins. This value contains runtime and diagnostic data;
+it is not a persistence schema. Save only the recovery fields needed by the
+operation.
+
+Create-and-add requires the status URL and original client dataset ID. Pass
+zero only if the original submission used zero; the status URL alone cannot
+recover a lost client dataset ID:
 
 ```go
-var submitted storage.CommitSubmission
+var statusURL string
+var clientDataSetID types.BigInt
+var providerID types.BigInt
 
 result, err := providerCtx.CreateAndAdd(ctx, storage.CreateAndAddRequest{
     Pieces: pieces,
     OnSubmitted: func(s storage.CommitSubmission) {
-        submitted = s // persist all fields here
+        statusURL = s.StatusURL
+        clientDataSetID = *s.ClientDataSetID
+        providerID = s.ProviderID
+        // Save these values before this callback returns.
     },
 })
 if err != nil {
-    if submitted.TransactionID == "" {
+    if statusURL == "" {
         return err
     }
     recoveryCtx, cancel := context.WithTimeout(context.Background(), 3 * time.Minute)
@@ -541,13 +556,17 @@ if err != nil {
 
     fresh, openErr := client.Storage().NewProviderContext(
         recoveryCtx,
-        submitted.ProviderID,
+        providerID,
         storage.NewProviderContextOptions{},
     )
     if openErr != nil {
         return openErr
     }
-    result, err = fresh.WaitForCreateAndAdd(recoveryCtx, submitted)
+    result, err = fresh.WaitForCreateAndAdd(
+        recoveryCtx,
+        statusURL,
+        clientDataSetID,
+    )
 }
 if err != nil {
     return err
@@ -565,27 +584,26 @@ submitted, err := providerCtx.SubmitCreateAndAdd(ctx, storage.CreateAndAddReques
 if err != nil {
     return err
 }
-// Persist submitted before waiting.
-result, err := providerCtx.WaitForCreateAndAdd(ctx, *submitted)
+// Persist submitted.StatusURL and the original
+// *submitted.ClientDataSetID before waiting.
+result, err := providerCtx.WaitForCreateAndAdd(
+    ctx,
+    submitted.StatusURL,
+    *submitted.ClientDataSetID,
+)
 ```
 
 For an existing dataset, use `DataSetContext.SubmitCommit`,
-`GetCommitStatus`, and `WaitForCommit` in the same pattern. Use
+`GetCommitStatus`, and `WaitForCommit` in the same pattern, persisting the
+`DataSetRef` and `submitted.StatusURL`. Use
 `ProviderContext.GetCreateAndAddStatus` and `WaitForCreateAndAdd` for a new
 dataset. High-level upload recovery continues to use
-`FailedAttempt.Submission`; `OnPiecesAdded` remains a transaction progress
-event and still receives a transaction hash rather than a recovery handle.
+`FailedAttempt.Submission`: extract the same minimal fields rather than storing
+the complete value. `OnPiecesAdded` remains a transaction progress event and
+still receives a transaction hash rather than a recovery handle.
 
-Migration from the previous context API:
-
-| Previous API | Updated API |
-|---|---|
-| `provider.Commit(req)` | `provider.CreateAndAdd(storage.CreateAndAddRequest{...})` |
-| `provider.SubmitCommit(req)` | `provider.SubmitCreateAndAdd(storage.CreateAndAddRequest{...})` |
-| `provider.GetCommitStatus(submission)` | `provider.GetCreateAndAddStatus(submission)` |
-| `provider.WaitForCommit(submission)` | `provider.WaitForCreateAndAdd(submission)` |
-| `CommitRequest.ClientDataSetID` | `CreateAndAddRequest.ClientDataSetID` |
-| `CommitRequest.OnSubmitted: func(txHash string)` | `CreateAndAddRequest.OnSubmitted` and `CommitRequest.OnSubmitted`: `func(submission storage.CommitSubmission)` |
+Applications that need to map returned piece IDs to CIDs must persist that
+business mapping with their original request.
 
 ## Discovery And Lifecycle
 

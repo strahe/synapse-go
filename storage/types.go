@@ -132,9 +132,11 @@ type CreateAndAddRequest struct {
 	// set. Nil generates a random ID. When ExtraData is set, the value must
 	// match the ID embedded in its create payload.
 	ClientDataSetID *types.BigInt
-	// OnSubmitted is invoked with a persistable copy of the complete submission
-	// immediately after the provider returns a valid handle, before confirmation.
-	// It may be nil. Direct calls do not recover callback panics.
+	// OnSubmitted is invoked with an independent runtime snapshot immediately
+	// after the provider returns a valid handle, before confirmation. For restart
+	// recovery, persist StatusURL and the original ClientDataSetID; do not treat
+	// the complete CommitSubmission as a persistence schema. It may be nil.
+	// Direct calls do not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -145,9 +147,11 @@ type CommitRequest struct {
 	// DataSetContext sign the request. Payloads whose encoded add-pieces calldata
 	// exceeds pdp.MaxAddPiecesMessageSize are rejected.
 	ExtraData []byte
-	// OnSubmitted is invoked with a persistable copy of the complete submission
-	// immediately after the provider returns a valid handle, before confirmation.
-	// It may be nil. Direct calls do not recover callback panics.
+	// OnSubmitted is invoked with an independent runtime snapshot immediately
+	// after the provider returns a valid handle, before confirmation. For restart
+	// recovery, persist StatusURL together with the target DataSetRef; do not treat
+	// the complete CommitSubmission as a persistence schema. It may be nil.
+	// Direct calls do not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -174,10 +178,10 @@ const (
 	CommitStateRejected CommitState = "rejected"
 )
 
-// CommitSubmission is a persistable handle returned after one successful
-// provider submission. Persist all fields together and resume it with the same
-// concrete context type. Its JSON form uses strict lowerCamel field names and
-// rejects alternate capitalization.
+// CommitSubmission describes one successful provider submission. It is a
+// runtime result for callbacks and diagnostics, not a durable recovery record.
+// Persist StatusURL to resume add-pieces. Create-and-add recovery also requires
+// the original ClientDataSetID.
 type CommitSubmission struct {
 	Kind            CommitKind      `json:"kind"`
 	TransactionID   string          `json:"transactionId"`
@@ -220,16 +224,14 @@ type CreateDataSetOptions struct {
 	OnSubmitted func(CreateDataSetSubmission)
 }
 
-// CreateDataSetSubmission identifies a submitted create-dataset transaction.
-// Persist and restore all fields together using the strict lowerCamel JSON
-// form; incomplete submissions and alternate capitalization are rejected. A
-// zero ProviderID is filled from the ProviderContext used to wait.
+// CreateDataSetSubmission describes a submitted create-dataset transaction. It
+// is a runtime result for callbacks and diagnostics, not a durable recovery
+// record. Persist StatusURL and the original ClientDataSetID to resume waiting.
 type CreateDataSetSubmission struct {
-	ProviderID    types.BigInt `json:"providerId"`
-	TransactionID string       `json:"transactionId"`
-	StatusURL     string       `json:"statusUrl"`
-	// ClientDataSetID must be non-nil when resuming a submitted create.
-	ClientDataSetID *types.BigInt `json:"clientDataSetId"`
+	ProviderID      types.BigInt `json:"providerId"`
+	TransactionID   string       `json:"transactionId"`
+	StatusURL       string       `json:"statusUrl"`
+	ClientDataSetID types.BigInt `json:"clientDataSetId"`
 }
 
 // CreateDataSetResult is returned after standalone dataset creation confirms.
@@ -257,9 +259,9 @@ type FailedAttempt struct {
 	Err        error
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
 	// Submission is set when the provider accepted a commit submission for
-	// this attempt, even if confirmation later failed or timed out. Resume it
-	// with ProviderContext.WaitForCreateAndAdd or DataSetContext.WaitForCommit,
-	// according to its Kind; see Submission recovery in the package documentation.
+	// this attempt, even if confirmation later failed or timed out. Use its
+	// StatusURL, and ClientDataSetID for create-and-add, to resume waiting; see
+	// Submission recovery in the package documentation.
 	Submission *CommitSubmission
 }
 
