@@ -132,9 +132,11 @@ type CreateAndAddRequest struct {
 	// set. Nil generates a random ID. When ExtraData is set, the value must
 	// match the ID embedded in its create payload.
 	ClientDataSetID *types.BigInt
-	// OnSubmitted is invoked with a persistable copy of the complete submission
-	// immediately after the provider returns a valid handle, before confirmation.
-	// It may be nil. Direct calls do not recover callback panics.
+	// OnSubmitted is invoked with an independent runtime snapshot immediately
+	// after the provider returns a valid handle, before confirmation. For restart
+	// recovery, persist StatusURL and the original ClientDataSetID; do not treat
+	// the complete CommitSubmission as a persistence schema. It may be nil.
+	// Direct calls do not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -145,9 +147,11 @@ type CommitRequest struct {
 	// DataSetContext sign the request. Payloads whose encoded add-pieces calldata
 	// exceeds pdp.MaxAddPiecesMessageSize are rejected.
 	ExtraData []byte
-	// OnSubmitted is invoked with a persistable copy of the complete submission
-	// immediately after the provider returns a valid handle, before confirmation.
-	// It may be nil. Direct calls do not recover callback panics.
+	// OnSubmitted is invoked with an independent runtime snapshot immediately
+	// after the provider returns a valid handle, before confirmation. For restart
+	// recovery, persist StatusURL together with the target DataSetRef; do not treat
+	// the complete CommitSubmission as a persistence schema. It may be nil.
+	// Direct calls do not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -177,7 +181,7 @@ const (
 // CommitSubmission describes one successful provider submission. It is a
 // runtime result for callbacks and diagnostics, not a durable recovery record.
 // Persist StatusURL to resume add-pieces. Create-and-add recovery also requires
-// ClientDataSetID.
+// the original ClientDataSetID.
 type CommitSubmission struct {
 	Kind            CommitKind      `json:"kind"`
 	TransactionID   string          `json:"transactionId"`
@@ -222,7 +226,7 @@ type CreateDataSetOptions struct {
 
 // CreateDataSetSubmission describes a submitted create-dataset transaction. It
 // is a runtime result for callbacks and diagnostics, not a durable recovery
-// record. Persist StatusURL and ClientDataSetID to resume waiting.
+// record. Persist StatusURL and the original ClientDataSetID to resume waiting.
 type CreateDataSetSubmission struct {
 	ProviderID      types.BigInt `json:"providerId"`
 	TransactionID   string       `json:"transactionId"`

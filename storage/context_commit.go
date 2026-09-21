@@ -52,7 +52,8 @@ func (c *ProviderContext) submitCommit(ctx context.Context, req commitRequest) (
 // GetCreateAndAddStatus checks a create-and-add status URL once. An invalid
 // status URL returns an error matching [ErrInvalidArgument] and
 // [pdp.ErrInvalidStatusURL]. An origin mismatch also matches
-// [pdp.ErrStatusURLOrigin]. ClientDataSetID may be zero.
+// [pdp.ErrStatusURLOrigin]. ClientDataSetID must be the value used for the
+// original submission; zero is valid only when that original value was zero.
 func (c *ProviderContext) GetCreateAndAddStatus(
 	ctx context.Context,
 	statusURL string,
@@ -73,7 +74,8 @@ func (c *ProviderContext) GetCreateAndAddStatus(
 // WaitForCreateAndAdd waits for a create-and-add status URL to confirm or
 // reject. An invalid status URL returns an error matching [ErrInvalidArgument]
 // and [pdp.ErrInvalidStatusURL]. An origin mismatch also matches
-// [pdp.ErrStatusURLOrigin]. ClientDataSetID may be zero.
+// [pdp.ErrStatusURLOrigin]. ClientDataSetID must be the value used for the
+// original submission; zero is valid only when that original value was zero.
 func (c *ProviderContext) WaitForCreateAndAdd(
 	ctx context.Context,
 	statusURL string,

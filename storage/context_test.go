@@ -661,14 +661,23 @@ func TestProviderContextConcurrentCommitsCreateIndependently(t *testing.T) {
 	}
 }
 
-func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *testing.T) {
+func TestProviderContextCreateDataSetRecoversOriginalZeroClientDataSetIDForSigning(t *testing.T) {
 	txHash := common.HexToHash("0x1234")
 	confirmedTxHash := common.HexToHash("0x5678")
 	dataSetID := types.NewBigInt(77)
+	originalClientDataSetID := types.NewBigInt(0)
+	storageSigner := mustTestSigner(t)
 	client := &fakePDPProviderClient{
 		createDataSetFn: func(_ context.Context, recordKeeper common.Address, extraData []byte) (*pdp.CreateDataSetResult, error) {
 			if recordKeeper != testRecordKeeper() || len(extraData) == 0 {
 				t.Fatalf("CreateDataSet recordKeeper=%s extraData=%x", recordKeeper, extraData)
+			}
+			values, err := createDataSetArgs.Unpack(extraData)
+			if err != nil {
+				t.Fatalf("unpack create payload: %v", err)
+			}
+			if values[1].(*big.Int).Sign() != 0 {
+				t.Fatalf("submitted clientDataSetID=%s want explicit zero", values[1].(*big.Int))
 			}
 			return &pdp.CreateDataSetResult{TxHash: txHash, StatusURL: "https://sp.example.com/create/1234"}, nil
 		},
@@ -677,15 +686,30 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 			return &pdp.CreateDataSetStatus{CreateMessageHash: txHash, ConfirmedTxHash: confirmedTxHash, DataSetID: &id}, nil
 		},
 	}
-	providerCtx := mustWritableProviderContext(t, client)
+	newContext := func() *ProviderContext {
+		providerContext, err := NewProviderContext(
+			testProvider(),
+			client,
+			storageSigner,
+			WithPayer(testPayer()),
+			WithRecordKeeper(testRecordKeeper()),
+			WithChainID(types.ChainID(314159)),
+		)
+		if err != nil {
+			t.Fatalf("NewProviderContext: %v", err)
+		}
+		return providerContext
+	}
+	providerCtx := newContext()
 	var submission CreateDataSetSubmission
 	result, err := providerCtx.CreateDataSet(context.Background(), &CreateDataSetOptions{
-		OnSubmitted: func(got CreateDataSetSubmission) { submission = got },
+		ClientDataSetID: &originalClientDataSetID,
+		OnSubmitted:     func(got CreateDataSetSubmission) { submission = got },
 	})
 	if err != nil {
 		t.Fatalf("CreateDataSet: %v", err)
 	}
-	if !submission.ProviderID.Equal(testProvider().ID) {
+	if !submission.ProviderID.Equal(testProvider().ID) || !submission.ClientDataSetID.IsZero() {
 		t.Fatalf("submission=%+v", submission)
 	}
 	if !result.DataSet.ProviderID().Equal(testProvider().ID) ||
@@ -698,7 +722,7 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 		t.Fatal("CreateDataSet mutated ProviderContext")
 	}
 
-	fresh := mustWritableProviderContext(t, client)
+	fresh := newContext()
 	recovered, err := fresh.WaitForDataSetCreated(
 		context.Background(),
 		submission.StatusURL,
@@ -725,32 +749,27 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 		!ref.ClientDataSetID().Equal(recovered.DataSet.ClientDataSetID()) {
 		t.Fatalf("bound ref=(%+v, %t) want %+v", ref, ok, recovered.DataSet)
 	}
-}
-
-func TestProviderContextWaitForDataSetCreatedAcceptsZeroClientDataSetID(t *testing.T) {
-	txHash := common.HexToHash("0x1234")
-	dataSetID := types.NewBigInt(77)
-	clientID := types.NewBigInt(0)
-	waitCalls := 0
-	client := &fakePDPProviderClient{
-		waitForCreatedFn: func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
-			waitCalls++
-			id := copyBigInt(dataSetID)
-			return &pdp.CreateDataSetStatus{CreateMessageHash: txHash, DataSetID: &id}, nil
-		},
-	}
-	c := mustWritableProviderContext(t, client)
-	result, err := c.WaitForDataSetCreated(context.Background(), "https://sp.example.com/status", clientID)
+	pieceInfo := mustPieceInfo(t)
+	payload, err := bound.PresignForCommit(context.Background(), []PieceInput{{PieceCID: pieceInfo.CIDv2}})
 	if err != nil {
-		t.Fatalf("WaitForDataSetCreated: %v", err)
+		t.Fatalf("PresignForCommit: %v", err)
 	}
-	if waitCalls != 1 {
-		t.Fatalf("waitCalls=%d want 1", waitCalls)
+	values, err := addPiecesArgs.Unpack(payload)
+	if err != nil {
+		t.Fatalf("unpack add-pieces payload: %v", err)
 	}
-	if !result.DataSet.ProviderID().Equal(testProvider().ID) ||
-		!result.DataSet.DataSetID().Equal(dataSetID) ||
-		!result.DataSet.ClientDataSetID().Equal(clientID) {
-		t.Fatalf("result=%+v", result.DataSet)
+	message, err := ityped.AddPiecesMessage(
+		originalClientDataSetID.Big(),
+		values[0].(*big.Int),
+		[]cid.Cid{pieceInfo.CIDv2},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build AddPieces message: %v", err)
+	}
+	domain := ityped.NewDomain(big.NewInt(314159), testRecordKeeper())
+	if recovered := recoverRawTypedDataSigner(t, domain, "AddPieces", message, values[3].([]byte)); recovered != storageSigner.EVMAddress() {
+		t.Fatalf("AddPieces signer=%s want %s", recovered, storageSigner.EVMAddress())
 	}
 }
 

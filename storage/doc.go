@@ -222,10 +222,10 @@
 //
 // [ProviderContext.CreateAndAdd] and [DataSetContext.Commit] are convenience
 // methods that submit once and wait for confirmation. Their OnSubmitted
-// callback receives an independent, complete [CommitSubmission] after the
+// callback receives an independent runtime [CommitSubmission] after the
 // provider handle is validated and before confirmation starts. For
-// create-and-add, persist StatusURL and ClientDataSetID. For add-pieces,
-// persist StatusURL with the target DataSetRef.
+// create-and-add, persist StatusURL and the original ClientDataSetID. For
+// add-pieces, persist StatusURL with the target DataSetRef.
 // For explicit recovery control, prefer SubmitCreateAndAdd followed by
 // WaitForCreateAndAdd on ProviderContext, or SubmitCommit followed by
 // WaitForCommit on DataSetContext.
@@ -241,8 +241,8 @@
 // [FailedAttempt] in [UploadResult.FailedAttempts] or
 // [CommitError.FailedAttempts] carries it as Submission. Resume a
 // create-and-add submission on [Service.NewProviderContext] for its ProviderID
-// and call WaitForCreateAndAdd with its StatusURL and ClientDataSetID. For
-// add-pieces, open its DataSet with [Service.NewDataSetContext] and call
+// and call WaitForCreateAndAdd with its StatusURL and original ClientDataSetID.
+// For add-pieces, open its DataSet with [Service.NewDataSetContext] and call
 // WaitForCommit with StatusURL. A batched submission can include other uploads'
 // pieces. Applications that need a durable CID-to-piece-ID mapping must retain
 // their original request order; generic recovery validates only that the

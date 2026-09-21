@@ -471,9 +471,9 @@ if err != nil {
 fmt.Println("dataset:", ref.DataSetID())
 ```
 
-To create an empty dataset first, save the status URL and client dataset ID if
-the process may restart before confirmation. Creation is available only on
-`ProviderContext`.
+To create an empty dataset first, save the status URL and original client
+dataset ID if the process may restart before confirmation. Creation is
+available only on `ProviderContext`.
 
 ```go
 var statusURL string
@@ -494,7 +494,9 @@ fmt.Println("dataset:", created.DataSet.DataSetID())
 
 Resume a submitted create transaction with any fresh `ProviderContext` for the
 same provider, then convert the returned reference without mutating that
-context:
+context. Pass the exact client dataset ID used for the original submission;
+zero is valid only if that original ID was zero. The status URL alone cannot
+recover a lost client dataset ID:
 
 ```go
 created, err := providerCtx.WaitForDataSetCreated(ctx, statusURL, clientDataSetID)
@@ -527,7 +529,9 @@ before confirmation begins. This value contains runtime and diagnostic data;
 it is not a persistence schema. Save only the recovery fields needed by the
 operation.
 
-Create-and-add requires the status URL and client dataset ID:
+Create-and-add requires the status URL and original client dataset ID. Pass
+zero only if the original submission used zero; the status URL alone cannot
+recover a lost client dataset ID:
 
 ```go
 var statusURL string
@@ -580,7 +584,8 @@ submitted, err := providerCtx.SubmitCreateAndAdd(ctx, storage.CreateAndAddReques
 if err != nil {
     return err
 }
-// Persist submitted.StatusURL and *submitted.ClientDataSetID before waiting.
+// Persist submitted.StatusURL and the original
+// *submitted.ClientDataSetID before waiting.
 result, err := providerCtx.WaitForCreateAndAdd(
     ctx,
     submitted.StatusURL,

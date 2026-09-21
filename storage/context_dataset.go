@@ -36,8 +36,9 @@ func (c *ProviderContext) CreateDataSet(ctx context.Context, opts *CreateDataSet
 	)
 }
 
-// WaitForDataSetCreated waits for a previously submitted create-dataset
-// status URL. ClientDataSetID may be zero. The receiver remains unbound.
+// WaitForDataSetCreated waits for a previously submitted create-dataset status
+// URL. ClientDataSetID must be the value used for the original submission; zero
+// is valid only when that original value was zero. The receiver remains unbound.
 func (c *ProviderContext) WaitForDataSetCreated(
 	ctx context.Context,
 	statusURL string,
