@@ -28,8 +28,4 @@
 // Implementations should use a dedicated authorization key and restrict access
 // to trusted callers. Do not expose HashSigner as a general-purpose signing
 // oracle.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package signer

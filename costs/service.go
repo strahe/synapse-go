@@ -16,17 +16,20 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// ContractCaller is the chain reader accepted by Service.
+// ContractCaller provides the chain block number used by Service. The root
+// Client uses its configured Ethereum client.
 type ContractCaller interface {
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
-// WarmStorageReader is the subset of warmstorage.Service used by costs.
+// WarmStorageReader provides the storage price list used by Service. The root
+// Client supplies warmstorage.Service.
 type WarmStorageReader interface {
 	GetPriceList(ctx context.Context) (*warmstorage.PriceList, error)
 }
 
-// PaymentsReader is the subset of payments.Service used by costs.
+// PaymentsReader provides payment account and operator approval state for cost
+// estimates. The root Client supplies payments.Service.
 type PaymentsReader interface {
 	AccountInfo(ctx context.Context, token, owner common.Address) (*payments.AccountState, error)
 	ServiceApproval(ctx context.Context, token, client, operator common.Address) (*payments.OperatorApproval, error)

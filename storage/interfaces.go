@@ -15,12 +15,9 @@ import (
 )
 
 // PDPVerifierReader is the read-only PDPVerifier surface required by
-// [DataSetContext] for piece lifecycle queries (scheduled removals, id lookup,
-// next challenge epoch) and proving-window calculations. The supported
-// implementation is the PDPVerifier adapter assembled by the root SDK client;
-// user-defined implementations are not compatibility targets. The adapter
-// converts between [sdktypes.BigInt] / [cid.Cid] and the abigen-native types
-// (`*big.Int`, `pdpverifier.CidsCid`).
+// [DataSetContext] for piece lifecycle queries (scheduled removals, ID lookup,
+// next challenge epoch) and proving-window calculations. The root Client
+// supplies a PDPVerifier adapter.
 type PDPVerifierReader interface {
 	FindPieceIdsByCid(ctx context.Context, dataSetID sdktypes.BigInt, pieceCID cid.Cid, start, limit uint64) ([]sdktypes.BigInt, error)
 	FindPieceIDsByCIDs(ctx context.Context, dataSetID sdktypes.BigInt, pieceCIDs []cid.Cid) ([][]sdktypes.BigInt, error)
@@ -29,13 +26,13 @@ type PDPVerifierReader interface {
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
-// PDPConfigReader returns the proving-period configuration from the
-// FWSSView contract. Satisfied by *warmstorage.Service.
+// PDPConfigReader reads proving-period configuration. The root Client
+// supplies [warmstorage.Service].
 type PDPConfigReader interface {
 	GetPDPConfig(ctx context.Context) (*warmstorage.PDPConfig, error)
 }
 
-// FWSSTerminationOptions configures the SDK's direct termination dependency.
+// FWSSTerminationOptions configures a data-set termination request.
 type FWSSTerminationOptions struct {
 	// WaitTimeout is positive and requires waiting for a receipt.
 	WaitTimeout time.Duration
@@ -48,21 +45,21 @@ type FWSSTerminationOptions struct {
 	WriteOptions []warmstorage.WriteOption
 }
 
-// FWSSTerminator is the SDK assembly interface for termination through FWSS.
-// The supported implementation is the WarmStorage adapter assembled by the root
-// SDK client; user-defined implementations are not compatibility targets.
+// FWSSTerminator terminates data sets through FWSS. The root Client supplies a
+// WarmStorage adapter.
 type FWSSTerminator interface {
 	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts FWSSTerminationOptions) (*sdktypes.WriteResult, error)
 }
 
-// DataSetValidator verifies that a data set is live in PDPVerifier and
-// managed by the current FWSS listener. Satisfied by *warmstorage.Service.
+// DataSetValidator checks that a data set is live in PDPVerifier and managed
+// by the current FWSS listener. The root Client supplies
+// [warmstorage.Service].
 type DataSetValidator interface {
 	ValidateDataSet(ctx context.Context, dataSetID sdktypes.BigInt) error
 }
 
-// DataSetDetailsCatalog lists data sets enriched with PDP liveness,
-// FWSS-listener ownership and metadata. Satisfied by *warmstorage.Service.
+// DataSetDetailsCatalog lists data sets with PDP liveness, FWSS-listener
+// ownership, and metadata. The root Client supplies [warmstorage.Service].
 type DataSetDetailsCatalog interface {
 	GetClientDataSetsWithDetails(ctx context.Context, payer common.Address, onlyManaged bool) ([]*warmstorage.EnhancedDataSetInfo, error)
 }
@@ -78,28 +75,32 @@ type FWSSDataSetReader interface {
 	FindDataSetByClientDataSetID(ctx context.Context, payer common.Address, clientDataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 }
 
-// ProviderResolver resolves a storage provider by provider ID.
+// ProviderResolver resolves storage providers by provider ID. The root Client
+// supplies [ServiceResolver].
 type ProviderResolver interface {
 	ResolveProvider(ctx context.Context, providerID sdktypes.BigInt) (Provider, error)
 }
 
 // PaymentStateReader reads payment account state for termination pre-checks.
+// The root Client supplies [payments.Service].
 type PaymentStateReader interface {
 	AccountInfo(ctx context.Context, token, owner common.Address) (*payments.AccountState, error)
 }
 
-// EpochReader returns the current chain epoch.
+// EpochReader returns the current chain epoch. The root Client supplies its
+// configured Ethereum client.
 type EpochReader interface {
 	BlockNumber(ctx context.Context) (uint64, error)
 }
 
-// DataSetFinder lists the enriched data sets owned by `payer`. Satisfied
-// by *warmstorage.Service via GetClientDataSetsWithDetails.
+// DataSetFinder lists enriched data sets owned by payer. The root Client
+// supplies a WarmStorage adapter.
 type DataSetFinder interface {
 	FindDataSets(ctx context.Context, payer common.Address, onlyManaged bool) ([]*DataSetDetails, error)
 }
 
-// StorageInfoReader returns the chain-wide StorageInfo view for the given client.
+// StorageInfoReader reads the chain-wide StorageInfo view. The root Client
+// supplies an adapter.
 type StorageInfoReader interface {
 	GetStorageInfo(ctx context.Context, client common.Address) (*StorageInfo, error)
 }
@@ -119,26 +120,24 @@ type MultiCostOptions struct {
 	BufferEpochs *int64
 }
 
-// MultiCostCalculator is the SDK assembly interface for aggregate upload costs.
-// The supported implementation is [costs.Service]; user-defined implementations
-// are not compatibility targets. Its input contract is defined by
+// MultiCostCalculator calculates aggregate upload costs. The root Client
+// supplies [costs.Service]. Its input contract is defined by
 // [costs.Service.CalculateMultiContextCosts]: leaf count, lifecycle reserve
 // state, PDP end epoch, and CDN are supplied through refs, not opts.
 type MultiCostCalculator interface {
 	CalculateMultiContextCosts(ctx context.Context, payer common.Address, pieceSizes []uint64, refs []costs.MultiContextRef, opts *costs.UploadCostOptions) (*costs.MultiContextCosts, error)
 }
 
-// DataSetLeafCountReader is the SDK assembly interface for existing data-set
-// leaf counts. The root client supplies its built-in PDPVerifier adapter.
-// User-defined implementations are not compatibility targets. A successful
-// result must be non-nil and non-negative; zero means known empty.
+// DataSetLeafCountReader reads existing data-set leaf counts. The root Client
+// supplies a PDPVerifier adapter. A successful result must be non-nil and
+// non-negative; zero means known empty.
 // Missing or non-live data sets return [ErrDataSetUnavailable].
 type DataSetLeafCountReader interface {
 	GetDataSetLeafCount(ctx context.Context, dataSetID sdktypes.BigInt) (*big.Int, error)
 }
 
-// PaymentsFunder tops up the Payments contract for an upload. Narrow
-// view of payments.Service used by PrepareTransaction.Execute.
+// PaymentsFunder tops up the Payments contract for an upload. The root Client
+// supplies a Payments adapter.
 type PaymentsFunder interface {
 	FundSync(ctx context.Context, amount *big.Int, opts ...payments.WriteOption) (*sdktypes.WriteResult, error)
 }

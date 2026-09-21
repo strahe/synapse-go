@@ -17,12 +17,12 @@ import (
 	"github.com/strahe/synapse-go/piece"
 )
 
-// DownloadContext provides piece retrieval from a known storage provider.
+// DownloadContext retrieves pieces from a known storage provider.
 type DownloadContext interface {
 	Download(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
-// CDNRetriever provides optional CDN-backed piece retrieval for storage contexts.
+// CDNRetriever retrieves pieces through an optional CDN for storage contexts.
 type CDNRetriever interface {
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, error)
 }

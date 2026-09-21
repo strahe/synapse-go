@@ -91,21 +91,24 @@ func (c *providerProbeCache) probe(ctx context.Context, providerKey, serviceURL 
 	return err
 }
 
-// PDPProviderSource is the subset of spregistry.Service used by ServiceResolver.
+// PDPProviderSource provides registry data to ServiceResolver. The root Client
+// supplies spregistry.Service.
 type PDPProviderSource interface {
 	GetPDPProvider(context.Context, types.BigInt) (*spregistry.PDPProvider, error)
 	SelectActivePDPProviders(context.Context, spregistry.ProviderFilter) ([]spregistry.PDPProvider, error)
 }
 
 // EndorsedProviderSource supplies the ordered provider IDs eligible to act as
-// automatic upload primaries. Implementations must be safe for concurrent use.
-// A nil slice with a nil error is an empty endorsement set; query and decoding
-// errors must be returned without being converted to an empty set.
+// automatic upload primaries. The root Client supplies spregistry.Service.
+// Implementations must be safe for concurrent
+// use. A nil slice with a nil error is an empty endorsement set; query and
+// decoding errors must be returned without being converted to an empty set.
 type EndorsedProviderSource interface {
 	GetEndorsedProviderIDs(context.Context) ([]types.BigInt, error)
 }
 
-// DataSetCatalog is the subset of warmstorage.Service used by ServiceResolver.
+// DataSetCatalog provides data-set records to ServiceResolver. The root Client
+// supplies warmstorage.Service.
 type DataSetCatalog interface {
 	GetApprovedProviderIDs(context.Context, types.ListOptions) ([]types.BigInt, error)
 	GetClientDataSets(context.Context, common.Address, types.ListOptions) ([]*warmstorage.DataSetInfo, error)

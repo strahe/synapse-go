@@ -49,6 +49,16 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "nil option",
+			opts: []UploadBatcherOption{nil},
+			check: func(t *testing.T, cfg uploadBatcherConfig) {
+				t.Helper()
+				if !cfg.idleWaitEnabled || cfg.idleWait != defaultUploadIdleWait {
+					t.Fatalf("idle=(%t,%s), want enabled %s", cfg.idleWaitEnabled, cfg.idleWait, defaultUploadIdleWait)
+				}
+			},
+		},
+		{
 			name: "immediate",
 			opts: []UploadBatcherOption{WithUploadIdleWait(0)},
 			check: func(t *testing.T, cfg uploadBatcherConfig) {

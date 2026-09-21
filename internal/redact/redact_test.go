@@ -3,6 +3,7 @@ package redact
 import (
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,11 @@ func TestURL(t *testing.T) {
 			name: "query with both userinfo and sensitive key",
 			in:   "https://u:p@x/y?apikey=abc",
 			want: "https://x/y?apikey=***",
+		},
+		{
+			name: "fragment is dropped",
+			in:   "https://x/y?region=us#access_token=secret",
+			want: "https://x/y?region=us",
 		},
 		{
 			name: "generic 'code' is NOT redacted (false-positive-prone)",
@@ -120,7 +126,7 @@ func TestURLString(t *testing.T) {
 		want string
 	}{
 		{"empty", "", ""},
-		{"valid URL redacts", "https://a:b@x/y?token=t", "https://x/y?token=***"},
+		{"valid URL redacts", "https://a:b@x/y?token=t#access_token=secret", "https://x/y?token=***"},
 		{
 			name: "unparseable falls back to userinfo strip",
 			in:   "https://user:p\x7fass@host/path",
@@ -166,7 +172,7 @@ func TestURLError(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("connection refused")
-	orig := &url.Error{Op: "Get", URL: "https://user@host/path?token=secret&part=1", Err: cause}
+	orig := &url.Error{Op: "Get", URL: "https://user@host/path?token=secret&part=1#access_token=fragment", Err: cause}
 
 	got := URLError(orig)
 	urlErr, ok := errors.AsType[*url.Error](got)
@@ -185,8 +191,41 @@ func TestURLError(t *testing.T) {
 	if !errors.Is(got, cause) {
 		t.Error("redacted error no longer matches the underlying cause")
 	}
-	if orig.URL != "https://user@host/path?token=secret&part=1" {
+	if orig.URL != "https://user@host/path?token=secret&part=1#access_token=fragment" {
 		t.Errorf("URLError mutated the original URL: %q", orig.URL)
+	}
+}
+
+func TestURLError_RedactsNestedURLErrors(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("connection refused")
+	inner := &url.Error{
+		Op:  "Post",
+		URL: "https://inner-user:inner-pass@host/path?token=inner-secret#inner-fragment",
+		Err: cause,
+	}
+	outer := &url.Error{
+		Op:  "Post",
+		URL: "https://outer-user:outer-pass@host/path?apikey=outer-secret#outer-fragment",
+		Err: inner,
+	}
+
+	got := URLError(outer)
+	message := got.Error()
+	for _, secret := range []string{
+		"inner-user", "inner-pass", "inner-secret", "inner-fragment",
+		"outer-user", "outer-pass", "outer-secret", "outer-fragment",
+	} {
+		if strings.Contains(message, secret) {
+			t.Errorf("redacted error contains %q: %s", secret, message)
+		}
+	}
+	if !errors.Is(got, cause) {
+		t.Error("redacted nested error no longer matches the underlying cause")
+	}
+	if inner.URL == "https://host/path?token=***" || outer.URL == "https://host/path?apikey=***" {
+		t.Error("URLError mutated an original URL")
 	}
 }
 

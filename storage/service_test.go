@@ -2462,3 +2462,20 @@ func TestWithMaxSecondaryAttempts(t *testing.T) {
 		t.Fatalf("maxSecondaryAttempts = %d after n=1, want 1", mgr.maxSecondaryAttempts)
 	}
 }
+
+func TestNewRejectsNegativeDownloadMaxBytes(t *testing.T) {
+	_, err := New(Options{DownloadMaxBytes: -1})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("New error = %v, want ErrInvalidArgument", err)
+	}
+
+	for _, limit := range []int64{0, 1} {
+		s, err := New(Options{DownloadMaxBytes: limit})
+		if err != nil {
+			t.Fatalf("New with DownloadMaxBytes=%d: %v", limit, err)
+		}
+		if s.downloadMaxBytes != limit {
+			t.Fatalf("downloadMaxBytes = %d, want %d", s.downloadMaxBytes, limit)
+		}
+	}
+}

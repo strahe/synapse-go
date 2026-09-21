@@ -1091,6 +1091,13 @@ func TestWithSkipPrecheck(t *testing.T) {
 	}
 }
 
+func TestWriteOptionsIgnoreNil(t *testing.T) {
+	cfg := newWriteConfig([]WriteOption{WithWait(time.Second), nil, WithConfirmations(2)})
+	if cfg.waitTimeout != time.Second || cfg.confirmations != 2 {
+		t.Fatalf("config = %+v, want wait=1s confirmations=2", cfg)
+	}
+}
+
 func TestAvailableFunds_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name string

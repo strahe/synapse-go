@@ -64,11 +64,11 @@ var (
 )
 
 // UploadResolver selects provider contexts for upload operations and provides
-// replacement candidates when a secondary provider fails. Implementations must
-// be safe for concurrent use by independent uploads. Each call receives an
-// independently owned options value, including its slice, map, and pointer
-// fields, which the implementation may read, modify, or retain without sharing
-// state with the upload pipeline or caller.
+// replacement candidates when a secondary provider fails. Implementations
+// must be safe for concurrent use by independent
+// uploads. Each call receives an independently owned options value, including
+// its slice, map, and pointer fields, which the implementation may read,
+// modify, or retain without sharing state with the upload pipeline or caller.
 type UploadResolver interface {
 	// ResolveUploadContexts selects the initial targets for one automatic upload.
 	ResolveUploadContexts(context.Context, SelectUploadContextsOptions) ([]StorageContext, error)
@@ -185,9 +185,10 @@ type Options struct {
 	AllowPrivateNetworks bool
 
 	// DownloadMaxBytes caps the number of bytes a single URL-based
-	// Service.Download will return. Zero (the default) disables the cap.
-	// Exceeding it returns ErrMaxBytesExceeded either eagerly (via
-	// Content-Length) or at the terminal Read of the returned reader.
+	// Service.Download will return. Zero (the default) disables the cap;
+	// negative values are invalid. Exceeding a positive limit returns
+	// ErrMaxBytesExceeded either eagerly (via Content-Length) or at the terminal
+	// Read of the returned reader.
 	DownloadMaxBytes int64
 
 	// Logger receives internal warnings. nil disables logging.
@@ -267,6 +268,9 @@ type Options struct {
 
 // New creates a Service from the given Options.
 func New(opts Options) (*Service, error) {
+	if opts.DownloadMaxBytes < 0 {
+		return nil, fmt.Errorf("storage.New: %w: DownloadMaxBytes must be >= 0", ErrInvalidArgument)
+	}
 	providerHTTPClient := opts.HTTPClient
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = safehttp.NewClient(defaultDownloadTimeout, opts.AllowPrivateNetworks)
@@ -279,9 +283,6 @@ func New(opts Options) (*Service, error) {
 	}
 	if opts.CommitConcurrency <= 0 {
 		opts.CommitConcurrency = commitConcurrencyDefault
-	}
-	if opts.DownloadMaxBytes < 0 {
-		opts.DownloadMaxBytes = 0
 	}
 	storageSigner := ifaceutil.NormalizeNil(opts.Signer)
 	payerAddr := opts.PayerAddress

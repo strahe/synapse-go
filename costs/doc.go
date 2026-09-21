@@ -77,8 +77,4 @@
 // Lockup — funds reserved on the FilecoinPay contract to guarantee a
 // stream of payments. Upload cost calculations include any additional lockup
 // required by the new data and report the resulting deposit requirement.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package costs

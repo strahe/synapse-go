@@ -11,7 +11,7 @@ import (
 func TestDo_Success(t *testing.T) {
 	result, err := Do(context.Background(), func(_ context.Context) (string, error) {
 		return "ok", nil
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,9 +65,9 @@ func TestDo_MaxRetriesExceeded(t *testing.T) {
 
 func TestDo_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var attempts int32
+	var attempts atomic.Int32
 	_, err := Do(ctx, func(_ context.Context) (string, error) {
-		n := atomic.AddInt32(&attempts, 1)
+		n := attempts.Add(1)
 		if n == 2 {
 			cancel()
 		}
@@ -156,11 +156,8 @@ func TestDo_BackoffRange(t *testing.T) {
 	maxD := 100 * time.Millisecond
 	multiplier := 2.0
 
-	for attempt := 0; attempt < 5; attempt++ {
-		fullBackoff := time.Duration(float64(base) * pow(multiplier, attempt))
-		if fullBackoff > maxD {
-			fullBackoff = maxD
-		}
+	for attempt := range 5 {
+		fullBackoff := min(time.Duration(float64(base)*pow(multiplier, attempt)), maxD)
 		half := fullBackoff / 2
 
 		for range 50 {
@@ -232,22 +229,22 @@ func TestDo_MaxRetriesZero_NoRetries(t *testing.T) {
 func TestDo_PreCancelledContext_FirstCheckShortCircuits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	var attempts int32
+	var attempts atomic.Int32
 	_, err := Do(ctx, func(_ context.Context) (string, error) {
-		atomic.AddInt32(&attempts, 1)
+		attempts.Add(1)
 		return "ok", nil
 	}, WithMaxRetries(3), WithInitialDelay(time.Millisecond))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v want context.Canceled", err)
 	}
-	if n := atomic.LoadInt32(&attempts); n != 0 {
+	if n := attempts.Load(); n != 0 {
 		t.Fatalf("attempts=%d want 0 (should not invoke fn)", n)
 	}
 }
 
 func TestDo_ContextCancelledDuringBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var attempts int32
+	var attempts atomic.Int32
 	done := make(chan struct{})
 	go func() {
 		time.Sleep(5 * time.Millisecond)
@@ -255,21 +252,21 @@ func TestDo_ContextCancelledDuringBackoff(t *testing.T) {
 		close(done)
 	}()
 	_, err := Do(ctx, func(_ context.Context) (string, error) {
-		atomic.AddInt32(&attempts, 1)
+		attempts.Add(1)
 		return "", errors.New("fail")
 	}, WithMaxRetries(10), WithInitialDelay(100*time.Millisecond))
 	<-done
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v want context.Canceled", err)
 	}
-	if n := atomic.LoadInt32(&attempts); n > 2 {
+	if n := attempts.Load(); n > 2 {
 		t.Fatalf("attempts=%d want <=2 (cancel should interrupt backoff)", n)
 	}
 }
 
 func TestDo_BackoffCappedByMaxDelay(t *testing.T) {
 	const maxD = 50 * time.Millisecond
-	for attempt := 0; attempt < 20; attempt++ {
+	for attempt := range 20 {
 		got := jitteredBackoff(time.Millisecond, maxD, attempt, 4.0)
 		if got > maxD {
 			t.Fatalf("attempt=%d backoff=%v exceeds max=%v", attempt, got, maxD)

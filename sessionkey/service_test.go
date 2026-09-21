@@ -1248,7 +1248,7 @@ func TestDedup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWriteOption_Defaults(t *testing.T) {
-	cfg := newWriteConfig(nil)
+	cfg := newWriteConfig([]WriteOption{nil})
 	if cfg.waitTimeout != 0 {
 		t.Errorf("default waitTimeout = %v, want 0", cfg.waitTimeout)
 	}

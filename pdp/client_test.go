@@ -75,6 +75,11 @@ func TestNew_Validation(t *testing.T) {
 	} else if !strings.HasSuffix(c.BaseURL().Path, "/") {
 		t.Errorf("base path should end with slash, got %q", c.BaseURL().Path)
 	}
+	if c, err := New("https://example.com", nil); err != nil {
+		t.Fatalf("New with nil option: %v", err)
+	} else if c.userAgent != DefaultUserAgent || c.maxRetries != DefaultMaxRetries {
+		t.Fatalf("nil option changed defaults: userAgent=%q maxRetries=%d", c.userAgent, c.maxRetries)
+	}
 }
 
 func TestNew_ParseErrorRedactsURL(t *testing.T) {

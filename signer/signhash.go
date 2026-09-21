@@ -7,8 +7,9 @@ import "errors"
 var ErrUnsupportedSigner = errors.New("signer: raw hash signing not supported by this signer")
 
 // HashSigner signs a pre-computed 32-byte digest and returns a 65-byte
-// Ethereum R‖S‖V signature. V may be encoded as 0/1 or 27/28. Implementations
-// must return an error for any other digest length.
+// Ethereum R‖S‖V signature. External signers can implement it. V may be
+// encoded as 0/1 or 27/28. Implementations must return an error for any other
+// digest length.
 //
 // This is a high-trust capability because the signer receives only a digest
 // and cannot verify the original message or its domain separation. External

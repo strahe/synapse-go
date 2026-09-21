@@ -1401,6 +1401,7 @@ func TestNewProviderContextNormalizesTypedNilSigner(t *testing.T) {
 		testProvider(),
 		&fakePDPProviderClient{},
 		typedNil,
+		nil,
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),

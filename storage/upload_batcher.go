@@ -46,7 +46,8 @@ type uploadBatcherConfig struct {
 	dataSetVisibleTimeout    time.Duration
 }
 
-// UploadBatcherOption configures upload batching behavior.
+// UploadBatcherOption configures upload batching behavior. Nil options are
+// ignored.
 type UploadBatcherOption func(*uploadBatcherConfig)
 
 // WithUploadIdleWait sets how long a batch waits without a new piece before it

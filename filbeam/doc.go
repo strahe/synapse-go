@@ -12,8 +12,4 @@
 //		// handle error (e.g. unsupported chain)
 //	}
 //	stats, err := svc.GetDataSetStats(ctx, types.NewBigInt(12345))
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package filbeam

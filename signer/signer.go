@@ -9,7 +9,8 @@ import (
 	"github.com/filecoin-project/go-state-types/crypto"
 )
 
-// Signer signs native Filecoin messages. Every key type implements this.
+// Signer signs native Filecoin messages. External key stores, remote signers,
+// and decorators can implement it.
 type Signer interface {
 	// FilecoinAddress returns the Filecoin protocol address for this key.
 	FilecoinAddress() address.Address
@@ -18,8 +19,9 @@ type Signer interface {
 	Sign(msg []byte) (*crypto.Signature, error)
 }
 
-// EVMSigner extends Signer with Ethereum/FEVM transaction signing.
-// Only secp256k1 keys support this.
+// EVMSigner extends Signer with Ethereum/FEVM transaction signing. External
+// transaction signers can implement it for standalone services. The built-in
+// implementation supports secp256k1 keys.
 type EVMSigner interface {
 	Signer
 
@@ -31,10 +33,11 @@ type EVMSigner interface {
 }
 
 // StorageSigner signs Storage EIP-712 authorizations without requiring native
-// Filecoin signing or Ethereum transaction submission. EVMAddress must return
-// the address derived from the key used by HashSigner. Storage operations may
-// call SignHash concurrently; implementations must be safe for concurrent use
-// or serialize calls internally.
+// Filecoin signing or Ethereum transaction submission. External signers can
+// implement it. EVMAddress must return the address derived from the key used by
+// HashSigner. Storage operations may call SignHash concurrently;
+// implementations must be safe for concurrent use or serialize calls
+// internally.
 type StorageSigner interface {
 	EVMAddress() common.Address
 	HashSigner

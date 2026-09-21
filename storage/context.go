@@ -62,8 +62,7 @@ const (
 )
 
 // PDPProviderClient is the provider HTTP API surface required by storage contexts.
-// The supported implementation is [pdp.Client]. User-defined implementations are
-// not compatibility targets.
+// The root Client supplies [pdp.Client].
 type PDPProviderClient interface {
 	UploadPieceStreaming(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
@@ -92,6 +91,7 @@ type Provider struct {
 }
 
 // ContextOption configures provider and data-set contexts during construction.
+// Nil options are ignored.
 type ContextOption func(*contextCore)
 
 // ProviderContext represents one provider without a bound data set.

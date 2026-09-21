@@ -32,8 +32,4 @@
 //	permission := AddPiecesPermission()
 //	bytes := permission[:]
 //	pointer := &permission
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package sessionkey

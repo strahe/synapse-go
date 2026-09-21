@@ -50,8 +50,4 @@
 //     that the data set is not live. It matches ErrDataSetUnavailable.
 //   - DataSetNotManagedError: returned by ValidateDataSet when the data set is
 //     managed by another listener.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package warmstorage
