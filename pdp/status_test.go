@@ -50,7 +50,7 @@ func TestGetAddPiecesStatusNormalizesWireStates(t *testing.T) {
 		},
 		{
 			name:      "reorged after success",
-			body:      fmt.Sprintf(`{"txHash":%q,"txStatus":"reorged","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[7]}`, testOriginalTx),
+			body:      fmt.Sprintf(`{"txHash":%q,"txStatus":"reorged","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`, testOriginalTx),
 			wantError: ErrTxRejected,
 		},
 		{

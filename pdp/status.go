@@ -130,6 +130,11 @@ func classifyAddPiecesStatus(op string, status *AddPiecesStatus) (transactionSta
 	if status.PieceCount < 0 {
 		return transactionPending, invalidStatusf(op, "negative pieceCount")
 	}
+	if status.TxStatus == "reorged" {
+		// The transaction is no longer canonical. A provider can retain stage-local
+		// success fields without retaining the confirmed piece IDs.
+		return transactionRejected, nil
+	}
 	if status.PiecesAdded && (status.AddMessageOK == nil || !*status.AddMessageOK) {
 		return transactionPending, invalidStatusf(op, "piecesAdded without successful add message")
 	}
@@ -156,10 +161,6 @@ func classifyAddPiecesStatus(op string, status *AddPiecesStatus) (transactionSta
 			return transactionPending, invalidStatusf(op, "pending response contains terminal fields")
 		}
 		return transactionPending, nil
-	case "reorged":
-		// A reorged transaction is no longer canonical. Stage-local success
-		// fields may still describe its pre-reorg result.
-		return transactionRejected, nil
 	case "failed", "rejected":
 		if (status.AddMessageOK != nil && *status.AddMessageOK) || status.PiecesAdded || len(status.ConfirmedPieceIDs) > 0 {
 			return transactionPending, invalidStatusf(op, "%s response contains successful fields", status.TxStatus)

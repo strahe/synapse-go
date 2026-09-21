@@ -95,15 +95,11 @@ func (c *ProviderContext) waitForCommit(ctx context.Context, submission CommitSu
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.ProviderContext.WaitForCreateAndAdd: %w: nil context", ErrInvalidArgument)
 	}
-	if submission.ClientDataSetID == nil {
-		return nil, errors.New("storage.ProviderContext.WaitForCreateAndAdd: invalid provider submission: missing clientDataSetID")
-	}
-	return c.core.waitForCommit(
+	return c.core.waitForSubmission(
 		ctx,
 		"storage.ProviderContext.WaitForCreateAndAdd",
 		nil,
-		submission.StatusURL,
-		*submission.ClientDataSetID,
+		submission,
 	)
 }
 
@@ -158,12 +154,11 @@ func (c *DataSetContext) waitForCommit(ctx context.Context, submission CommitSub
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.DataSetContext.WaitForCommit: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.waitForCommit(
+	return c.core.waitForSubmission(
 		ctx,
 		"storage.DataSetContext.WaitForCommit",
 		&c.ref,
-		submission.StatusURL,
-		types.BigInt{},
+		submission,
 	)
 }
 
@@ -398,7 +393,7 @@ func (c *contextCore) getAddPiecesCommitStatus(
 	if snapshot.TxHash == (common.Hash{}) {
 		return nil, invalidCommitStatusf(op, "zero transactionID")
 	}
-	if snapshot.PiecesAdded && (snapshot.PieceCount <= 0 || snapshot.PieceCount != len(snapshot.ConfirmedPieceIDs)) {
+	if !rejected && snapshot.PiecesAdded && (snapshot.PieceCount <= 0 || snapshot.PieceCount != len(snapshot.ConfirmedPieceIDs)) {
 		return nil, invalidCommitStatusf(op, "confirmed piece counts differ")
 	}
 
@@ -453,7 +448,7 @@ func (c *contextCore) getCreateAndAddCommitStatus(
 		if snapshot.Add.ConfirmedTxHash != (common.Hash{}) {
 			confirmedHash = snapshot.Add.ConfirmedTxHash
 		}
-		if snapshot.Add.PiecesAdded &&
+		if !rejected && snapshot.Add.PiecesAdded &&
 			(snapshot.Add.PieceCount <= 0 || snapshot.Add.PieceCount != len(snapshot.Add.ConfirmedPieceIDs)) {
 			return nil, invalidCommitStatusf(op, "confirmed piece counts differ")
 		}
@@ -525,6 +520,35 @@ func (c *contextCore) waitForCommit(
 			return nil, invalidCommitStatusf(op, "unknown commit state %q", status.State)
 		}
 	}
+}
+
+func (c *contextCore) waitForSubmission(
+	ctx context.Context,
+	op string,
+	ref *DataSetRef,
+	submission CommitSubmission,
+) (*CommitResult, error) {
+	validated, err := c.validateCommitSubmission(op, ref, submission)
+	if err != nil {
+		return nil, err
+	}
+	var clientDataSetID types.BigInt
+	if validated.ClientDataSetID != nil {
+		clientDataSetID = *validated.ClientDataSetID
+	}
+	result, err := c.waitForCommit(ctx, op, ref, validated.StatusURL, clientDataSetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.PieceIDs) != len(validated.PieceCIDs) {
+		return nil, invalidCommitStatusf(
+			op,
+			"confirmed piece ID count %d does not match submission count %d",
+			len(result.PieceIDs),
+			len(validated.PieceCIDs),
+		)
+	}
+	return result, nil
 }
 
 func (c *contextCore) validateCommitSubmission(
@@ -627,7 +651,11 @@ func validateRecoveryStatusURL(op, serviceURL, statusURL string) error {
 }
 
 func wrapRecoveryStatusError(op, action string, err error) error {
-	if errors.Is(err, pdp.ErrInvalidStatusURL) {
+	// The PDP client validates the original URL before issuing HTTP. An origin
+	// error inside url.Error therefore comes from redirect handling.
+	_, requestErr := errors.AsType[*url.Error](err)
+	providerRedirect := requestErr && errors.Is(err, pdp.ErrStatusURLOrigin)
+	if errors.Is(err, pdp.ErrInvalidStatusURL) && !providerRedirect {
 		return fmt.Errorf("%s: %w: %s: %w", op, ErrInvalidArgument, action, err)
 	}
 	return fmt.Errorf("%s: %s: %w", op, action, err)

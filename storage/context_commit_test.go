@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -156,6 +158,105 @@ func TestAddCommitLifecycleCanResumeFromStatusURL(t *testing.T) {
 	}
 	if len(validator.calls) != 0 {
 		t.Fatalf("status recovery called data-set validator %d times", len(validator.calls))
+	}
+}
+
+func TestSynchronousCommitRejectsConfirmedPieceCountMismatch(t *testing.T) {
+	firstPieceCID := mustPieceInfo(t).CIDv2
+	secondInfo, err := piece.CalculateFromBytes(bytes.Repeat([]byte("count-mismatch"), 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pieces := []PieceInput{{PieceCID: firstPieceCID}, {PieceCID: secondInfo.CIDv2}}
+	originalTx := common.HexToHash("0x31")
+	dataSetID := types.NewBigInt(42)
+	confirmedPieceIDs := []types.BigInt{types.NewBigInt(8)}
+
+	t.Run("add pieces", func(t *testing.T) {
+		ref := testDataSetRef(dataSetID, types.NewBigInt(7))
+		client := &fakePDPProviderClient{
+			addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+				return &pdp.AddPiecesResult{TxHash: originalTx, StatusURL: "https://sp.example.com/status/add"}, nil
+			},
+			getAddedFn: func(context.Context, string) (*pdp.AddPiecesStatus, error) {
+				return &pdp.AddPiecesStatus{
+					TxHash:            originalTx,
+					TxStatus:          "confirmed",
+					DataSetID:         dataSetID,
+					PieceCount:        1,
+					AddMessageOK:      new(true),
+					PiecesAdded:       true,
+					ConfirmedPieceIDs: confirmedPieceIDs,
+				}, nil
+			},
+		}
+		ctx, err := NewDataSetContext(testProvider(), client, nil, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := ctx.Commit(context.Background(), CommitRequest{Pieces: pieces, ExtraData: []byte{1}})
+		if result != nil || !errors.Is(err, pdp.ErrInvalidStatus) {
+			t.Fatalf("result=%+v error=%v want ErrInvalidStatus", result, err)
+		}
+	})
+
+	t.Run("create and add", func(t *testing.T) {
+		client := &fakePDPProviderClient{
+			createAndAddFn: func(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+				return &pdp.CreateDataSetResult{TxHash: originalTx, StatusURL: "https://sp.example.com/status/create"}, nil
+			},
+			getCreateAndAddFn: func(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error) {
+				createdDataSetID := dataSetID.Copy()
+				return &pdp.CreateAndAddPiecesStatus{
+					Create: &pdp.CreateDataSetStatus{
+						CreateMessageHash: originalTx,
+						TxStatus:          "confirmed",
+						DataSetCreated:    true,
+						OK:                new(true),
+						DataSetID:         &createdDataSetID,
+					},
+					Add: &pdp.AddPiecesStatus{
+						TxHash:            originalTx,
+						TxStatus:          "confirmed",
+						DataSetID:         dataSetID,
+						PieceCount:        1,
+						AddMessageOK:      new(true),
+						PiecesAdded:       true,
+						ConfirmedPieceIDs: confirmedPieceIDs,
+					},
+				}, nil
+			},
+		}
+		result, err := mustWritableProviderContext(t, client).CreateAndAdd(context.Background(), CreateAndAddRequest{Pieces: pieces})
+		if result != nil || !errors.Is(err, pdp.ErrInvalidStatus) {
+			t.Fatalf("result=%+v error=%v want ErrInvalidStatus", result, err)
+		}
+	})
+}
+
+func TestURLOnlyCommitRecoveryAcceptsSelfConsistentPieceCount(t *testing.T) {
+	ref := testDataSetRef(types.NewBigInt(42), types.NewBigInt(7))
+	originalTx := common.HexToHash("0x32")
+	client := &fakePDPProviderClient{
+		getAddedFn: func(context.Context, string) (*pdp.AddPiecesStatus, error) {
+			return &pdp.AddPiecesStatus{
+				TxHash:            originalTx,
+				TxStatus:          "confirmed",
+				DataSetID:         ref.DataSetID(),
+				PieceCount:        1,
+				AddMessageOK:      new(true),
+				PiecesAdded:       true,
+				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
+			}, nil
+		},
+	}
+	ctx, err := NewDataSetContext(testProvider(), client, nil, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ctx.WaitForCommit(context.Background(), "https://sp.example.com/status/add")
+	if err != nil || len(result.PieceIDs) != 1 {
+		t.Fatalf("result=%+v error=%v", result, err)
 	}
 }
 
@@ -520,13 +621,12 @@ func TestWaitForCommitTreatsReorgedSuccessSnapshotAsRejected(t *testing.T) {
 	client := &fakePDPProviderClient{
 		getAddedFn: func(context.Context, string) (*pdp.AddPiecesStatus, error) {
 			return &pdp.AddPiecesStatus{
-				TxHash:            originalTx,
-				TxStatus:          "reorged",
-				DataSetID:         ref.DataSetID(),
-				PieceCount:        1,
-				AddMessageOK:      new(true),
-				PiecesAdded:       true,
-				ConfirmedPieceIDs: []types.BigInt{types.NewBigInt(8)},
+				TxHash:       originalTx,
+				TxStatus:     "reorged",
+				DataSetID:    ref.DataSetID(),
+				PieceCount:   1,
+				AddMessageOK: new(true),
+				PiecesAdded:  true,
 			}, pdp.ErrTxRejected
 		},
 	}
@@ -540,6 +640,45 @@ func TestWaitForCommitTreatsReorgedSuccessSnapshotAsRejected(t *testing.T) {
 		t.Fatalf("status=%+v error=%v", status, err)
 	}
 	_, err = ctx.WaitForCommit(context.Background(), statusURL)
+	var rejected *CommitRejectedError
+	if !errors.As(err, &rejected) || !errors.Is(err, pdp.ErrTxRejected) {
+		t.Fatalf("error=%v want CommitRejectedError", err)
+	}
+}
+
+func TestWaitForCreateAndAddTreatsAddReorgedSuccessSnapshotAsRejected(t *testing.T) {
+	originalTx := common.HexToHash("0x5a")
+	dataSetID := types.NewBigInt(42)
+	clientDataSetID := types.NewBigInt(7)
+	client := &fakePDPProviderClient{
+		getCreateAndAddFn: func(context.Context, string) (*pdp.CreateAndAddPiecesStatus, error) {
+			createdDataSetID := dataSetID.Copy()
+			return &pdp.CreateAndAddPiecesStatus{
+				Create: &pdp.CreateDataSetStatus{
+					CreateMessageHash: originalTx,
+					TxStatus:          "confirmed",
+					DataSetCreated:    true,
+					OK:                new(true),
+					DataSetID:         &createdDataSetID,
+				},
+				Add: &pdp.AddPiecesStatus{
+					TxHash:       originalTx,
+					TxStatus:     "reorged",
+					DataSetID:    dataSetID,
+					PieceCount:   1,
+					AddMessageOK: new(true),
+					PiecesAdded:  true,
+				},
+			}, pdp.ErrTxRejected
+		},
+	}
+	ctx := mustWritableProviderContext(t, client)
+	statusURL := "https://sp.example.com/status/create"
+	status, err := ctx.GetCreateAndAddStatus(context.Background(), statusURL, clientDataSetID)
+	if err != nil || status.State != CommitStateRejected || len(status.PieceIDs) != 0 {
+		t.Fatalf("status=%+v error=%v", status, err)
+	}
+	_, err = ctx.WaitForCreateAndAdd(context.Background(), statusURL, clientDataSetID)
 	var rejected *CommitRejectedError
 	if !errors.As(err, &rejected) || !errors.Is(err, pdp.ErrTxRejected) {
 		t.Fatalf("error=%v want CommitRejectedError", err)
@@ -685,6 +824,41 @@ func TestCommitStatusSeparatesCallerAndProviderValidationErrors(t *testing.T) {
 	}
 	if statusCalls != 3 {
 		t.Fatalf("malformed caller URL statusCalls=%d want 3", statusCalls)
+	}
+}
+
+func TestCommitStatusDoesNotClassifyProviderRedirectAsInvalidArgument(t *testing.T) {
+	targetRequests := 0
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetRequests++
+	}))
+	t.Cleanup(target.Close)
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path+"?token=secret", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+	client, err := pdp.New(source.URL, pdp.WithHTTPClient(source.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := testProvider()
+	provider.ServiceURL = source.URL
+	ref := testDataSetRef(types.NewBigInt(42), types.NewBigInt(7))
+	ctx, err := NewDataSetContext(provider, client, nil, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusURL := source.URL + "/status/" + common.HexToHash("0x78").Hex()
+	status, err := ctx.GetCommitStatus(context.Background(), statusURL)
+	if status != nil || !errors.Is(err, pdp.ErrInvalidStatusURL) || !errors.Is(err, pdp.ErrStatusURLOrigin) {
+		t.Fatalf("status=%+v error=%v want PDP status URL errors", status, err)
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("provider redirect error matched ErrInvalidArgument: %v", err)
+	}
+	if targetRequests != 0 {
+		t.Fatalf("targetRequests=%d want 0", targetRequests)
 	}
 }
 
