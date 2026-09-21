@@ -442,6 +442,9 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
+	if txOpts == nil {
+		return nil, nil, fmt.Errorf("transactor: %w: signer returned nil options", ErrInvalidArgument)
+	}
 	txOpts.Context = ctx
 	if value != nil {
 		txOpts.Value = value

@@ -11,6 +11,7 @@ import (
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -284,6 +285,30 @@ func newTestSigner(t *testing.T) signer.EVMSigner {
 		t.Fatal(err)
 	}
 	return s
+}
+
+type nilTransactOptsSigner struct {
+	signer.EVMSigner
+}
+
+func (nilTransactOptsSigner) Transactor(*big.Int) (*bind.TransactOpts, error) {
+	return nil, nil
+}
+
+func TestNewTransactOptsRejectsNilSignerOptions(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.signer = nilTransactOptsSigner{EVMSigner: svc.signer}
+
+	opts, release, err := svc.newTransactOpts(context.Background())
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("newTransactOpts error = %v, want ErrInvalidArgument", err)
+	}
+	if opts != nil {
+		t.Fatalf("newTransactOpts returned options %v, want nil", opts)
+	}
+	if release != nil {
+		t.Fatal("newTransactOpts returned a release function, want nil")
+	}
 }
 
 func newTestServiceWith(t *testing.T, sg signer.EVMSigner) (*Service, *mockBackend) {

@@ -84,7 +84,15 @@ type ContextResolver interface {
 	ResolveDataSetContext(context.Context, types.BigInt, NewDataSetContextOptions) (*DataSetContext, error)
 }
 
-// ContextSelector chooses healthy targets for new uploads.
+// ContextSelector chooses healthy targets for new uploads. Returned contexts
+// must use the Service payer, chain ID, and record keeper, must honor requested
+// provider exclusions, and must not contain duplicate providers.
+//
+// SelectUploadContexts must set RequestedCopies to opts.Copies. A complete
+// selection contains exactly that many contexts and sets Complete to true. A
+// partial selection contains at least one but fewer than opts.Copies contexts,
+// sets Complete to false, and returns an [InsufficientUploadContextsError]
+// whose Requested and Available fields match the selection.
 type ContextSelector interface {
 	SelectProviderContext(context.Context, SelectProviderContextOptions) (*ProviderContext, error)
 	SelectUploadContexts(context.Context, SelectUploadContextsOptions) (*UploadContextSelection, error)

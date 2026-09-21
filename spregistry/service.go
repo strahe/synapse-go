@@ -184,6 +184,9 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
+	if topts == nil {
+		return nil, nil, fmt.Errorf("transactor: %w: signer returned nil options", ErrInvalidArgument)
+	}
 	topts.Context = ctx
 	nonce, release, err := s.nonces.Acquire(ctx)
 	if err != nil {

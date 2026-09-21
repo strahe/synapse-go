@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
 	"github.com/strahe/synapse-go/internal/txutil"
+	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
@@ -49,6 +51,30 @@ func TestWriteOptionsIgnoreNil(t *testing.T) {
 	cfg := newWriteConfig([]WriteOption{WithWait(time.Second), nil, WithConfirmations(2)})
 	if cfg.waitTimeout != time.Second || cfg.confirmations != 2 {
 		t.Fatalf("config = %+v, want wait=1s confirmations=2", cfg)
+	}
+}
+
+type nilTransactOptsSigner struct {
+	signer.EVMSigner
+}
+
+func (nilTransactOptsSigner) Transactor(*big.Int) (*bind.TransactOpts, error) {
+	return nil, nil
+}
+
+func TestNewTransactOptsRejectsNilSignerOptions(t *testing.T) {
+	svc, _ := newWriteTestService(t)
+	svc.signer = nilTransactOptsSigner{EVMSigner: svc.signer}
+
+	opts, release, err := svc.newTransactOpts(context.Background())
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("newTransactOpts error = %v, want ErrInvalidArgument", err)
+	}
+	if opts != nil {
+		t.Fatalf("newTransactOpts returned options %v, want nil", opts)
+	}
+	if release != nil {
+		t.Fatal("newTransactOpts returned a release function, want nil")
 	}
 }
 

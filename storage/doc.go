@@ -291,6 +291,11 @@
 // return these contexts. [DownloadContext] and [CDNRetriever] accept custom
 // piece retrieval implementations.
 //
+// A custom ContextSelector must return contexts matching the Service identity
+// and requested exclusions. Complete selections contain exactly the requested
+// number of unique providers. Partial selections contain at least one target
+// and return [InsufficientUploadContextsError] with counts matching the result.
+//
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts
 // [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner

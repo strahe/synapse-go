@@ -11,6 +11,7 @@ import (
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -143,6 +144,30 @@ func newWriteTestSigner(t *testing.T) signer.EVMSigner {
 		t.Fatal(err)
 	}
 	return s
+}
+
+type nilTransactOptsSigner struct {
+	signer.EVMSigner
+}
+
+func (nilTransactOptsSigner) Transactor(*big.Int) (*bind.TransactOpts, error) {
+	return nil, nil
+}
+
+func TestNewTransactOptsRejectsNilSignerOptions(t *testing.T) {
+	svc, _ := newWriteTestService(t)
+	svc.signer = nilTransactOptsSigner{EVMSigner: svc.signer}
+
+	opts, release, err := svc.newTransactOpts(context.Background())
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("newTransactOpts error = %v, want ErrInvalidArgument", err)
+	}
+	if opts != nil {
+		t.Fatalf("newTransactOpts returned options %v, want nil", opts)
+	}
+	if release != nil {
+		t.Fatal("newTransactOpts returned a release function, want nil")
+	}
 }
 
 // newWriteTestService constructs a Service wired for writes using the

@@ -20,6 +20,12 @@
 // Consumers should accept the interface types; this package returns concrete
 // types per Go convention.
 //
+// # External transaction signers
+//
+// Standalone contract services accept custom [EVMSigner] implementations.
+// [EVMSigner.Transactor] must return non-nil transaction options on success;
+// returning an error aborts the write before nonce acquisition or broadcast.
+//
 // # Raw hash signing
 //
 // HashSigner and StorageSigner are extension points for KMS/HSM-backed keys,
