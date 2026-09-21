@@ -235,9 +235,47 @@ func (uploadResolver) SelectReplacement(context.Context, storage.SelectProviderC
 	return nil, nil
 }
 
+type contextResolver struct{}
+
+func (contextResolver) ResolveProviderContext(context.Context, types.BigInt, storage.NewProviderContextOptions) (*storage.ProviderContext, error) {
+	return nil, nil
+}
+
+func (contextResolver) ResolveDataSetContext(context.Context, types.BigInt, storage.NewDataSetContextOptions) (*storage.DataSetContext, error) {
+	return nil, nil
+}
+
+type contextSelector struct{}
+
+func (contextSelector) SelectProviderContext(context.Context, storage.SelectProviderContextOptions) (*storage.ProviderContext, error) {
+	return nil, nil
+}
+
+func (contextSelector) SelectUploadContexts(context.Context, storage.SelectUploadContextsOptions) (*storage.UploadContextSelection, error) {
+	return nil, nil
+}
+
+type downloadContext struct{}
+
+func (downloadContext) Download(context.Context, cid.Cid) (io.ReadCloser, error) {
+	return nil, nil
+}
+
+type cdnRetriever struct{}
+
+func (cdnRetriever) DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, error) {
+	return nil, nil
+}
+
 var (
-	_ storage.UploadResolver = uploadResolver{}
-	_                        = storage.Options{Resolver: uploadResolver{}}
+	_ storage.UploadResolver  = uploadResolver{}
+	_ storage.ContextResolver = contextResolver{}
+	_ storage.ContextSelector = contextSelector{}
+	_ storage.DownloadContext = downloadContext{}
+	_ storage.CDNRetriever    = cdnRetriever{}
+	_                         = storage.Options{Resolver: uploadResolver{}, ContextResolver: contextResolver{}, ContextSelector: contextSelector{}}
+	_                         = storage.DownloadOptions{Context: downloadContext{}}
+	_ storage.ContextOption   = storage.WithCDNRetriever(cdnRetriever{})
 
 	_ func(*storage.Service, context.Context, io.Reader, *storage.UploadOptions) (*storage.UploadResult, error) = (*storage.Service).Upload
 	_ func(*storage.Service, context.Context, io.Reader, []storage.StorageContext, *storage.UploadToContextsOptions) (*storage.UploadResult, error) = (*storage.Service).UploadToContexts
@@ -289,10 +327,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"math/big"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/filecoin-project/go-address"
+	filcrypto "github.com/filecoin-project/go-state-types/crypto"
 
 	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/pdp"
@@ -307,8 +349,24 @@ type kmsStorageSigner struct {
 	digests [][]byte
 }
 
+type externalEVMSigner struct{}
+
+func (externalEVMSigner) FilecoinAddress() address.Address { return address.Undef }
+
+func (externalEVMSigner) Sign([]byte) (*filcrypto.Signature, error) {
+	return &filcrypto.Signature{}, nil
+}
+
+func (externalEVMSigner) EVMAddress() common.Address { return common.Address{} }
+
+func (externalEVMSigner) Transactor(*big.Int) (*bind.TransactOpts, error) {
+	return new(bind.TransactOpts), nil
+}
+
 var _ signer.HashSigner = (*kmsStorageSigner)(nil)
 var _ signer.StorageSigner = (*kmsStorageSigner)(nil)
+var _ signer.Signer = externalEVMSigner{}
+var _ signer.EVMSigner = externalEVMSigner{}
 
 func (s *kmsStorageSigner) EVMAddress() common.Address {
 	return ethcrypto.PubkeyToAddress(s.key.PublicKey)

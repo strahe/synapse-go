@@ -63,7 +63,9 @@ var ErrInsufficientUploadContexts = errors.New("storage: insufficient upload con
 
 // InsufficientUploadContextsError reports a usable partial selection.
 type InsufficientUploadContextsError struct {
+	// Requested is the copy count requested from the selector.
 	Requested int
+	// Available is the number of usable contexts returned with the error.
 	Available int
 }
 

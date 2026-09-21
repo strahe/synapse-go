@@ -76,8 +76,9 @@ func isSensitiveQueryKey(k string) bool {
 //   - any userinfo component is dropped entirely;
 //   - any query parameter whose name matches isSensitiveQueryKey has its
 //     value replaced with the literal "***";
-//   - the path, scheme, host, port, and non-sensitive query values are
-//     preserved so operators can still identify the endpoint.
+//   - the fragment is dropped because it may contain credentials;
+//   - the path, scheme, host, port, and non-sensitive query values are preserved
+//     so operators can still identify the endpoint.
 //
 // The original *url.URL is not mutated.
 func URL(u *url.URL) string {
@@ -85,6 +86,8 @@ func URL(u *url.URL) string {
 		return ""
 	}
 	clone := *u
+	clone.Fragment = ""
+	clone.RawFragment = ""
 	if clone.User != nil {
 		clone.User = nil
 	}
@@ -153,11 +156,11 @@ func URLString(raw string) string {
 	return rest
 }
 
-// URLError returns a copy of the *url.Error in err's chain with its URL
-// redacted. The copy keeps Op and Err, so errors.Is and errors.As still reach
-// the underlying cause. Pass errors returned directly by net/http or net/url:
-// wrapping around the *url.Error is not preserved. Errors without a
-// *url.Error are returned unchanged.
+// URLError returns a copy of the *url.Error in err's chain with its URL and any
+// nested *url.Error values redacted. The copies keep Op and the underlying
+// causes, so errors.Is and errors.As still reach them. Pass errors returned
+// directly by net/http or net/url: wrapping around the outer *url.Error is not
+// preserved. Errors without a *url.Error are returned unchanged.
 func URLError(err error) error {
 	urlErr, ok := errors.AsType[*url.Error](err)
 	if !ok {
@@ -165,5 +168,6 @@ func URLError(err error) error {
 	}
 	redacted := *urlErr
 	redacted.URL = URLString(urlErr.URL)
+	redacted.Err = URLError(urlErr.Err)
 	return &redacted
 }

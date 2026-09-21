@@ -739,16 +739,29 @@ func TestNew_MissingKey(t *testing.T) {
 	}
 }
 
-func TestNew_DefaultsToCalibrationRPC(t *testing.T) {
-	key := testKey(t)
-	client, err := New(context.Background(), WithPrivateKey(key))
-	if err != nil {
-		t.Fatalf("New: %v", err)
+func TestNew_IgnoresNilOption(t *testing.T) {
+	_, err := New(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "missing private key") {
+		t.Fatalf("New(nil) error = %v, want missing private key", err)
 	}
-	defer func() { _ = client.Close() }()
+}
 
-	if client.Chain() != chain.Calibration {
-		t.Errorf("chain = %v, want Calibration", client.Chain())
+func TestResolveEthClient_DefaultsToCalibrationRPC(t *testing.T) {
+	cfg := clientConfig{}
+	client, ownsClient, err := resolveEthClient(context.Background(), &cfg)
+	if err != nil {
+		t.Fatalf("resolveEthClient: %v", err)
+	}
+	defer client.Close()
+
+	if !ownsClient {
+		t.Fatal("resolveEthClient did not mark the default client as owned")
+	}
+	if cfg.chain == nil || *cfg.chain != chain.Calibration {
+		t.Fatalf("chain = %v, want Calibration", cfg.chain)
+	}
+	if cfg.rpcURL != chain.Calibration.DefaultRPCURL() {
+		t.Fatalf("rpcURL = %q, want %q", cfg.rpcURL, chain.Calibration.DefaultRPCURL())
 	}
 }
 

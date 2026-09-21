@@ -67,7 +67,9 @@ func DefaultConfig() Config {
 func Do[T any](ctx context.Context, fn func(context.Context) (T, error), opts ...Option) (T, error) {
 	cfg := DefaultConfig()
 	for _, o := range opts {
-		o(&cfg)
+		if o != nil {
+			o(&cfg)
+		}
 	}
 
 	var zero T
@@ -112,10 +114,7 @@ func Do[T any](ctx context.Context, fn func(context.Context) (T, error), opts ..
 
 // jitteredBackoff computes an exponential backoff with decorrelated jitter.
 func jitteredBackoff(base, max time.Duration, attempt int, multiplier float64) time.Duration {
-	backoff := time.Duration(float64(base) * math.Pow(multiplier, float64(attempt)))
-	if backoff > max {
-		backoff = max
-	}
+	backoff := min(time.Duration(float64(base)*math.Pow(multiplier, float64(attempt))), max)
 	half := backoff / 2
 	jitter := time.Duration(secureRandInt64n(int64(half) + 1))
 	return half + jitter

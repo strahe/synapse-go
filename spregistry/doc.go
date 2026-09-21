@@ -57,8 +57,4 @@
 //     constructed without write dependencies.
 //   - ErrTxFailed: returned by write methods when the broadcast
 //     transaction reverts on-chain.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package spregistry

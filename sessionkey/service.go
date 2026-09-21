@@ -21,8 +21,8 @@ import (
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
-// Backend is the minimal RPC surface used by the session key service. It is
-// satisfied by *ethclient.Client. Tests can substitute a mock.
+// Backend provides the Ethereum RPC methods used by Service. The root Client
+// supplies its configured Ethereum client.
 type Backend interface {
 	bind.ContractBackend
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error)
@@ -30,9 +30,10 @@ type Backend interface {
 }
 
 // NonceManager serializes transaction-nonce acquisition for one signing
-// address. On success, Acquire must return the next pending nonce and a
-// non-nil, idempotent release function. Callers may invoke release more than
-// once, but must invoke it after broadcasting or abandoning the transaction.
+// address. The root Client supplies a shared coordinator. On success, Acquire
+// must return the next pending nonce and a non-nil, idempotent release function.
+// Callers may invoke release more than once, but must invoke it after
+// broadcasting or abandoning the transaction.
 type NonceManager interface {
 	Acquire(ctx context.Context) (nonce uint64, release func(), err error)
 }
@@ -440,6 +441,9 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	txOpts, err := s.signer.Transactor(s.chainID.BigInt())
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
+	}
+	if txOpts == nil {
+		return nil, nil, fmt.Errorf("transactor: %w: signer returned nil options", ErrInvalidArgument)
 	}
 	txOpts.Context = ctx
 	if value != nil {

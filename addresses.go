@@ -11,7 +11,8 @@ import (
 	iabi "github.com/strahe/synapse-go/internal/abi"
 )
 
-// ContractCaller is the RPC surface required to resolve contract addresses.
+// ContractCaller provides the contract read needed by ResolveAddresses. The
+// root Client uses its configured Ethereum client.
 type ContractCaller interface {
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 }

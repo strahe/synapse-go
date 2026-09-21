@@ -44,12 +44,5 @@
 // Lower-level packages ([chain], [signer], [piece], [storage], [payments], etc.)
 // can still be used independently without the root client.
 //
-// # Stability
-//
-// This SDK is in its 0.x phase. Public APIs may change between minor
-// releases; breaking changes are called out in release notes. Pin to a
-// specific minor version in production. The implementation tracks the
-// Filecoin Onchain Cloud protocol.
-//
 // [piece]: https://pkg.go.dev/github.com/strahe/synapse-go/piece
 package synapse

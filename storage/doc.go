@@ -131,9 +131,8 @@
 // it, strict selection returns [ErrEndorsementsNotConfigured] when upload
 // selection runs; setting AllowUnendorsedPrimary continues normally with the
 // approved pool. A nil slice with a nil source error is an
-// empty set, while source errors remain query errors. Implementations outside
-// this module may satisfy the interface directly; its one-method shape and
-// nil/error contract are part of the public dependency-injection contract.
+// empty set, while source errors remain query errors. Standalone callers may
+// provide their own [EndorsedProviderSource] implementation.
 //
 // # Upload flow
 //
@@ -283,19 +282,21 @@
 // [Options.AllowPrivateNetworks] only for trusted private infrastructure.
 // [Options.DownloadMaxBytes] can cap URL-based downloads.
 //
-// # Stability
+// # Custom storage components
 //
-// During the 0.x phase, public APIs may change between minor releases.
 // [StorageContext] is sealed and implemented only by [ProviderContext] and
 // [DataSetContext]. Custom resolvers may return those built-in contexts but
-// cannot provide their own implementation. [PDPProviderClient],
-// [PDPVerifierReader], [FWSSDataSetReader], [FWSSTerminator], and
-// [MultiCostCalculator] are SDK assembly interfaces implemented by [pdp.Client],
-// [costs.Service], and adapters assembled by the root SDK client.
+// cannot provide their own implementation. Callers may implement
+// [UploadResolver], [ContextResolver], and [ContextSelector] to choose and
+// return these contexts. [DownloadContext] and [CDNRetriever] accept custom
+// piece retrieval implementations.
 //
-// [pdp.Client]: https://pkg.go.dev/github.com/strahe/synapse-go/pdp#Client
+// A custom ContextSelector must return contexts matching the Service identity
+// and requested exclusions. Complete selections contain exactly the requested
+// number of unique providers. Partial selections contain at least one target
+// and return [InsufficientUploadContextsError] with counts matching the result.
+//
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts
-// [costs.Service]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#Service
 // [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner

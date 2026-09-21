@@ -46,9 +46,12 @@ type SelectUploadContextsOptions struct {
 
 // UploadContextSelection contains the targets selected for one upload.
 type UploadContextSelection struct {
-	Contexts        []StorageContext
+	// Contexts contains unique targets in primary-to-secondary order.
+	Contexts []StorageContext
+	// RequestedCopies is the requested copy count passed to the selector.
 	RequestedCopies int
-	Complete        bool
+	// Complete reports whether Contexts contains exactly RequestedCopies targets.
+	Complete bool
 }
 
 // NewProviderContext opens a registered provider without selecting it or

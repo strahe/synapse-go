@@ -2,7 +2,8 @@ package sessionkey
 
 import "time"
 
-// WriteOption tunes the behaviour of a single state-changing call.
+// WriteOption tunes the behaviour of a single state-changing call. Nil
+// options are ignored.
 type WriteOption func(*writeConfig)
 
 type writeConfig struct {
@@ -13,7 +14,9 @@ type writeConfig struct {
 func newWriteConfig(opts []WriteOption) writeConfig {
 	cfg := writeConfig{}
 	for _, o := range opts {
-		o(&cfg)
+		if o != nil {
+			o(&cfg)
+		}
 	}
 	return cfg
 }

@@ -51,7 +51,7 @@ type Client struct {
 	retryDelayFn func(err error, attempt int) time.Duration // nil = httpRetryDelay
 }
 
-// Option configures a Client.
+// Option configures a Client. Nil options are ignored.
 type Option func(*Client)
 
 // WithHTTPClient supplies a custom *http.Client. Useful to inject timeouts,
@@ -114,7 +114,9 @@ func New(serviceURL string, opts ...Option) (*Client, error) {
 		maxRetries: DefaultMaxRetries,
 	}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	return c, nil
 }

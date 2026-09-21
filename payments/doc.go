@@ -31,8 +31,4 @@
 // contract's uint256 width: check IsUint64 before converting it to a manual
 // offset, and reject out-of-range values rather than truncating them.
 // The IterateAllRails methods carry the full-width continuation automatically.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases.
 package payments

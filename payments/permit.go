@@ -65,7 +65,7 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 	bound := bind.NewBoundContract(token, permitERC20ABI, s.backend, nil, nil)
 	call := &bind.CallOpts{Context: ctx}
 
-	var nameOut []interface{}
+	var nameOut []any
 	if err := bound.Call(call, &nameOut, "name"); err != nil {
 		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): %w", err)
 	}
@@ -74,7 +74,7 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): unexpected type %T: %w", nameOut[0], ErrPermitUnsupported)
 	}
 
-	var versionOut []interface{}
+	var versionOut []any
 	if err := bound.Call(call, &versionOut, "version"); err != nil {
 		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): %w", err)
 	}
@@ -83,7 +83,7 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): unexpected type %T: %w", versionOut[0], ErrPermitUnsupported)
 	}
 
-	var nonceOut []interface{}
+	var nonceOut []any
 	if err := bound.Call(call, &nonceOut, "nonces", owner); err != nil {
 		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): %w", err)
 	}
@@ -94,12 +94,6 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 
 	return &permitInputs{Name: name, Version: version, Nonce: nonce}, nil
 }
-
-// PermitOption is reserved for future nonce / salt overrides. Currently
-// unused; keep the type to preserve API stability once options land.
-type PermitOption func(*permitConfig)
-
-type permitConfig struct{}
 
 // DepositWithPermit deposits `amount` of `token` into the Filecoin Pay
 // contract on behalf of the signer in a single on-chain transaction by

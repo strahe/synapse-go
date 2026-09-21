@@ -24,15 +24,14 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
-// EthClient is the minimal RPC surface the service needs. The interface is
-// defined here so tests can substitute a mock without pulling in ethclient.
+// EthClient provides the Ethereum contract calls used for WarmStorage reads.
+// The root Client supplies its configured Ethereum client.
 type EthClient interface {
 	bind.ContractCaller
 }
 
-// Backend extends EthClient with the surface required for sending
-// transactions (TopUpCDNPaymentRails). The full ethclient.Client satisfies
-// this interface.
+// Backend extends EthClient with the Ethereum RPC methods used for writes. The
+// root Client supplies its configured Ethereum client.
 type Backend interface {
 	bind.ContractBackend
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error)
@@ -40,9 +39,10 @@ type Backend interface {
 }
 
 // NonceManager serializes transaction-nonce acquisition for one signing
-// address. On success, Acquire must return the next pending nonce and a
-// non-nil, idempotent release function. Callers may invoke release more than
-// once, but must invoke it after broadcasting or abandoning the transaction.
+// address. The root Client supplies a shared coordinator. On success, Acquire
+// must return the next pending nonce and a non-nil, idempotent release function.
+// Callers may invoke release more than once, but must invoke it after
+// broadcasting or abandoning the transaction.
 type NonceManager interface {
 	Acquire(ctx context.Context) (nonce uint64, release func(), err error)
 }

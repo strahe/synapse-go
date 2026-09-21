@@ -11,10 +11,4 @@
 // This package exists so every service can share the same vocabulary
 // (WriteResult, BigInt, ...) without cross-importing each other's service
 // package.
-//
-// # Stability
-//
-// 0.x phase: public API may change between minor releases. Contract uint256
-// identifiers are exposed as BigInt; field and parameter names carry the
-// domain meaning.
 package types

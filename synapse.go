@@ -89,7 +89,7 @@ type clientConfig struct {
 	maxMulticallCalls      int
 }
 
-// ClientOption configures a [Client] via [New].
+// ClientOption configures a [Client] via [New]. Nil options are ignored.
 type ClientOption func(*clientConfig)
 
 // WithPrivateKey sets the ECDSA private key used for transaction signing.
@@ -268,7 +268,9 @@ func WithAllowPrivateNetworks(allow bool) ClientOption {
 func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	cfg := clientConfig{uploadBatching: true}
 	for _, o := range opts {
-		o(&cfg)
+		if o != nil {
+			o(&cfg)
+		}
 	}
 	if cfg.maxMulticallCalls < 0 {
 		return nil, fmt.Errorf("synapse.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
@@ -291,7 +293,6 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 			ec.Close()
 		}
 	}()
-
 	selectedChain, err := resolveChain(ctx, ec, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("synapse.New: %w", err)
