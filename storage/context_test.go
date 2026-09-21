@@ -685,12 +685,12 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 	if err != nil {
 		t.Fatalf("CreateDataSet: %v", err)
 	}
-	if !submission.ProviderID.Equal(testProvider().ID) || submission.ClientDataSetID == nil {
+	if !submission.ProviderID.Equal(testProvider().ID) {
 		t.Fatalf("submission=%+v", submission)
 	}
 	if !result.DataSet.ProviderID().Equal(testProvider().ID) ||
 		!result.DataSet.DataSetID().Equal(dataSetID) ||
-		!result.DataSet.ClientDataSetID().Equal(*submission.ClientDataSetID) ||
+		!result.DataSet.ClientDataSetID().Equal(submission.ClientDataSetID) ||
 		result.ConfirmedTransactionID != confirmedTxHash.Hex() {
 		t.Fatalf("result=%+v submission=%+v", result, submission)
 	}
@@ -699,7 +699,11 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 	}
 
 	fresh := mustWritableProviderContext(t, client)
-	recovered, err := fresh.WaitForDataSetCreated(context.Background(), submission)
+	recovered, err := fresh.WaitForDataSetCreated(
+		context.Background(),
+		submission.StatusURL,
+		submission.ClientDataSetID,
+	)
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
@@ -723,34 +727,10 @@ func TestProviderContextCreateDataSetReturnsRecoverableRefWithoutBinding(t *test
 	}
 }
 
-func TestProviderContextWaitForDataSetCreatedRejectsWrongProvider(t *testing.T) {
-	waitCalls := 0
-	client := &fakePDPProviderClient{
-		waitForCreatedFn: func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
-			waitCalls++
-			return nil, nil
-		},
-	}
-	c := mustWritableProviderContext(t, client)
-	clientID := types.NewBigInt(7)
-	_, err := c.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
-		ProviderID:      types.NewBigInt(2),
-		TransactionID:   common.HexToHash("0x1234").Hex(),
-		StatusURL:       "https://sp.example.com/status",
-		ClientDataSetID: &clientID,
-	})
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "providerID") {
-		t.Fatalf("WaitForDataSetCreated error=%v", err)
-	}
-	if waitCalls != 0 {
-		t.Fatalf("waitCalls=%d want 0", waitCalls)
-	}
-}
-
-func TestProviderContextWaitForDataSetCreatedAcceptsZeroProviderID(t *testing.T) {
+func TestProviderContextWaitForDataSetCreatedAcceptsZeroClientDataSetID(t *testing.T) {
 	txHash := common.HexToHash("0x1234")
 	dataSetID := types.NewBigInt(77)
-	clientID := types.NewBigInt(7)
+	clientID := types.NewBigInt(0)
 	waitCalls := 0
 	client := &fakePDPProviderClient{
 		waitForCreatedFn: func(context.Context, string, time.Duration) (*pdp.CreateDataSetStatus, error) {
@@ -760,11 +740,7 @@ func TestProviderContextWaitForDataSetCreatedAcceptsZeroProviderID(t *testing.T)
 		},
 	}
 	c := mustWritableProviderContext(t, client)
-	result, err := c.WaitForDataSetCreated(context.Background(), CreateDataSetSubmission{
-		TransactionID:   txHash.Hex(),
-		StatusURL:       "https://sp.example.com/status",
-		ClientDataSetID: &clientID,
-	})
+	result, err := c.WaitForDataSetCreated(context.Background(), "https://sp.example.com/status", clientID)
 	if err != nil {
 		t.Fatalf("WaitForDataSetCreated: %v", err)
 	}
@@ -778,26 +754,14 @@ func TestProviderContextWaitForDataSetCreatedAcceptsZeroProviderID(t *testing.T)
 	}
 }
 
-func TestProviderContextWaitForDataSetCreatedRejectsInvalidSubmission(t *testing.T) {
+func TestProviderContextWaitForDataSetCreatedRejectsInvalidStatusURL(t *testing.T) {
 	clientID := types.NewBigInt(7)
-	valid := CreateDataSetSubmission{
-		TransactionID:   common.HexToHash("0x1234").Hex(),
-		StatusURL:       "https://sp.example.com/status",
-		ClientDataSetID: &clientID,
+	tests := map[string]string{
+		"empty status URL":        "",
+		"relative status URL":     "/status",
+		"cross-origin status URL": "https://other.example/status",
 	}
-	tests := map[string]CreateDataSetSubmission{
-		"empty transaction": {TransactionID: "", StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
-		"short transaction": {TransactionID: "0xbeef", StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
-		"zero transaction":  {TransactionID: common.Hash{}.Hex(), StatusURL: valid.StatusURL, ClientDataSetID: valid.ClientDataSetID},
-		"empty status URL":  {TransactionID: valid.TransactionID, StatusURL: "", ClientDataSetID: valid.ClientDataSetID},
-		"missing client ID": {TransactionID: valid.TransactionID, StatusURL: valid.StatusURL},
-		"cross-origin status URL": {
-			TransactionID:   valid.TransactionID,
-			StatusURL:       "https://other.example/status",
-			ClientDataSetID: valid.ClientDataSetID,
-		},
-	}
-	for name, submission := range tests {
+	for name, statusURL := range tests {
 		t.Run(name, func(t *testing.T) {
 			waitCalls := 0
 			client := &fakePDPProviderClient{
@@ -807,7 +771,7 @@ func TestProviderContextWaitForDataSetCreatedRejectsInvalidSubmission(t *testing
 				},
 			}
 			c := mustWritableProviderContext(t, client)
-			_, err := c.WaitForDataSetCreated(context.Background(), submission)
+			_, err := c.WaitForDataSetCreated(context.Background(), statusURL, clientID)
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("WaitForDataSetCreated error=%v want ErrInvalidArgument", err)
 			}

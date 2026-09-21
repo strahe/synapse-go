@@ -331,7 +331,11 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		cleanupDataSetID := dataSetID
 		if cleanupDataSetID.IsZero() {
 			waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			commitResult, waitErr := providerCtx.WaitForCreateAndAdd(waitCtx, *commitSubmission)
+			commitResult, waitErr := providerCtx.WaitForCreateAndAdd(
+				waitCtx,
+				commitSubmission.StatusURL,
+				*commitSubmission.ClientDataSetID,
+			)
 			waitCancel()
 			if waitErr != nil {
 				t.Errorf("cleanup WaitForCreateAndAdd(submission=%+v session=%s): %v", *commitSubmission, delegatedAddress, waitErr)
@@ -367,7 +371,11 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 	})
 
-	commitResult, err := providerCtx.WaitForCreateAndAdd(ctx, *commitSubmission)
+	commitResult, err := providerCtx.WaitForCreateAndAdd(
+		ctx,
+		commitSubmission.StatusURL,
+		*commitSubmission.ClientDataSetID,
+	)
 	if err != nil {
 		t.Fatalf("WaitForCreateAndAdd: %v", err)
 	}

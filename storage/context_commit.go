@@ -49,28 +49,62 @@ func (c *ProviderContext) submitCommit(ctx context.Context, req commitRequest) (
 	return c.core.submitCommit(ctx, "storage.ProviderContext.SubmitCreateAndAdd", nil, req)
 }
 
-// GetCreateAndAddStatus checks a create-and-add submission once. A
-// caller-supplied status URL outside the provider origin returns an error
-// matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *ProviderContext) GetCreateAndAddStatus(ctx context.Context, submission CommitSubmission) (*CommitStatus, error) {
+// GetCreateAndAddStatus checks a create-and-add status URL once. An invalid
+// status URL returns an error matching [ErrInvalidArgument] and
+// [pdp.ErrInvalidStatusURL]. An origin mismatch also matches
+// [pdp.ErrStatusURLOrigin]. ClientDataSetID may be zero.
+func (c *ProviderContext) GetCreateAndAddStatus(
+	ctx context.Context,
+	statusURL string,
+	clientDataSetID types.BigInt,
+) (*CommitStatus, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.ProviderContext.GetCreateAndAddStatus: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.getCommitStatus(ctx, "storage.ProviderContext.GetCreateAndAddStatus", nil, submission)
+	return c.core.getCommitStatus(
+		ctx,
+		"storage.ProviderContext.GetCreateAndAddStatus",
+		nil,
+		statusURL,
+		clientDataSetID,
+	)
 }
 
-// WaitForCreateAndAdd waits for a create-and-add submission to confirm or
-// reject. A caller-supplied status URL outside the provider origin returns an
-// error matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *ProviderContext) WaitForCreateAndAdd(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
-	return c.waitForCommit(ctx, submission)
+// WaitForCreateAndAdd waits for a create-and-add status URL to confirm or
+// reject. An invalid status URL returns an error matching [ErrInvalidArgument]
+// and [pdp.ErrInvalidStatusURL]. An origin mismatch also matches
+// [pdp.ErrStatusURLOrigin]. ClientDataSetID may be zero.
+func (c *ProviderContext) WaitForCreateAndAdd(
+	ctx context.Context,
+	statusURL string,
+	clientDataSetID types.BigInt,
+) (*CommitResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.WaitForCreateAndAdd: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.waitForCommit(
+		ctx,
+		"storage.ProviderContext.WaitForCreateAndAdd",
+		nil,
+		statusURL,
+		clientDataSetID,
+	)
 }
 
 func (c *ProviderContext) waitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.ProviderContext.WaitForCreateAndAdd: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.waitForCommit(ctx, "storage.ProviderContext.WaitForCreateAndAdd", nil, submission)
+	if submission.ClientDataSetID == nil {
+		return nil, errors.New("storage.ProviderContext.WaitForCreateAndAdd: invalid provider submission: missing clientDataSetID")
+	}
+	return c.core.waitForCommit(
+		ctx,
+		"storage.ProviderContext.WaitForCreateAndAdd",
+		nil,
+		submission.StatusURL,
+		*submission.ClientDataSetID,
+	)
 }
 
 // SubmitCommit submits one add-pieces transaction and returns without waiting
@@ -86,28 +120,51 @@ func (c *DataSetContext) submitCommit(ctx context.Context, req commitRequest) (*
 	return c.core.submitCommit(ctx, "storage.DataSetContext.SubmitCommit", &c.ref, req)
 }
 
-// GetCommitStatus checks an add-pieces submission once. A caller-supplied
-// status URL outside the provider origin returns an error matching both
-// [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *DataSetContext) GetCommitStatus(ctx context.Context, submission CommitSubmission) (*CommitStatus, error) {
+// GetCommitStatus checks an add-pieces status URL once. A caller-supplied
+// invalid status URL returns an error matching [ErrInvalidArgument] and
+// [pdp.ErrInvalidStatusURL]. An origin mismatch also matches
+// [pdp.ErrStatusURLOrigin].
+func (c *DataSetContext) GetCommitStatus(ctx context.Context, statusURL string) (*CommitStatus, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.DataSetContext.GetCommitStatus: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.getCommitStatus(ctx, "storage.DataSetContext.GetCommitStatus", &c.ref, submission)
+	return c.core.getCommitStatus(
+		ctx,
+		"storage.DataSetContext.GetCommitStatus",
+		&c.ref,
+		statusURL,
+		types.BigInt{},
+	)
 }
 
-// WaitForCommit waits for an add-pieces submission to confirm or reject. A
-// caller-supplied status URL outside the provider origin returns an error
-// matching both [ErrInvalidArgument] and [pdp.ErrStatusURLOrigin].
-func (c *DataSetContext) WaitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
-	return c.waitForCommit(ctx, submission)
+// WaitForCommit waits for an add-pieces status URL to confirm or reject. A
+// caller-supplied invalid status URL returns an error matching
+// [ErrInvalidArgument] and [pdp.ErrInvalidStatusURL]. An origin mismatch also
+// matches [pdp.ErrStatusURLOrigin].
+func (c *DataSetContext) WaitForCommit(ctx context.Context, statusURL string) (*CommitResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.DataSetContext.WaitForCommit: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.waitForCommit(
+		ctx,
+		"storage.DataSetContext.WaitForCommit",
+		&c.ref,
+		statusURL,
+		types.BigInt{},
+	)
 }
 
 func (c *DataSetContext) waitForCommit(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
 	if c == nil || c.core == nil {
 		return nil, fmt.Errorf("storage.DataSetContext.WaitForCommit: %w: nil context", ErrInvalidArgument)
 	}
-	return c.core.waitForCommit(ctx, "storage.DataSetContext.WaitForCommit", &c.ref, submission)
+	return c.core.waitForCommit(
+		ctx,
+		"storage.DataSetContext.WaitForCommit",
+		&c.ref,
+		submission.StatusURL,
+		types.BigInt{},
+	)
 }
 
 func (c *contextCore) submitCommit(
@@ -195,7 +252,7 @@ func (c *contextCore) submitCommit(
 		submission.StatusURL = created.StatusURL
 	}
 
-	validated, err := c.validateCommitSubmission(op, ref, submission, false)
+	validated, err := c.validateCommitSubmission(op, ref, submission)
 	if err != nil {
 		return nil, err
 	}
@@ -299,42 +356,50 @@ func (c *contextCore) getCommitStatus(
 	ctx context.Context,
 	op string,
 	ref *DataSetRef,
-	submission CommitSubmission,
+	statusURL string,
+	clientDataSetID types.BigInt,
 ) (*CommitStatus, error) {
-	validated, err := c.validateCommitSubmission(op, ref, submission, true)
-	if err != nil {
+	if err := validateRecoveryStatusURL(op, c.provider.ServiceURL, statusURL); err != nil {
 		return nil, err
 	}
-	return c.getValidatedCommitStatus(ctx, op, ref, validated)
+	return c.getValidatedCommitStatus(ctx, op, ref, statusURL, clientDataSetID)
 }
 
 func (c *contextCore) getValidatedCommitStatus(
 	ctx context.Context,
 	op string,
 	ref *DataSetRef,
-	submission CommitSubmission,
+	statusURL string,
+	clientDataSetID types.BigInt,
 ) (*CommitStatus, error) {
 	if ref != nil {
-		return c.getAddPiecesCommitStatus(ctx, op, submission)
+		return c.getAddPiecesCommitStatus(ctx, op, *ref, statusURL)
 	}
-	return c.getCreateAndAddCommitStatus(ctx, op, submission)
+	return c.getCreateAndAddCommitStatus(ctx, op, statusURL, clientDataSetID)
 }
 
 func (c *contextCore) getAddPiecesCommitStatus(
 	ctx context.Context,
 	op string,
-	submission CommitSubmission,
+	ref DataSetRef,
+	statusURL string,
 ) (*CommitStatus, error) {
-	snapshot, err := c.client.GetAddPiecesStatus(ctx, submission.StatusURL)
+	snapshot, err := c.client.GetAddPiecesStatus(ctx, statusURL)
 	rejected := errors.Is(err, pdp.ErrTxRejected)
 	if err != nil && !rejected {
-		return nil, fmt.Errorf("%s: get add-pieces status: %w", op, err)
+		return nil, wrapRecoveryStatusError(op, "get add-pieces status", err)
 	}
 	if snapshot == nil {
 		return nil, invalidCommitStatusf(op, "nil add-pieces status")
 	}
-	if err := validateAddCommitSnapshot(op, submission, snapshot, rejected); err != nil {
-		return nil, err
+	if !snapshot.DataSetID.Equal(ref.DataSetID()) {
+		return nil, invalidCommitStatusf(op, "dataSetID does not match context")
+	}
+	if snapshot.TxHash == (common.Hash{}) {
+		return nil, invalidCommitStatusf(op, "zero transactionID")
+	}
+	if snapshot.PiecesAdded && (snapshot.PieceCount <= 0 || snapshot.PieceCount != len(snapshot.ConfirmedPieceIDs)) {
+		return nil, invalidCommitStatusf(op, "confirmed piece counts differ")
 	}
 
 	state := CommitStatePending
@@ -344,11 +409,11 @@ func (c *contextCore) getAddPiecesCommitStatus(
 		state = CommitStateConfirmed
 	}
 	status := &CommitStatus{
-		Kind:                   submission.Kind,
+		Kind:                   CommitKindAddPieces,
 		State:                  state,
-		TransactionID:          submission.TransactionID,
+		TransactionID:          snapshot.TxHash.Hex(),
 		ConfirmedTransactionID: optionalHashString(snapshot.ConfirmedTxHash),
-		DataSet:                copyDataSetRefPtr(submission.DataSet),
+		DataSet:                copyDataSetRefPtr(&ref),
 	}
 	if state == CommitStateConfirmed {
 		status.PieceIDs = copyBigInts(snapshot.ConfirmedPieceIDs)
@@ -359,24 +424,25 @@ func (c *contextCore) getAddPiecesCommitStatus(
 func (c *contextCore) getCreateAndAddCommitStatus(
 	ctx context.Context,
 	op string,
-	submission CommitSubmission,
+	statusURL string,
+	clientDataSetID types.BigInt,
 ) (*CommitStatus, error) {
-	snapshot, err := c.client.GetCreateDataSetAndAddPiecesStatus(ctx, submission.StatusURL)
+	snapshot, err := c.client.GetCreateDataSetAndAddPiecesStatus(ctx, statusURL)
 	rejected := errors.Is(err, pdp.ErrTxRejected)
 	if err != nil && !rejected {
-		return nil, fmt.Errorf("%s: get create-and-add status: %w", op, err)
+		return nil, wrapRecoveryStatusError(op, "get create-and-add status", err)
 	}
 	if snapshot == nil || snapshot.Create == nil {
 		return nil, invalidCommitStatusf(op, "nil create status")
 	}
-	if snapshot.Create.CreateMessageHash != common.HexToHash(submission.TransactionID) {
-		return nil, invalidCommitStatusf(op, "create transactionID does not match submission")
+	if snapshot.Create.CreateMessageHash == (common.Hash{}) {
+		return nil, invalidCommitStatusf(op, "zero transactionID")
 	}
 
 	confirmedHash := snapshot.Create.ConfirmedTxHash
 	if snapshot.Add != nil {
-		if snapshot.Add.TxHash != common.HexToHash(submission.TransactionID) {
-			return nil, invalidCommitStatusf(op, "add transactionID does not match submission")
+		if snapshot.Add.TxHash != snapshot.Create.CreateMessageHash {
+			return nil, invalidCommitStatusf(op, "create and add transactionIDs differ")
 		}
 		if snapshot.Create.DataSetID == nil || !snapshot.Add.DataSetID.Equal(*snapshot.Create.DataSetID) {
 			return nil, invalidCommitStatusf(op, "create and add dataSetIds differ")
@@ -387,8 +453,9 @@ func (c *contextCore) getCreateAndAddCommitStatus(
 		if snapshot.Add.ConfirmedTxHash != (common.Hash{}) {
 			confirmedHash = snapshot.Add.ConfirmedTxHash
 		}
-		if err := validateCommitPieceCount(op, snapshot.Add, len(submission.PieceCIDs), rejected); err != nil {
-			return nil, err
+		if snapshot.Add.PiecesAdded &&
+			(snapshot.Add.PieceCount <= 0 || snapshot.Add.PieceCount != len(snapshot.Add.ConfirmedPieceIDs)) {
+			return nil, invalidCommitStatusf(op, "confirmed piece counts differ")
 		}
 	}
 
@@ -399,16 +466,16 @@ func (c *contextCore) getCreateAndAddCommitStatus(
 		state = CommitStateConfirmed
 	}
 	status := &CommitStatus{
-		Kind:                   submission.Kind,
+		Kind:                   CommitKindCreateAndAdd,
 		State:                  state,
-		TransactionID:          submission.TransactionID,
+		TransactionID:          snapshot.Create.CreateMessageHash.Hex(),
 		ConfirmedTransactionID: optionalHashString(confirmedHash),
 	}
 	if state == CommitStateConfirmed {
 		dataSet, err := NewDataSetRef(
-			submission.ProviderID,
+			c.provider.ID,
 			*snapshot.Create.DataSetID,
-			*submission.ClientDataSetID,
+			clientDataSetID,
 		)
 		if err != nil {
 			return nil, invalidCommitStatusf(op, "invalid confirmed data-set identity")
@@ -419,46 +486,18 @@ func (c *contextCore) getCreateAndAddCommitStatus(
 	return status, nil
 }
 
-func validateAddCommitSnapshot(op string, submission CommitSubmission, snapshot *pdp.AddPiecesStatus, rejected bool) error {
-	if snapshot.TxHash != common.HexToHash(submission.TransactionID) {
-		return invalidCommitStatusf(op, "transactionID does not match submission")
-	}
-	if !snapshot.DataSetID.Equal(submission.DataSet.DataSetID()) {
-		return invalidCommitStatusf(op, "dataSetID does not match submission")
-	}
-	return validateCommitPieceCount(op, snapshot, len(submission.PieceCIDs), rejected)
-}
-
-func validateCommitPieceCount(op string, snapshot *pdp.AddPiecesStatus, expected int, rejected bool) error {
-	if snapshot.PiecesAdded {
-		if snapshot.PieceCount != expected {
-			return invalidCommitStatusf(op, "pieceCount %d does not match submission count %d", snapshot.PieceCount, expected)
-		}
-	} else if snapshot.PieceCount != 0 && snapshot.PieceCount != expected {
-		state := "pending"
-		if rejected {
-			state = "rejected"
-		}
-		return invalidCommitStatusf(op, "%s pieceCount %d does not match submission count %d", state, snapshot.PieceCount, expected)
-	}
-	if snapshot.PiecesAdded && len(snapshot.ConfirmedPieceIDs) != expected {
-		return invalidCommitStatusf(op, "confirmed piece ID count %d does not match submission count %d", len(snapshot.ConfirmedPieceIDs), expected)
-	}
-	return nil
-}
-
 func (c *contextCore) waitForCommit(
 	ctx context.Context,
 	op string,
 	ref *DataSetRef,
-	submission CommitSubmission,
+	statusURL string,
+	clientDataSetID types.BigInt,
 ) (*CommitResult, error) {
-	validated, err := c.validateCommitSubmission(op, ref, submission, true)
-	if err != nil {
+	if err := validateRecoveryStatusURL(op, c.provider.ServiceURL, statusURL); err != nil {
 		return nil, err
 	}
 	for {
-		status, err := c.getValidatedCommitStatus(ctx, op, ref, validated)
+		status, err := c.getValidatedCommitStatus(ctx, op, ref, statusURL, clientDataSetID)
 		if err != nil {
 			return nil, err
 		}
@@ -475,7 +514,7 @@ func (c *contextCore) waitForCommit(
 				IsNewDataSet:           status.Kind == CommitKindCreateAndAdd,
 			}, nil
 		case CommitStateRejected:
-			return nil, newCommitRejectedError(validated, *status)
+			return nil, newCommitRejectedError(c.provider.ID, *status)
 		case CommitStatePending:
 			select {
 			case <-ctx.Done():
@@ -492,14 +531,10 @@ func (c *contextCore) validateCommitSubmission(
 	op string,
 	ref *DataSetRef,
 	submission CommitSubmission,
-	callerSupplied bool,
 ) (CommitSubmission, error) {
 	submission = copyCommitSubmission(submission)
 	invalid := func(format string, args ...any) (CommitSubmission, error) {
 		message := fmt.Sprintf(format, args...)
-		if callerSupplied {
-			return CommitSubmission{}, fmt.Errorf("%s: %w: %s", op, ErrInvalidArgument, message)
-		}
 		return CommitSubmission{}, fmt.Errorf("%s: invalid provider submission: %s", op, message)
 	}
 
@@ -518,9 +553,6 @@ func (c *contextCore) validateCommitSubmission(
 	}
 	submission.TransactionID = common.HexToHash(submission.TransactionID).Hex()
 	if err := validateProviderStatusURL(c.provider.ServiceURL, submission.StatusURL); err != nil {
-		if callerSupplied {
-			return CommitSubmission{}, fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, err)
-		}
 		return CommitSubmission{}, fmt.Errorf("%s: %w", op, err)
 	}
 	if len(submission.PieceCIDs) == 0 || len(submission.PieceCIDs) > pdp.MaxAddPiecesBatchSize {
@@ -578,9 +610,27 @@ func validateProviderStatusURL(serviceURL, statusURL string) error {
 		!strings.EqualFold(base.Scheme, status.Scheme) ||
 		!strings.EqualFold(base.Hostname(), status.Hostname()) ||
 		effectiveStatusPort(base) != effectiveStatusPort(status) {
-		return fmt.Errorf("%w: provider status URL origin does not match service URL", pdp.ErrStatusURLOrigin)
+		return fmt.Errorf(
+			"%w: %w: provider status URL origin does not match service URL",
+			pdp.ErrInvalidStatusURL,
+			pdp.ErrStatusURLOrigin,
+		)
 	}
 	return nil
+}
+
+func validateRecoveryStatusURL(op, serviceURL, statusURL string) error {
+	if err := validateProviderStatusURL(serviceURL, statusURL); err != nil {
+		return fmt.Errorf("%s: %w: %w", op, ErrInvalidArgument, err)
+	}
+	return nil
+}
+
+func wrapRecoveryStatusError(op, action string, err error) error {
+	if errors.Is(err, pdp.ErrInvalidStatusURL) {
+		return fmt.Errorf("%s: %w: %s: %w", op, ErrInvalidArgument, action, err)
+	}
+	return fmt.Errorf("%s: %s: %w", op, action, err)
 }
 
 func validStatusScheme(scheme string) bool {
@@ -646,9 +696,9 @@ func copyBigInts(in []types.BigInt) []types.BigInt {
 	return out
 }
 
-func newCommitRejectedError(submission CommitSubmission, status CommitStatus) *CommitRejectedError {
+func newCommitRejectedError(providerID types.BigInt, status CommitStatus) *CommitRejectedError {
 	return &CommitRejectedError{
-		Submission: copyCommitSubmission(submission),
+		ProviderID: copyBigInt(providerID),
 		Status:     copyCommitStatus(status),
 	}
 }

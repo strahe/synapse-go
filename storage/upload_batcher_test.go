@@ -1606,7 +1606,8 @@ func TestServiceUploadPreservesConfirmedCopyWhenContextCancelsDuringSecondaryPul
 
 func TestUploadBatchContextErrorPreservesPublishedFailure(t *testing.T) {
 	rejected := &CommitRejectedError{
-		Submission: CommitSubmission{TransactionID: "0xrej", ProviderID: types.NewBigInt(1)},
+		ProviderID: types.NewBigInt(1),
+		Status:     CommitStatus{TransactionID: "0xrej"},
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()

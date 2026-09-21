@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/strahe/synapse-go/internal/redact"
+	"github.com/strahe/synapse-go/types"
 )
 
 // Upload stores a single copy and commits it to a new data set. opts may be
@@ -118,7 +119,11 @@ func (c *contextCore) upload(ctx context.Context, op string, target StorageConte
 			OnSubmitted: onCommitSubmitted,
 		}})
 		if err == nil {
-			commit, err = c.waitForCommit(ctx, op, ref, *submission)
+			var clientDataSetID types.BigInt
+			if submission.ClientDataSetID != nil {
+				clientDataSetID = *submission.ClientDataSetID
+			}
+			commit, err = c.waitForCommit(ctx, op, ref, submission.StatusURL, clientDataSetID)
 		}
 	} else {
 		task, enqueueErr := c.uploadBatcher.enqueue(ctx, reservation.seq, target, pieceInputs[0], transfer)

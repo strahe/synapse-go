@@ -39,6 +39,34 @@ func parseOptionalStatusHash(op, field, value string) (common.Hash, error) {
 	return parseRequiredStatusHash(op, field, value)
 }
 
+func (c *Client) statusURLTransactionHash(op, statusURL string) (common.Hash, error) {
+	if statusURL == "" {
+		return common.Hash{}, fmt.Errorf("%s: %w: empty status URL", op, ErrInvalidStatusURL)
+	}
+	u, err := url.Parse(statusURL)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("%s: %w", op, ErrInvalidStatusURL)
+	}
+	if err := c.validateStatusURL(u); err != nil {
+		return common.Hash{}, fmt.Errorf("%s: %w", op, err)
+	}
+	hashHex := lastPathSegment(statusURL)
+	if hashHex == "" {
+		return common.Hash{}, fmt.Errorf("%s: %w: missing transaction hash", op, ErrInvalidStatusURL)
+	}
+	if !strings.HasPrefix(hashHex, "0x") {
+		hashHex = "0x" + hashHex
+	}
+	if !common.IsHexHash(hashHex) {
+		return common.Hash{}, fmt.Errorf("%s: %w: invalid transaction hash", op, ErrInvalidStatusURL)
+	}
+	hash := common.HexToHash(hashHex)
+	if hash == (common.Hash{}) {
+		return common.Hash{}, fmt.Errorf("%s: %w: zero transaction hash", op, ErrInvalidStatusURL)
+	}
+	return hash, nil
+}
+
 func invalidStatusf(op, format string, args ...any) error {
 	return fmt.Errorf("%s: %w: %s", op, ErrInvalidStatus, fmt.Sprintf(format, args...))
 }
@@ -108,6 +136,19 @@ func classifyAddPiecesStatus(op string, status *AddPiecesStatus) (transactionSta
 	if len(status.ConfirmedPieceIDs) > 0 && !status.PiecesAdded {
 		return transactionPending, invalidStatusf(op, "confirmedPieceIds without piecesAdded")
 	}
+	if status.PiecesAdded {
+		if status.PieceCount == 0 {
+			return transactionPending, invalidStatusf(op, "piecesAdded with zero pieceCount")
+		}
+		if status.PieceCount != len(status.ConfirmedPieceIDs) {
+			return transactionPending, invalidStatusf(
+				op,
+				"pieceCount %d does not match confirmedPieceIds count %d",
+				status.PieceCount,
+				len(status.ConfirmedPieceIDs),
+			)
+		}
+	}
 
 	switch status.TxStatus {
 	case "pending":
@@ -146,7 +187,7 @@ func classifyAddPiecesStatus(op string, status *AddPiecesStatus) (transactionSta
 func (c *Client) resolveStatusURL(ref string) (string, error) {
 	u, err := c.resolve(ref)
 	if err != nil {
-		return "", fmt.Errorf("%w: invalid status URL", ErrStatusURLOrigin)
+		return "", fmt.Errorf("%w: invalid status URL", ErrInvalidStatusURL)
 	}
 	if err := c.validateStatusURL(u); err != nil {
 		return "", err
@@ -157,7 +198,7 @@ func (c *Client) resolveStatusURL(ref string) (string, error) {
 func (c *Client) getStatusBody(ctx context.Context, op, statusURL string, expectStatuses ...int) ([]byte, error) {
 	u, err := url.Parse(statusURL)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w: invalid status URL", op, ErrStatusURLOrigin)
+		return nil, fmt.Errorf("%s: %w", op, ErrInvalidStatusURL)
 	}
 	if err := c.validateStatusURL(u); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
@@ -180,10 +221,10 @@ func (c *Client) getStatusBody(ctx context.Context, op, statusURL string, expect
 
 func (c *Client) validateStatusURL(u *url.URL) error {
 	if u == nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redact.URL(u))
+		return fmt.Errorf("%w: %w: %s", ErrInvalidStatusURL, ErrStatusURLOrigin, redact.URL(u))
 	}
 	if !sameOrigin(c.baseURL, u) {
-		return fmt.Errorf("%w: %s", ErrStatusURLOrigin, redact.URL(u))
+		return fmt.Errorf("%w: %w: %s", ErrInvalidStatusURL, ErrStatusURLOrigin, redact.URL(u))
 	}
 	return nil
 }

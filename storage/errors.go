@@ -170,10 +170,10 @@ type CommitError struct {
 	FailedAttempts []FailedAttempt
 }
 
-// CommitRejectedError reports a valid terminal rejection while preserving the
-// submission and final status needed for diagnostics.
+// CommitRejectedError reports a valid terminal rejection with the provider and
+// final status needed for diagnostics.
 type CommitRejectedError struct {
-	Submission CommitSubmission
+	ProviderID types.BigInt
 	Status     CommitStatus
 }
 
@@ -183,9 +183,9 @@ func (e *CommitRejectedError) Error() string {
 	}
 	return fmt.Sprintf(
 		"storage: %s commit %s for provider %s was rejected",
-		e.Submission.Kind,
-		e.Submission.TransactionID,
-		e.Submission.ProviderID.String(),
+		e.Status.Kind,
+		e.Status.TransactionID,
+		e.ProviderID.String(),
 	)
 }
 

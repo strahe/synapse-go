@@ -20,6 +20,7 @@ import (
 const (
 	testOriginalTx  = "0x0000000000000000000000000000000000000000000000000000000000000011"
 	testConfirmedTx = "0x0000000000000000000000000000000000000000000000000000000000000022"
+	testTxOne       = "0x0000000000000000000000000000000000000000000000000000000000000001"
 )
 
 func TestGetAddPiecesStatusNormalizesWireStates(t *testing.T) {
@@ -99,6 +100,16 @@ func TestGetAddPiecesStatusNormalizesWireStates(t *testing.T) {
 			body:      fmt.Sprintf(`{"txHash":%q,"txStatus":"failed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":false}`, testOriginalTx),
 			wantError: ErrInvalidStatus,
 		},
+		{
+			name:      "confirmed with zero pieces",
+			body:      fmt.Sprintf(`{"txHash":%q,"txStatus":"confirmed","dataSetId":5,"pieceCount":0,"addMessageOk":true,"piecesAdded":true}`, testOriginalTx),
+			wantError: ErrInvalidStatus,
+		},
+		{
+			name:      "confirmed piece count mismatch",
+			body:      fmt.Sprintf(`{"txHash":%q,"txStatus":"confirmed","dataSetId":5,"pieceCount":2,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[7]}`, testOriginalTx),
+			wantError: ErrInvalidStatus,
+		},
 	}
 
 	for _, test := range tests {
@@ -109,7 +120,7 @@ func TestGetAddPiecesStatusNormalizesWireStates(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = fmt.Fprint(w, test.body)
 			}))
-			status, err := client.GetAddPiecesStatus(context.Background(), client.BaseURL().String()+"status")
+			status, err := client.GetAddPiecesStatus(context.Background(), client.BaseURL().String()+"status/"+testOriginalTx)
 			if !errors.Is(err, test.wantError) {
 				t.Fatalf("error=%v want %v", err, test.wantError)
 			}
@@ -196,7 +207,7 @@ func TestGetDataSetCreationStatusNormalizesWireStates(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = fmt.Fprint(w, test.body)
 			}))
-			status, err := client.GetDataSetCreationStatus(context.Background(), client.BaseURL().String()+"status")
+			status, err := client.GetDataSetCreationStatus(context.Background(), client.BaseURL().String()+"status/"+testOriginalTx)
 			if !errors.Is(err, test.wantError) {
 				t.Fatalf("error=%v want %v", err, test.wantError)
 			}
@@ -204,6 +215,67 @@ func TestGetDataSetCreationStatusNormalizesWireStates(t *testing.T) {
 				t.Fatal("expected decoded snapshot")
 			}
 		})
+	}
+}
+
+func TestStatusResponsesMustMatchTransactionHashInURL(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *Client, string) error
+		body string
+	}{
+		{
+			name: "add pieces",
+			call: func(ctx context.Context, client *Client, statusURL string) error {
+				_, err := client.GetAddPiecesStatus(ctx, statusURL)
+				return err
+			},
+			body: fmt.Sprintf(`{"txHash":%q,"txStatus":"pending","dataSetId":5,"pieceCount":0,"piecesAdded":false}`, testOriginalTx),
+		},
+		{
+			name: "create data set",
+			call: func(ctx context.Context, client *Client, statusURL string) error {
+				_, err := client.GetDataSetCreationStatus(ctx, statusURL)
+				return err
+			},
+			body: fmt.Sprintf(`{"createMessageHash":%q,"txStatus":"pending","dataSetCreated":false}`, testOriginalTx),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, test.body)
+			}))
+			err := test.call(context.Background(), client, client.BaseURL().String()+"status/"+testConfirmedTx)
+			if !errors.Is(err, ErrInvalidStatus) || errors.Is(err, ErrInvalidStatusURL) {
+				t.Fatalf("error=%v want ErrInvalidStatus only", err)
+			}
+		})
+	}
+}
+
+func TestStatusMethodsRejectURLWithoutTransactionHashBeforeRequest(t *testing.T) {
+	requests := 0
+	client, _ := newTestClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	for _, call := range []func() error{
+		func() error {
+			_, err := client.GetAddPiecesStatus(context.Background(), client.BaseURL().String()+"status/not-a-hash")
+			return err
+		},
+		func() error {
+			_, err := client.GetDataSetCreationStatus(context.Background(), client.BaseURL().String()+"status/not-a-hash")
+			return err
+		},
+	} {
+		if err := call(); !errors.Is(err, ErrInvalidStatusURL) || errors.Is(err, ErrStatusURLOrigin) {
+			t.Fatalf("error=%v want ErrInvalidStatusURL only", err)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("requests=%d want 0", requests)
 	}
 }
 
@@ -218,7 +290,7 @@ func TestGetAddPiecesStatusRetriesTransportStatusButNotPending(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"pending","dataSetId":5,"pieceCount":0,"piecesAdded":false}`, testOriginalTx)
 	}))
-	status, err := client.GetAddPiecesStatus(context.Background(), client.BaseURL().String()+"status")
+	status, err := client.GetAddPiecesStatus(context.Background(), client.BaseURL().String()+"status/"+testOriginalTx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +324,7 @@ func TestGetAddPiecesStatusRetriesTransportTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.retryDelayFn = noRetryDelay
-	status, err := client.GetAddPiecesStatus(context.Background(), "https://provider.example/status")
+	status, err := client.GetAddPiecesStatus(context.Background(), "https://provider.example/status/"+testOriginalTx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +345,7 @@ func TestStatusTimeoutPreservesClassificationAndRedactsURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.GetAddPiecesStatus(context.Background(), "https://provider.example/status?token=secret")
+	_, err = client.GetAddPiecesStatus(context.Background(), "https://provider.example/status/"+testOriginalTx+"?token=secret")
 	if err == nil {
 		t.Fatal("expected timeout")
 	}
@@ -304,7 +376,7 @@ func TestGetAddPiecesStatusDoesNotRetryCallerCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.retryDelayFn = noRetryDelay
-	_, err = client.GetAddPiecesStatus(ctx, "https://provider.example/status")
+	_, err = client.GetAddPiecesStatus(ctx, "https://provider.example/status/"+testOriginalTx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error=%v want context.Canceled", err)
 	}
@@ -341,7 +413,7 @@ func TestStatusURLOriginValidation(t *testing.T) {
 		if parseErr != nil {
 			t.Fatal(parseErr)
 		}
-		if err := client.validateStatusURL(u); !errors.Is(err, ErrStatusURLOrigin) {
+		if err := client.validateStatusURL(u); !errors.Is(err, ErrStatusURLOrigin) || !errors.Is(err, ErrInvalidStatusURL) {
 			t.Fatalf("validate %q: %v", raw, err)
 		}
 	}
@@ -368,8 +440,8 @@ func TestGetStatusRejectsCrossOriginRedirectBeforeFollowing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.GetAddPiecesStatus(context.Background(), source.URL+"/start")
-	if !errors.Is(err, ErrStatusURLOrigin) {
+	_, err = client.GetAddPiecesStatus(context.Background(), source.URL+"/start/"+testOriginalTx)
+	if !errors.Is(err, ErrStatusURLOrigin) || !errors.Is(err, ErrInvalidStatusURL) {
 		t.Fatalf("error=%v want ErrStatusURLOrigin", err)
 	}
 	if targetRequests != 0 || customRedirectCalls != 0 {
@@ -383,8 +455,8 @@ func TestGetStatusRejectsCrossOriginRedirectBeforeFollowing(t *testing.T) {
 func TestGetStatusPreservesCustomRedirectPolicy(t *testing.T) {
 	want := errors.New("redirect denied")
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/start" {
-			http.Redirect(w, r, "/status", http.StatusFound)
+		if r.URL.Path == "/start/"+testOriginalTx {
+			http.Redirect(w, r, "/status/"+testOriginalTx, http.StatusFound)
 			return
 		}
 		t.Fatal("custom redirect policy should stop the redirect")
@@ -396,7 +468,7 @@ func TestGetStatusPreservesCustomRedirectPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.GetAddPiecesStatus(context.Background(), source.URL+"/start")
+	_, err = client.GetAddPiecesStatus(context.Background(), source.URL+"/start/"+testOriginalTx)
 	if !errors.Is(err, want) {
 		t.Fatalf("error=%v want custom redirect error", err)
 	}
@@ -444,7 +516,7 @@ func TestSubmissionsRejectCrossOriginStatusLocations(t *testing.T) {
 				w.Header().Set("Location", location)
 				w.WriteHeader(http.StatusCreated)
 			}))
-			if err := test.call(context.Background(), client); !errors.Is(err, ErrStatusURLOrigin) {
+			if err := test.call(context.Background(), client); !errors.Is(err, ErrStatusURLOrigin) || !errors.Is(err, ErrInvalidStatusURL) {
 				t.Fatalf("error=%v want ErrStatusURLOrigin", err)
 			} else if strings.Contains(err.Error(), "secret") {
 				t.Fatalf("error leaked Location query value: %v", err)
@@ -457,7 +529,7 @@ func TestGetCreateDataSetAndAddPiecesStatusRejectsCrossStageMismatch(t *testing.
 	client, server := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/create":
+		case "/create/" + testOriginalTx:
 			_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":42}`, testOriginalTx)
 		case "/pdp/data-sets/42/pieces/added/" + testOriginalTx:
 			_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":99,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[7]}`, testOriginalTx)
@@ -465,7 +537,7 @@ func TestGetCreateDataSetAndAddPiecesStatusRejectsCrossStageMismatch(t *testing.
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	}))
-	status, err := client.GetCreateDataSetAndAddPiecesStatus(context.Background(), server.URL+"/create")
+	status, err := client.GetCreateDataSetAndAddPiecesStatus(context.Background(), server.URL+"/create/"+testOriginalTx)
 	if !errors.Is(err, ErrInvalidStatus) {
 		t.Fatalf("error=%v want ErrInvalidStatus", err)
 	}
@@ -480,7 +552,7 @@ func TestGetCreateDataSetAndAddPiecesStatusRejectsConfirmedHashConflict(t *testi
 	client, server := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/create":
+		case "/create/" + testOriginalTx:
 			_, _ = fmt.Fprintf(w, `{"createMessageHash":%q,"confirmedTxHash":%q,"txStatus":"confirmed","dataSetCreated":true,"ok":true,"dataSetId":42}`, testOriginalTx, createConfirmed)
 		case "/pdp/data-sets/42/pieces/added/" + testOriginalTx:
 			_, _ = fmt.Fprintf(w, `{"txHash":%q,"confirmedTxHash":%q,"txStatus":"confirmed","dataSetId":42,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[7]}`, testOriginalTx, addConfirmed)
@@ -488,7 +560,7 @@ func TestGetCreateDataSetAndAddPiecesStatusRejectsConfirmedHashConflict(t *testi
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	}))
-	_, err := client.GetCreateDataSetAndAddPiecesStatus(context.Background(), server.URL+"/create")
+	_, err := client.GetCreateDataSetAndAddPiecesStatus(context.Background(), server.URL+"/create/"+testOriginalTx)
 	if !errors.Is(err, ErrInvalidStatus) {
 		t.Fatalf("error=%v want ErrInvalidStatus", err)
 	}

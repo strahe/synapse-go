@@ -254,17 +254,21 @@ var (
 
 	_ func(*storage.ProviderContext, context.Context, storage.CreateAndAddRequest) (*storage.CommitResult, error) = (*storage.ProviderContext).CreateAndAdd
 	_ func(*storage.ProviderContext, context.Context, storage.CreateAndAddRequest) (*storage.CommitSubmission, error) = (*storage.ProviderContext).SubmitCreateAndAdd
-	_ func(*storage.ProviderContext, context.Context, storage.CommitSubmission) (*storage.CommitStatus, error) = (*storage.ProviderContext).GetCreateAndAddStatus
-	_ func(*storage.ProviderContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = (*storage.ProviderContext).WaitForCreateAndAdd
+	_ func(*storage.ProviderContext, context.Context, string, types.BigInt) (*storage.CreateDataSetResult, error) = (*storage.ProviderContext).WaitForDataSetCreated
+	_ func(*storage.ProviderContext, context.Context, string, types.BigInt) (*storage.CommitStatus, error) = (*storage.ProviderContext).GetCreateAndAddStatus
+	_ func(*storage.ProviderContext, context.Context, string, types.BigInt) (*storage.CommitResult, error) = (*storage.ProviderContext).WaitForCreateAndAdd
 	_ func(*storage.DataSetContext, context.Context, storage.CommitRequest) (*storage.CommitResult, error) = (*storage.DataSetContext).Commit
 	_ func(*storage.DataSetContext, context.Context, storage.CommitRequest) (*storage.CommitSubmission, error) = (*storage.DataSetContext).SubmitCommit
-	_ func(*storage.DataSetContext, context.Context, storage.CommitSubmission) (*storage.CommitStatus, error) = (*storage.DataSetContext).GetCommitStatus
-	_ func(*storage.DataSetContext, context.Context, storage.CommitSubmission) (*storage.CommitResult, error) = (*storage.DataSetContext).WaitForCommit
+	_ func(*storage.DataSetContext, context.Context, string) (*storage.CommitStatus, error) = (*storage.DataSetContext).GetCommitStatus
+	_ func(*storage.DataSetContext, context.Context, string) (*storage.CommitResult, error) = (*storage.DataSetContext).WaitForCommit
 	_ func(*storage.ProviderContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.ProviderContext).Upload
 	_ func(*storage.DataSetContext, context.Context, io.Reader, *storage.ContextUploadOptions) (*storage.UploadResult, error) = (*storage.DataSetContext).Upload
 
 	_ storage.StorageContext = (*storage.ProviderContext)(nil)
 	_ storage.StorageContext = (*storage.DataSetContext)(nil)
+	_ types.BigInt            = storage.CreateDataSetSubmission{}.ClientDataSetID
+	_ types.BigInt            = storage.CommitRejectedError{}.ProviderID
+	_ storage.CommitStatus    = storage.CommitRejectedError{}.Status
 )
 
 func keepStorageContext(ctx storage.StorageContext) storage.StorageContext { return ctx }

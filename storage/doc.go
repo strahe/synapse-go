@@ -30,10 +30,10 @@
 // its ordinary zero value, including nil pointer and map fields. Check
 // DataSetID and ProviderID when a complete identity is required.
 //
-// Persistent data-set references, context identities, and create/commit
-// lifecycle values use strict lowerCamel JSON field names. Alternate
+// Persistent data-set references, context identities, and commit status and
+// result values use strict lowerCamel JSON field names. Alternate
 // capitalization, unknown or duplicate fields, and incomplete objects are
-// rejected.
+// rejected. Submission values are runtime results, not persistence schemas.
 //
 // # Upload batching
 //
@@ -212,22 +212,23 @@
 // The ID is a correlation key, not an HTTP idempotency key; create POSTs are
 // sent once and are not automatically retried.
 //
-// [ProviderContext.CreateDataSet] leaves its receiver unbound. Persist the
-// [CreateDataSetSubmission] received through [CreateDataSetOptions.OnSubmitted]
-// when confirmation must survive a restart. A fresh ProviderContext for the
-// same provider can resume with [ProviderContext.WaitForDataSetCreated]. Pass
-// the returned DataSetRef to [ProviderContext.ForDataSet] to obtain a
-// DataSetContext.
+// [ProviderContext.CreateDataSet] leaves its receiver unbound. When
+// confirmation must survive a restart, persist StatusURL and ClientDataSetID
+// from the [CreateDataSetSubmission] received through
+// [CreateDataSetOptions.OnSubmitted]. A fresh ProviderContext for the same
+// provider can pass those values to [ProviderContext.WaitForDataSetCreated].
+// Pass the returned DataSetRef to [ProviderContext.ForDataSet] to obtain a
+// DataSetContext. Waiting does not require an FWSS reader.
 //
 // [ProviderContext.CreateAndAdd] and [DataSetContext.Commit] are convenience
 // methods that submit once and wait for confirmation. Their OnSubmitted
 // callback receives an independent, complete [CommitSubmission] after the
-// provider handle is validated and before confirmation starts. Persisting that
-// value allows a failed wait to resume on a fresh context for the same target.
+// provider handle is validated and before confirmation starts. For
+// create-and-add, persist StatusURL and ClientDataSetID. For add-pieces,
+// persist StatusURL with the target DataSetRef.
 // For explicit recovery control, prefer SubmitCreateAndAdd followed by
 // WaitForCreateAndAdd on ProviderContext, or SubmitCommit followed by
-// WaitForCommit on DataSetContext, and persist the returned submission between
-// those calls.
+// WaitForCommit on DataSetContext.
 //
 // GetCreateAndAddStatus and GetCommitStatus perform one logical status check
 // and return [CommitStatePending], [CommitStateConfirmed], or
@@ -240,10 +241,12 @@
 // [FailedAttempt] in [UploadResult.FailedAttempts] or
 // [CommitError.FailedAttempts] carries it as Submission. Resume a
 // create-and-add submission on [Service.NewProviderContext] for its ProviderID
-// and call WaitForCreateAndAdd, or open an add-pieces submission's DataSet with
-// [Service.NewDataSetContext] and call WaitForCommit. A batched submission can
-// include other uploads' pieces; the result's PieceIDs follow the order of
-// Submission.PieceCIDs.
+// and call WaitForCreateAndAdd with its StatusURL and ClientDataSetID. For
+// add-pieces, open its DataSet with [Service.NewDataSetContext] and call
+// WaitForCommit with StatusURL. A batched submission can include other uploads'
+// pieces. Applications that need a durable CID-to-piece-ID mapping must retain
+// their original request order; generic recovery validates only that the
+// provider's confirmed count matches its returned piece IDs.
 //
 // # Service termination
 //

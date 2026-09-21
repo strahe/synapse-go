@@ -174,10 +174,10 @@ const (
 	CommitStateRejected CommitState = "rejected"
 )
 
-// CommitSubmission is a persistable handle returned after one successful
-// provider submission. Persist all fields together and resume it with the same
-// concrete context type. Its JSON form uses strict lowerCamel field names and
-// rejects alternate capitalization.
+// CommitSubmission describes one successful provider submission. It is a
+// runtime result for callbacks and diagnostics, not a durable recovery record.
+// Persist StatusURL to resume add-pieces. Create-and-add recovery also requires
+// ClientDataSetID.
 type CommitSubmission struct {
 	Kind            CommitKind      `json:"kind"`
 	TransactionID   string          `json:"transactionId"`
@@ -220,16 +220,14 @@ type CreateDataSetOptions struct {
 	OnSubmitted func(CreateDataSetSubmission)
 }
 
-// CreateDataSetSubmission identifies a submitted create-dataset transaction.
-// Persist and restore all fields together using the strict lowerCamel JSON
-// form; incomplete submissions and alternate capitalization are rejected. A
-// zero ProviderID is filled from the ProviderContext used to wait.
+// CreateDataSetSubmission describes a submitted create-dataset transaction. It
+// is a runtime result for callbacks and diagnostics, not a durable recovery
+// record. Persist StatusURL and ClientDataSetID to resume waiting.
 type CreateDataSetSubmission struct {
-	ProviderID    types.BigInt `json:"providerId"`
-	TransactionID string       `json:"transactionId"`
-	StatusURL     string       `json:"statusUrl"`
-	// ClientDataSetID must be non-nil when resuming a submitted create.
-	ClientDataSetID *types.BigInt `json:"clientDataSetId"`
+	ProviderID      types.BigInt `json:"providerId"`
+	TransactionID   string       `json:"transactionId"`
+	StatusURL       string       `json:"statusUrl"`
+	ClientDataSetID types.BigInt `json:"clientDataSetId"`
 }
 
 // CreateDataSetResult is returned after standalone dataset creation confirms.
@@ -257,9 +255,9 @@ type FailedAttempt struct {
 	Err        error
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
 	// Submission is set when the provider accepted a commit submission for
-	// this attempt, even if confirmation later failed or timed out. Resume it
-	// with ProviderContext.WaitForCreateAndAdd or DataSetContext.WaitForCommit,
-	// according to its Kind; see Submission recovery in the package documentation.
+	// this attempt, even if confirmation later failed or timed out. Use its
+	// StatusURL, and ClientDataSetID for create-and-add, to resume waiting; see
+	// Submission recovery in the package documentation.
 	Submission *CommitSubmission
 }
 

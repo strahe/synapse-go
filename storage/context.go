@@ -652,7 +652,7 @@ func (c *ProviderContext) CreateAndAdd(ctx context.Context, req CreateAndAddRequ
 	if err != nil {
 		return nil, err
 	}
-	return c.WaitForCreateAndAdd(ctx, *submission)
+	return c.WaitForCreateAndAdd(ctx, submission.StatusURL, *submission.ClientDataSetID)
 }
 
 // Commit adds pieces to the bound data set and waits for confirmation.
@@ -661,7 +661,7 @@ func (c *DataSetContext) Commit(ctx context.Context, req CommitRequest) (*Commit
 	if err != nil {
 		return nil, err
 	}
-	return c.WaitForCommit(ctx, *submission)
+	return c.WaitForCommit(ctx, submission.StatusURL)
 }
 
 func (c *contextCore) validateWritableDataSet(ctx context.Context, op string, ref *DataSetRef) error {

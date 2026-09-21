@@ -146,10 +146,12 @@ type rawAddPiecesStatus struct {
 // GetAddPiecesStatus polls the status URL once. Providers may return either
 // HTTP 200 or 202 with the same JSON body shape.
 func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*AddPiecesStatus, error) {
-	if statusURL == "" {
-		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: %w: empty statusURL", ErrStatusURLOrigin)
+	const op = "pdp.GetAddPiecesStatus"
+	expectedHash, err := c.statusURLTransactionHash(op, statusURL)
+	if err != nil {
+		return nil, err
 	}
-	body, err := c.getStatusBody(ctx, "pdp.GetAddPiecesStatus", statusURL, http.StatusOK, http.StatusAccepted)
+	body, err := c.getStatusBody(ctx, op, statusURL, http.StatusOK, http.StatusAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +162,9 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	txHash, err := parseRequiredStatusHash("pdp.GetAddPiecesStatus", "txHash", raw.TxHash)
 	if err != nil {
 		return nil, err
+	}
+	if txHash != expectedHash {
+		return nil, invalidStatusf(op, "txHash does not match status URL")
 	}
 	confirmedTxHash, err := parseOptionalStatusHash("pdp.GetAddPiecesStatus", "confirmedTxHash", raw.ConfirmedTxHash)
 	if err != nil {
