@@ -225,6 +225,7 @@ func (c *Client) initServices() error {
 		HTTPClient:           c.storageHTTPClient(),
 		Source:               c.source,
 		DefaultWithCDN:       c.withCDN,
+		PullConcurrency:      c.uploadPullConcurrency,
 		AllowPrivateNetworks: c.allowPrivateNetworks,
 		Lifecycle:            c.lifecycle,
 		Logger:               c.logger,

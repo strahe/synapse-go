@@ -385,8 +385,8 @@ type UploadOptions struct {
 	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
 	// submitted for a provider (primary or secondary), carrying the transaction
 	// hash and the batch of pieces included in that transaction. During
-	// Service.Upload, different providers may invoke this callback
-	// concurrently when commitConcurrency > 1. It may be nil.
+	// Service.Upload, it may overlap other providers' submission and secondary
+	// callbacks. It may be nil.
 	OnPiecesAdded func(txHash string, providerID types.BigInt, pieces []SubmittedPiece)
 	// OnPiecesConfirmed is invoked after the on-chain AddPieces transaction is
 	// confirmed (CommitResult received) for a provider, carrying the assigned
@@ -395,16 +395,17 @@ type UploadOptions struct {
 	OnPiecesConfirmed func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece)
 	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
 	// completes successfully. It is not fired for the primary (which stores
-	// directly). It may be nil.
+	// directly). Different providers may invoke it concurrently. It may be nil.
 	OnCopyComplete func(providerID types.BigInt, pieceCID cid.Cid)
 	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy
 	// attempt fails. Presign failures are not copy attempts and still surface
 	// only through FailedAttempts with CopyStagePresign. Primary store/commit
 	// failures likewise surface through the Upload return value and
-	// FailedAttempts. It may be nil.
+	// FailedAttempts. Different providers may invoke it concurrently. It may be nil.
 	OnCopyFailed func(providerID types.BigInt, pieceCID cid.Cid, err error)
 	// OnPullProgress is invoked for each piece status update during a
-	// secondary-provider pull. It may be nil.
+	// secondary-provider pull. Different providers may invoke it concurrently.
+	// It may be nil.
 	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
 }
 
@@ -430,20 +431,24 @@ type UploadToContextsOptions struct {
 	OnStored func(providerID types.BigInt, pieceCID cid.Cid)
 	// OnPiecesAdded is invoked after the on-chain AddPieces transaction is
 	// submitted for a provider, carrying the transaction hash and submitted pieces.
-	// Different providers may invoke it concurrently. It may be nil.
+	// It may overlap other providers' submission and secondary callbacks.
+	// It may be nil.
 	OnPiecesAdded func(txHash string, providerID types.BigInt, pieces []SubmittedPiece)
 	// OnPiecesConfirmed is invoked after AddPieces is confirmed for a provider,
-	// carrying the assigned on-chain IDs. It may be nil.
+	// carrying the assigned on-chain IDs. It runs sequentially in target order
+	// after all upload workers finish, unless canceled. It may be nil.
 	OnPiecesConfirmed func(dataSetID, providerID types.BigInt, pieces []ConfirmedPiece)
 	// OnCopyComplete is invoked once a secondary provider's SP-to-SP pull
-	// completes successfully. It is not fired for the primary. It may be nil.
+	// completes successfully. It is not fired for the primary. Different
+	// providers may invoke it concurrently. It may be nil.
 	OnCopyComplete func(providerID types.BigInt, pieceCID cid.Cid)
 	// OnCopyFailed is invoked when a secondary provider's SP-to-SP copy attempt
 	// fails. Presign and commit failures are reported through FailedAttempts.
-	// It may be nil.
+	// Different providers may invoke it concurrently. It may be nil.
 	OnCopyFailed func(providerID types.BigInt, pieceCID cid.Cid, err error)
 	// OnPullProgress is invoked for each piece status update during a
-	// secondary-provider pull. It may be nil.
+	// secondary-provider pull. Different providers may invoke it concurrently.
+	// It may be nil.
 	OnPullProgress func(providerID types.BigInt, pieceCID cid.Cid, status PullStatus)
 }
 

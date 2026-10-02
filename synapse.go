@@ -53,6 +53,7 @@ type Client struct {
 	uploadBatching         bool
 	uploadBatcherOptions   []storage.UploadBatcherOption
 	uploadBatcher          *storage.UploadBatcher
+	uploadPullConcurrency  int
 
 	lifecycle *lifecycle.Lifecycle
 	closeOnce sync.Once
@@ -85,6 +86,7 @@ type clientConfig struct {
 	filbeamRetrievalDomain string
 	uploadBatching         bool
 	uploadBatcherOptions   []storage.UploadBatcherOption
+	uploadPullConcurrency  int
 	allowPrivateNetworks   bool
 	maxMulticallCalls      int
 }
@@ -141,6 +143,13 @@ func WithoutUploadBatching() ClientOption {
 		cfg.uploadBatching = false
 		cfg.uploadBatcherOptions = nil
 	}
+}
+
+// WithUploadPullConcurrency caps concurrent secondary copy workflows within
+// each upload. Values <= 0 select the default of 4. A value of 1 serializes
+// secondary pulls while still allowing commits to overlap with them.
+func WithUploadPullConcurrency(concurrency int) ClientOption {
+	return func(cfg *clientConfig) { cfg.uploadPullConcurrency = concurrency }
 }
 
 // WithRPCURL sets the JSON-RPC endpoint URL. An ethclient is dialed
@@ -480,6 +489,7 @@ func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selecte
 		filbeamRetrievalDomain: cfg.filbeamRetrievalDomain,
 		uploadBatching:         cfg.uploadBatching,
 		uploadBatcherOptions:   append([]storage.UploadBatcherOption(nil), cfg.uploadBatcherOptions...),
+		uploadPullConcurrency:  cfg.uploadPullConcurrency,
 		allowPrivateNetworks:   cfg.allowPrivateNetworks,
 		maxMulticallCalls:      cfg.maxMulticallCalls,
 		lifecycle:              lifecycle.New(),

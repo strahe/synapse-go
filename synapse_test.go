@@ -68,6 +68,156 @@ func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 	return fn(req)
 }
 
+type pullConcurrencyProviderClient struct {
+	storage.PDPProviderClient
+	pieceCID cid.Cid
+	started  chan<- []byte
+	release  <-chan struct{}
+	active   atomic.Int32
+	peak     atomic.Int32
+}
+
+func (p *pullConcurrencyProviderClient) UploadPieceStreaming(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return &pdp.UploadStreamingResult{PieceCID: p.pieceCID, Size: int64(len(data))}, nil
+}
+
+func (p *pullConcurrencyProviderClient) WaitForPieceParked(context.Context, cid.Cid, time.Duration) error {
+	return nil
+}
+
+func (p *pullConcurrencyProviderClient) WaitForPullComplete(ctx context.Context, req pdp.PullRequest, _ time.Duration, _ func(*pdp.PullResult)) (*pdp.PullResult, error) {
+	active := p.active.Add(1)
+	defer p.active.Add(-1)
+	for previous := p.peak.Load(); active > previous; previous = p.peak.Load() {
+		if p.peak.CompareAndSwap(previous, active) {
+			break
+		}
+	}
+	p.started <- append([]byte(nil), req.ExtraData...)
+	select {
+	case <-p.release:
+		return &pdp.PullResult{Status: "complete"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (p *pullConcurrencyProviderClient) CreateDataSetAndAddPieces(context.Context, common.Address, []pdp.AddPieceInput, []byte) (*pdp.CreateDataSetResult, error) {
+	return nil, errors.New("commit unavailable in pull concurrency fixture")
+}
+
+func TestNewUploadPullConcurrencyReachesStorage(t *testing.T) {
+	for _, limit := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			srv, ec := fakeRPCServer(t, "0x4cb2f")
+			defer srv.Close()
+			defer ec.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			client, err := New(ctx, WithPrivateKey(testKey(t)), WithEthClient(ec), WithoutUploadBatching(), WithUploadPullConcurrency(limit))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() {
+				if err := client.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			}()
+			data := bytes.Repeat([]byte("upload"), 128)
+			info, err := piece.CalculateFromBytes(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, release := make(chan []byte, 5), make(chan struct{}, 5)
+			providerClient := &pullConcurrencyProviderClient{pieceCID: info.CIDv2, started: started, release: release}
+			contexts := make([]storage.StorageContext, 6)
+			for i := range contexts {
+				target, err := storage.NewProviderContext(storage.Provider{
+					ID: types.NewBigInt(uint64(i + 1)), ServiceURL: "https://provider.example.com",
+					ServiceProvider: common.HexToAddress("0x1"), Payee: common.HexToAddress("0x1"),
+				}, providerClient, client.storageSigner,
+					storage.WithPayer(client.Address()), storage.WithChainID(types.ChainID(client.selectedChain.ChainID())),
+					storage.WithRecordKeeper(client.addresses.FWSS))
+				if err != nil {
+					t.Fatalf("NewProviderContext: %v", err)
+				}
+				contexts[i] = target
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := client.Storage().UploadToContexts(ctx, bytes.NewReader(data), contexts, nil)
+				done <- err
+			}()
+			want := limit
+			if want <= 0 {
+				want = 4
+			}
+			seenNonces := make(map[string]bool)
+			receive := func() {
+				select {
+				case extraData := <-started:
+					payer, recovered := recoverClientCreateDataSetSigner(t, client, contexts[0], extraData)
+					if payer != client.Address() || recovered != client.Address() {
+						t.Fatalf("invalid concurrent create authorization: payer=%s signer=%s", payer, recovered)
+					}
+					outer, err := mustTestABIArguments(t, "bytes", "bytes").Unpack(extraData)
+					if err != nil {
+						t.Fatal(err)
+					}
+					create, err := mustTestABIArguments(t, "address", "uint256", "string[]", "string[]", "bytes").Unpack(outer[0].([]byte))
+					if err != nil {
+						t.Fatal(err)
+					}
+					add, err := mustTestABIArguments(t, "uint256", "string[][]", "string[][]", "bytes").Unpack(outer[1].([]byte))
+					if err != nil {
+						t.Fatal(err)
+					}
+					nonce := add[0].(*big.Int)
+					if seenNonces[nonce.String()] {
+						t.Fatal("concurrent pull authorizations reused a nonce")
+					}
+					seenNonces[nonce.String()] = true
+					message, err := ityped.AddPiecesMessage(create[1].(*big.Int), nonce, []cid.Cid{info.CIDv2}, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					domain := ityped.NewDomain(big.NewInt(int64(client.Chain().ChainID())), client.ResolvedAddresses().FWSS)
+					if recovered := recoverClientTypedDataSigner(t, domain, "AddPieces", message, add[3].([]byte)); recovered != client.Address() {
+						t.Fatalf("invalid concurrent add-pieces authorization: signer=%s", recovered)
+					}
+				case <-ctx.Done():
+					t.Fatalf("pull did not start: %v", ctx.Err())
+				}
+			}
+			for range want {
+				receive()
+			}
+			for range 5 - want {
+				release <- struct{}{}
+				receive()
+			}
+			for range want {
+				release <- struct{}{}
+			}
+			select {
+			case err := <-done:
+				if _, ok := errors.AsType[*storage.CommitError](err); !ok {
+					t.Fatalf("error=%v, want fixture commit failure", err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("upload did not finish: %v", ctx.Err())
+			}
+			if peak := providerClient.peak.Load(); peak != int32(want) {
+				t.Fatalf("peak pulls=%d, want root option %d", peak, want)
+			}
+		})
+	}
+}
+
 type closeTrackingTransport struct {
 	closeCalls atomic.Int32
 }

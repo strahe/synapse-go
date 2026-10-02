@@ -95,6 +95,32 @@ emitted in the FWSS `PieceAdded` event and is not stored in contract state.
 See [`UploadOptions`](https://pkg.go.dev/github.com/strahe/synapse-go/storage#UploadOptions)
 for exclusions and progress callbacks.
 
+Callbacks from different providers can overlap. Protect shared state when
+updating it; for example, record completed secondary copies with a mutex.
+This example also uses `sync`, `github.com/ipfs/go-cid`, and
+`github.com/strahe/synapse-go/types`:
+
+```go
+var mu sync.Mutex
+copiedProviders := make(map[string]bool)
+
+result, err := client.Storage().Upload(ctx, bytes.NewReader(data), &storage.UploadOptions{
+    Copies: 3,
+    OnCopyComplete: func(providerID types.BigInt, _ cid.Cid) {
+        mu.Lock()
+        copiedProviders[providerID.String()] = true
+        mu.Unlock()
+    },
+})
+if err != nil {
+    return err
+}
+fmt.Println("all copies confirmed:", result.Complete)
+```
+
+Use the same mutex if another goroutine reads the map. `OnCopyComplete` reports
+pull completion; use the upload result to check on-chain confirmation.
+
 By default the primary copy goes to an endorsed provider. If none is available,
 `Upload` returns an error matching `storage.ErrNoEndorsedProvider`. Set
 `AllowUnendorsedPrimary: true` to choose the primary from all approved

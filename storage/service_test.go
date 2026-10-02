@@ -730,71 +730,95 @@ func TestUploadToContextsKeepsCommitResultWhenCommitIgnoresCanceledContext(t *te
 	}
 }
 
-func TestUploadToContextsCancelDuringSecondaryPullReturnsCommitError(t *testing.T) {
-	data := bytes.Repeat([]byte("pull-cancel"), 128)
-	info, err := piece.CalculateFromBytes(data)
-	if err != nil {
-		t.Fatalf("CalculateFromBytes: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pullStarted := make(chan struct{})
-	primary := &fakeUploadContext{
-		id:       types.NewBigInt(101),
-		endpoint: "https://primary.example.com",
-		pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
-		storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
-			return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
-		},
-		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
-			return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
-		},
-	}
-	secondary := &fakeUploadContext{
-		id:       types.NewBigInt(202),
-		endpoint: "https://secondary.example.com",
-		presignFn: func(context.Context, []PieceInput) ([]byte, error) {
-			return []byte{0x01}, nil
-		},
-		pullFn: func(ctx context.Context, _ PullRequest) (*PullResult, error) {
-			close(pullStarted)
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-		commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
-			return nil, errors.New("canceled secondary must not commit")
-		},
-	}
-	svc := mustNewService(t, Options{})
-	type outcome struct {
-		result *UploadResult
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		result, err := svc.UploadToContexts(ctx, bytes.NewReader(data), []StorageContext{primary, secondary}, nil)
-		done <- outcome{result: result, err: err}
-	}()
-	select {
-	case <-pullStarted:
-	case <-time.After(time.Second):
-		t.Fatal("secondary pull did not start")
-	}
-	cancel()
-	var got outcome
-	select {
-	case got = <-done:
-	case <-time.After(time.Second):
-		t.Fatal("UploadToContexts did not return after cancellation")
-	}
-	if got.result != nil {
-		t.Fatalf("result=%+v, want CommitError", got.result)
-	}
-	if _, ok := errors.AsType[*CommitError](got.err); !ok {
-		t.Fatalf("error=%v (%T), want CommitError", got.err, got.err)
-	}
-	if !errors.Is(got.err, context.Canceled) {
-		t.Fatalf("error=%v, want context.Canceled", got.err)
+func TestUploadToContextsCancelDuringSecondaryPull(t *testing.T) {
+	for _, confirmed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("primary-confirmed=%t", confirmed), func(t *testing.T) {
+			data := bytes.Repeat([]byte("pull-cancel"), 128)
+			info, err := piece.CalculateFromBytes(data)
+			if err != nil {
+				t.Fatalf("CalculateFromBytes: %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pullStarted := make(chan struct{})
+			primaryWaiting := make(chan struct{})
+			primary := &fakeUploadContext{
+				id:       types.NewBigInt(101),
+				endpoint: "https://primary.example.com",
+				pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+				storeFn: func(_ context.Context, _ io.Reader, _ *StoreOptions) (*StoreResult, error) {
+					return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+				},
+				submitCommitFn: func(context.Context, CommitRequest) (*CommitSubmission, error) {
+					return &CommitSubmission{TransactionID: "primary"}, nil
+				},
+				waitCommitFn: func(ctx context.Context, _ CommitSubmission) (*CommitResult, error) {
+					close(primaryWaiting)
+					if !confirmed {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+				},
+			}
+			secondary := &fakeUploadContext{
+				id:       types.NewBigInt(202),
+				endpoint: "https://secondary.example.com",
+				presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+					return []byte{0x01}, nil
+				},
+				pullFn: func(ctx context.Context, _ PullRequest) (*PullResult, error) {
+					close(pullStarted)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+				commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+					return nil, errors.New("canceled secondary must not commit")
+				},
+			}
+			svc := mustNewService(t, Options{})
+			type outcome struct {
+				result *UploadResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				result, err := svc.UploadToContexts(ctx, bytes.NewReader(data), []StorageContext{primary, secondary}, nil)
+				done <- outcome{result: result, err: err}
+			}()
+			select {
+			case <-pullStarted:
+			case <-time.After(time.Second):
+				t.Fatal("secondary pull did not start")
+			}
+			select {
+			case <-primaryWaiting:
+			case <-time.After(time.Second):
+				t.Fatal("primary confirmation wait did not start")
+			}
+			cancel()
+			var got outcome
+			select {
+			case got = <-done:
+			case <-time.After(time.Second):
+				t.Fatal("UploadToContexts did not return after cancellation")
+			}
+			if confirmed {
+				if got.err != nil || got.result == nil || got.result.Complete || len(got.result.Copies) != 1 {
+					t.Fatalf("result=%+v error=%v, want incomplete primary success", got.result, got.err)
+				}
+				return
+			}
+			if got.result != nil {
+				t.Fatalf("result=%+v, want CommitError", got.result)
+			}
+			if _, ok := errors.AsType[*CommitError](got.err); !ok {
+				t.Fatalf("error=%v (%T), want CommitError", got.err, got.err)
+			}
+			if !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("error=%v, want context.Canceled", got.err)
+			}
+		})
 	}
 }
 
