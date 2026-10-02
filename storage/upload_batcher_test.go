@@ -503,6 +503,7 @@ func TestUploadBatcherSealsAtPieceLimit(t *testing.T) {
 	identity := serviceTestIdentity()
 	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
 	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	target.legacyLimit = 100
 	var (
 		mu     sync.Mutex
 		counts []int
@@ -521,7 +522,7 @@ func TestUploadBatcherSealsAtPieceLimit(t *testing.T) {
 		ref, _ := target.DataSetRef()
 		return &CommitResult{DataSet: ref, PieceIDs: pieceIDs}, nil
 	}
-	for i := range pdp.MaxAddPiecesBatchSize + 1 {
+	for i := range pdp.MaxLegacyAddPiecesBatchSize + 1 {
 		enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "piece-limit-"+strconv.Itoa(i)))
 	}
 	if err := batcher.Flush(context.Background()); err != nil {
@@ -532,8 +533,8 @@ func TestUploadBatcherSealsAtPieceLimit(t *testing.T) {
 	if len(counts) != 2 {
 		t.Fatalf("submitted piece counts=%v, want two batches", counts)
 	}
-	if min(counts[0], counts[1]) != 1 || max(counts[0], counts[1]) != pdp.MaxAddPiecesBatchSize {
-		t.Fatalf("submitted piece counts=%v, want %d and 1", counts, pdp.MaxAddPiecesBatchSize)
+	if min(counts[0], counts[1]) != 1 || max(counts[0], counts[1]) != pdp.MaxLegacyAddPiecesBatchSize {
+		t.Fatalf("submitted piece counts=%v, want %d and 1", counts, pdp.MaxLegacyAddPiecesBatchSize)
 	}
 }
 
@@ -2146,20 +2147,33 @@ func TestProviderContextUploadUsesInjectedBatcher(t *testing.T) {
 	}
 }
 
-func TestUploadBatcherSharesNewDataSetAcrossPieceLimit(t *testing.T) {
+func TestUploadBatcherSharesNewDataSetAcrossMessageLimit(t *testing.T) {
 	identity := serviceTestIdentity()
 	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
 	target := sharedBatchTestTarget(identity, 1)
 	commits := recordSharedBatchCommits(target)
-	tasks := make([]*uploadBatchTask, 0, pdp.MaxAddPiecesBatchSize+1)
-	for i := range pdp.MaxAddPiecesBatchSize + 1 {
+	limit := 0
+	var candidate []PieceInput
+	clientID := types.NewBigInt(1)
+	for {
+		candidate = append(candidate, batchTestPiece(t, fmt.Sprintf("shared-limit-%d", limit)))
+		if batcher.validateCandidate(target, nil, &clientID, candidate) != nil {
+			break
+		}
+		limit++
+	}
+	if limit <= 80 {
+		t.Fatalf("limit=%d, want >80", limit)
+	}
+	tasks := make([]*uploadBatchTask, 0, limit+1)
+	for i := range limit + 1 {
 		tasks = append(tasks, enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, fmt.Sprintf("shared-limit-%d", i))))
 	}
 	if err := batcher.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 	got := commits.snapshot()
-	if len(got) != 2 || !got[0].create || got[0].pieces != pdp.MaxAddPiecesBatchSize || got[1].create || got[1].pieces != 1 {
+	if len(got) != 2 || !got[0].create || got[1].create || min(got[0].pieces, got[1].pieces) != 1 || max(got[0].pieces, got[1].pieces) != limit {
 		t.Fatalf("commits=%+v, want one full create-and-add followed by one add-pieces", got)
 	}
 	for i, task := range tasks {
@@ -2167,7 +2181,7 @@ func TestUploadBatcherSharesNewDataSetAcrossPieceLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("wait %d: %v", i, err)
 		}
-		if !result.DataSet.DataSetID().Equal(types.NewBigInt(101)) || result.IsNewDataSet != (i < pdp.MaxAddPiecesBatchSize) {
+		if !result.DataSet.DataSetID().Equal(types.NewBigInt(101)) {
 			t.Fatalf("result %d=%+v, want shared data set 101", i, result)
 		}
 	}

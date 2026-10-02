@@ -13,10 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 func TestContextDownload_UsesPDPProviderClientAndValidatesPiece(t *testing.T) {
@@ -1063,4 +1067,144 @@ func TestValidatingReadCloser_ConcurrentReadAndClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	<-done
+}
+
+func TestManagerDownload_DataSetID(t *testing.T) {
+	data := bytes.Repeat([]byte("dataset-download"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdnMiss := errors.New("CDN cache miss")
+	tests := []struct {
+		name         string
+		active       bool
+		withCDN      bool
+		noRetriever  bool
+		wrongPayer   bool
+		cdnErr       error
+		cdnNilBody   bool
+		oversized    bool
+		wantErr      error
+		wantReadErr  error
+		wantCDNCalls int
+		wantPDPCalls int
+	}{
+		{name: "inactive provider with CDN", withCDN: true, wantCDNCalls: 1},
+		{name: "inactive provider without CDN", wantErr: spregistry.ErrNotFound},
+		{name: "inactive provider with unavailable CDN", withCDN: true, cdnErr: cdnMiss, wantErr: spregistry.ErrNotFound, wantCDNCalls: 1},
+		{name: "inactive provider without retriever", withCDN: true, noRetriever: true, wantErr: spregistry.ErrNotFound},
+		{name: "active provider fallback", active: true, withCDN: true, cdnErr: cdnMiss, wantCDNCalls: 1, wantPDPCalls: 1},
+		{name: "active provider without CDN", active: true, wantPDPCalls: 1},
+		{name: "nil CDN body falls back", active: true, withCDN: true, cdnNilBody: true, wantCDNCalls: 1, wantPDPCalls: 1},
+		{name: "CDN canceled", active: true, withCDN: true, cdnErr: context.Canceled, wantErr: context.Canceled, wantCDNCalls: 1},
+		{name: "CDN deadline", active: true, withCDN: true, cdnErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded, wantCDNCalls: 1},
+		{name: "oversized CDN response", withCDN: true, oversized: true, wantCDNCalls: 1, wantReadErr: ErrMaxBytesExceeded},
+		{name: "different payer", withCDN: true, wrongPayer: true, wantErr: ErrInvalidArgument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payer := testPayer()
+			if tt.wrongPayer {
+				payer = common.HexToAddress("0x9999")
+			}
+			fixture := serviceResolverFixture{
+				dataSetsByID:    map[string]*warmstorage.DataSetInfo{idconv.Key(types.NewBigInt(17)): {DataSetID: types.NewBigInt(17), ClientDataSetID: types.NewBigInt(3), ProviderID: types.NewBigInt(1), Payer: payer}},
+				dataSetMetadata: map[string]map[string]string{idconv.Key(types.NewBigInt(17)): {}},
+			}
+			if tt.withCDN {
+				fixture.dataSetMetadata[idconv.Key(types.NewBigInt(17))]["withCDN"] = ""
+			}
+			if tt.active {
+				fixture.activeProviders = []spregistry.PDPProvider{testPDPProvider(types.NewBigInt(1), "https://provider.test")}
+			}
+			cdnCalls, pdpCalls, factoryCalls := 0, 0, 0
+			var retriever CDNRetriever
+			if !tt.noRetriever {
+				retriever = fakeCDNRetriever{downloadPieceFn: func(_ context.Context, gotCID cid.Cid) (io.ReadCloser, error) {
+					cdnCalls++
+					if !gotCID.Equals(info.CIDv2) {
+						t.Fatalf("CDN CID=%s want %s", gotCID, info.CIDv2)
+					}
+					if tt.cdnErr != nil || tt.cdnNilBody {
+						return nil, tt.cdnErr
+					}
+					payload := bytes.Clone(data)
+					if tt.oversized {
+						payload = append(payload, 0)
+					}
+					return io.NopCloser(bytes.NewReader(payload)), nil
+				}}
+			}
+			resolver, err := NewServiceResolver(ServiceResolverOptions{
+				Payer: testPayer(), SPRegistry: &fakePDPProviderSource{fixture: fixture}, WarmStorage: &fakeDataSetCatalog{fixture: fixture}, CDNRetriever: retriever,
+				NewContext: func(provider Provider, opts ContextFactoryOptions) (*ProviderContext, error) {
+					factoryCalls++
+					if opts.WithCDN {
+						t.Fatal("provider fallback must not retry CDN")
+					}
+					return NewProviderContext(provider, &fakePDPProviderClient{downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+						pdpCalls++
+						return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+					}}, nil, WithPayer(testPayer()))
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := mustNewService(t, Options{DataSetDownloader: resolver})
+			body, err := svc.Download(context.Background(), info.CIDv2, &DownloadOptions{DataSetID: new(types.NewBigInt(17))})
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) || body != nil {
+					t.Fatalf("body=%v err=%v want %v", body, err, tt.wantErr)
+				}
+				if tt.cdnErr != nil && !errors.Is(err, tt.cdnErr) {
+					t.Fatalf("CDN cause lost: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, readErr := io.ReadAll(body)
+				_ = body.Close()
+				if tt.wantReadErr != nil {
+					if !errors.Is(readErr, tt.wantReadErr) {
+						t.Fatalf("read error=%v want %v", readErr, tt.wantReadErr)
+					}
+				} else if readErr != nil || !bytes.Equal(got, data) {
+					t.Fatalf("download bytes=%d read error=%v", len(got), readErr)
+				}
+			}
+			if cdnCalls != tt.wantCDNCalls || pdpCalls != tt.wantPDPCalls || factoryCalls != tt.wantPDPCalls {
+				t.Fatalf("CDN/PDP/factory calls=%d/%d/%d want %d/%d/%d", cdnCalls, pdpCalls, factoryCalls, tt.wantCDNCalls, tt.wantPDPCalls, tt.wantPDPCalls)
+			}
+			if !tt.active && !tt.wrongPayer {
+				if _, err := resolver.ResolveDataSetContext(context.Background(), types.NewBigInt(17), NewDataSetContextOptions{}); !errors.Is(err, spregistry.ErrNotFound) {
+					t.Fatalf("inactive writable context error=%v want ErrNotFound", err)
+				}
+			}
+		})
+	}
+}
+
+func TestManagerDownload_DataSetIDOptions(t *testing.T) {
+	info := mustPieceInfo(t)
+	tests := []struct {
+		name string
+		opts DownloadOptions
+		want error
+	}{
+		{name: "URL conflict", opts: DownloadOptions{DataSetID: new(types.NewBigInt(17)), URL: "https://example.test/piece"}, want: ErrInvalidDownloadOptions},
+		{name: "context conflict", opts: DownloadOptions{DataSetID: new(types.NewBigInt(17)), Context: (*DataSetContext)(nil)}, want: ErrInvalidDownloadOptions},
+		{name: "zero ID", opts: DownloadOptions{DataSetID: new(types.BigInt{})}, want: ErrInvalidDownloadOptions},
+		{name: "unconfigured", opts: DownloadOptions{DataSetID: new(types.NewBigInt(17))}, want: ErrUninitialized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := mustNewService(t, Options{}).Download(context.Background(), info.CIDv2, &tt.opts)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error=%v want %v", err, tt.want)
+			}
+		})
+	}
 }

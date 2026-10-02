@@ -177,11 +177,13 @@ func (c *Client) initServices() error {
 		c.uploadBatcher = batcher
 	}
 	resolver, err := storage.NewServiceResolver(storage.ServiceResolverOptions{
-		Payer:        rootAddress,
-		SPRegistry:   spReg,
-		Endorsements: spReg,
-		WarmStorage:  ws,
-		ProviderPing: c.pingProvider,
+		LegacyPieceStorageIDLimit: c.selectedChain.LegacyPieceStorageIDLimit(),
+		Payer:                     rootAddress,
+		SPRegistry:                spReg,
+		Endorsements:              spReg,
+		WarmStorage:               ws,
+		CDNRetriever:              fbRetriever,
+		ProviderPing:              c.pingProvider,
 		NewContext: func(provider storage.Provider, opts storage.ContextFactoryOptions) (*storage.ProviderContext, error) {
 			pdpClient, err := c.newPDPClient(provider.ServiceURL)
 			if err != nil {
@@ -190,6 +192,7 @@ func (c *Client) initServices() error {
 			ctxOpts := []storage.ContextOption{
 				storage.WithPayer(rootAddress),
 				storage.WithChainID(types.ChainID(c.selectedChain.ChainID())),
+				storage.WithLegacyPieceStorageIDLimit(opts.LegacyPieceStorageIDLimit),
 				storage.WithRecordKeeper(c.addresses.FWSS),
 				storage.WithDataSetMetadata(opts.DataSetMetadata),
 				storage.WithCDN(opts.WithCDN),
@@ -218,6 +221,7 @@ func (c *Client) initServices() error {
 	}
 	storageOpts := storage.Options{
 		Resolver:             resolver,
+		DataSetDownloader:    resolver,
 		HTTPClient:           c.storageHTTPClient(),
 		Source:               c.source,
 		DefaultWithCDN:       c.withCDN,
@@ -254,6 +258,7 @@ func (c *Client) initServices() error {
 
 func (c *Client) newPDPClient(serviceURL string, opts ...pdp.Option) (*pdp.Client, error) {
 	pdpOpts := make([]pdp.Option, 0, len(opts)+2)
+	pdpOpts = append(pdpOpts, pdp.WithLegacyPieceStorageIDLimit(c.selectedChain.LegacyPieceStorageIDLimit()))
 	if c.logger != nil {
 		pdpOpts = append(pdpOpts, pdp.WithLogger(c.logger))
 	}

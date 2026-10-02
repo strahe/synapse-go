@@ -170,6 +170,9 @@ func (c *contextCore) submitCommit(
 	ref *DataSetRef,
 	req commitRequest,
 ) (*CommitSubmission, error) {
+	if err := validateLegacyAddPiecesBatch(op, ref, c.legacyPieceStorageIDLimit, len(req.Pieces)); err != nil {
+		return nil, err
+	}
 	if ref != nil && req.clientDataSetID != nil {
 		return nil, fmt.Errorf("%s: %w: ClientDataSetID is only valid when creating a data set", op, ErrInvalidArgument)
 	}
@@ -267,9 +270,6 @@ func validateCommitRequest(op string, req CommitRequest) ([]cid.Cid, error) {
 func validateCommitPieces(op string, pieces []PieceInput) ([]cid.Cid, error) {
 	if len(pieces) == 0 {
 		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
-	}
-	if err := validateAddPiecesBatch(op, len(pieces)); err != nil {
-		return nil, err
 	}
 	pieceCIDs := make([]cid.Cid, len(pieces))
 	for i, piece := range pieces {
@@ -394,6 +394,9 @@ func (c *contextCore) getAddPiecesCommitStatus(
 	}
 	if snapshot.TxHash == (common.Hash{}) {
 		return nil, invalidCommitStatusf(op, "zero transactionID")
+	}
+	if err := validateLegacyAddPiecesBatch(op, &ref, c.legacyPieceStorageIDLimit, snapshot.PieceCount); err != nil {
+		return nil, err
 	}
 	if !rejected && snapshot.PiecesAdded && (snapshot.PieceCount <= 0 || snapshot.PieceCount != len(snapshot.ConfirmedPieceIDs)) {
 		return nil, invalidCommitStatusf(op, "confirmed piece counts differ")
@@ -581,8 +584,15 @@ func (c *contextCore) validateCommitSubmission(
 	if err := validateProviderStatusURL(c.provider.ServiceURL, submission.StatusURL); err != nil {
 		return CommitSubmission{}, fmt.Errorf("%s: %w", op, err)
 	}
-	if len(submission.PieceCIDs) == 0 || len(submission.PieceCIDs) > pdp.MaxAddPiecesBatchSize {
-		return invalid("pieceCIDs count must be between 1 and %d", pdp.MaxAddPiecesBatchSize)
+	if len(submission.PieceCIDs) == 0 {
+		return invalid("pieceCIDs must not be empty")
+	}
+	if err := validateLegacyAddPiecesBatch(op, ref, c.legacyPieceStorageIDLimit, len(submission.PieceCIDs)); err != nil {
+		return CommitSubmission{}, err
+	}
+	// Recovery has no extraData; the empty payload proves only a size lower bound.
+	if err := validateAddPiecesMessageSize(op, submission.PieceCIDs, nil); err != nil {
+		return CommitSubmission{}, err
 	}
 	if err := validateCommitPieceCIDs(op, submission.PieceCIDs); err != nil {
 		return CommitSubmission{}, err

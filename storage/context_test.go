@@ -187,7 +187,7 @@ func mustWritableDataSetContext(t *testing.T, client PDPProviderClient, ref Data
 
 func newTestContextForSelection(t *testing.T, provider Provider, factoryOpts ContextFactoryOptions, client PDPProviderClient, opts ...ContextOption) (*ProviderContext, error) {
 	t.Helper()
-	opts = append(opts, WithDataSetMetadata(factoryOpts.DataSetMetadata), WithCDN(factoryOpts.WithCDN))
+	opts = append(opts, WithDataSetMetadata(factoryOpts.DataSetMetadata), WithCDN(factoryOpts.WithCDN), WithLegacyPieceStorageIDLimit(factoryOpts.LegacyPieceStorageIDLimit))
 	return NewProviderContext(provider, client, mustTestSigner(t), opts...)
 }
 
@@ -1317,11 +1317,15 @@ func TestContextPresignAndPullRejectInvalidInputs(t *testing.T) {
 	info := mustPieceInfo(t)
 	c := mustWritableProviderContext(t, &fakePDPProviderClient{})
 
-	tooMany := make([]PieceInput, pdp.MaxAddPiecesBatchSize+1)
+	tooMany := make([]PieceInput, pdp.MaxLegacyAddPiecesBatchSize+1)
 	for i := range tooMany {
 		tooMany[i] = PieceInput{PieceCID: info.CIDv2}
 	}
-	_, err := c.PresignForCommit(context.Background(), tooMany)
+	legacy, err := c.ForDataSet(testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.PresignForCommit(context.Background(), tooMany)
 	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrTooManyPieces) {
 		t.Fatalf("too many pieces error=%v", err)
 	}

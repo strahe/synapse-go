@@ -11,7 +11,6 @@ import (
 	"github.com/ipfs/go-cid"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
-	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
@@ -49,9 +48,6 @@ func (c *DataSetContext) deletePieces(ctx context.Context, op string, pieceCIDs 
 	normalizedCIDs, err := normalizeDeletePieceCIDs(op, pieceCIDs)
 	if err != nil {
 		return nil, err
-	}
-	if len(normalizedCIDs) > pdp.MaxDeletePiecesBatchSize {
-		return nil, fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, len(normalizedCIDs), pdp.MaxDeletePiecesBatchSize)
 	}
 	if c.core.pdpCaller == nil {
 		return nil, errors.New(op + ": PDPVerifier reader not configured")
@@ -267,9 +263,6 @@ func normalizeDeletePieceIDs(op string, pieceIDs []sdktypes.BigInt) ([]sdktypes.
 		}
 		seen[id] = struct{}{}
 		normalized = append(normalized, pieceID.Copy())
-	}
-	if len(normalized) > pdp.MaxDeletePiecesBatchSize {
-		return nil, fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, len(normalized), pdp.MaxDeletePiecesBatchSize)
 	}
 	return normalized, nil
 }

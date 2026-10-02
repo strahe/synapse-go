@@ -34,6 +34,7 @@ const defaultDownloadTimeout = 24 * time.Hour
 
 // storageContextOps seals StorageContext and defines its internal orchestration.
 type storageContextOps interface {
+	legacyPieceStorageLimit() uint64
 	presignForCommit(context.Context, []PieceInput) ([]byte, error)
 	pull(context.Context, PullRequest) (*PullResult, error)
 	submitCommit(context.Context, commitRequest) (*CommitSubmission, error)
@@ -104,6 +105,7 @@ type Service struct {
 	resolver             UploadResolver
 	contextResolver      ContextResolver
 	contextSelector      ContextSelector
+	dataSetDownloader    DataSetDownloader
 	httpClient           *http.Client
 	providerHTTPClient   *http.Client
 	source               string
@@ -153,6 +155,10 @@ type Options struct {
 	// ContextSelector chooses healthy providers and upload targets. When nil and
 	// Resolver also implements ContextSelector, New reuses Resolver.
 	ContextSelector ContextSelector
+
+	// DataSetDownloader backs downloads identified by data set ID. The root
+	// Client supplies ServiceResolver; nil disables this download mode.
+	DataSetDownloader DataSetDownloader
 
 	// HTTPClient is used for URL-based downloads and manager-level provider PDP
 	// control requests. nil installs clients sharing a safe transport: downloads
@@ -320,6 +326,7 @@ func New(opts Options) (*Service, error) {
 		resolver:             resolver,
 		contextResolver:      contextResolver,
 		contextSelector:      contextSelector,
+		dataSetDownloader:    normalizeOptional(opts.DataSetDownloader),
 		httpClient:           opts.HTTPClient,
 		providerHTTPClient:   providerHTTPClient,
 		source:               opts.Source,

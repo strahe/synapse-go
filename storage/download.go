@@ -15,6 +15,7 @@ import (
 
 	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/piece"
+	"github.com/strahe/synapse-go/types"
 )
 
 // DownloadContext retrieves pieces from a known storage provider.
@@ -27,17 +28,28 @@ type CDNRetriever interface {
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, error)
 }
 
-// DownloadOptions configures a Service.Download call. Exactly one of Context
-// or URL must be set; supplying both, or neither, returns an error matching
+// DataSetDownloader downloads a piece from a data set identified by ID. The
+// root Client supplies [ServiceResolver], which checks ownership and CDN
+// metadata before retrieving a piece, with an active provider as the fallback.
+type DataSetDownloader interface {
+	DownloadDataSet(context.Context, types.BigInt, cid.Cid) (io.ReadCloser, error)
+}
+
+// DownloadOptions configures a Service.Download call. Exactly one of Context,
+// URL, or DataSetID must be set; other combinations return an error matching
 // both [ErrInvalidDownloadOptions] and [ErrInvalidArgument].
 type DownloadOptions struct {
-	Context DownloadContext // when set, delegates to DownloadContext.Download; mutually exclusive with URL
+	Context DownloadContext // delegates to DownloadContext.Download
 	URL     string          // direct HTTP or HTTPS URL; validated against pieceCID on read completion
+	// DataSetID downloads an owned data set's piece, using its CDN setting.
+	// CDN retrieval can succeed even when the provider is inactive.
+	DataSetID *types.BigInt
 }
 
 // ErrInvalidDownloadOptions is returned when [DownloadOptions] is nil, empty,
-// or specifies more than one download source. Service.Download wraps it
-// together with [ErrInvalidArgument], so callers may match either.
+// specifies more than one download source, or sets a zero DataSetID.
+// Service.Download wraps it together with [ErrInvalidArgument], so callers may
+// match either.
 var ErrInvalidDownloadOptions = errors.New("storage: invalid download options")
 
 func invalidDownloadOptionsError(msg string) error {
@@ -61,10 +73,11 @@ func validatePieceCID(c cid.Cid) error {
 	return fmt.Errorf("not a piece CID (v1 or v2): %s", c)
 }
 
-// Download retrieves a piece by URL or via a DownloadContext.  When URL is
-// used, the response body is streamed through a validating reader; the
-// terminal read error from io.ReadAll (or any last Read call that returns
-// io.EOF) carries the integrity check result — callers must not discard it.
+// Download retrieves a piece by URL, through a DownloadContext, or from a data
+// set by ID. When URL is used, the response body is streamed through a
+// validating reader; the terminal read error from io.ReadAll (or any last Read
+// call that returns io.EOF) carries the integrity check result — callers must
+// not discard it.
 // URL downloads are capped by non-zero [Options.DownloadMaxBytes]. Exceeding
 // the cap returns [ErrMaxBytesExceeded] either before streaming starts, when
 // Content-Length is too large, or as the terminal Read error.
@@ -78,16 +91,105 @@ func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *Download
 	if opts == nil {
 		return nil, invalidDownloadOptionsError("options must not be nil")
 	}
-	if opts.Context != nil && opts.URL != "" {
-		return nil, invalidDownloadOptionsError("Context and URL are mutually exclusive")
+	sources := 0
+	if opts.Context != nil {
+		sources++
+	}
+	if opts.URL != "" {
+		sources++
+	}
+	if opts.DataSetID != nil {
+		sources++
+	}
+	if sources > 1 {
+		return nil, invalidDownloadOptionsError("Context, URL, and DataSetID are mutually exclusive")
+	}
+	if sources == 0 {
+		return nil, invalidDownloadOptionsError("exactly one of Context, URL, or DataSetID must be set")
+	}
+	if opts.DataSetID != nil {
+		if opts.DataSetID.IsZero() {
+			return nil, invalidDownloadOptionsError("DataSetID must not be zero")
+		}
+		if s.dataSetDownloader == nil {
+			return nil, fmt.Errorf("storage.Service.Download: %w: DataSetDownloader not configured", ErrUninitialized)
+		}
+		return s.dataSetDownloader.DownloadDataSet(ctx, opts.DataSetID.Copy(), pieceCID)
 	}
 	if opts.Context != nil {
 		return opts.Context.Download(ctx, pieceCID)
 	}
-	if opts.URL == "" {
-		return nil, invalidDownloadOptionsError("either Context or URL must be set")
-	}
 	return s.downloadAndValidate(ctx, opts.URL, pieceCID)
+}
+
+// DownloadDataSet retrieves a PieceCIDv2 from a data set owned by the resolver's
+// payer. A CDN-enabled data set is tried through CDNRetriever first, regardless
+// of provider activity. Provider retrieval requires an active PDP product.
+func (r *ServiceResolver) DownloadDataSet(ctx context.Context, dataSetID types.BigInt, pieceCID cid.Cid) (io.ReadCloser, error) {
+	const op = "storage.ServiceResolver.DownloadDataSet"
+	if r == nil || r.warmStorage == nil || r.spRegistry == nil || r.newContext == nil {
+		return nil, fmt.Errorf("%s: %w", op, ErrUninitialized)
+	}
+	info, err := piece.ParseV2(pieceCID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w: PieceCIDv2 required: %w", op, ErrInvalidArgument, err)
+	}
+	dataSetID = dataSetID.Copy()
+	if dataSetID.IsZero() {
+		return nil, fmt.Errorf("%s: %w: zero dataSetID", op, ErrInvalidArgument)
+	}
+	dataSet, err := r.warmStorage.GetDataSet(ctx, dataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: get data set: %w", op, err)
+	}
+	if dataSet == nil {
+		return nil, fmt.Errorf("%s: %w", op, ErrDataSetUnavailable)
+	}
+	if dataSet.Payer != r.payer {
+		return nil, fmt.Errorf("%s: %w: data set is not owned by payer", op, ErrInvalidArgument)
+	}
+	metadata, err := r.warmStorage.GetAllDataSetMetadata(ctx, dataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: get metadata: %w", op, err)
+	}
+	var cdnErr error
+	if _, withCDN := metadata["withCDN"]; withCDN && r.cdnRetriever != nil {
+		var body io.ReadCloser
+		body, cdnErr = r.cdnRetriever.DownloadPiece(ctx, pieceCID)
+		if cdnErr == nil && body != nil {
+			return newValidatingReadCloser(body, pieceCID, info.RawSize), nil
+		}
+		if body != nil {
+			_ = body.Close()
+		}
+		if cdnErr == nil {
+			cdnErr = errors.New("CDN retriever returned nil body")
+		}
+		if errors.Is(cdnErr, context.Canceled) || errors.Is(cdnErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			return nil, fmt.Errorf("%s: CDN: %w", op, errors.Join(cdnErr, ctx.Err()))
+		}
+	}
+	provider, err := r.ResolveProvider(ctx, dataSet.ProviderID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, errors.Join(cdnErr, err))
+	}
+	providerCtx, err := r.buildProviderContext(op, provider, ContextFactoryOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, errors.Join(cdnErr, err))
+	}
+	ref, err := NewDataSetRef(dataSet.ProviderID, dataSetID, dataSet.ClientDataSetID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	target, err := providerCtx.ForDataSet(ref)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	body, err := target.Download(ctx, pieceCID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, errors.Join(cdnErr, err))
+	}
+	return body, nil
 }
 
 // Download retrieves a piece from CDN when enabled and available, otherwise

@@ -19,7 +19,11 @@
 // target ID is already known. Use [Service.SelectProviderContext] to choose one
 // healthy provider without looking up data sets. Use
 // [Service.SelectUploadContexts] when preparing a new upload; it may reuse
-// writable data sets whose metadata matches.
+// writable data sets whose metadata matches. On known deployments, compact
+// matches take precedence over legacy matches, including empty compact data
+// sets. Within each layout, active pieces take precedence when activity is
+// available, then the lowest ID.
+// Explicitly bound targets and already shared data sets keep their identity.
 //
 // [DataSetRef] is the persistent target reference shared by creation results,
 // DataSetContext, and [ProviderContext.ForDataSet]. Construct it with
@@ -50,8 +54,8 @@
 // submits a batch at most that long after its first piece is ready.
 // [WithoutUploadIdleWait] with a zero [WithUploadMaxWait] submits every piece
 // immediately. With both timers disabled, a batch is submitted only by
-// [Service.Flush], the 40-piece limit, the provider message-size limit, or a
-// repeated piece CID.
+// [Service.Flush], the 80-piece legacy limit, a candidate exceeding the message
+// size limit, or a repeated piece CID.
 //
 // Compatible uploads share a window only when their immutable target matches.
 // Existing data sets match by provider, complete DataSetRef, and exact service
@@ -59,6 +63,19 @@
 // metadata. Uploads to the same new target share one data set for the
 // coordinator's lifetime, across windows and sequential uploads, without
 // binding or mutating the source ProviderContext.
+// Different layout cutoffs split windows but still share the same data set.
+// Unbound targets reserve creation space in every window so a terminated shared
+// data set can be replaced without exceeding the message-size limit.
+//
+// Direct add/pull requests to legacy data sets accept at most 80 pieces. New
+// and compact data sets have no fixed count limit; every request must fit
+// [pdp.MaxAddPiecesMessageSize], including signatures and metadata. Low-level
+// methods return errors rather than splitting requests. The root client sets
+// the deployment cutoff automatically. Standalone contexts derive it from
+// [WithChainID]; [WithLegacyPieceStorageIDLimit] overrides it, including zero
+// to skip legacy checks. Standalone resolvers use
+// [ServiceResolverOptions.LegacyPieceStorageIDLimit] and forward it through
+// [ContextFactoryOptions.LegacyPieceStorageIDLimit] to the caller's factory.
 //
 // Store, Pull, target resolution, and coordinator admission use the caller
 // context. Successful admission transfers ownership of the piece to the
@@ -112,6 +129,24 @@
 // independently determines the payer assigned to contexts created by that
 // resolver. The root synapse Client keeps both values on the root account when
 // [synapse.WithStorageSigner] configures a delegated signer.
+//
+// # Downloads and deletion
+//
+// Service.Download accepts exactly one of DownloadOptions.Context, URL, or
+// DataSetID. Downloading by data set ID reads its ownership and CDN metadata.
+// CDN-enabled data sets can be read even when their provider is inactive;
+// provider fallback and writable contexts still require an active PDP product.
+// Data-set and context downloads require PieceCIDv2, enforce its raw size, and
+// verify integrity at EOF. Always check the final Read or io.ReadAll error.
+//
+// The root Client configures the data-set download path automatically.
+// Standalone services set Options.DataSetDownloader to their ServiceResolver
+// and provide ServiceResolverOptions.CDNRetriever for the resolver's Payer.
+//
+// DataSetContext.DeletePieces and DeletePiecesByID have no fixed count limit.
+// They submit one deletion request without splitting or retrying; contract,
+// gas, and transaction limits still apply. Deletion schedules removal rather
+// than immediately erasing the pieces. MaxDeletePiecesBatchSize is deprecated.
 //
 // # Provider selection
 //

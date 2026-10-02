@@ -44,6 +44,19 @@ func (c Chain) BigChainID() *big.Int {
 	return big.NewInt(c.ChainID())
 }
 
+// LegacyPieceStorageIDLimit returns the first data set ID using compact piece
+// storage. Unknown chains return zero. Earlier IDs retain legacy storage.
+func (c Chain) LegacyPieceStorageIDLimit() uint64 {
+	switch c {
+	case Mainnet:
+		return 1559
+	case Calibration:
+		return 32331
+	default:
+		return 0
+	}
+}
+
 // String returns the human-readable network name.
 func (c Chain) String() string {
 	if c < chainCount {
@@ -54,7 +67,7 @@ func (c Chain) String() string {
 
 // FromID returns the Chain for the given EIP-155 chain ID.
 func FromID(id int64) (Chain, error) {
-	for i := Chain(0); i < chainCount; i++ {
+	for i := range chainCount {
 		if chainIDs[i] == id {
 			return i, nil
 		}

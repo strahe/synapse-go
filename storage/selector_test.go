@@ -957,7 +957,7 @@ func TestSelectMatchingDetailedDataSet_PrefersActiveThenLowestID(t *testing.T) {
 			HasActivePieces: true,
 			Metadata:        map[string]string{"source": "app"},
 		},
-	}, map[string]string{"source": "app"})
+	}, map[string]string{"source": "app"}, 0)
 
 	if dataSetID == nil || !dataSetID.Equal(testID(2)) {
 		t.Fatalf("DataSetID=%v want 2", dataSetID)
@@ -1552,6 +1552,7 @@ func newResolvedTestContext(provider Provider, opts ContextFactoryOptions) (*Pro
 		nil,
 		WithDataSetMetadata(opts.DataSetMetadata),
 		WithCDN(opts.WithCDN),
+		WithLegacyPieceStorageIDLimit(opts.LegacyPieceStorageIDLimit),
 	)
 }
 

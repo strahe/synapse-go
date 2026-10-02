@@ -12,7 +12,6 @@ import (
 	"github.com/multiformats/go-multihash"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
-	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -187,13 +186,15 @@ func TestContext_DeletePiecesByID_NormalizesBeforeBatchCall(t *testing.T) {
 		WithChainID(types.ChainID(314159)),
 	)
 
-	res, err := c.DeletePiecesByID(context.Background(), []types.BigInt{
-		types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(3), types.NewBigInt(0),
-	})
+	want := []types.BigInt{types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(0)}
+	for i := uint64(4); i < 84; i++ {
+		want = append(want, types.NewBigInt(i))
+	}
+	input := append([]types.BigInt{types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(3), types.NewBigInt(0)}, want[3:]...)
+	res, err := c.DeletePiecesByID(context.Background(), input)
 	if err != nil {
 		t.Fatalf("DeletePiecesByID: %v", err)
 	}
-	want := []types.BigInt{types.NewBigInt(3), types.NewBigInt(2), types.NewBigInt(0)}
 	if !equalBigInts(gotPieceIDs, want) {
 		t.Fatalf("pieceIDs=%v want %v", gotPieceIDs, want)
 	}
@@ -208,10 +209,11 @@ func TestContext_DeletePiecesByID_NormalizesBeforeBatchCall(t *testing.T) {
 		t.Fatalf("unpack extraData: %v", err)
 	}
 	domain := ityped.NewDomain(big.NewInt(314159), testRecordKeeper())
-	message := ityped.SchedulePieceRemovalsMessage(
-		types.NewBigInt(3).Big(),
-		[]*big.Int{big.NewInt(3), big.NewInt(2), new(big.Int)},
-	)
+	wantIDs := make([]*big.Int, len(want))
+	for i := range want {
+		wantIDs[i] = want[i].Big()
+	}
+	message := ityped.SchedulePieceRemovalsMessage(types.NewBigInt(3).Big(), wantIDs)
 	recovered := recoverRawTypedDataSigner(t, domain, "SchedulePieceRemovals", message, values[0].([]byte))
 	if recovered != c.core.signer.EVMAddress() {
 		t.Fatalf("signature signer=%s want %s", recovered, c.core.signer.EVMAddress())
@@ -365,21 +367,27 @@ func TestContext_DeletePieces_PropagatesUnavailableDataSet(t *testing.T) {
 	}
 }
 
-func TestContext_DeletePieces_RejectsOversizedBatchBeforeResolution(t *testing.T) {
-	reader := &dataSetMutatingPDPReader{}
-	c := mustDeleteContext(t, &fakePDPProviderClient{},
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithPDPVerifierReader(reader),
-	)
-
-	_, err := c.DeletePieces(context.Background(), sequenceDeleteCIDs(t, pdp.MaxDeletePiecesBatchSize+1))
-	if !errors.Is(err, ErrInvalidArgument) || !errors.Is(err, pdp.ErrTooManyPieces) {
-		t.Fatalf("err=%v want ErrInvalidArgument and pdp.ErrTooManyPieces", err)
+func TestContext_DeletePieces_LargeBatch(t *testing.T) {
+	pieceCIDs := sequenceDeleteCIDs(t, 81)
+	wantIDs := sequenceBigInts(len(pieceCIDs))
+	reader := &batchCIDResultPDPReader{batchResults: make([][]types.BigInt, len(pieceCIDs))}
+	for i := range wantIDs {
+		reader.batchResults[i] = []types.BigInt{wantIDs[i]}
 	}
-	if reader.calls != 0 {
-		t.Fatalf("FindPieceIdsByCid calls=%d want 0", reader.calls)
+	calls := 0
+	fake := &fakePDPProviderClient{scheduleDeletionsFn: func(_ context.Context, dataSetID types.BigInt, ids []types.BigInt, extraData []byte) (common.Hash, error) {
+		calls++
+		if !dataSetID.Equal(types.NewBigInt(77)) || !equalBigInts(ids, wantIDs) || len(extraData) == 0 {
+			t.Fatalf("dataSetID=%s ids=%v extraData length=%d", dataSetID, ids, len(extraData))
+		}
+		return common.HexToHash("0xabc123"), nil
+	}}
+	c := mustDeleteContext(t, fake, WithPayer(testPayer()), WithRecordKeeper(testRecordKeeper()), WithChainID(types.ChainID(314159)), WithPDPVerifierReader(reader))
+	if _, err := c.DeletePieces(context.Background(), pieceCIDs); err != nil {
+		t.Fatalf("DeletePieces: %v", err)
+	}
+	if calls != 1 || reader.batchCalls != 1 {
+		t.Fatalf("submission calls=%d resolution calls=%d want 1,1", calls, reader.batchCalls)
 	}
 }
 
@@ -405,13 +413,11 @@ func TestContext_DeletePieces_ReportsOriginalCIDIndexAfterDeduplication(t *testi
 
 func TestContext_DeletePiecesByID_Validation(t *testing.T) {
 	tests := []struct {
-		name        string
-		pieceIDs    []types.BigInt
-		wantTooMany bool
+		name     string
+		pieceIDs []types.BigInt
 	}{
 		{name: "empty"},
 		{name: "above Curio range", pieceIDs: []types.BigInt{mustBigInt(t, "9223372036854775808")}},
-		{name: "too many", pieceIDs: sequenceBigInts(pdp.MaxDeletePiecesBatchSize + 1), wantTooMany: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -419,9 +425,6 @@ func TestContext_DeletePiecesByID_Validation(t *testing.T) {
 			_, err := c.DeletePiecesByID(context.Background(), tt.pieceIDs)
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("err=%v want ErrInvalidArgument", err)
-			}
-			if got := errors.Is(err, pdp.ErrTooManyPieces); got != tt.wantTooMany {
-				t.Fatalf("errors.Is(ErrTooManyPieces)=%t want %t", got, tt.wantTooMany)
 			}
 		})
 	}

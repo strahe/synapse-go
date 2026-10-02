@@ -915,8 +915,9 @@ func TestAddPieces(t *testing.T) {
 	}
 }
 
-func TestAddPieces_MaxBatchSizeAccepted(t *testing.T) {
-	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize)
+func TestAddPieces_CompactLargeBatchAccepted(t *testing.T) {
+	const count = 81
+	pieces := make([]AddPieceInput, count)
 	for i := range pieces {
 		info, err := piece.CalculateFromBytes(bytes.Repeat([]byte{byte(i), 0xa5}, 128))
 		if err != nil {
@@ -934,11 +935,12 @@ func TestAddPieces_MaxBatchSizeAccepted(t *testing.T) {
 		w.Header().Set("Location", "/pdp/data-sets/5/pieces/added/0xdead000000000000000000000000000000000000000000000000000000000000")
 		w.WriteHeader(http.StatusCreated)
 	}))
+	c.legacyPieceStorageIDLimit = 5
 	if _, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1}); err != nil {
 		t.Fatalf("AddPieces: %v", err)
 	}
-	if gotPieces != MaxAddPiecesBatchSize {
-		t.Fatalf("pieces len=%d want %d", gotPieces, MaxAddPiecesBatchSize)
+	if gotPieces != count {
+		t.Fatalf("pieces len=%d want %d", gotPieces, count)
 	}
 }
 
@@ -1018,7 +1020,8 @@ func TestAddPieces_TooManyPieces(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not reach server")
 	}))
-	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize+1)
+	c.legacyPieceStorageIDLimit = 10
+	pieces := make([]AddPieceInput, MaxLegacyAddPiecesBatchSize+1)
 	_, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1})
 	if !errors.Is(err, ErrTooManyPieces) {
 		t.Fatalf("err=%v want ErrTooManyPieces", err)
@@ -1138,8 +1141,15 @@ func TestGetAddPiecesStatus_LargeUint64DataSetID(t *testing.T) {
 }
 
 func TestSchedulePieceDeletions(t *testing.T) {
+	maxID, err := types.ParseBigInt("9223372036854775807")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pieceIDs := append([]types.BigInt{types.NewBigInt(99), maxID}, makeBigInts(80)...)
+	calls := 0
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/9" {
+		calls++
+		if r.Method != http.MethodDelete || r.URL.Path != "/pdp/data-sets/5/pieces/99" {
 			t.Fatalf("bad req: %s %s", r.Method, r.URL.Path)
 		}
 		var body struct {
@@ -1151,30 +1161,23 @@ func TestSchedulePieceDeletions(t *testing.T) {
 		if err := decoder.Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		want := []string{"9", "9223372036854775807", "0"}
-		if body.ExtraData != "0x0102" || len(body.PieceIDs) != len(want) {
+		if body.ExtraData != "0x0102" || len(body.PieceIDs) != len(pieceIDs) {
 			t.Fatalf("body=%+v", body)
 		}
-		for i := range want {
-			if body.PieceIDs[i].String() != want[i] {
-				t.Fatalf("pieceIds[%d]=%s want %s", i, body.PieceIDs[i], want[i])
+		for i := range pieceIDs {
+			if body.PieceIDs[i].String() != pieceIDs[i].String() {
+				t.Fatalf("pieceIds[%d]=%s want %s", i, body.PieceIDs[i], pieceIDs[i])
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"txHash":"0xabc0000000000000000000000000000000000000000000000000000000000000"}`)
 	}))
-	maxID, err := types.ParseBigInt("9223372036854775807")
+	h, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), pieceIDs, []byte{1, 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{
-		types.NewBigInt(9), maxID, types.NewBigInt(0),
-	}, []byte{1, 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h == (common.Hash{}) {
-		t.Fatal("zero hash")
+	if h == (common.Hash{}) || calls != 1 {
+		t.Fatalf("hash=%s requests=%d want nonzero hash and one request", h, calls)
 	}
 }
 

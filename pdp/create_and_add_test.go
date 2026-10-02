@@ -80,14 +80,28 @@ func TestCreateDataSetAndAddPieces_OK(t *testing.T) {
 	}
 }
 
-func TestCreateDataSetAndAddPieces_TooManyPieces(t *testing.T) {
+func TestCreateDataSetAndAddPieces_LargeBatch(t *testing.T) {
+	pieces := make([]AddPieceInput, 81)
+	for i := range pieces {
+		info, err := piece.CalculateFromBytes([]byte(fmt.Sprintf("%0256d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pieces[i] = AddPieceInput{PieceCID: info.CIDv2}
+	}
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not reach server")
+		var body createAndAddBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Pieces) != 81 {
+			t.Fatalf("pieces=%d", len(body.Pieces))
+		}
+		w.Header().Set("Location", "/pdp/data-sets/created/"+common.HexToHash("0x1234").Hex())
+		w.WriteHeader(http.StatusCreated)
 	}))
-	pieces := make([]AddPieceInput, MaxAddPiecesBatchSize+1)
-	_, err := c.CreateDataSetAndAddPieces(context.Background(), common.HexToAddress("0xabc"), pieces, []byte{1})
-	if !errors.Is(err, ErrTooManyPieces) {
-		t.Fatalf("err=%v want ErrTooManyPieces", err)
+	if _, err := c.CreateDataSetAndAddPieces(context.Background(), common.HexToAddress("0xabc"), pieces, []byte{1}); err != nil {
+		t.Fatal(err)
 	}
 }
 

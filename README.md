@@ -34,7 +34,7 @@ client, err := synapse.New(ctx,
 if err != nil { return err }
 defer client.Close()
 
-// file is an io.Reader over the payload to upload.
+// file is an io.Reader with 127 bytes to about 1 GiB of data.
 upload, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
 if err != nil { return err }
 
@@ -43,23 +43,10 @@ fmt.Printf("copies: %d/%d\n", upload.SuccessCount(), upload.RequestedCopies)
 fmt.Println("retrieve:", upload.Copies[0].RetrievalURL)
 ```
 
-Use real values from your config or secret manager. Mainnet and Calibration
-are detected from the RPC chain ID.
-
-Single uploads must be at least 127 bytes and fit the PDP cap, about 1 GiB.
-
-The root client batches compatible high-level upload commits by default.
-Ready pieces are submitted together once no other upload to the same target
-is in progress and 3 seconds pass without a new piece, so concurrent uploads
-can share a provider transaction. Use
-`client.Storage().Flush(ctx)` to drain accepted uploads before shutdown, or
-configure immediate, timed, Flush-only, or disabled behavior with
-`WithUploadBatching` and `WithoutUploadBatching`. See
-[upload batching](docs/GETTING_STARTED.md#commit-batching).
-After a piece enters a batch window, canceling its Upload context stops only
-that caller's wait; the accepted commit may still complete. Flush before Close
-for a graceful drain, and reconcile external state before retrying a timed-out
-upload.
+Load the key from your config or secret manager. Mainnet and Calibration are
+detected from the RPC endpoint. Uploads wait about 3 seconds before committing
+so concurrent uploads can share a transaction; see
+[Commit Batching](docs/GETTING_STARTED.md#commit-batching) to change this.
 
 ## Package Map
 

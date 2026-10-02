@@ -24,8 +24,8 @@ type createAndAddPiecesRequest struct {
 // The provider creates a dataset and immediately submits the add-pieces
 // transaction using the caller-provided EIP-712 signed extraData for the
 // combined create+add flow. Piece CIDs must be unique within the request after
-// PieceCIDv2-to-v1 normalization. Requests exceeding MaxAddPiecesBatchSize or
-// MaxAddPiecesMessageSize are rejected before submission.
+// PieceCIDv2-to-v1 normalization. Requests exceeding MaxAddPiecesMessageSize
+// are rejected before submission; there is no fixed piece-count limit.
 func (c *Client) CreateDataSetAndAddPieces(
 	ctx context.Context,
 	recordKeeper common.Address,

@@ -1237,6 +1237,7 @@ func (r *fakeResolver) SelectReplacement(_ context.Context, opts SelectProviderC
 }
 
 type fakeUploadContext struct {
+	legacyLimit     uint64
 	id              types.BigInt
 	endpoint        string
 	pieceURL        string
@@ -1254,9 +1255,10 @@ type fakeUploadContext struct {
 	identity        *ContextIdentity
 }
 
-func (c *fakeUploadContext) ProviderID() types.BigInt  { return c.id }
-func (c *fakeUploadContext) ServiceURL() string        { return c.endpoint }
-func (c *fakeUploadContext) PieceURL(_ cid.Cid) string { return c.pieceURL }
+func (c *fakeUploadContext) ProviderID() types.BigInt        { return c.id }
+func (c *fakeUploadContext) legacyPieceStorageLimit() uint64 { return c.legacyLimit }
+func (c *fakeUploadContext) ServiceURL() string              { return c.endpoint }
+func (c *fakeUploadContext) PieceURL(_ cid.Cid) string       { return c.pieceURL }
 
 func (c *fakeUploadContext) DataSetRef() (DataSetRef, bool) {
 	if c.dataSetID == nil {

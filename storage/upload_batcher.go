@@ -577,7 +577,7 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 	if window != nil {
 		pieces := append(windowPieces(window), clonePieceInput(piece))
 		_, duplicate := window.pieceCIDs[canonicalCommitPieceCIDKey(piece.PieceCID)]
-		if duplicate || b.validateCandidate(window.target, window.ref, sizeClientDataSetID, pieces) != nil {
+		if duplicate || window.target.legacyPieceStorageLimit() != target.legacyPieceStorageLimit() || b.validateCandidate(window.target, window.ref, sizeClientDataSetID, pieces) != nil {
 			launches = append(launches, b.sealWindowLocked(window))
 			window = nil
 		}
@@ -618,7 +618,7 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 	}
 	immediate := b.config.idleWaitEnabled && b.config.idleWait == 0 && b.transfers[key] == 0 ||
 		b.config.maxWaitEnabled && b.config.maxWait == 0
-	if immediate || len(window.slots) == pdp.MaxAddPiecesBatchSize {
+	if immediate || window.ref != nil && isLegacyDataSet(window.ref.dataSetID, target.legacyPieceStorageLimit()) && len(window.slots) == pdp.MaxLegacyAddPiecesBatchSize {
 		launches = append(launches, b.sealWindowLocked(window))
 	} else {
 		b.scheduleWindowLocked(window, now)
@@ -631,6 +631,9 @@ func (b *UploadBatcher) enqueue(ctx context.Context, reservation uint64, target 
 }
 
 func (b *UploadBatcher) validateCandidate(target StorageContext, ref *DataSetRef, clientDataSetID *types.BigInt, pieces []PieceInput) error {
+	if err := validateLegacyAddPiecesBatch("storage.UploadBatcher", ref, target.legacyPieceStorageLimit(), len(pieces)); err != nil {
+		return err
+	}
 	pieceCIDs, err := validateCommitPieces("storage.UploadBatcher", pieces)
 	if err != nil {
 		return err
@@ -648,6 +651,8 @@ func (b *UploadBatcher) validateCandidate(target StorageContext, ref *DataSetRef
 	if ref != nil {
 		extraData, err = encodeAddPiecesExtraData(new(big.Int), pieceMetadata, make([]byte, secp256k1SignatureSize))
 	} else {
+		// Shared data sets can be terminated between flights. Reserve creation
+		// space even after creation so replacement accepts the same window.
 		if clientDataSetID == nil {
 			return fmt.Errorf("%w: missing client data-set ID", ErrInvalidArgument)
 		}
@@ -883,11 +888,12 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 		clientDataSetID = &id
 	}
 	extraData, _, err := presignCommitAuthorization(b.ctx, "storage.UploadBatcher", commitAuthorization{
-		identity:        b.identity,
-		provider:        target.GetProviderInfo(),
-		signer:          b.signer,
-		dataSetMetadata: target.DataSetMetadata(),
-		withCDN:         target.CDNEnabled(),
+		identity:                  b.identity,
+		provider:                  target.GetProviderInfo(),
+		signer:                    b.signer,
+		dataSetMetadata:           target.DataSetMetadata(),
+		withCDN:                   target.CDNEnabled(),
+		legacyPieceStorageIDLimit: target.legacyPieceStorageLimit(),
 	}, ref, pieces, clientDataSetID)
 	if err == nil {
 		err = b.ctx.Err()
@@ -1334,11 +1340,12 @@ func (b *UploadBatcher) authorizePull(ctx context.Context, target StorageContext
 		return nil, nil, err
 	}
 	auth := commitAuthorization{
-		identity:        b.identity,
-		provider:        target.GetProviderInfo(),
-		signer:          b.signer,
-		dataSetMetadata: target.DataSetMetadata(),
-		withCDN:         target.CDNEnabled(),
+		identity:                  b.identity,
+		provider:                  target.GetProviderInfo(),
+		signer:                    b.signer,
+		dataSetMetadata:           target.DataSetMetadata(),
+		withCDN:                   target.CDNEnabled(),
+		legacyPieceStorageIDLimit: target.legacyPieceStorageLimit(),
 	}
 	if ref, ok := target.DataSetRef(); ok {
 		extraData, _, err := presignCommitAuthorization(ctx, op, auth, &ref, pieces, nil)

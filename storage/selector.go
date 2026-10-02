@@ -133,8 +133,10 @@ type resolvedUploadContext struct {
 
 // ContextFactoryOptions configures construction of one provider context.
 type ContextFactoryOptions struct {
-	DataSetMetadata map[string]string
-	WithCDN         bool
+	// LegacyPieceStorageIDLimit is the first compact data set ID; zero is unknown.
+	LegacyPieceStorageIDLimit uint64
+	DataSetMetadata           map[string]string
+	WithCDN                   bool
 }
 
 // ContextFactory builds an unbound immutable provider context.
@@ -142,6 +144,9 @@ type ContextFactory func(Provider, ContextFactoryOptions) (*ProviderContext, err
 
 // ServiceResolverOptions configures a ServiceResolver.
 type ServiceResolverOptions struct {
+	// LegacyPieceStorageIDLimit enables compact-first reuse for this deployment.
+	// Zero preserves the existing layout-independent selection order.
+	LegacyPieceStorageIDLimit uint64
 	// Payer is the EVM address assigned to contexts created by this resolver.
 	// Set it to the paying account, not a delegated Storage signer address.
 	Payer      common.Address
@@ -149,8 +154,11 @@ type ServiceResolverOptions struct {
 	// Endorsements is required only when automatic upload selection uses its
 	// default endorsed-primary policy. It may be nil when callers always set
 	// AllowUnendorsedPrimary or use explicit provider contexts.
-	Endorsements     EndorsedProviderSource
-	WarmStorage      DataSetCatalog
+	Endorsements EndorsedProviderSource
+	WarmStorage  DataSetCatalog
+	// CDNRetriever retrieves pieces for Payer without requiring an active
+	// provider. nil limits data-set downloads to active providers.
+	CDNRetriever     CDNRetriever
 	DataSetValidator DataSetValidator
 	DataSetDetails   DataSetDetailsCatalog
 	// ProviderPing checks one automatically selected provider endpoint. The
@@ -165,18 +173,21 @@ type ServiceResolverOptions struct {
 }
 
 // ServiceResolver opens explicit targets and selects providers and data sets
-// for uploads. Automatic selection prefers writable matching data sets with
-// active pieces, then writable empty matches, in stable provider order.
+// for uploads. With a known cutoff, compact matches precede legacy matches.
+// Within each layout, active pieces precede empty matches when the catalog
+// reports activity. Providers retain their stable order inside each layout group.
 type ServiceResolver struct {
-	payer            common.Address
-	spRegistry       PDPProviderSource
-	endorsements     EndorsedProviderSource
-	warmStorage      DataSetCatalog
-	dataSetActivity  dataSetActivityReader
-	dataSetValidator DataSetValidator
-	dataSetDetails   DataSetDetailsCatalog
-	providerPing     func(context.Context, string) error
-	newContext       ContextFactory
+	legacyPieceStorageIDLimit uint64
+	payer                     common.Address
+	spRegistry                PDPProviderSource
+	endorsements              EndorsedProviderSource
+	warmStorage               DataSetCatalog
+	cdnRetriever              CDNRetriever
+	dataSetActivity           dataSetActivityReader
+	dataSetValidator          DataSetValidator
+	dataSetDetails            DataSetDetailsCatalog
+	providerPing              func(context.Context, string) error
+	newContext                ContextFactory
 }
 
 var (
@@ -231,15 +242,17 @@ func NewServiceResolver(opts ServiceResolverOptions) (*ServiceResolver, error) {
 		providerPing = defaultProviderPing
 	}
 	return &ServiceResolver{
-		payer:            opts.Payer,
-		spRegistry:       opts.SPRegistry,
-		endorsements:     normalizeOptional(opts.Endorsements),
-		warmStorage:      opts.WarmStorage,
-		dataSetActivity:  activity,
-		dataSetValidator: validator,
-		dataSetDetails:   details,
-		providerPing:     providerPing,
-		newContext:       opts.NewContext,
+		legacyPieceStorageIDLimit: opts.LegacyPieceStorageIDLimit,
+		payer:                     opts.Payer,
+		spRegistry:                opts.SPRegistry,
+		endorsements:              normalizeOptional(opts.Endorsements),
+		warmStorage:               opts.WarmStorage,
+		cdnRetriever:              normalizeOptional(opts.CDNRetriever),
+		dataSetActivity:           activity,
+		dataSetValidator:          validator,
+		dataSetDetails:            details,
+		providerPing:              providerPing,
+		newContext:                opts.NewContext,
 	}, nil
 }
 
@@ -435,8 +448,9 @@ func (r *ServiceResolver) selectWithRetry(ctx context.Context, opts SelectUpload
 
 func (r *ServiceResolver) buildProviderContext(op string, provider Provider, opts ContextFactoryOptions) (*ProviderContext, error) {
 	providerCtx, err := r.newContext(provider, ContextFactoryOptions{
-		DataSetMetadata: cloneStringMap(opts.DataSetMetadata),
-		WithCDN:         opts.WithCDN,
+		LegacyPieceStorageIDLimit: r.legacyPieceStorageIDLimit,
+		DataSetMetadata:           cloneStringMap(opts.DataSetMetadata),
+		WithCDN:                   opts.WithCDN,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: build context for provider %s: %w", op, provider.ID.String(), err)
@@ -547,6 +561,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts SelectUploadConte
 	}
 	requestedMetadata := dataSetMetadataFromOptions(opts)
 	withDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
+	withLegacyDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
 	withoutDataSet := make([]autoSelectCandidate, 0, min(count, len(providers)))
 	seenProviderIDs := make(map[string]struct{}, min(count, len(providers)))
 	for i := range providers {
@@ -563,7 +578,7 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts SelectUploadConte
 		var dataSetID, clientDataSetID *types.BigInt
 		var metadata map[string]string
 		if providerDataSets, ok := providersWithDetails[providerKey]; ok {
-			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata)
+			dataSetID, clientDataSetID, metadata = selectMatchingDetailedDataSet(provider.Info.ID, providerDataSets, requestedMetadata, r.legacyPieceStorageIDLimit)
 		} else if reuseDataSets && len(basicDataSets) > 0 {
 			dataSetID, clientDataSetID, metadata, err = r.selectMatchingDataSetWithWritable(ctx, provider.Info.ID, basicDataSets, requestedMetadata, true)
 			if err != nil {
@@ -577,13 +592,17 @@ func (r *ServiceResolver) autoSelect(ctx context.Context, opts SelectUploadConte
 			metadata:        metadata,
 		}
 		if dataSetID != nil {
-			withDataSet = append(withDataSet, candidate)
+			if isLegacyDataSet(*dataSetID, r.legacyPieceStorageIDLimit) {
+				withLegacyDataSet = append(withLegacyDataSet, candidate)
+			} else {
+				withDataSet = append(withDataSet, candidate)
+			}
 		} else {
 			candidate.metadata = requestedMetadata
 			withoutDataSet = append(withoutDataSet, candidate)
 		}
 	}
-	candidates := slices.Concat(withDataSet, withoutDataSet)
+	candidates := slices.Concat(withDataSet, withLegacyDataSet, withoutDataSet)
 	if !requireEndorsedPrimary {
 		return r.selectHealthyCandidates(ctx, candidates, count, ErrNoHealthyProviders, nil)
 	}
@@ -843,15 +862,43 @@ func (r *ServiceResolver) selectMatchingDataSetWithWritable(ctx context.Context,
 		matching = append(matching, dataSet)
 	}
 	slices.SortFunc(matching, func(a, b *warmstorage.DataSetInfo) int {
+		if aLegacy, bLegacy := isLegacyDataSet(a.DataSetID, r.legacyPieceStorageIDLimit), isLegacyDataSet(b.DataSetID, r.legacyPieceStorageIDLimit); aLegacy != bLegacy {
+			if aLegacy {
+				return 1
+			}
+			return -1
+		}
 		return a.DataSetID.Cmp(b.DataSetID)
 	})
 	if len(matching) == 0 {
 		return nil, nil, cloneStringMap(requestedMetadata), nil
 	}
-	if r.dataSetActivity == nil {
-		return r.selectFirstMatchingDataSet(ctx, matching, requestedMetadata, requireWritable)
+	selectTier := func(tier []*warmstorage.DataSetInfo) (*types.BigInt, *types.BigInt, map[string]string, error) {
+		if r.dataSetActivity == nil {
+			return r.selectFirstMatchingDataSet(ctx, tier, requestedMetadata, requireWritable)
+		}
+		return r.selectPreferredMatchingDataSet(ctx, tier, requestedMetadata, requireWritable)
 	}
-	return r.selectPreferredMatchingDataSet(ctx, matching, requestedMetadata, requireWritable)
+	if r.legacyPieceStorageIDLimit != 0 {
+		legacyStart := len(matching)
+		for i, dataSet := range matching {
+			if isLegacyDataSet(dataSet.DataSetID, r.legacyPieceStorageIDLimit) {
+				legacyStart = i
+				break
+			}
+		}
+		if legacyStart > 0 {
+			id, clientID, metadata, err := selectTier(matching[:legacyStart])
+			if err != nil || id != nil {
+				return id, clientID, metadata, err
+			}
+		}
+		matching = matching[legacyStart:]
+	}
+	if len(matching) == 0 {
+		return nil, nil, cloneStringMap(requestedMetadata), nil
+	}
+	return selectTier(matching)
 }
 
 func (r *ServiceResolver) selectFirstMatchingDataSet(ctx context.Context, matching []*warmstorage.DataSetInfo, requestedMetadata map[string]string, requireWritable bool) (*types.BigInt, *types.BigInt, map[string]string, error) {
@@ -1063,7 +1110,7 @@ func detailedCandidateProviders(dataSets []*warmstorage.EnhancedDataSetInfo, sel
 	return out
 }
 
-func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string) (*types.BigInt, *types.BigInt, map[string]string) {
+func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstorage.EnhancedDataSetInfo, requestedMetadata map[string]string, legacyLimit uint64) (*types.BigInt, *types.BigInt, map[string]string) {
 	var best *warmstorage.EnhancedDataSetInfo
 	var bestHasPieces bool
 	for _, dataSet := range dataSets {
@@ -1080,6 +1127,15 @@ func selectMatchingDetailedDataSet(providerID types.BigInt, dataSets []*warmstor
 			continue
 		}
 		hasPieces := dataSet.HasActivePieces
+		if best != nil {
+			candidateLegacy, bestLegacy := isLegacyDataSet(dataSet.DataSetID, legacyLimit), isLegacyDataSet(best.DataSetID, legacyLimit)
+			if candidateLegacy && !bestLegacy {
+				continue
+			}
+			if !candidateLegacy && bestLegacy {
+				best = nil
+			}
+		}
 		if best == nil ||
 			(hasPieces && !bestHasPieces) ||
 			(hasPieces == bestHasPieces && dataSet.DataSetID.Cmp(best.DataSetID) < 0) {
