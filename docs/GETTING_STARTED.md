@@ -95,6 +95,8 @@ emitted in the FWSS `PieceAdded` event and is not stored in contract state.
 See [`UploadOptions`](https://pkg.go.dev/github.com/strahe/synapse-go/storage#UploadOptions)
 for exclusions and progress callbacks.
 
+Callbacks for different providers may run concurrently; synchronize shared state.
+
 By default the primary copy goes to an endorsed provider. If none is available,
 `Upload` returns an error matching `storage.ErrNoEndorsedProvider`. Set
 `AllowUnendorsedPrimary: true` to choose the primary from all approved

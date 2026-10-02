@@ -308,20 +308,9 @@ func TestManagerUpload_CallbackPanicReachesCaller(t *testing.T) {
 			logs := &recordingSlogHandler{}
 			mgr := mustNewService(t, Options{Resolver: resolver, Logger: slog.New(logs)})
 			sentinel := &uploadCallbackPanic{callback: name}
-			var (
-				panicked         atomic.Bool
-				mu               sync.Mutex
-				calledAfterPanic []string
-			)
 			hit := func(callback string) {
 				if callback == name {
-					panicked.Store(true)
 					panic(sentinel)
-				}
-				if panicked.Load() {
-					mu.Lock()
-					calledAfterPanic = append(calledAfterPanic, callback)
-					mu.Unlock()
 				}
 			}
 			opts := &UploadOptions{
@@ -341,13 +330,50 @@ func TestManagerUpload_CallbackPanicReachesCaller(t *testing.T) {
 			if recovered != sentinel {
 				t.Fatalf("recovered %v, want the %s panic value", recovered, name)
 			}
-			// Concurrent commits can each start OnPiecesAdded before either
-			// panic is recorded; every other callback runs sequentially.
-			if name != "OnPiecesAdded" && len(calledAfterPanic) != 0 {
-				t.Fatalf("callbacks invoked after the panic: %v", calledAfterPanic)
-			}
 			assertCallbackPanicLogged(t, logs, name, "TestManagerUpload_CallbackPanicReachesCaller")
 		})
+	}
+}
+
+func TestUploadCallbackGuardPanicStopsNewCallbacksAndJoinsEnteredCallback(t *testing.T) {
+	ctx, guard := newUploadCallbackGuard(t.Context(), "upload", nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseCallback := sync.OnceFunc(func() { close(release) })
+	defer releaseCallback()
+	finished := make(chan struct{})
+	sentinel := &uploadCallbackPanic{callback: "OnPiecesAdded"}
+	var calls atomic.Int32
+	opts := guard.wrapUploadOptions(&UploadOptions{
+		OnCopyComplete: func(types.BigInt, cid.Cid) {
+			calls.Add(1)
+			close(entered)
+			<-release
+		},
+		OnPiecesAdded: func(string, types.BigInt, []SubmittedPiece) { panic(sentinel) },
+	})
+	go func() {
+		defer close(finished)
+		opts.OnCopyComplete(types.NewBigInt(1), cid.Undef)
+	}()
+	awaitPipeline(t, entered)
+	panicked := make(chan struct{})
+	go func() {
+		opts.OnPiecesAdded("tx", types.NewBigInt(2), nil)
+		close(panicked)
+	}()
+	awaitPipeline(t, panicked)
+	if !errors.Is(context.Cause(ctx), errUploadCallbackPanicked) {
+		t.Fatalf("callback panic did not cancel workers: %v", context.Cause(ctx))
+	}
+	opts.OnCopyComplete(types.NewBigInt(3), cid.Undef)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("callback calls=%d, want only the already entered callback", got)
+	}
+	releaseCallback()
+	awaitPipeline(t, finished)
+	if recovered := recoverPanic(guard.rethrow); recovered != sentinel {
+		t.Fatalf("recovered %v, want original panic %v", recovered, sentinel)
 	}
 }
 

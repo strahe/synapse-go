@@ -2,13 +2,11 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
-	"github.com/strahe/synapse-go/internal/redact"
 	"github.com/strahe/synapse-go/internal/safehttp"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/signer"
@@ -26,6 +23,8 @@ import (
 const maxSecondaryAttemptsDefault = 5
 
 const commitConcurrencyDefault = 4
+
+const pullConcurrencyDefault = 4
 
 // defaultDownloadTimeout is applied to the Service's HTTP client for
 // URL-based downloads.  It is long enough for multi-GiB files transferred
@@ -111,6 +110,7 @@ type Service struct {
 	source               string
 	defaultWithCDN       bool
 	maxSecondaryAttempts int
+	pullConcurrency      int
 	commitConcurrency    int
 	uploadBatcher        *UploadBatcher
 	downloadMaxBytes     int64
@@ -185,9 +185,14 @@ type Options struct {
 	// default of 5.
 	MaxSecondaryAttempts int
 
-	// CommitConcurrency caps the number of concurrent on-chain Commit RPCs
-	// issued across primary + secondary copies. Values <= 0 select the
-	// default of 4. The cap only matters when RequestedCopies exceeds it.
+	// PullConcurrency caps concurrent secondary presign/pull/replacement
+	// workflows within one upload. Values <= 0 select the default of 4.
+	// A value of 1 serializes secondary pulls but still overlaps them with commits.
+	PullConcurrency int
+
+	// CommitConcurrency caps concurrent direct commits, including confirmation
+	// waits, within one upload. Values <= 0 select the default of 4.
+	// With UploadBatcher, the coordinator controls submission concurrency instead.
 	CommitConcurrency int
 
 	// AllowPrivateNetworks disables the default SSRF protection applied to
@@ -298,6 +303,9 @@ func New(opts Options) (*Service, error) {
 	if opts.CommitConcurrency <= 0 {
 		opts.CommitConcurrency = commitConcurrencyDefault
 	}
+	if opts.PullConcurrency <= 0 {
+		opts.PullConcurrency = pullConcurrencyDefault
+	}
 	storageSigner := ifaceutil.NormalizeNil(opts.Signer)
 	payerAddr := opts.PayerAddress
 	if payerAddr == (common.Address{}) && storageSigner != nil {
@@ -332,6 +340,7 @@ func New(opts Options) (*Service, error) {
 		source:               opts.Source,
 		defaultWithCDN:       opts.DefaultWithCDN,
 		maxSecondaryAttempts: opts.MaxSecondaryAttempts,
+		pullConcurrency:      opts.PullConcurrency,
 		commitConcurrency:    opts.CommitConcurrency,
 		uploadBatcher:        opts.UploadBatcher,
 		downloadMaxBytes:     opts.DownloadMaxBytes,
@@ -478,433 +487,6 @@ func (s *Service) UploadToContexts(ctx context.Context, r io.Reader, contexts []
 		return nil, fmt.Errorf("%s: %w: nil reader", op, ErrInvalidArgument)
 	}
 	return s.uploadWithContexts(ctx, op, r, contexts, uploadOptionsFromUploadToContexts(opts), len(contexts), false, reservation)
-}
-
-func (s *Service) uploadWithContexts(ctx context.Context, op string, r io.Reader, contexts []StorageContext, opts *UploadOptions, requestedCopies int, allowReplacement bool, reservation *uploadReservation) (*UploadResult, error) {
-	ctx, guard := newUploadCallbackGuard(ctx, op, s.logger)
-	defer guard.rethrow()
-	opts = guard.wrapUploadOptions(opts)
-	explicitProviders := !allowReplacement
-	if s.uploadBatcher != nil {
-		for _, target := range contexts {
-			if err := s.uploadBatcher.validateTarget(target); err != nil {
-				return nil, fmt.Errorf("%s: %w", op, err)
-			}
-		}
-	}
-
-	primary := contexts[0]
-	secondaries := contexts[1:]
-
-	var primaryTransfer *uploadBatchTransfer
-	if s.uploadBatcher != nil {
-		var err error
-		primaryTransfer, err = reservation.beginTransfer(primary)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
-		}
-	}
-
-	storeOpts := &StoreOptions{}
-	if opts != nil {
-		storeOpts.PieceCID = opts.PieceCID
-		storeOpts.OnProgress = opts.OnProgress
-	}
-	storeResult, err := primary.Store(ctx, r, storeOpts)
-	if err != nil {
-		return nil, &StoreError{
-			ProviderID: primary.ProviderID(),
-			Endpoint:   redact.URLString(primary.ServiceURL()),
-			Cause:      uploadBatchContextError(ctx, err),
-		}
-	}
-
-	if opts != nil && opts.OnStored != nil {
-		opts.OnStored(primary.ProviderID(), storeResult.PieceCID)
-	}
-
-	pieceInputs := []PieceInput{{
-		PieceCID:      storeResult.PieceCID,
-		PieceMetadata: cloneMetadata(opts),
-	}}
-	var primaryTask *uploadBatchTask
-	var primaryEnqueueErr error
-	admittedBatchWork := false
-	if s.uploadBatcher != nil {
-		primaryTask, primaryEnqueueErr = s.uploadBatcher.enqueue(ctx, reservation.seq, primary, pieceInputs[0], primaryTransfer)
-		admittedBatchWork = primaryTask != nil
-	}
-
-	usedProviders := make(map[string]types.BigInt, len(contexts))
-	for _, c := range contexts {
-		id := c.ProviderID()
-		usedProviders[idconv.Key(id)] = id
-	}
-	var excluded []types.BigInt
-	if opts != nil {
-		excluded = opts.ExcludeProviderIDs
-	}
-
-	type successfulSecondary struct {
-		ctx       StorageContext
-		extraData []byte
-		task      *uploadBatchTask
-		err       error
-	}
-
-	var (
-		successfulSecondaries []successfulSecondary
-		failedAttempts        []FailedAttempt
-	)
-
-secondariesLoop:
-	for _, secondary := range secondaries {
-		if admittedBatchWork {
-			if err := uploadBatchContextError(ctx, nil); err != nil {
-				break secondariesLoop
-			}
-		}
-		current := secondary
-		maxAttempts := s.maxSecondaryAttempts
-		currentAttemptCounted := false
-		for attemptsUsed := 0; attemptsUsed < maxAttempts || currentAttemptCounted; {
-			if !currentAttemptCounted {
-				attemptsUsed++
-			}
-			currentAttemptCounted = false
-			var extraData []byte
-			var presignErr error
-			var transfer *uploadBatchTransfer
-			pullTarget := current
-			if s.uploadBatcher != nil {
-				transfer, presignErr = reservation.beginTransfer(current)
-				if presignErr == nil {
-					pullTarget, extraData, presignErr = s.uploadBatcher.authorizePull(ctx, current, pieceInputs)
-				}
-			} else {
-				extraData, presignErr = current.presignForCommit(ctx, pieceInputs)
-			}
-			if admittedBatchWork {
-				if err := uploadBatchContextError(ctx, nil); err != nil {
-					break secondariesLoop
-				}
-			}
-			if presignErr == nil {
-				var onProgress func(cid.Cid, PullStatus)
-				if opts != nil && opts.OnPullProgress != nil {
-					pullProviderID := current.ProviderID()
-					onProgress = func(pieceCID cid.Cid, status PullStatus) {
-						opts.OnPullProgress(pullProviderID, pieceCID, status)
-					}
-				}
-				pullResult, pullErr := pullTarget.pull(ctx, PullRequest{
-					Pieces:     []cid.Cid{storeResult.PieceCID},
-					From:       primary.PieceURL,
-					ExtraData:  extraData,
-					OnProgress: onProgress,
-				})
-				if admittedBatchWork {
-					if err := uploadBatchContextError(ctx, nil); err != nil {
-						break secondariesLoop
-					}
-				}
-				if pullErr == nil && pullResult != nil && pullResult.Status == PullStatusComplete {
-					if opts != nil && opts.OnCopyComplete != nil {
-						opts.OnCopyComplete(current.ProviderID(), storeResult.PieceCID)
-					}
-					secondary := successfulSecondary{
-						ctx:       current,
-						extraData: append([]byte(nil), extraData...),
-					}
-					if s.uploadBatcher != nil {
-						secondary.task, secondary.err = s.uploadBatcher.enqueue(ctx, reservation.seq, current, pieceInputs[0], transfer)
-						secondary.extraData = nil
-						if secondary.task != nil {
-							admittedBatchWork = true
-						}
-					}
-					successfulSecondaries = append(successfulSecondaries, secondary)
-					break
-				}
-				if pullErr == nil {
-					if pullResult == nil {
-						pullErr = errors.New("pull returned nil result")
-					} else {
-						pullErr = fmt.Errorf("pull status %s", pullResult.Status)
-					}
-				}
-				if opts != nil && opts.OnCopyFailed != nil {
-					opts.OnCopyFailed(current.ProviderID(), storeResult.PieceCID, pullErr)
-				}
-				failedAttempts = append(failedAttempts, FailedAttempt{
-					ProviderID: current.ProviderID(),
-					Role:       CopyRoleSecondary,
-					Stage:      CopyStagePull,
-					Err:        pullErr,
-					Explicit:   explicitProviders,
-				})
-			} else {
-				failedAttempts = append(failedAttempts, FailedAttempt{
-					ProviderID: current.ProviderID(),
-					Role:       CopyRoleSecondary,
-					Stage:      CopyStagePresign,
-					Err:        presignErr,
-					Explicit:   explicitProviders,
-				})
-			}
-			transfer.end()
-			if admittedBatchWork {
-				if err := uploadBatchContextError(ctx, nil); err != nil {
-					break secondariesLoop
-				}
-			}
-
-			if explicitProviders || attemptsUsed >= maxAttempts {
-				break
-			}
-			foundReplacement := false
-			for attemptsUsed < maxAttempts {
-				replacement, replErr := s.resolver.SelectReplacement(ctx, selectProviderContextOptionsForReplacement(opts, usedProviders))
-				if admittedBatchWork {
-					if err := uploadBatchContextError(ctx, nil); err != nil {
-						break secondariesLoop
-					}
-				}
-				if replErr != nil {
-					break
-				}
-				if err := s.validateUploadReplacement("storage.Service.Upload", replacement, usedProviders, excluded); err != nil {
-					var providerID types.BigInt
-					if !isNilStorageContext(replacement) {
-						providerID = replacement.ProviderID()
-						if !providerID.IsZero() {
-							usedProviders[idconv.Key(providerID)] = copyBigInt(providerID)
-						}
-					}
-					failedAttempts = append(failedAttempts, FailedAttempt{
-						ProviderID: providerID,
-						Role:       CopyRoleSecondary,
-						Stage:      CopyStagePresign,
-						Err:        err,
-						Explicit:   explicitProviders,
-					})
-					attemptsUsed++
-					continue
-				}
-				id := replacement.ProviderID()
-				usedProviders[idconv.Key(id)] = id
-				attemptsUsed++
-				if err := s.validateUploadContextsWritable(ctx, []StorageContext{replacement}); err != nil {
-					failedAttempts = append(failedAttempts, FailedAttempt{
-						ProviderID: replacement.ProviderID(),
-						Role:       CopyRoleSecondary,
-						Stage:      CopyStagePresign,
-						Err:        err,
-						Explicit:   explicitProviders,
-					})
-					continue
-				}
-				current = replacement
-				currentAttemptCounted = true
-				foundReplacement = true
-				break
-			}
-			if !foundReplacement {
-				break
-			}
-		}
-	}
-
-	type commitTarget struct {
-		ctx       StorageContext
-		role      CopyRole
-		extraData []byte
-		task      *uploadBatchTask
-		err       error
-	}
-	type commitOutcome struct {
-		result     *CommitResult
-		submission *CommitSubmission
-		err        error
-	}
-
-	targets := make([]commitTarget, 0, 1+len(successfulSecondaries))
-	targets = append(targets, commitTarget{
-		ctx:  primary,
-		role: CopyRolePrimary,
-		task: primaryTask,
-		err:  primaryEnqueueErr,
-	})
-	for _, secondary := range successfulSecondaries {
-		targets = append(targets, commitTarget{
-			ctx:       secondary.ctx,
-			role:      CopyRoleSecondary,
-			extraData: secondary.extraData,
-			task:      secondary.task,
-			err:       secondary.err,
-		})
-	}
-	if reservation != nil {
-		reservation.release()
-	}
-
-	outcomes := make([]commitOutcome, len(targets))
-	concurrency := s.commitConcurrency
-	if concurrency <= 0 {
-		concurrency = commitConcurrencyDefault
-	}
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	for i := range targets {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			target := targets[idx]
-			if target.err != nil {
-				outcomes[idx].err = target.err
-				return
-			}
-			var onBatchSubmitted func(string)
-			var onCommitSubmitted func(CommitSubmission)
-			if opts != nil && opts.OnPiecesAdded != nil {
-				commitPieceCID := storeResult.PieceCID
-				onBatchSubmitted = func(txHash string) {
-					opts.OnPiecesAdded(txHash, target.ctx.ProviderID(), []SubmittedPiece{{PieceCID: commitPieceCID}})
-				}
-				onCommitSubmitted = func(submission CommitSubmission) {
-					opts.OnPiecesAdded(submission.TransactionID, submission.ProviderID, []SubmittedPiece{{PieceCID: commitPieceCID}})
-				}
-			}
-			if target.task != nil {
-				outcomes[idx].result, outcomes[idx].submission, outcomes[idx].err = target.task.wait(ctx, onBatchSubmitted)
-				return
-			}
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				outcomes[idx].err = uploadBatchContextError(ctx, ctx.Err())
-				return
-			}
-			defer func() { <-sem }()
-			if err := ctx.Err(); err != nil {
-				outcomes[idx].err = uploadBatchContextError(ctx, err)
-				return
-			}
-			// Submit and wait separately so an accepted submission survives a
-			// failed wait.
-			submission, err := target.ctx.submitCommit(ctx, commitRequest{CommitRequest: CommitRequest{
-				Pieces:      pieceInputs,
-				ExtraData:   target.extraData,
-				OnSubmitted: onCommitSubmitted,
-			}})
-			if err == nil && submission == nil {
-				err = errors.New("submit commit returned nil submission")
-			}
-			if err == nil {
-				outcomes[idx].submission = submission
-				outcomes[idx].result, err = target.ctx.waitForCommit(ctx, *submission)
-			}
-			if err != nil {
-				outcomes[idx].err = uploadBatchContextError(ctx, err)
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	copies := make([]CopyResult, 0, len(targets))
-	var primaryCommitErr error
-	for i, target := range targets {
-		outcome := outcomes[i]
-		if outcome.err != nil {
-			if target.role == CopyRolePrimary {
-				primaryCommitErr = outcome.err
-			}
-			failedAttempts = append(failedAttempts, FailedAttempt{
-				ProviderID: target.ctx.ProviderID(),
-				Role:       target.role,
-				Stage:      CopyStageCommit,
-				Err:        outcome.err,
-				Explicit:   explicitProviders,
-				Submission: outcome.submission,
-			})
-			continue
-		}
-		if outcome.result == nil ||
-			!outcome.result.DataSet.valid() ||
-			!outcome.result.DataSet.ProviderID().Equal(target.ctx.ProviderID()) {
-			var err error
-			switch {
-			case outcome.result == nil:
-				err = errors.New("commit result missing confirmed identifiers: nil result")
-			case !outcome.result.DataSet.valid():
-				err = errors.New("commit result missing confirmed identifiers: zero dataSetID")
-			default:
-				err = errors.New("commit result data-set provider does not match target context")
-			}
-			if target.role == CopyRolePrimary {
-				primaryCommitErr = err
-			}
-			failedAttempts = append(failedAttempts, FailedAttempt{
-				ProviderID: target.ctx.ProviderID(),
-				Role:       target.role,
-				Stage:      CopyStageCommit,
-				Err:        err,
-				Explicit:   explicitProviders,
-				Submission: outcome.submission,
-			})
-			continue
-		}
-		if err := validateConfirmedPieceIDs(outcome.result.PieceIDs, len(pieceInputs)); err != nil {
-			if target.role == CopyRolePrimary {
-				primaryCommitErr = err
-			}
-			failedAttempts = append(failedAttempts, FailedAttempt{
-				ProviderID: target.ctx.ProviderID(),
-				Role:       target.role,
-				Stage:      CopyStageCommit,
-				Err:        err,
-				Explicit:   explicitProviders,
-				Submission: outcome.submission,
-			})
-			continue
-		}
-
-		if opts != nil && opts.OnPiecesConfirmed != nil && ctx.Err() == nil {
-			confirmed := make([]ConfirmedPiece, len(outcome.result.PieceIDs))
-			for j, id := range outcome.result.PieceIDs {
-				confirmed[j] = ConfirmedPiece{PieceID: id, PieceCID: storeResult.PieceCID}
-			}
-			opts.OnPiecesConfirmed(outcome.result.DataSet.DataSetID(), target.ctx.ProviderID(), confirmed)
-		}
-		copies = append(copies, CopyResult{
-			ProviderID:   target.ctx.ProviderID(),
-			DataSetID:    outcome.result.DataSet.DataSetID(),
-			PieceID:      outcome.result.PieceIDs[0],
-			Role:         target.role,
-			RetrievalURL: target.ctx.PieceURL(storeResult.PieceCID),
-			IsNewDataSet: outcome.result.IsNewDataSet,
-		})
-	}
-
-	if len(copies) == 0 {
-		return nil, &CommitError{
-			ProviderID:     primary.ProviderID(),
-			Endpoint:       redact.URLString(primary.ServiceURL()),
-			Cause:          primaryCommitErr,
-			PieceCID:       storeResult.PieceCID,
-			Size:           storeResult.Size,
-			FailedAttempts: failedAttempts,
-		}
-	}
-
-	return &UploadResult{
-		PieceCID:        storeResult.PieceCID,
-		Size:            storeResult.Size,
-		RequestedCopies: requestedCopies,
-		Complete:        len(copies) >= requestedCopies,
-		Copies:          copies,
-		FailedAttempts:  failedAttempts,
-	}, nil
 }
 
 func (s *Service) validateUploadContextsWritable(ctx context.Context, contexts []StorageContext) error {

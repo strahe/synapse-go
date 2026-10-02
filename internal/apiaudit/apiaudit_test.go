@@ -406,6 +406,8 @@ func TestStorageSignerContract(t *testing.T) {
 	defer batcher.Close()
 	_ = synapse.WithUploadBatching(storage.WithUploadIdleWait(0))
 	_ = synapse.WithoutUploadBatching()
+	_ = synapse.WithUploadPullConcurrency(1)
+	_ = storage.Options{PullConcurrency: 1}
 	_ = storage.Options{Signer: kms, UploadBatcher: batcher}
 	pdpClient, err := pdp.New("https://pdp.example.com")
 	if err != nil {

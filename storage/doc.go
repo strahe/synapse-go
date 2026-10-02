@@ -175,6 +175,20 @@
 // commit. Copies must be explicitly positive. If fewer targets are available,
 // the upload continues with those targets and reports the requested and actual
 // copy counts through [UploadResult]. Configure this path with [UploadOptions].
+// Primary commits overlap secondary pulls; each ready secondary enters commit
+// independently. [Options.PullConcurrency] limits secondary copy workflows per
+// upload. Root clients configure it with [synapse.WithUploadPullConcurrency].
+// [Options.CommitConcurrency] limits direct commits through confirmation;
+// batched submissions use the coordinator's own limit and waiting policy.
+//
+// Secondary callbacks and OnPiecesAdded may overlap across providers. Callbacks
+// must synchronize shared application state and return promptly. No global
+// callback order is guaranteed. OnPiecesConfirmed remains sequential, in target
+// order, after all upload workers finish, and is suppressed after cancellation.
+// After primary storage succeeds, cancellation preserves confirmed copies.
+// With at least one confirmed copy, it returns an UploadResult and nil error;
+// check UploadResult.Complete. With none confirmed, it returns a CommitError.
+// See [UploadOptions] for callback panic handling.
 //
 // For an exact preflight and upload, use the same context instances throughout:
 //
@@ -337,4 +351,5 @@
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner
 // [synapse.WithUploadBatching]: https://pkg.go.dev/github.com/strahe/synapse-go#WithUploadBatching
 // [synapse.WithoutUploadBatching]: https://pkg.go.dev/github.com/strahe/synapse-go#WithoutUploadBatching
+// [synapse.WithUploadPullConcurrency]: https://pkg.go.dev/github.com/strahe/synapse-go#WithUploadPullConcurrency
 package storage
