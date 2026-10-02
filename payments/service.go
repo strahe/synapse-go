@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	"github.com/strahe/synapse-go/internal/contracts/erc20"
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/ifaceutil"
@@ -52,20 +53,21 @@ type ApprovalLockupPeriodReader interface {
 // [sdktypes.WriteResult] whose Receipt is only populated when WithWait is
 // supplied.
 type Service struct {
-	backend     Backend
-	chainID     sdktypes.ChainID
-	filPayAddr  common.Address
-	warmStorage common.Address
-	usdfcToken  common.Address
-	filPayCall  *filpay.FilPayCaller
-	filPayWrite *filpay.FilPayTransactor
-	signer      signer.EVMSigner
-	nonces      NonceManager
-	permits     *permitCoordinator
-	lockups     ApprovalLockupPeriodReader
-	logger      *slog.Logger
-	receiptWait time.Duration
-	lifecycle   interface{ CheckClosed() error }
+	backend           Backend
+	chainID           sdktypes.ChainID
+	filPayAddr        common.Address
+	warmStorage       common.Address
+	usdfcToken        common.Address
+	filPayCall        *filpay.FilPayCaller
+	filPayWrite       *filpay.FilPayTransactor
+	maxMulticallCalls int
+	signer            signer.EVMSigner
+	nonces            NonceManager
+	permits           *permitCoordinator
+	lockups           ApprovalLockupPeriodReader
+	logger            *slog.Logger
+	receiptWait       time.Duration
+	lifecycle         interface{ CheckClosed() error }
 }
 
 // Options bundles the dependencies for constructing a Service.
@@ -86,6 +88,10 @@ type Options struct {
 	// that do not receive an explicit token argument. Optional; callers
 	// may always pass a token explicitly to DepositWithPermit.
 	USDFCTokenAddress common.Address
+	// MaxMulticallCalls limits rail detail calls per Multicall3 request in
+	// AccountSummary and TotalAccountFixedLockup. Zero uses 64; negative values
+	// return ErrInvalidArgument.
+	MaxMulticallCalls int
 	// Signer is used to sign transactions. Required for write methods;
 	// may be nil when the Service is used for reads only.
 	Signer signer.EVMSigner
@@ -123,6 +129,13 @@ func New(opts Options) (*Service, error) {
 	if (opts.FilPayAddress == common.Address{}) {
 		return nil, fmt.Errorf("payments.New: %w: zero FilPayAddress", ErrInvalidArgument)
 	}
+	if opts.MaxMulticallCalls < 0 {
+		return nil, fmt.Errorf("payments.New: %w: negative MaxMulticallCalls", ErrInvalidArgument)
+	}
+	maxCalls := opts.MaxMulticallCalls
+	if maxCalls == 0 {
+		maxCalls = iabi.DefaultMaxMulticallCalls
+	}
 	caller, err := filpay.NewFilPayCaller(opts.FilPayAddress, opts.Backend)
 	if err != nil {
 		return nil, fmt.Errorf("payments.New: bind caller: %w", err)
@@ -132,20 +145,21 @@ func New(opts Options) (*Service, error) {
 		return nil, fmt.Errorf("payments.New: bind transactor: %w", err)
 	}
 	s := &Service{
-		backend:     opts.Backend,
-		chainID:     opts.ChainID,
-		filPayAddr:  opts.FilPayAddress,
-		warmStorage: opts.WarmStorageAddress,
-		usdfcToken:  opts.USDFCTokenAddress,
-		filPayCall:  caller,
-		filPayWrite: writer,
-		signer:      opts.Signer,
-		lockups:     opts.ApprovalLockupPeriod,
-		logger:      opts.Logger,
-		nonces:      ifaceutil.NormalizeNil(opts.NonceManager),
-		permits:     newPermitCoordinator(),
-		receiptWait: opts.ReceiptWait,
-		lifecycle:   ifaceutil.NormalizeNil(opts.Lifecycle),
+		backend:           opts.Backend,
+		chainID:           opts.ChainID,
+		filPayAddr:        opts.FilPayAddress,
+		warmStorage:       opts.WarmStorageAddress,
+		usdfcToken:        opts.USDFCTokenAddress,
+		filPayCall:        caller,
+		filPayWrite:       writer,
+		maxMulticallCalls: maxCalls,
+		signer:            opts.Signer,
+		lockups:           opts.ApprovalLockupPeriod,
+		logger:            opts.Logger,
+		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
+		permits:           newPermitCoordinator(),
+		receiptWait:       opts.ReceiptWait,
+		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 	}
 	if s.nonces == nil && s.signer != nil {
 		s.nonces = txutil.NewNonceManager(opts.Backend, s.signer.EVMAddress())

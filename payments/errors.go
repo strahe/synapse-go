@@ -34,9 +34,9 @@ var ErrClosed = lifecycle.ErrClosed
 // preconditions that are independent of caller-supplied arguments.
 var ErrInvalidArgument = errors.New("payments: invalid argument")
 
-// ErrInvalidRailPage is returned by IterateAllRailsAsPayer/Payee when a
-// contract response has missing pagination values or a continuation offset
-// that does not advance. Match with errors.Is.
+// ErrInvalidRailPage is returned by AccountSummary, TotalAccountFixedLockup,
+// and IterateAllRailsAsPayer/Payee when a rail page cannot be safely traversed.
+// Match with errors.Is.
 var ErrInvalidRailPage = errors.New("payments: invalid rail page")
 
 // ErrPermitUnsupported is returned by DepositWithPermit and

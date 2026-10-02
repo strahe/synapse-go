@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +30,8 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/chain"
+	iabi "github.com/strahe/synapse-go/internal/abi"
+	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	provideridsetbind "github.com/strahe/synapse-go/internal/contracts/provideridset"
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
 	"github.com/strahe/synapse-go/internal/testutil"
@@ -827,6 +831,127 @@ func TestNew_WithMaxMulticallCalls(t *testing.T) {
 				if got := int(field.Int()); got != tt.service {
 					t.Fatalf("%s maxMulticallCalls = %d, want %d", name, got, tt.service)
 				}
+			}
+		})
+	}
+}
+
+func TestNew_PaymentsAccountSummaryBatchLimit(t *testing.T) {
+	for _, tc := range []struct {
+		configured int
+		batches    []int
+	}{
+		{0, []int{64, 1}},
+		{3, append(slices.Repeat([]int{3}, 21), 2)},
+		{65, []int{65}},
+	} {
+		t.Run(fmt.Sprint(tc.configured), func(t *testing.T) {
+			fp, err := filpaybind.FilPayMetaData.GetAbi()
+			if err != nil {
+				t.Fatal(err)
+			}
+			multicall := testutil.MulticallABI(t)
+			addresses := chain.Calibration.Addresses()
+			discovery := testutil.FWSSAddressResolutionResultHex(t, chain.Calibration)
+			rails := make([]filpaybind.FilecoinPayV1RailInfo, 65)
+			for i := range rails {
+				rails[i] = filpaybind.FilecoinPayV1RailInfo{RailId: big.NewInt(int64(i + 1)), EndEpoch: new(big.Int)}
+			}
+			page, err := fp.Methods["getRailsForPayerAndToken"].Outputs.Pack(rails, big.NewInt(65), big.NewInt(65))
+			if err != nil {
+				t.Fatal(err)
+			}
+			detail, err := fp.Methods["getRail"].Outputs.Pack(filpaybind.FilecoinPayV1RailView{
+				PaymentRate: new(big.Int), LockupPeriod: new(big.Int), LockupFixed: big.NewInt(1),
+				SettledUpTo: new(big.Int), EndEpoch: new(big.Int), CommissionRateBps: new(big.Int),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mu sync.Mutex
+			var batches []int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req jsonRPCReq
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				var result string
+				switch req.Method {
+				case "eth_chainId":
+					result = "0x4cb2f"
+				case "eth_blockNumber":
+					result = "0x64"
+				case "eth_call":
+					var params []json.RawMessage
+					if err := json.Unmarshal(req.Params, &params); err != nil || len(params) != 2 {
+						http.Error(w, "bad call params", http.StatusBadRequest)
+						return
+					}
+					var call struct {
+						To    common.Address `json:"to"`
+						Input hexutil.Bytes  `json:"input"`
+					}
+					if err := json.Unmarshal(params[0], &call); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					if call.To == addresses.Payments {
+						if string(params[1]) != `"0x64"` || !bytes.Equal(call.Input[:4], fp.Methods["getRailsForPayerAndToken"].ID) {
+							t.Errorf("unexpected payment call at %s", params[1])
+						}
+						result = hexutil.Encode(page)
+					} else {
+						args, err := multicall.Methods["aggregate3"].Inputs.Unpack(call.Input[4:])
+						if err != nil {
+							http.Error(w, err.Error(), http.StatusBadRequest)
+							return
+						}
+						calls := *abi.ConvertType(args[0], new([]iabi.Call3)).(*[]iabi.Call3)
+						if calls[0].Target != addresses.Payments {
+							result = discovery
+						} else {
+							if string(params[1]) != `"0x64"` {
+								t.Errorf("detail batch block=%s", params[1])
+							}
+							mu.Lock()
+							batches = append(batches, len(calls))
+							mu.Unlock()
+							results := make([]iabi.Result3, len(calls))
+							for i, call := range calls {
+								if call.Target != addresses.Payments || !call.AllowFailure || !bytes.Equal(call.CallData[:4], fp.Methods["getRail"].ID) {
+									t.Errorf("unexpected rail detail subcall: %+v", call)
+								}
+								results[i] = iabi.Result3{Success: true, ReturnData: detail}
+							}
+							out, err := multicall.Methods["aggregate3"].Outputs.Pack(results)
+							if err != nil {
+								http.Error(w, err.Error(), http.StatusInternalServerError)
+								return
+							}
+							result = hexutil.Encode(out)
+						}
+					}
+				default:
+					t.Errorf("unexpected RPC method: %s", req.Method)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%q}`, req.ID, result)
+			}))
+			defer srv.Close()
+			client, err := New(context.Background(), WithPrivateKey(testKey(t)), WithRPCURL(srv.URL), WithMaxMulticallCalls(tc.configured))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			total, err := client.Payments().TotalAccountFixedLockup(context.Background(), client.Address())
+			if err != nil || total == nil || total.Int64() != 65 {
+				t.Fatalf("fixed lockup=%v err=%v", total, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(batches, tc.batches) {
+				t.Fatalf("detail batches=%v, want %v", batches, tc.batches)
 			}
 		})
 	}

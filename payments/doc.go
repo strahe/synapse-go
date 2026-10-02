@@ -6,6 +6,11 @@
 // via the Filecoin Pay contract.
 // AccountSummary is the recommended entry point for payment account state;
 // TotalAccountFixedLockup reports fixed lockup held across payer rails.
+// Both methods pin every read to one block and include terminated rails awaiting
+// final settlement. Rail details require the chain's Multicall3 contract.
+// Options.MaxMulticallCalls bounds each detail batch (zero uses 64). Transient
+// RPC failures receive bounded retries within the caller's context; contract
+// and decoding errors are not retried. Any failure returns a nil result.
 //
 // The root synapse Client wires payments together with the other
 // write-capable services so transaction nonce allocation is coordinated for

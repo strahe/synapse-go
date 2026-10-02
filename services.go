@@ -91,6 +91,7 @@ func (c *Client) initServices() error {
 		FilPayAddress:        c.addresses.Payments,
 		WarmStorageAddress:   c.addresses.FWSS,
 		USDFCTokenAddress:    c.addresses.USDFC,
+		MaxMulticallCalls:    c.maxMulticallCalls,
 		Signer:               c.evmSigner,
 		ApprovalLockupPeriod: adapters.NewApprovalLockupPeriodReader(ws),
 		Logger:               c.logger,

@@ -12,6 +12,16 @@ import (
 	"github.com/strahe/synapse-go/internal/contracts/fwss"
 )
 
+// MulticallABI returns the aggregate3 ABI for encoding and inspecting test RPCs.
+func MulticallABI(t testing.TB) gethabi.ABI {
+	t.Helper()
+	a, err := gethabi.JSON(strings.NewReader(`[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`))
+	if err != nil {
+		t.Fatalf("parse multicall abi: %v", err)
+	}
+	return a
+}
+
 // FWSSAddressResolutionResultHex returns an ABI-encoded Multicall3 aggregate3
 // result for the FWSS address-resolution calls used by synapse.New tests.
 func FWSSAddressResolutionResultHex(t testing.TB, c chain.Chain) string {
@@ -28,10 +38,7 @@ func FWSSAddressResolutionResultHexFor(t testing.TB, addresses chain.ContractAdd
 	if err != nil {
 		t.Fatalf("parse fwss abi: %v", err)
 	}
-	multicallABI, err := gethabi.JSON(strings.NewReader(`[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`))
-	if err != nil {
-		t.Fatalf("parse multicall abi: %v", err)
-	}
+	multicallABI := MulticallABI(t)
 
 	pack := func(name string, addr common.Address) []byte {
 		t.Helper()

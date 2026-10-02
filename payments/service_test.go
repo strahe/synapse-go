@@ -17,8 +17,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/strahe/synapse-go/chain"
+	iabi "github.com/strahe/synapse-go/internal/abi"
 	erc20bind "github.com/strahe/synapse-go/internal/contracts/erc20"
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
+	"github.com/strahe/synapse-go/internal/testutil"
 	"github.com/strahe/synapse-go/internal/txutil"
 	"github.com/strahe/synapse-go/signer"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -29,8 +31,9 @@ import (
 type mockBackend struct {
 	mu sync.Mutex
 
-	filPayABI abi.ABI
-	erc20ABI  abi.ABI
+	filPayABI    abi.ABI
+	erc20ABI     abi.ABI
+	multicallABI abi.ABI
 
 	// replies keyed by (contract-address-hex, method-name)
 	replies map[string][]byte
@@ -72,15 +75,16 @@ func newMockBackend(t *testing.T) *mockBackend {
 		t.Fatal(err)
 	}
 	return &mockBackend{
-		filPayABI: *fp,
-		erc20ABI:  *ea,
-		replies:   map[string][]byte{},
-		errs:      map[string]error{},
-		balances:  map[common.Address]*big.Int{},
-		lastIn:    map[string][]byte{},
-		lastBlock: map[string]*big.Int{},
-		receipts:  map[common.Hash]*types.Receipt{},
-		nonces:    map[common.Address]uint64{},
+		filPayABI:    *fp,
+		erc20ABI:     *ea,
+		multicallABI: testutil.MulticallABI(t),
+		replies:      map[string][]byte{},
+		errs:         map[string]error{},
+		balances:     map[common.Address]*big.Int{},
+		lastIn:       map[string][]byte{},
+		lastBlock:    map[string]*big.Int{},
+		receipts:     map[common.Hash]*types.Receipt{},
+		nonces:       map[common.Address]uint64{},
 	}
 }
 
@@ -93,6 +97,10 @@ func (m *mockBackend) CodeAt(_ context.Context, _ common.Address, _ *big.Int) ([
 func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.callContractLocked(call, blockNumber)
+}
+
+func (m *mockBackend) callContractLocked(call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	if m.rejectNonZeroCallFrom && call.From != (common.Address{}) {
 		return nil, errors.New("non-zero eth_call sender")
 	}
@@ -101,6 +109,31 @@ func (m *mockBackend) CallContract(_ context.Context, call ethereum.CallMsg, blo
 	}
 	selector := [4]byte{call.Data[0], call.Data[1], call.Data[2], call.Data[3]}
 	toHex := call.To.Hex()
+	aggregate := m.multicallABI.Methods["aggregate3"]
+	if *call.To == chain.Mainnet.Addresses().Multicall3 && selector == [4]byte(aggregate.ID) {
+		key := toHex + ":aggregate3"
+		m.lastIn[key] = append([]byte(nil), call.Data...)
+		m.lastBlock[key] = copyBig(blockNumber)
+		if m.callReplyFn != nil {
+			if b, handled, err := m.callReplyFn(toHex, "aggregate3", call.Data); handled {
+				return b, err
+			}
+		}
+		values, err := aggregate.Inputs.Unpack(call.Data[4:])
+		if err != nil {
+			return nil, err
+		}
+		calls := *abi.ConvertType(values[0], new([]iabi.Call3)).(*[]iabi.Call3)
+		results := make([]iabi.Result3, len(calls))
+		for i, subcall := range calls {
+			data, err := m.callContractLocked(ethereum.CallMsg{To: &subcall.Target, Data: subcall.CallData}, blockNumber)
+			if err != nil && !subcall.AllowFailure {
+				return nil, err
+			}
+			results[i] = iabi.Result3{Success: err == nil, ReturnData: data}
+		}
+		return aggregate.Outputs.Pack(results)
+	}
 	for name, method := range m.filPayABI.Methods {
 		if [4]byte(method.ID) == selector {
 			key := toHex + ":" + name
@@ -435,7 +468,7 @@ func TestTotalAccountFixedLockup_IncludesTerminatedRails(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{
 		{RailId: big.NewInt(1), IsTerminated: false, EndEpoch: big.NewInt(0)},
 		{RailId: big.NewInt(2), IsTerminated: true, EndEpoch: big.NewInt(99)},
-	}, big.NewInt(0), big.NewInt(2))
+	}, big.NewInt(2), big.NewInt(2))
 	mb.setFilPayReply(t, filPayAddr, "getRail", testRailView(owner, big.NewInt(700)))
 
 	total, err := s.TotalAccountFixedLockup(context.Background(), owner)
@@ -457,7 +490,7 @@ func TestAccountSummary_ComputesBreakdown(t *testing.T) {
 	mb.setFilPayReply(t, filPayAddr, "getRailsForPayerAndToken", []filpaybind.FilecoinPayV1RailInfo{
 		{RailId: big.NewInt(1), IsTerminated: false, EndEpoch: big.NewInt(0)},
 		{RailId: big.NewInt(2), IsTerminated: true, EndEpoch: big.NewInt(99)},
-	}, big.NewInt(0), big.NewInt(2))
+	}, big.NewInt(2), big.NewInt(2))
 	mb.setFilPayReply(t, filPayAddr, "getRail", testRailView(owner, big.NewInt(100)))
 
 	summary, err := s.AccountSummary(context.Background(), owner)
