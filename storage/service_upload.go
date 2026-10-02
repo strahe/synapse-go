@@ -228,7 +228,8 @@ func (p *uploadPipeline) pullAttempt(index int) bool {
 		p.recordPullFailure(slot, target.ProviderID(), CopyStagePresign, err)
 		return false
 	}
-	if p.ctx.Err() != nil {
+	if err := p.ctx.Err(); err != nil {
+		p.recordPullFailure(slot, target.ProviderID(), CopyStagePull, err)
 		return false
 	}
 	var onProgress func(cid.Cid, PullStatus)
@@ -256,10 +257,7 @@ func (p *uploadPipeline) pullAttempt(index int) bool {
 		p.recordPullFailure(slot, target.ProviderID(), CopyStagePull, err)
 		return false
 	}
-	if p.ctx.Err() != nil {
-		return false
-	}
-	if p.opts != nil && p.opts.OnCopyComplete != nil {
+	if p.ctx.Err() == nil && p.opts != nil && p.opts.OnCopyComplete != nil {
 		p.opts.OnCopyComplete(target.ProviderID(), p.storeResult.PieceCID)
 	}
 	p.admitCopy(index, extraData, transfer)

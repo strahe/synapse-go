@@ -6,12 +6,16 @@ import (
 	"bytes"
 	"context"
 	crypto_rand "crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ipfs/go-cid"
 
 	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/internal/integrationtest"
@@ -169,6 +173,50 @@ func TestIntegration_UploadPipelines(t *testing.T) {
 					contexts[i] = bound
 				}
 			}
+			t.Run("cancel-after-completed-pull", func(t *testing.T) {
+				payload := make([]byte, 128*1024)
+				if _, err := crypto_rand.Read(payload); err != nil {
+					t.Fatal(err)
+				}
+				uploadCtx, cancelUpload := context.WithCancel(ctx)
+				defer cancelUpload()
+				var completedPulls, completedCallbacks int
+				result, err := client.Storage().UploadToContexts(uploadCtx, bytes.NewReader(payload), contexts[:2], &storage.UploadToContextsOptions{
+					OnPullProgress: func(_ types.BigInt, _ cid.Cid, status storage.PullStatus) {
+						if status == storage.PullStatusComplete {
+							completedPulls++
+							cancelUpload()
+						}
+					},
+					OnCopyComplete: func(types.BigInt, cid.Cid) { completedCallbacks++ },
+				})
+				remember(result)
+				var failures []storage.FailedAttempt
+				switch {
+				case err == nil && result != nil:
+					if result.Complete {
+						t.Fatalf("result=%+v, want incomplete upload after cancellation", result)
+					}
+					failures = result.FailedAttempts
+				case errors.Is(err, context.Canceled):
+					commitErr, ok := errors.AsType[*storage.CommitError](err)
+					if !ok {
+						t.Fatalf("error=%v, want CommitError", err)
+					}
+					failures = commitErr.FailedAttempts
+				default:
+					t.Fatalf("result=%+v error=%v, want cancellation diagnostics", result, err)
+				}
+				if completedPulls != 1 || completedCallbacks != 0 {
+					t.Fatalf("completed pulls=%d copy callbacks=%d, want completed pull and suppressed callback", completedPulls, completedCallbacks)
+				}
+				if !slices.ContainsFunc(failures, func(failure storage.FailedAttempt) bool {
+					return failure.ProviderID.Equal(contexts[1].ProviderID()) && failure.Stage == storage.CopyStageCommit &&
+						errors.Is(failure.Err, context.Canceled)
+				}) {
+					t.Fatalf("failures=%+v, want cancellation recorded for completed secondary pull", failures)
+				}
+			})
 		})
 	}
 }

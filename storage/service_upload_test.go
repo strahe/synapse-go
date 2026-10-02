@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/pdp"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -45,6 +50,168 @@ func awaitPipeline[T any](t *testing.T, events <-chan T) T {
 		t.Fatal("pipeline did not reach the expected barrier")
 		var zero T
 		return zero
+	}
+}
+
+type cancelAfterSigning struct {
+	signer.StorageSigner
+	cancel context.CancelFunc
+}
+
+func (s cancelAfterSigning) SignHash(hash []byte) ([]byte, error) {
+	signature, err := s.StorageSigner.SignHash(hash)
+	if err == nil {
+		s.cancel()
+	}
+	return signature, err
+}
+
+func TestUploadCancellationAfterPresign(t *testing.T) {
+	contexts, piece := pipelineTestTargets(t, 2)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request after cancellation", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	pdpClient, err := pdp.New(server.URL, pdp.WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := serviceTestIdentity()
+	provider, err := NewProviderContext(Provider{ID: types.NewBigInt(2), ServiceURL: server.URL}, pdpClient,
+		cancelAfterSigning{StorageSigner: mustTestSigner(t), cancel: cancel},
+		WithPayer(identity.Payer), WithChainID(identity.ChainID), WithRecordKeeper(identity.RecordKeeper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := contexts[1].DataSetRef()
+	contexts[1], err = provider.ForDataSet(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := mustNewService(t, Options{})
+	result, err := service.UploadToContexts(ctx, bytes.NewReader([]byte("data")), contexts, nil)
+	var failures []FailedAttempt
+	switch {
+	case err == nil && result != nil:
+		failures = result.FailedAttempts
+	case errors.Is(err, context.Canceled):
+		commitErr, ok := errors.AsType[*CommitError](err)
+		if !ok {
+			t.Fatalf("error=%v, want CommitError", err)
+		}
+		failures = commitErr.FailedAttempts
+	default:
+		t.Fatalf("result=%+v error=%v, want cancellation diagnostics", result, err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("HTTP requests=%d, want no pull or commit after cancellation", requests.Load())
+	}
+	if !slices.ContainsFunc(failures, func(failure FailedAttempt) bool {
+		return failure.ProviderID.Equal(contexts[1].ProviderID()) && failure.Role == CopyRoleSecondary &&
+			failure.Stage == CopyStagePull && failure.Explicit && errors.Is(failure.Err, context.Canceled)
+	}) {
+		t.Fatalf("failures=%+v, want canceled secondary pull after successful presign for %s", failures, piece.PieceCID)
+	}
+}
+
+func TestUploadCancellationAfterCompletedPull(t *testing.T) {
+	for _, batched := range []bool{false, true} {
+		t.Run(fmt.Sprintf("batched=%t", batched), func(t *testing.T) {
+			contexts, piece := pipelineTestTargets(t, 2)
+			primary := contexts[0].(*fakeUploadContext)
+			primary.pieceURL = "https://primary.example.com/piece/" + piece.PieceCID.String()
+			primaryConfirmed := make(chan struct{})
+			waitCommit := primary.waitCommitFn
+			primary.waitCommitFn = func(ctx context.Context, submission CommitSubmission) (*CommitResult, error) {
+				defer close(primaryConfirmed)
+				return waitCommit(ctx, submission)
+			}
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/pdp/piece/pull" {
+					http.Error(w, "unexpected secondary commit", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := fmt.Fprintf(w, `{"status":"complete","pieces":[{"pieceCid":%q,"status":"complete"}]}`, piece.PieceCID.String()); err != nil {
+					t.Errorf("write pull response: %v", err)
+				}
+			}))
+			defer server.Close()
+			pdpClient, err := pdp.New(server.URL, pdp.WithHTTPClient(server.Client()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := serviceTestIdentity()
+			provider, err := NewProviderContext(Provider{ID: types.NewBigInt(2), ServiceURL: server.URL}, pdpClient,
+				mustTestSigner(t), WithPayer(identity.Payer), WithChainID(identity.ChainID), WithRecordKeeper(identity.RecordKeeper))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, _ := contexts[1].DataSetRef()
+			contexts[1], err = provider.ForDataSet(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := Options{}
+			if batched {
+				opts.UploadBatcher = mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0))
+			}
+			service := mustNewService(t, opts)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			pullCompleted, releaseProgress := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseProgress) })
+			defer release()
+			var completeCallbacks atomic.Int32
+			type outcome struct {
+				result *UploadResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				result, err := service.UploadToContexts(ctx, bytes.NewReader([]byte("data")), contexts, &UploadToContextsOptions{
+					OnPullProgress: func(_ types.BigInt, _ cid.Cid, status PullStatus) {
+						if status == PullStatusComplete {
+							close(pullCompleted)
+							<-releaseProgress
+							cancel()
+						}
+					},
+					OnCopyComplete: func(types.BigInt, cid.Cid) { completeCallbacks.Add(1) },
+				})
+				done <- outcome{result: result, err: err}
+			}()
+			awaitPipeline(t, pullCompleted)
+			awaitPipeline(t, primaryConfirmed)
+			if batched {
+				waitForNoUploadBatchFlights(t, opts.UploadBatcher)
+			}
+			release()
+			got := awaitPipeline(t, done)
+			if got.err != nil || got.result == nil || got.result.Complete || got.result.RequestedCopies != 2 ||
+				len(got.result.Copies) != 1 || !got.result.Copies[0].ProviderID.Equal(primary.ProviderID()) {
+				t.Fatalf("result=%+v error=%v, want incomplete confirmed primary result", got.result, got.err)
+			}
+			failures := got.result.FailedAttempts
+			if len(failures) != 1 || !failures[0].ProviderID.Equal(contexts[1].ProviderID()) ||
+				failures[0].Role != CopyRoleSecondary || failures[0].Stage != CopyStageCommit ||
+				!failures[0].Explicit || !errors.Is(failures[0].Err, context.Canceled) {
+				t.Fatalf("failures=%+v, want canceled secondary commit after completed pull", failures)
+			}
+			if requests.Load() != 1 || completeCallbacks.Load() != 0 {
+				t.Fatalf("HTTP requests=%d complete callbacks=%d, want one pull and no callback after cancellation",
+					requests.Load(), completeCallbacks.Load())
+			}
+			if batched {
+				assertNoUploadBatchTransfers(t, opts.UploadBatcher)
+			}
+		})
 	}
 }
 

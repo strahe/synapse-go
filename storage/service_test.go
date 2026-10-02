@@ -725,8 +725,8 @@ func TestUploadToContextsKeepsCommitResultWhenCommitIgnoresCanceledContext(t *te
 	if err != nil {
 		t.Fatalf("UploadToContexts error=%v, want confirmed copy", err)
 	}
-	if result == nil || len(result.Copies) != 1 || !result.Copies[0].PieceID.Equal(types.NewBigInt(2001)) {
-		t.Fatalf("result=%+v, want one confirmed copy", result)
+	if result == nil || !result.Complete || len(result.Copies) != 1 || !result.Copies[0].PieceID.Equal(types.NewBigInt(2001)) {
+		t.Fatalf("result=%+v, want complete upload with one confirmed copy", result)
 	}
 }
 
