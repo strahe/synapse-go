@@ -185,10 +185,10 @@
 // must synchronize shared application state and return promptly. No global
 // callback order is guaranteed. OnPiecesConfirmed remains sequential, in target
 // order, after all upload workers finish, and is suppressed after cancellation.
-// Cancellation preserves confirmed copies: at least one yields a partial
-// UploadResult with nil error; no confirmed copies yields a CommitError.
-// A callback panic cancels the caller's remaining work and wait, then rethrows
-// on the caller after workers exit. It does not retract coordinator-owned work.
+// After primary storage succeeds, cancellation preserves confirmed copies.
+// With at least one confirmed copy, it returns an UploadResult and nil error;
+// check UploadResult.Complete. With none confirmed, it returns a CommitError.
+// See [UploadOptions] for callback panic handling.
 //
 // For an exact preflight and upload, use the same context instances throughout:
 //
