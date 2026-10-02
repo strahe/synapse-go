@@ -412,7 +412,6 @@ func TestPullPieces_Accepts201And202(t *testing.T) {
 	sourceURL := fmt.Sprintf("https://sp.example.com/piece/%s", pc.String())
 
 	for _, code := range []int{http.StatusCreated, http.StatusAccepted} {
-		code := code
 		t.Run(fmt.Sprintf("HTTP%d", code), func(t *testing.T) {
 			c, _ := pullTestServer(t, func(_ pullPiecesBody, _ int) (int, pullResponse) {
 				return code, pullResponse{
@@ -455,8 +454,11 @@ func TestPullPieces_TooManyPieces(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected req %s %s", r.Method, r.URL.Path)
 	}))
-	reqPieces := make([]PullPieceInput, MaxAddPiecesBatchSize+1)
+	c.legacyPieceStorageIDLimit = 10
+	id := types.NewBigInt(5)
+	reqPieces := make([]PullPieceInput, MaxLegacyAddPiecesBatchSize+1)
 	_, err := c.PullPieces(context.Background(), PullRequest{
+		DataSetID:    &id,
 		RecordKeeper: common.HexToAddress("0xabc"),
 		ExtraData:    []byte{0x01},
 		Pieces:       reqPieces,

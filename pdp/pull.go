@@ -82,9 +82,13 @@ type pullPieceWireItem struct {
 // The endpoint is idempotent: calling again with the same extraData returns
 // the status of the existing pull request rather than creating a duplicate.
 // This makes it safe to poll for status using repeated calls. Requests
-// exceeding MaxAddPiecesBatchSize or MaxAddPiecesMessageSize are rejected
-// before submission.
+// exceeding MaxAddPiecesMessageSize are rejected before submission. Existing
+// legacy data sets also have a MaxLegacyAddPiecesBatchSize count limit when
+// WithLegacyPieceStorageIDLimit configures their deployment's cutoff.
 func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, error) {
+	if err := c.validateLegacyAddPiecesBatch("pdp.PullPieces", req.DataSetID, len(req.Pieces)); err != nil {
+		return nil, err
+	}
 	if err := validateAddPiecesBatch("pdp.PullPieces", len(req.Pieces)); err != nil {
 		return nil, err
 	}

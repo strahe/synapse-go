@@ -31,6 +31,17 @@ func TestChainID_Unknown(t *testing.T) {
 	}
 }
 
+func TestLegacyPieceStorageIDLimit(t *testing.T) {
+	for _, test := range []struct {
+		network Chain
+		want    uint64
+	}{{Mainnet, 1559}, {Calibration, 32331}, {Chain(99), 0}} {
+		if got := test.network.LegacyPieceStorageIDLimit(); got != test.want {
+			t.Errorf("%s cutoff=%d want=%d", test.network, got, test.want)
+		}
+	}
+}
+
 func TestBigChainID(t *testing.T) {
 	want := big.NewInt(314)
 	if got := Mainnet.BigChainID(); got.Cmp(want) != 0 {

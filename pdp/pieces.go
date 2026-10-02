@@ -20,14 +20,20 @@ import (
 )
 
 const (
-	// MaxAddPiecesBatchSize is the maximum number of pieces accepted by
-	// add-pieces style PDP requests.
+	// MaxAddPiecesBatchSize is the former temporary piece-count limit.
+	//
+	// Deprecated: use MaxLegacyAddPiecesBatchSize for legacy data sets and
+	// MaxAddPiecesMessageSize for all requests.
 	MaxAddPiecesBatchSize = 40
+	// MaxLegacyAddPiecesBatchSize is the piece-count limit for legacy data sets.
+	MaxLegacyAddPiecesBatchSize = 80
 	// MaxAddPiecesMessageSize is the maximum encoded PDPVerifier.addPieces
 	// calldata size accepted by the Filecoin message path.
 	MaxAddPiecesMessageSize = 64*1024 - 288
-	// MaxDeletePiecesBatchSize is the maximum number of pieces accepted by a
-	// batch deletion request.
+	// MaxDeletePiecesBatchSize is the former deletion request count limit.
+	//
+	// Deprecated: deletion requests have no fixed count limit. Contract and
+	// transaction limits still apply.
 	MaxDeletePiecesBatchSize = 35
 )
 
@@ -64,9 +70,13 @@ type AddPiecesResult struct {
 // caller-provided EIP-712 signed data encoded as the PDP provider expects.
 // Piece CIDs must be unique within one request after PieceCIDv2-to-v1
 // normalization; the same CID may be used again in a later request. Requests
-// exceeding MaxAddPiecesBatchSize or MaxAddPiecesMessageSize are rejected
-// before submission.
+// exceeding MaxAddPiecesMessageSize are rejected before submission. When the
+// configured cutoff identifies a legacy data set, MaxLegacyAddPiecesBatchSize
+// also applies.
 func (c *Client) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []AddPieceInput, extraData []byte) (*AddPiecesResult, error) {
+	if err := c.validateLegacyAddPiecesBatch("pdp.AddPieces", &dataSetID, len(pieces)); err != nil {
+		return nil, err
+	}
 	if err := validateAddPieceInputs("pdp.AddPieces", pieces); err != nil {
 		return nil, err
 	}
@@ -278,10 +288,6 @@ func validateDeletePieceIDs(op string, pieceIDs []types.BigInt) ([]uint64, error
 	if len(pieceIDs) == 0 {
 		return nil, fmt.Errorf("%s: no pieces provided", op)
 	}
-	if len(pieceIDs) > MaxDeletePiecesBatchSize {
-		return nil, fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, len(pieceIDs), MaxDeletePiecesBatchSize)
-	}
-
 	numericIDs := make([]uint64, len(pieceIDs))
 	seen := make(map[uint64]int, len(pieceIDs))
 	for i, pieceID := range pieceIDs {
@@ -302,8 +308,12 @@ func validateAddPiecesBatch(op string, count int) error {
 	if count == 0 {
 		return fmt.Errorf("%s: no pieces provided", op)
 	}
-	if count > MaxAddPiecesBatchSize {
-		return fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, count, MaxAddPiecesBatchSize)
+	return nil
+}
+
+func (c *Client) validateLegacyAddPiecesBatch(op string, id *types.BigInt, count int) error {
+	if id != nil && c.legacyPieceStorageIDLimit != 0 && id.Cmp(types.NewBigInt(c.legacyPieceStorageIDLimit)) < 0 && count > MaxLegacyAddPiecesBatchSize {
+		return fmt.Errorf("%s: %w: got %d, max %d", op, ErrTooManyPieces, count, MaxLegacyAddPiecesBatchSize)
 	}
 	return nil
 }

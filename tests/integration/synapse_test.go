@@ -410,6 +410,22 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		}
 		t.Logf("CDN context download verified through FilBeam: cid=%s dataset=%s", result.PieceCID, result.Copies[0].DataSetID)
 
+		recorder.Reset()
+		byID, err := client.Storage().Download(cctx, result.PieceCID, &storage.DownloadOptions{DataSetID: &downloadDataSetID})
+		if err != nil {
+			t.Fatalf("data-set-ID download: %v", err)
+		}
+		got, readErr = io.ReadAll(byID)
+		_ = byID.Close()
+		requests = recorder.Snapshot()
+		if readErr != nil || !bytes.Equal(got, data) {
+			t.Fatalf("data-set-ID download bytes=%d error=%v", len(got), readErr)
+		}
+		if !hasFilBeamMethod(requests, http.MethodHead) || !hasFilBeamMethod(requests, http.MethodGet) {
+			t.Fatalf("data-set-ID download did not use FilBeam HEAD+GET: %+v", requests)
+		}
+		t.Logf("data-set-ID CDN download verified: dataset=%s", downloadDataSetID)
+
 		t.Logf("start CDNContextDownload TerminateDataSet(%s)", cleanupDataSetID)
 		termRes, err := client.WarmStorage().TerminateDataSet(cctx, cleanupDataSetID, warmstorage.WithWait(txWaitTimeout))
 		if err != nil {

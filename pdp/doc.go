@@ -24,8 +24,8 @@
 // Non-success PDP HTTP responses surface *HTTPError. Use
 // errors.AsType[*pdp.HTTPError] to inspect status code, response body, and
 // Retry-After.
-// A full piece-deletion queue additionally matches ErrTooManyPiecesQueued;
-// the wrapped *HTTPError remains available for Retry-After handling.
+// Legacy providers reporting a full deletion queue additionally match
+// ErrTooManyPiecesQueued; the wrapped *HTTPError remains available.
 //
 // POST and DELETE requests are executed exactly once unless an endpoint
 // documents server-side idempotency. The PullPieces POST is retried for
@@ -38,10 +38,22 @@
 // # Add-pieces limits
 //
 // AddPieces, CreateDataSetAndAddPieces, and PullPieces reject requests whose
-// encoded PDPVerifier.addPieces calldata exceeds MaxAddPiecesMessageSize. The
-// existing MaxAddPiecesBatchSize count limit is enforced separately. Use
-// EstimateAddPiecesMessageSize when constructing a batch; these methods do not
-// split oversized requests automatically.
+// encoded PDPVerifier.addPieces calldata exceeds MaxAddPiecesMessageSize
+// (65,248 bytes). Metadata and signatures consume part of that budget. Existing
+// legacy data sets also have an 80-piece limit, MaxLegacyAddPiecesBatchSize.
+// Configure WithLegacyPieceStorageIDLimit with the chain's first compact data
+// set ID; zero (the standalone default) skips the legacy count check. New and
+// compact data sets have no fixed piece-count limit. MaxAddPiecesBatchSize is
+// deprecated and no longer enforced. Use EstimateAddPiecesMessageSize when
+// constructing a batch; these methods do not split oversized requests.
+//
+// # Deletion requests
+//
+// SchedulePieceDeletions has no fixed piece-count limit. Contract, gas, and
+// transaction-size limits still apply. Each request is sent once and is not
+// split or retried. MaxDeletePiecesBatchSize is deprecated and unused by SDK
+// validation. Piece IDs must be unique and within 0..math.MaxInt64; callers
+// provide extraData signed for the complete ordered batch.
 //
 // # Status URLs
 //

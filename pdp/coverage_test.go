@@ -443,7 +443,6 @@ func TestSchedulePieceDeletions_Validation(t *testing.T) {
 		wantText  string
 	}{
 		{name: "empty", extraData: []byte{1}, wantText: "no pieces"},
-		{name: "too many", pieceIDs: makeBigInts(MaxDeletePiecesBatchSize + 1), extraData: []byte{1}, wantIs: ErrTooManyPieces},
 		{name: "duplicate", pieceIDs: []types.BigInt{types.NewBigInt(1), types.NewBigInt(1)}, extraData: []byte{1}, wantText: "duplicate pieceID"},
 		{name: "above Curio range", pieceIDs: []types.BigInt{tooLarge}, extraData: []byte{1}, wantText: "outside Curio's supported range"},
 		{name: "empty extraData", pieceIDs: []types.BigInt{types.NewBigInt(1)}, wantText: "empty extraData"},
@@ -496,11 +495,16 @@ func TestSchedulePieceDeletions_HTTP429Classification(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
 			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
 				w.Header().Set("Retry-After", "30")
 				http.Error(w, tt.body, http.StatusTooManyRequests)
 			}))
 			_, err := c.SchedulePieceDeletions(context.Background(), types.NewBigInt(5), []types.BigInt{types.NewBigInt(1)}, []byte{1})
+			if calls != 1 {
+				t.Fatalf("DELETE requests=%d want 1", calls)
+			}
 			if got := errors.Is(err, ErrTooManyPiecesQueued); got != tt.wantQueueFull {
 				t.Fatalf("errors.Is(ErrTooManyPiecesQueued)=%t want %t: %v", got, tt.wantQueueFull, err)
 			}

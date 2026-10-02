@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
+	"github.com/strahe/synapse-go/chain"
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
@@ -111,16 +112,18 @@ type DataSetContext struct {
 // contextCore contains the immutable configuration shared by provider and
 // data-set contexts. Mutable inputs are copied before a core is published.
 type contextCore struct {
-	provider      Provider
-	client        PDPProviderClient
-	signer        signer.StorageSigner
-	payer         common.Address
-	chainID       types.ChainID
-	recordKeeper  common.Address
-	withCDN       bool
-	cdnRetriever  CDNRetriever
-	logger        *slog.Logger
-	uploadBatcher *UploadBatcher
+	legacyPieceStorageIDLimit    uint64
+	legacyPieceStorageIDLimitSet bool
+	provider                     Provider
+	client                       PDPProviderClient
+	signer                       signer.StorageSigner
+	payer                        common.Address
+	chainID                      types.ChainID
+	recordKeeper                 common.Address
+	withCDN                      bool
+	cdnRetriever                 CDNRetriever
+	logger                       *slog.Logger
+	uploadBatcher                *UploadBatcher
 
 	dataSetMetadata map[string]string
 
@@ -173,8 +176,27 @@ func NewProviderContext(provider Provider, client PDPProviderClient, storageSign
 		}
 	}
 	core.dataSetMetadata = cloneStringMap(core.dataSetMetadata)
+	if !core.legacyPieceStorageIDLimitSet {
+		if network, err := chain.FromID(int64(core.chainID)); err == nil {
+			core.legacyPieceStorageIDLimit = network.LegacyPieceStorageIDLimit()
+		}
+	}
 	return &ProviderContext{core: core}, nil
 }
+
+// WithLegacyPieceStorageIDLimit overrides the first compact data set ID.
+// Without this option, known ChainIDs supply their deployment's cutoff.
+// Explicit zero skips legacy piece-count checks. The last option wins.
+func WithLegacyPieceStorageIDLimit(limit uint64) ContextOption {
+	return func(c *contextCore) {
+		c.legacyPieceStorageIDLimit = limit
+		c.legacyPieceStorageIDLimitSet = true
+	}
+}
+
+func (c *ProviderContext) legacyPieceStorageLimit() uint64 { return c.core.legacyPieceStorageIDLimit }
+
+func (c *DataSetContext) legacyPieceStorageLimit() uint64 { return c.core.legacyPieceStorageIDLimit }
 
 // NewDataSetContext creates an immutable context bound to ref. storageSigner
 // and [WithPayer] have the same independent signer and payer semantics as
@@ -416,20 +438,22 @@ func (c *contextCore) presignForCommit(
 	requestedClientDataSetID *types.BigInt,
 ) ([]byte, *types.BigInt, error) {
 	return presignCommitAuthorization(ctx, op, commitAuthorization{
-		identity:        c.identity(),
-		provider:        c.providerInfo(),
-		signer:          c.signer,
-		dataSetMetadata: c.dataSetMetadata,
-		withCDN:         c.withCDN,
+		identity:                  c.identity(),
+		provider:                  c.providerInfo(),
+		signer:                    c.signer,
+		dataSetMetadata:           c.dataSetMetadata,
+		withCDN:                   c.withCDN,
+		legacyPieceStorageIDLimit: c.legacyPieceStorageIDLimit,
 	}, ref, pieces, requestedClientDataSetID)
 }
 
 type commitAuthorization struct {
-	identity        ContextIdentity
-	provider        Provider
-	signer          signer.StorageSigner
-	dataSetMetadata map[string]string
-	withCDN         bool
+	legacyPieceStorageIDLimit uint64
+	identity                  ContextIdentity
+	provider                  Provider
+	signer                    signer.StorageSigner
+	dataSetMetadata           map[string]string
+	withCDN                   bool
 }
 
 func presignCommitAuthorization(
@@ -440,6 +464,9 @@ func presignCommitAuthorization(
 	pieces []PieceInput,
 	requestedClientDataSetID *types.BigInt,
 ) ([]byte, *types.BigInt, error) {
+	if err := validateLegacyAddPiecesBatch(op, ref, auth.legacyPieceStorageIDLimit, len(pieces)); err != nil {
+		return nil, nil, err
+	}
 	pieceCIDs, err := validateCommitPieces(op, pieces)
 	if err != nil {
 		return nil, nil, err
@@ -580,7 +607,7 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 	if len(req.Pieces) == 0 {
 		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
 	}
-	if err := validateAddPiecesBatch(op, len(req.Pieces)); err != nil {
+	if err := validateLegacyAddPiecesBatch(op, ref, c.legacyPieceStorageIDLimit, len(req.Pieces)); err != nil {
 		return nil, err
 	}
 	if req.From == nil {
@@ -864,9 +891,13 @@ func metadataEntries(metadata map[string]string, maxKeys int) ([]ityped.Metadata
 	return out, nil
 }
 
-func validateAddPiecesBatch(op string, count int) error {
-	if count > pdp.MaxAddPiecesBatchSize {
-		return fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, count, pdp.MaxAddPiecesBatchSize)
+func isLegacyDataSet(id types.BigInt, limit uint64) bool {
+	return limit != 0 && id.Cmp(types.NewBigInt(limit)) < 0
+}
+
+func validateLegacyAddPiecesBatch(op string, ref *DataSetRef, limit uint64, count int) error {
+	if ref != nil && isLegacyDataSet(ref.dataSetID, limit) && count > pdp.MaxLegacyAddPiecesBatchSize {
+		return fmt.Errorf("%s: %w: %w: got %d, max %d", op, ErrInvalidArgument, pdp.ErrTooManyPieces, count, pdp.MaxLegacyAddPiecesBatchSize)
 	}
 	return nil
 }

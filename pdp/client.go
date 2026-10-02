@@ -43,16 +43,23 @@ const MaxControlResponseBytes = 16 << 20 // 16 MiB
 // Client is a thin HTTP client for a single PDP provider service URL.
 // Safe for concurrent use.
 type Client struct {
-	baseURL      *url.URL
-	httpClient   *http.Client
-	userAgent    string
-	logger       *slog.Logger
-	maxRetries   int                                        // 0 = disabled; set to DefaultMaxRetries in New()
-	retryDelayFn func(err error, attempt int) time.Duration // nil = httpRetryDelay
+	legacyPieceStorageIDLimit uint64
+	baseURL                   *url.URL
+	httpClient                *http.Client
+	userAgent                 string
+	logger                    *slog.Logger
+	maxRetries                int                                        // 0 = disabled; set to DefaultMaxRetries in New()
+	retryDelayFn              func(err error, attempt int) time.Duration // nil = httpRetryDelay
 }
 
 // Option configures a Client. Nil options are ignored.
 type Option func(*Client)
+
+// WithLegacyPieceStorageIDLimit sets the first compact data set ID for this
+// deployment. Zero (the default) skips the legacy piece-count check.
+func WithLegacyPieceStorageIDLimit(limit uint64) Option {
+	return func(c *Client) { c.legacyPieceStorageIDLimit = limit }
+}
 
 // WithHTTPClient supplies a custom *http.Client. Useful to inject timeouts,
 // custom transports, or test doubles.
