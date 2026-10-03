@@ -1067,7 +1067,7 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 
 	dsID := types.NewBigInt(404)
 	replacementClient := &fakePDPProviderClient{
-		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
+		waitForPullFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			if req.DataSetID == nil || !req.DataSetID.Equal(dsID) {
 				t.Fatalf("pull dataSetID=%v want %s", req.DataSetID, dsID.String())
 			}

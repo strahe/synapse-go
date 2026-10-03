@@ -77,9 +77,9 @@ func TestContextBatchLimitsBeforeSideEffects(t *testing.T) {
 					calls++
 					return &pdp.AddPiecesResult{TxHash: common.HexToHash("0x11"), StatusURL: "https://sp.example.com/status/add"}, nil
 				},
-				pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+				waitForPullFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 					calls++
-					return &pdp.PullResult{Status: pdp.PullStatusComplete}, nil
+					return completePullResult(req), nil
 				},
 			}
 			tracking := &trackingStorageSigner{inner: mustTestSigner(t)}
