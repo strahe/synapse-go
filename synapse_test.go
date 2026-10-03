@@ -104,7 +104,10 @@ func (p *pullConcurrencyProviderClient) WaitForPullComplete(ctx context.Context,
 	p.started <- append([]byte(nil), req.ExtraData...)
 	select {
 	case <-p.release:
-		return &pdp.PullResult{Status: "complete"}, nil
+		return &pdp.PullResult{
+			Status: "complete",
+			Pieces: []pdp.PullPieceStatus{{PieceCID: p.pieceCID.String(), Status: "complete"}},
+		}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

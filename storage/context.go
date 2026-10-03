@@ -68,6 +68,7 @@ type PDPProviderClient interface {
 	UploadPieceStreaming(context.Context, io.Reader, pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error)
 	DownloadPiece(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	WaitForPieceParked(context.Context, cid.Cid, time.Duration) error
+	PullPieces(context.Context, pdp.PullRequest) (*pdp.PullResult, error)
 	WaitForPullComplete(context.Context, pdp.PullRequest, time.Duration, func(*pdp.PullResult)) (*pdp.PullResult, error)
 	AddPieces(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	GetAddPiecesStatus(context.Context, string) (*pdp.AddPiecesStatus, error)
@@ -96,8 +97,9 @@ type Provider struct {
 type ContextOption func(*contextCore)
 
 // ProviderContext represents one provider without a bound data set.
-// CreateAndAdd and Pull operations create a new data set. It is safe for
-// concurrent use; concurrent create operations are independent.
+// CreateAndAdd operations create a new data set, and Pull operations fetch
+// pieces for a later create-and-add. It is safe for concurrent use; concurrent
+// create operations are independent.
 type ProviderContext struct {
 	core *contextCore
 }
@@ -585,7 +587,11 @@ func presignCommitAuthorization(
 	return extraData, copyBigIntPtr(&clientDataSetID), nil
 }
 
-// Pull asks this provider to fetch pieces for a new data set.
+// Pull asks this provider to fetch pieces for a new data set and repeats the
+// request until the pull ends, so it also resumes a pull started by
+// [ProviderContext.SubmitPull]. It succeeds only when every requested piece
+// completes. Otherwise the error matches [pdp.ErrPullFailed] and the result
+// carries each piece status the provider reported.
 func (c *ProviderContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req)
 }
@@ -594,7 +600,28 @@ func (c *ProviderContext) pull(ctx context.Context, req PullRequest) (*PullResul
 	return c.Pull(ctx, req)
 }
 
-// Pull asks this provider to fetch pieces for the bound data set.
+// SubmitPull makes one pull request for a new data set and returns the
+// provider's current status without waiting for the pull to finish; transient
+// provider errors follow the PDP client's retry policy. Resending the original
+// request reports the existing pull's progress, because providers identify a
+// pull by its ExtraData. The result lists every piece status the provider
+// reports, and a failed pull is returned as a status rather than an error.
+// ExtraData is required and must be a create-and-add authorization, such as
+// one from [ProviderContext.PresignForCommit]. The pull does not create the
+// data set; after every piece completes, pass the same ExtraData to
+// [ProviderContext.SubmitCreateAndAdd].
+func (c *ProviderContext) SubmitPull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.ProviderContext.SubmitPull: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.submitPull(ctx, "storage.ProviderContext.SubmitPull", nil, req)
+}
+
+// Pull asks this provider to fetch pieces for the bound data set and repeats
+// the request until the pull ends, so it also resumes a pull started by
+// [DataSetContext.SubmitPull]. It succeeds only when every requested piece
+// completes. Otherwise the error matches [pdp.ErrPullFailed] and the result
+// carries each piece status the provider reported.
 func (c *DataSetContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req)
 }
@@ -603,18 +630,95 @@ func (c *DataSetContext) pull(ctx context.Context, req PullRequest) (*PullResult
 	return c.Pull(ctx, req)
 }
 
+// SubmitPull makes one pull request for the bound data set and returns the
+// provider's current status without waiting for the pull to finish; transient
+// provider errors follow the PDP client's retry policy. Resending the original
+// request reports the existing pull's progress, because providers identify a
+// pull by its ExtraData. The result lists every piece status the provider
+// reports, and a failed pull is returned as a status rather than an error.
+// ExtraData is required; after every piece completes, the same ExtraData can
+// authorize [DataSetContext.SubmitCommit].
+func (c *DataSetContext) SubmitPull(ctx context.Context, req PullRequest) (*PullResult, error) {
+	if c == nil || c.core == nil {
+		return nil, fmt.Errorf("storage.DataSetContext.SubmitPull: %w: nil context", ErrInvalidArgument)
+	}
+	return c.core.submitPull(ctx, "storage.DataSetContext.SubmitPull", &c.ref, req)
+}
+
 func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req PullRequest) (*PullResult, error) {
+	pdpReq, err := c.buildPullRequest(op, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	// A malformed status cannot be reported, so stop polling rather than
+	// waiting for the pull to end.
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var statusErr error
+	res, waitErr := c.client.WaitForPullComplete(waitCtx, pdpReq, 0, func(snapshot *pdp.PullResult) {
+		if statusErr != nil {
+			return
+		}
+		out, err := pullResultFromPDP(snapshot)
+		if err != nil {
+			statusErr = err
+			cancel()
+			return
+		}
+		reportPullProgress(req.OnProgress, out)
+	})
+	if statusErr != nil {
+		return nil, fmt.Errorf("%s: %w", op, statusErr)
+	}
+	if waitErr != nil && (res == nil || !errors.Is(waitErr, pdp.ErrPullFailed)) {
+		return nil, fmt.Errorf("%s: %w", op, waitErr)
+	}
+	out, err := pullResultFromPDP(res)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if err := requireCompletePieces(req.Pieces, out); err != nil {
+		return out, fmt.Errorf("%s: %w", op, err)
+	}
+	if waitErr != nil {
+		return out, fmt.Errorf("%s: %w", op, waitErr)
+	}
+	return out, nil
+}
+
+func (c *contextCore) submitPull(ctx context.Context, op string, ref *DataSetRef, req PullRequest) (*PullResult, error) {
+	pdpReq, err := c.buildPullRequest(op, ref, req)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.client.PullPieces(ctx, pdpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	out, err := pullResultFromPDP(res)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	reportPullProgress(req.OnProgress, out)
+	return out, nil
+}
+
+// buildPullRequest validates req and resolves its source URLs.
+func (c *contextCore) buildPullRequest(op string, ref *DataSetRef, req PullRequest) (pdp.PullRequest, error) {
 	if len(req.Pieces) == 0 {
-		return nil, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
+		return pdp.PullRequest{}, fmt.Errorf("%s: %w: no pieces provided", op, ErrInvalidArgument)
 	}
 	if err := validateLegacyAddPiecesBatch(op, ref, c.legacyPieceStorageIDLimit, len(req.Pieces)); err != nil {
-		return nil, err
+		return pdp.PullRequest{}, err
 	}
 	if req.From == nil {
-		return nil, fmt.Errorf("%s: %w: nil source resolver", op, ErrInvalidArgument)
+		return pdp.PullRequest{}, fmt.Errorf("%s: %w: nil source resolver", op, ErrInvalidArgument)
+	}
+	if len(req.ExtraData) == 0 {
+		return pdp.PullRequest{}, fmt.Errorf("%s: %w: empty extraData", op, ErrInvalidArgument)
 	}
 	if err := validateAddPiecesMessageSize(op, req.Pieces, req.ExtraData); err != nil {
-		return nil, err
+		return pdp.PullRequest{}, err
 	}
 	pdpReq := pdp.PullRequest{
 		ExtraData:    append([]byte(nil), req.ExtraData...),
@@ -625,45 +729,32 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 		pdpReq.DataSetID = &id
 	}
 
-	pieceByString := make(map[string]cid.Cid, len(req.Pieces))
 	for i, pieceCID := range req.Pieces {
 		if !pieceCID.Defined() {
-			return nil, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
+			return pdp.PullRequest{}, fmt.Errorf("%s: %w: undefined pieceCID", op, ErrInvalidArgument)
 		}
 		if err := validateUploadPieceCID(op, i, pieceCID); err != nil {
-			return nil, err
+			return pdp.PullRequest{}, err
 		}
 		sourceURL := req.From(pieceCID)
 		if sourceURL == "" {
-			return nil, fmt.Errorf("%s: %w: empty source URL", op, ErrInvalidArgument)
+			return pdp.PullRequest{}, fmt.Errorf("%s: %w: empty source URL", op, ErrInvalidArgument)
 		}
 		pdpReq.Pieces = append(pdpReq.Pieces, pdp.PullPieceInput{
 			PieceCID:  pieceCID,
 			SourceURL: sourceURL,
 		})
-		pieceByString[pieceCID.String()] = pieceCID
 	}
-	res, err := c.client.WaitForPullComplete(ctx, pdpReq, 0, func(snapshot *pdp.PullResult) {
-		if req.OnProgress == nil {
-			return
-		}
-		for _, pieceStatus := range snapshot.Pieces {
-			pieceCID, ok := pieceByString[pieceStatus.PieceCID]
-			if !ok {
-				continue
-			}
-			req.OnProgress(pieceCID, PullStatus(pieceStatus.Status))
-		}
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
+	return pdpReq, nil
+}
 
+// pullResultFromPDP keeps every piece status the provider reports.
+func pullResultFromPDP(res *pdp.PullResult) (*PullResult, error) {
 	out := &PullResult{Status: PullStatus(res.Status)}
 	for _, pieceStatus := range res.Pieces {
-		pieceCID, ok := pieceByString[pieceStatus.PieceCID]
-		if !ok {
-			continue
+		pieceCID, err := cid.Parse(pieceStatus.PieceCID)
+		if err != nil {
+			return nil, fmt.Errorf("provider returned invalid piece CID %q: %w", pieceStatus.PieceCID, err)
 		}
 		out.Pieces = append(out.Pieces, PullPieceResult{
 			PieceCID: pieceCID,
@@ -671,6 +762,36 @@ func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req 
 		})
 	}
 	return out, nil
+}
+
+func reportPullProgress(onProgress func(cid.Cid, PullStatus), res *PullResult) {
+	if onProgress == nil {
+		return
+	}
+	for _, piece := range res.Pieces {
+		onProgress(piece.PieceCID, piece.Status)
+	}
+}
+
+// requireCompletePieces fails unless the provider reports every requested piece
+// as complete. A provider may report several entries for one piece; any
+// complete entry counts.
+func requireCompletePieces(requested []cid.Cid, res *PullResult) error {
+	statuses := make(map[cid.Cid]PullStatus, len(res.Pieces))
+	for _, piece := range res.Pieces {
+		if statuses[piece.PieceCID] != PullStatusComplete {
+			statuses[piece.PieceCID] = piece.Status
+		}
+	}
+	for _, pieceCID := range requested {
+		switch status, ok := statuses[pieceCID]; {
+		case !ok:
+			return fmt.Errorf("%w: provider reported no status for piece %s", pdp.ErrPullFailed, pieceCID)
+		case status != PullStatusComplete:
+			return fmt.Errorf("%w: piece %s is %s", pdp.ErrPullFailed, pieceCID, status)
+		}
+	}
+	return nil
 }
 
 // CreateAndAdd creates a data set, adds pieces, and waits for confirmation.

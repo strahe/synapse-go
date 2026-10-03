@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -196,7 +197,8 @@ type fakePDPProviderClient struct {
 	downloadPieceFn       func(context.Context, cid.Cid) (io.ReadCloser, int64, error)
 	waitForPieceFn        func(context.Context, cid.Cid, time.Duration) error
 	pullPiecesFn          func(context.Context, pdp.PullRequest) (*pdp.PullResult, error)
-	pullPiecesFnWithCb    func(context.Context, pdp.PullRequest, func(*pdp.PullResult)) (*pdp.PullResult, error)
+	waitForPullFn         func(context.Context, pdp.PullRequest) (*pdp.PullResult, error)
+	waitForPullWithCbFn   func(context.Context, pdp.PullRequest, func(*pdp.PullResult)) (*pdp.PullResult, error)
 	addPiecesFn           func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error)
 	getAddedFn            func(context.Context, string) (*pdp.AddPiecesStatus, error)
 	waitForAddedFn        func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
@@ -232,14 +234,30 @@ func (f *fakePDPProviderClient) WaitForPieceParked(ctx context.Context, pieceCID
 	return f.waitForPieceFn(ctx, pieceCID, pollInterval)
 }
 
-func (f *fakePDPProviderClient) WaitForPullComplete(ctx context.Context, req pdp.PullRequest, pollInterval time.Duration, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
-	if f.pullPiecesFnWithCb != nil {
-		return f.pullPiecesFnWithCb(ctx, req, cb)
-	}
+func (f *fakePDPProviderClient) PullPieces(ctx context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 	if f.pullPiecesFn == nil {
-		return nil, errors.New("unexpected WaitForPullComplete")
+		return nil, errors.New("unexpected PullPieces")
 	}
 	return f.pullPiecesFn(ctx, req)
+}
+
+// completePullResult reports every requested piece as complete.
+func completePullResult(req pdp.PullRequest) *pdp.PullResult {
+	res := &pdp.PullResult{Status: pdp.PullStatusComplete}
+	for _, piece := range req.Pieces {
+		res.Pieces = append(res.Pieces, pdp.PullPieceStatus{PieceCID: piece.PieceCID.String(), Status: pdp.PullStatusComplete})
+	}
+	return res
+}
+
+func (f *fakePDPProviderClient) WaitForPullComplete(ctx context.Context, req pdp.PullRequest, pollInterval time.Duration, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
+	if f.waitForPullWithCbFn != nil {
+		return f.waitForPullWithCbFn(ctx, req, cb)
+	}
+	if f.waitForPullFn == nil {
+		return nil, errors.New("unexpected WaitForPullComplete")
+	}
+	return f.waitForPullFn(ctx, req)
 }
 
 func (f *fakePDPProviderClient) AddPieces(ctx context.Context, dataSetID types.BigInt, pieces []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
@@ -882,14 +900,15 @@ func TestContextPullRoutesByConcreteType(t *testing.T) {
 	dataSetID := types.NewBigInt(42)
 	var requests []pdp.PullRequest
 	client := &fakePDPProviderClient{
-		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
+		waitForPullFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			requests = append(requests, req)
-			return &pdp.PullResult{Status: pdp.PullStatusComplete}, nil
+			return completePullResult(req), nil
 		},
 	}
 	request := PullRequest{
-		Pieces: []cid.Cid{info.CIDv2},
-		From:   func(cid.Cid) string { return "https://source.example.com/piece" },
+		Pieces:    []cid.Cid{info.CIDv2},
+		From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+		ExtraData: []byte{0x01},
 	}
 	providerCtx := mustProviderContext(t, client, WithRecordKeeper(testRecordKeeper()))
 	if _, err := providerCtx.Pull(context.Background(), request); err != nil {
@@ -902,6 +921,263 @@ func TestContextPullRoutesByConcreteType(t *testing.T) {
 	if len(requests) != 2 || requests[0].DataSetID != nil || requests[1].DataSetID == nil || !requests[1].DataSetID.Equal(dataSetID) {
 		t.Fatalf("pull requests=%+v", requests)
 	}
+}
+
+func TestContextSubmitPullSendsOneRequest(t *testing.T) {
+	info := mustPieceInfo(t)
+	dataSetID := types.NewBigInt(42)
+	const sourceURL = "https://source.example.com/piece"
+	extraData := []byte{0x01, 0x02}
+	var requests []pdp.PullRequest
+	client := &fakePDPProviderClient{
+		pullPiecesFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
+			requests = append(requests, req)
+			return &pdp.PullResult{
+				Status: pdp.PullStatusPending,
+				Pieces: []pdp.PullPieceStatus{{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusPending}},
+			}, nil
+		},
+	}
+	providerCtx := mustProviderContext(t, client, WithRecordKeeper(testRecordKeeper()))
+	dataSetCtx := mustDataSetContext(t, client, testDataSetRef(dataSetID, types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+	tests := []struct {
+		name          string
+		submit        func(context.Context, PullRequest) (*PullResult, error)
+		wantDataSetID *types.BigInt
+	}{
+		{name: "ProviderContext", submit: providerCtx.SubmitPull},
+		{name: "DataSetContext", submit: dataSetCtx.SubmitPull, wantDataSetID: &dataSetID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests = nil
+			var progress []PullStatus
+			res, err := tt.submit(context.Background(), PullRequest{
+				Pieces:    []cid.Cid{info.CIDv2},
+				From:      func(cid.Cid) string { return sourceURL },
+				ExtraData: extraData,
+				OnProgress: func(pieceCID cid.Cid, status PullStatus) {
+					if !pieceCID.Equals(info.CIDv2) {
+						t.Errorf("progress pieceCID=%s, want %s", pieceCID, info.CIDv2)
+					}
+					progress = append(progress, status)
+				},
+			})
+			if err != nil {
+				t.Fatalf("SubmitPull: %v", err)
+			}
+			if len(requests) != 1 {
+				t.Fatalf("PullPieces calls=%d, want 1", len(requests))
+			}
+			req := requests[0]
+			if tt.wantDataSetID == nil && req.DataSetID != nil ||
+				tt.wantDataSetID != nil && (req.DataSetID == nil || !req.DataSetID.Equal(*tt.wantDataSetID)) {
+				t.Fatalf("DataSetID=%v, want %v", req.DataSetID, tt.wantDataSetID)
+			}
+			if req.RecordKeeper != testRecordKeeper() || !bytes.Equal(req.ExtraData, extraData) ||
+				len(req.Pieces) != 1 || !req.Pieces[0].PieceCID.Equals(info.CIDv2) || req.Pieces[0].SourceURL != sourceURL {
+				t.Fatalf("request=%+v", req)
+			}
+			if res.Status != PullStatusPending || len(res.Pieces) != 1 ||
+				!res.Pieces[0].PieceCID.Equals(info.CIDv2) || res.Pieces[0].Status != PullStatusPending {
+				t.Fatalf("result=%+v", res)
+			}
+			if !slices.Equal(progress, []PullStatus{PullStatusPending}) {
+				t.Fatalf("progress=%v, want one pending update", progress)
+			}
+		})
+	}
+}
+
+func TestContextSubmitPullErrors(t *testing.T) {
+	info := mustPieceInfo(t)
+	tests := []struct {
+		name           string
+		extraData      []byte
+		providerResult *pdp.PullResult
+		providerErr    error
+		wantCalls      int
+		check          func(error) bool
+	}{
+		{
+			name:  "empty extraData",
+			check: func(err error) bool { return errors.Is(err, ErrInvalidArgument) },
+		},
+		{
+			name:        "provider backpressure",
+			extraData:   []byte{0x01},
+			providerErr: &pdp.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: time.Minute},
+			wantCalls:   1,
+			check: func(err error) bool {
+				httpErr, ok := errors.AsType[*pdp.HTTPError](err)
+				return ok && httpErr.RetryAfter == time.Minute
+			},
+		},
+		{
+			name:      "invalid provider piece CID",
+			extraData: []byte{0x01},
+			providerResult: &pdp.PullResult{
+				Status: pdp.PullStatusPending,
+				Pieces: []pdp.PullPieceStatus{{PieceCID: "not-a-cid", Status: pdp.PullStatusPending}},
+			},
+			wantCalls: 1,
+			check:     func(err error) bool { return err != nil && strings.Contains(err.Error(), "invalid piece CID") },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			client := &fakePDPProviderClient{
+				pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+					calls++
+					return tt.providerResult, tt.providerErr
+				},
+			}
+			c := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+			fromCalls := 0
+			_, err := c.SubmitPull(context.Background(), PullRequest{
+				Pieces: []cid.Cid{info.CIDv2},
+				From: func(cid.Cid) string {
+					fromCalls++
+					return "https://source.example.com/piece"
+				},
+				ExtraData: tt.extraData,
+			})
+			if !tt.check(err) {
+				t.Fatalf("SubmitPull error=%v", err)
+			}
+			if calls != tt.wantCalls || fromCalls != tt.wantCalls {
+				t.Fatalf("PullPieces calls=%d From calls=%d, want %d", calls, fromCalls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestContextSubmitPullReturnsEveryProviderStatus(t *testing.T) {
+	info := mustPieceInfo(t)
+	other := testutil.PieceCIDv2WithRawSize(t, info.CIDv1, chain.MinUploadSize)
+	client := &fakePDPProviderClient{
+		pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+			return &pdp.PullResult{
+				Status: pdp.PullStatusComplete,
+				Pieces: []pdp.PullPieceStatus{
+					{PieceCID: info.CIDv2.String(), Status: pdp.PullStatusFailed},
+					{PieceCID: other.String(), Status: pdp.PullStatusComplete},
+				},
+			}, nil
+		},
+	}
+	c := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+	var progress []PullPieceResult
+	res, err := c.SubmitPull(context.Background(), PullRequest{
+		Pieces:    []cid.Cid{info.CIDv2},
+		From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+		ExtraData: []byte{0x01},
+		OnProgress: func(pieceCID cid.Cid, status PullStatus) {
+			progress = append(progress, PullPieceResult{PieceCID: pieceCID, Status: status})
+		},
+	})
+	if err != nil {
+		t.Fatalf("SubmitPull returned an error for a provider status: %v", err)
+	}
+	want := []PullPieceResult{
+		{PieceCID: info.CIDv2, Status: PullStatusFailed},
+		{PieceCID: other, Status: PullStatusComplete},
+	}
+	if res.Status != PullStatusComplete || !slices.Equal(res.Pieces, want) {
+		t.Fatalf("result=%+v, want status complete and pieces %+v", res, want)
+	}
+	if !slices.Equal(progress, want) {
+		t.Fatalf("progress=%+v, want %+v", progress, want)
+	}
+}
+
+func TestContextPullRequiresEveryPieceComplete(t *testing.T) {
+	info := mustPieceInfo(t)
+	first := info.CIDv2
+	second := testutil.PieceCIDv2WithRawSize(t, info.CIDv1, chain.MinUploadSize)
+	status := func(overall pdp.PullStatus, pieces ...pdp.PullPieceStatus) *pdp.PullResult {
+		return &pdp.PullResult{Status: overall, Pieces: pieces}
+	}
+	piece := func(pieceCID cid.Cid, s pdp.PullStatus) pdp.PullPieceStatus {
+		return pdp.PullPieceStatus{PieceCID: pieceCID.String(), Status: s}
+	}
+	finished := func(res *pdp.PullResult, err error) func(context.Context, func(*pdp.PullResult)) (*pdp.PullResult, error) {
+		return func(_ context.Context, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
+			cb(res)
+			return res, err
+		}
+	}
+	tests := []struct {
+		name       string
+		wait       func(context.Context, func(*pdp.PullResult)) (*pdp.PullResult, error)
+		wantFailed bool
+		wantPieces int
+	}{
+		{
+			name:       "every piece complete",
+			wait:       finished(status(pdp.PullStatusComplete, piece(first, pdp.PullStatusComplete), piece(second, pdp.PullStatusComplete)), nil),
+			wantPieces: 2,
+		},
+		{
+			name:       "complete with a failed piece",
+			wait:       finished(status(pdp.PullStatusComplete, piece(first, pdp.PullStatusComplete), piece(second, pdp.PullStatusFailed)), nil),
+			wantFailed: true,
+			wantPieces: 2,
+		},
+		{
+			name:       "requested piece not in provider pull",
+			wait:       finished(status(pdp.PullStatusComplete, piece(first, pdp.PullStatusComplete)), nil),
+			wantFailed: true,
+			wantPieces: 1,
+		},
+		{
+			name:       "provider reports failure",
+			wait:       finished(status(pdp.PullStatusFailed, piece(first, pdp.PullStatusFailed), piece(second, pdp.PullStatusFailed)), pdp.ErrPullFailed),
+			wantFailed: true,
+			wantPieces: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakePDPProviderClient{
+				waitForPullWithCbFn: func(ctx context.Context, _ pdp.PullRequest, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
+					return tt.wait(ctx, cb)
+				},
+			}
+			c := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+			res, err := c.Pull(context.Background(), PullRequest{
+				Pieces:    []cid.Cid{first, second},
+				From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+				ExtraData: []byte{0x01},
+			})
+			if tt.wantFailed != errors.Is(err, pdp.ErrPullFailed) || !tt.wantFailed && err != nil {
+				t.Fatalf("Pull error=%v, want failed=%t", err, tt.wantFailed)
+			}
+			if res == nil || len(res.Pieces) != tt.wantPieces {
+				t.Fatalf("Pull result=%+v, want %d piece statuses", res, tt.wantPieces)
+			}
+		})
+	}
+
+	t.Run("invalid provider piece CID stops polling", func(t *testing.T) {
+		client := &fakePDPProviderClient{
+			waitForPullWithCbFn: func(ctx context.Context, _ pdp.PullRequest, cb func(*pdp.PullResult)) (*pdp.PullResult, error) {
+				cb(status(pdp.PullStatusPending, pdp.PullPieceStatus{PieceCID: "not-a-cid", Status: pdp.PullStatusPending}))
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		c := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+		_, err := c.Pull(context.Background(), PullRequest{
+			Pieces:    []cid.Cid{first},
+			From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+			ExtraData: []byte{0x01},
+		})
+		if err == nil || errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "invalid piece CID") {
+			t.Fatalf("Pull error=%v, want invalid piece CID", err)
+		}
+	})
 }
 
 func TestContextPresignWireShapesRemainStable(t *testing.T) {
@@ -1350,10 +1626,11 @@ func TestContextPresignAndPullRejectInvalidInputs(t *testing.T) {
 	}
 
 	_, err = c.Pull(context.Background(), PullRequest{
-		Pieces: []cid.Cid{info.CIDv2},
-		From:   func(cid.Cid) string { return "" },
+		Pieces:    []cid.Cid{info.CIDv2},
+		From:      func(cid.Cid) string { return "" },
+		ExtraData: []byte{0x01},
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "empty source URL") {
 		t.Fatalf("empty source URL error=%v", err)
 	}
 }

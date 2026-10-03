@@ -38,7 +38,7 @@ const (
 // retains a long lockup period, so an empty provider-terminated fixture supplies
 // the second mature rail needed to exercise both settlement entry points.
 func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -252,15 +252,33 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PresignForCommit: %v", err)
 	}
-	start = time.Now()
-	t.Log("start storage staged Pull")
-	pull, err := recovered.Pull(ctx, storage.PullRequest{
+	checkSubmittedPull := func(label string, res *storage.PullResult) {
+		t.Helper()
+		if res == nil || res.Status == storage.PullStatusFailed || len(res.Pieces) != 1 ||
+			!res.Pieces[0].PieceCID.Equals(primaryStore.PieceCID) || res.Pieces[0].Status == storage.PullStatusFailed {
+			t.Fatalf("%s result = %+v, want one unfailed piece %s", label, res, primaryStore.PieceCID)
+		}
+	}
+	pullRequest := storage.PullRequest{
 		Pieces: []cid.Cid{primaryStore.PieceCID},
 		From: func(cid.Cid) string {
 			return primaryURL
 		},
 		ExtraData: extraData,
-	})
+	}
+	start = time.Now()
+	t.Log("start storage staged SubmitPull")
+	submittedPull, err := recovered.SubmitPull(ctx, pullRequest)
+	t.Logf("done storage staged SubmitPull elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("SubmitPull: %v", err)
+	}
+	checkSubmittedPull("SubmitPull", submittedPull)
+
+	// Pull repeats the submitted request, so it resumes the same provider pull.
+	start = time.Now()
+	t.Log("start storage staged Pull")
+	pull, err := recovered.Pull(ctx, pullRequest)
 	t.Logf("done storage staged Pull elapsed=%s", time.Since(start).Round(time.Second))
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
@@ -322,6 +340,87 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	}
 	if !afterActive {
 		t.Fatal("HasActivePieces(after) = false, want true")
+	}
+
+	// A pull through an unbound ProviderContext stages the piece without a data
+	// set; the same create-and-add authorization then creates it in one commit.
+	start = time.Now()
+	t.Log("start storage staged Prepare(provider pull)")
+	providerPullPrepare, err := sm.Prepare(ctx, &storage.PrepareOptions{
+		PieceSizes:        []uint64{uint64(len(data))},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
+		Contexts: []storage.StorageContext{
+			secondary,
+		},
+	})
+	t.Logf("done storage staged Prepare(provider pull) elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("Prepare(provider pull): %v", err)
+	}
+	executePrepare("Prepare(provider pull).Execute", providerPullPrepare)
+
+	providerExtra, err := secondary.PresignForCommit(ctx, []storage.PieceInput{pieceInput})
+	if err != nil {
+		t.Fatalf("secondary PresignForCommit: %v", err)
+	}
+	providerPullRequest := storage.PullRequest{
+		Pieces: []cid.Cid{primaryStore.PieceCID},
+		From: func(cid.Cid) string {
+			return primaryURL
+		},
+		ExtraData: providerExtra,
+	}
+	start = time.Now()
+	t.Log("start storage staged secondary SubmitPull")
+	providerSubmittedPull, err := secondary.SubmitPull(ctx, providerPullRequest)
+	t.Logf("done storage staged secondary SubmitPull elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("secondary SubmitPull: %v", err)
+	}
+	checkSubmittedPull("secondary SubmitPull", providerSubmittedPull)
+
+	start = time.Now()
+	t.Log("start storage staged secondary Pull")
+	providerPull, err := secondary.Pull(ctx, providerPullRequest)
+	t.Logf("done storage staged secondary Pull elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("secondary Pull: %v", err)
+	}
+	if providerPull.Status != storage.PullStatusComplete || len(providerPull.Pieces) != 1 ||
+		providerPull.Pieces[0].Status != storage.PullStatusComplete {
+		t.Fatalf("secondary Pull = %+v, want one complete piece", providerPull)
+	}
+
+	start = time.Now()
+	t.Log("start storage staged secondary SubmitCreateAndAdd")
+	providerSubmission, err := secondary.SubmitCreateAndAdd(ctx, storage.CreateAndAddRequest{
+		Pieces:    []storage.PieceInput{pieceInput},
+		ExtraData: providerExtra,
+	})
+	t.Logf("done storage staged secondary SubmitCreateAndAdd elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("secondary SubmitCreateAndAdd: %v", err)
+	}
+	if providerSubmission.ClientDataSetID == nil {
+		t.Fatal("secondary SubmitCreateAndAdd submission missing ClientDataSetID")
+	}
+	start = time.Now()
+	t.Log("start storage staged secondary WaitForCreateAndAdd")
+	providerCommit, err := secondary.WaitForCreateAndAdd(ctx, providerSubmission.StatusURL, *providerSubmission.ClientDataSetID)
+	t.Logf("done storage staged secondary WaitForCreateAndAdd elapsed=%s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("secondary WaitForCreateAndAdd: %v", err)
+	}
+	if providerCommit.DataSet.DataSetID().IsZero() || !providerCommit.IsNewDataSet {
+		t.Fatalf("secondary WaitForCreateAndAdd = %+v, want a new non-zero data set", providerCommit)
+	}
+	cleanupIDs = append(cleanupIDs, providerCommit.DataSet.DataSetID())
+	if providerCommit.DataSet.DataSetID().Equal(created.DataSet.DataSetID()) {
+		t.Fatalf("secondary WaitForCreateAndAdd reused data set %s", created.DataSet.DataSetID())
+	}
+	if len(providerCommit.PieceIDs) != 1 {
+		t.Fatalf("secondary WaitForCreateAndAdd PieceIDs = %d, want 1", len(providerCommit.PieceIDs))
 	}
 
 	t.Run("DeletePieceByID", func(t *testing.T) {

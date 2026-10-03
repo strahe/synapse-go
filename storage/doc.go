@@ -4,9 +4,10 @@
 // # Contexts
 //
 // [ProviderContext] identifies one provider but no data set. Its CreateAndAdd
-// and Pull operations create a new data set. [DataSetContext] identifies one
-// provider and one existing data set; its Commit and Pull operations always
-// use that data set. Neither type changes target after construction.
+// operations create a new data set, and its Pull operations fetch pieces for a
+// later create-and-add. [DataSetContext] identifies one provider and one
+// existing data set; its Commit and Pull operations always use that data set.
+// Neither type changes target after construction.
 //
 // Both types expose provider-scoped operations such as Store and Download.
 // Download therefore behaves the same on both: it retrieves the requested
@@ -295,6 +296,22 @@
 // pieces. Applications that need a durable CID-to-piece-ID mapping must retain
 // their original request order; generic recovery validates only that the
 // provider's confirmed count matches its returned piece IDs.
+//
+// Pulls have no status URL. [ProviderContext.SubmitPull] and
+// [DataSetContext.SubmitPull] make one pull request and return the provider's
+// current status without waiting for the pull to finish; the provider
+// identifies the pull by its ExtraData. Transient provider errors follow the
+// PDP client's retry policy, so bound the call with its context when the
+// scheduler needs a prompt answer. To resume after a restart, persist the
+// piece CIDs, their source URLs, and ExtraData, then resend the original
+// request unchanged: SubmitPull reports progress, and Pull waits. SubmitPull
+// returns failed statuses without an error; Pull returns an error matching
+// [pdp.ErrPullFailed] unless every requested piece completes. New ExtraData
+// starts a separate pull, and a failed pull stays failed until retried with
+// new ExtraData. Providers keep pull records for a limited time, so commit soon
+// after every piece completes; the same ExtraData authorizes the commit. A
+// pull through ProviderContext does not create a data set: pass its ExtraData
+// to SubmitCreateAndAdd, which creates one data set per authorization.
 //
 // # Service termination
 //

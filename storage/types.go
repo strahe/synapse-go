@@ -101,11 +101,13 @@ type PullRequest struct {
 	// chain.MinUploadSize and chain.MaxUploadSize.
 	Pieces []cid.Cid
 	From   func(cid.Cid) string // returns the HTTPS URL for a given piece CID
-	// ExtraData is the EIP-712 signed payload authorising the pull. Oversized
-	// payloads are rejected before submission.
+	// ExtraData is the required EIP-712 signed payload authorising the pull,
+	// usually from PresignForCommit. Oversized payloads are rejected before
+	// submission.
 	ExtraData []byte
-	// OnProgress is invoked after each piece status update during the pull.
-	// It may be nil. Direct Pull calls do not recover callback panics.
+	// OnProgress is invoked for each piece status in every provider response.
+	// It may be nil. Direct Pull and SubmitPull calls do not recover callback
+	// panics.
 	OnProgress func(pieceCID cid.Cid, status PullStatus)
 }
 
@@ -117,7 +119,11 @@ type PullPieceResult struct {
 
 // PullResult is the aggregate outcome of a pull operation.
 type PullResult struct {
+	// Status is the provider's overall status. In a SubmitPull result, a
+	// complete status does not guarantee that every piece completed; check
+	// each entry in Pieces. Pull returns an error in that case.
 	Status PullStatus
+	// Pieces lists every piece status the provider reports.
 	Pieces []PullPieceResult
 }
 

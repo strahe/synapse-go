@@ -269,7 +269,7 @@ func TestContextRejectsOversizedExternalPayloadBeforeProviderCall(t *testing.T) 
 			providerCalls++
 			return nil, errors.New("unexpected AddPieces")
 		},
-		pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+		waitForPullFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
 			providerCalls++
 			return nil, errors.New("unexpected WaitForPullComplete")
 		},
