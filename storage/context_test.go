@@ -1004,13 +1004,14 @@ func TestContextSubmitPullErrors(t *testing.T) {
 			check: func(err error) bool { return errors.Is(err, ErrInvalidArgument) },
 		},
 		{
-			name:        "provider backpressure",
-			extraData:   []byte{0x01},
-			providerErr: &pdp.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: time.Minute},
-			wantCalls:   1,
+			name:      "provider pull queue full",
+			extraData: []byte{0x01},
+			providerErr: fmt.Errorf("pdp.PullPieces: %w: %w", pdp.ErrPullQueueFull,
+				&pdp.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: time.Minute}),
+			wantCalls: 1,
 			check: func(err error) bool {
 				httpErr, ok := errors.AsType[*pdp.HTTPError](err)
-				return ok && httpErr.RetryAfter == time.Minute
+				return errors.Is(err, pdp.ErrPullQueueFull) && ok && httpErr.RetryAfter == time.Minute
 			},
 		},
 		{

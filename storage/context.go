@@ -589,9 +589,11 @@ func presignCommitAuthorization(
 
 // Pull asks this provider to fetch pieces for a new data set and repeats the
 // request until the pull ends, so it also resumes a pull started by
-// [ProviderContext.SubmitPull]. It succeeds only when every requested piece
-// completes. Otherwise the error matches [pdp.ErrPullFailed] and the result
-// carries each piece status the provider reported.
+// [ProviderContext.SubmitPull]. While the provider's pull queue is full, it
+// waits for the provider's Retry-After and tries again. It succeeds only when
+// every requested piece completes. Otherwise the error matches
+// [pdp.ErrPullFailed] and the result carries each piece status the provider
+// reported.
 func (c *ProviderContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req)
 }
@@ -601,11 +603,14 @@ func (c *ProviderContext) pull(ctx context.Context, req PullRequest) (*PullResul
 }
 
 // SubmitPull makes one pull request for a new data set and returns the
-// provider's current status without waiting for the pull to finish; transient
-// provider errors follow the PDP client's retry policy. Resending the original
-// request reports the existing pull's progress, because providers identify a
-// pull by its ExtraData. The result lists every piece status the provider
-// reports, and a failed pull is returned as a status rather than an error.
+// provider's current status without waiting for the pull to finish. When the
+// provider's pull queue is full, the error matches [pdp.ErrPullQueueFull]
+// without retrying; read the delay with errors.AsType[*pdp.HTTPError] and
+// resend the same request after RetryAfter. Other transient provider errors
+// are retried. Resending the original request reports the existing pull's
+// progress, because providers identify a pull by its ExtraData. The result
+// lists every piece status the provider reports, and a failed pull is returned
+// as a status rather than an error.
 // ExtraData is required and must be a create-and-add authorization, such as
 // one from [ProviderContext.PresignForCommit]. The pull does not create the
 // data set; after every piece completes, pass the same ExtraData to
@@ -619,9 +624,11 @@ func (c *ProviderContext) SubmitPull(ctx context.Context, req PullRequest) (*Pul
 
 // Pull asks this provider to fetch pieces for the bound data set and repeats
 // the request until the pull ends, so it also resumes a pull started by
-// [DataSetContext.SubmitPull]. It succeeds only when every requested piece
-// completes. Otherwise the error matches [pdp.ErrPullFailed] and the result
-// carries each piece status the provider reported.
+// [DataSetContext.SubmitPull]. While the provider's pull queue is full, it
+// waits for the provider's Retry-After and tries again. It succeeds only when
+// every requested piece completes. Otherwise the error matches
+// [pdp.ErrPullFailed] and the result carries each piece status the provider
+// reported.
 func (c *DataSetContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
 	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req)
 }
@@ -631,11 +638,14 @@ func (c *DataSetContext) pull(ctx context.Context, req PullRequest) (*PullResult
 }
 
 // SubmitPull makes one pull request for the bound data set and returns the
-// provider's current status without waiting for the pull to finish; transient
-// provider errors follow the PDP client's retry policy. Resending the original
-// request reports the existing pull's progress, because providers identify a
-// pull by its ExtraData. The result lists every piece status the provider
-// reports, and a failed pull is returned as a status rather than an error.
+// provider's current status without waiting for the pull to finish. When the
+// provider's pull queue is full, the error matches [pdp.ErrPullQueueFull]
+// without retrying; read the delay with errors.AsType[*pdp.HTTPError] and
+// resend the same request after RetryAfter. Other transient provider errors
+// are retried. Resending the original request reports the existing pull's
+// progress, because providers identify a pull by its ExtraData. The result
+// lists every piece status the provider reports, and a failed pull is returned
+// as a status rather than an error.
 // ExtraData is required; after every piece completes, the same ExtraData can
 // authorize [DataSetContext.SubmitCommit].
 func (c *DataSetContext) SubmitPull(ctx context.Context, req PullRequest) (*PullResult, error) {

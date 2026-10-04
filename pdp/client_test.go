@@ -1220,6 +1220,7 @@ func TestIsRetryable(t *testing.T) {
 		{"HTTP 500", &HTTPError{StatusCode: 500}, true},
 		{"HTTP 503", &HTTPError{StatusCode: 503}, true},
 		{"HTTP 429", &HTTPError{StatusCode: 429}, true},
+		{"pull queue full", fmt.Errorf("%w: %w", ErrPullQueueFull, &HTTPError{StatusCode: 429}), false},
 		{"HTTP 404", &HTTPError{StatusCode: 404}, false},
 		{"HTTP 400", &HTTPError{StatusCode: 400}, false},
 		{"HTTP 501", &HTTPError{StatusCode: 501}, false},

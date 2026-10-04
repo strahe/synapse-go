@@ -30,7 +30,10 @@
 // POST and DELETE requests are executed exactly once unless an endpoint
 // documents server-side idempotency. The PullPieces POST is retried for
 // transient failures because the provider de-duplicates by request body
-// and returns the existing pull status for repeated calls. Other
+// and returns the existing pull status for repeated calls. A full provider
+// pull queue (HTTP 429) is not retried: PullPieces returns an error matching
+// ErrPullQueueFull, and WaitForPullComplete waits for the provider's
+// Retry-After before sending the request again. Other
 // state-changing POST/DELETE endpoints are not retried: a client-side
 // retry after a server-side partial success can cause duplicate work or
 // inconsistent state.

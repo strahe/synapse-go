@@ -123,6 +123,11 @@ func (e *AddPiecesMessageTooLargeError) Is(target error) bool {
 // piece deletions until its on-chain removal queue has been processed.
 var ErrTooManyPiecesQueued = errors.New("pdp: piece deletion queue is full; retry after the next proving period")
 
+// ErrPullQueueFull is returned when a provider declines a new pull because its
+// pull queue is full. The provider records nothing, so the same request can be
+// sent again later; the wrapped *HTTPError carries any Retry-After delay.
+var ErrPullQueueFull = errors.New("pdp: provider pull queue is full; retry later")
+
 // ErrTxRejected is returned when an on-chain operation posted by the SP was
 // rejected, failed, or removed from the canonical chain by a reorganization.
 var ErrTxRejected = errors.New("pdp: transaction rejected")
