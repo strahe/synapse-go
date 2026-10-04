@@ -45,9 +45,10 @@
 // The root synapse Client enables commit batching for high-level Upload calls
 // by default. Ready pieces are submitted together once no other upload to the
 // same target is in progress and three seconds pass without a new piece. There
-// is no time limit by default, so a slow upload delays the others for that
-// target. At most four batches are signed and submitted at once; provider
-// confirmation waits do not consume that limit. Configure the root coordinator
+// is no time limit by default, so a slow upload, including a copy waiting for
+// a busy provider to accept its pull, delays the others for that target. At
+// most four batches are signed and submitted at once; provider confirmation
+// waits do not consume that limit. Configure the root coordinator
 // with [synapse.WithUploadBatching], or disable it with
 // [synapse.WithoutUploadBatching].
 //
@@ -217,10 +218,12 @@
 // errors, rather than caller argument or unavailable-dataset errors.
 //
 // UploadToContexts does not select replacements. The first context stores the
-// reader; later contexts pull from it. Configure this path with
-// [UploadToContextsOptions]. Service.Upload retains automatic replacement for
-// failed secondary copies. Direct [ProviderContext.Upload] and
-// [DataSetContext.Upload] calls store one copy and accept [ContextUploadOptions].
+// reader; later contexts pull from it, waiting while a provider's pull queue is
+// full. Configure this path with [UploadToContextsOptions]. Service.Upload
+// retains automatic replacement for failed secondary copies and replaces a
+// provider whose pull queue is full without waiting. Direct
+// [ProviderContext.Upload] and [DataSetContext.Upload] calls store one copy and
+// accept [ContextUploadOptions].
 // [StorageContext] is the sealed, ordered mixed-target view used by selection,
 // preparation, and UploadToContexts; commit lifecycle methods remain on the
 // concrete context whose target determines their meaning.
@@ -300,18 +303,20 @@
 // Pulls have no status URL. [ProviderContext.SubmitPull] and
 // [DataSetContext.SubmitPull] make one pull request and return the provider's
 // current status without waiting for the pull to finish; the provider
-// identifies the pull by its ExtraData. Transient provider errors follow the
-// PDP client's retry policy, so bound the call with its context when the
-// scheduler needs a prompt answer. To resume after a restart, persist the
-// piece CIDs, their source URLs, and ExtraData, then resend the original
-// request unchanged: SubmitPull reports progress, and Pull waits. SubmitPull
-// returns failed statuses without an error; Pull returns an error matching
-// [pdp.ErrPullFailed] unless every requested piece completes. New ExtraData
-// starts a separate pull, and a failed pull stays failed until retried with
-// new ExtraData. Providers keep pull records for a limited time, so commit soon
-// after every piece completes; the same ExtraData authorizes the commit. A
-// pull through ProviderContext does not create a data set: pass its ExtraData
-// to SubmitCreateAndAdd, which creates one data set per authorization.
+// identifies the pull by its ExtraData. When the provider's pull queue is
+// full, SubmitPull returns an error matching [pdp.ErrPullQueueFull] without
+// waiting; resend the same request after the RetryAfter of the wrapped
+// [pdp.HTTPError]. Pull waits for that delay itself. To resume after a
+// restart, persist the piece CIDs, their source URLs, and ExtraData, then
+// resend the original request unchanged: SubmitPull reports progress, and
+// Pull waits. SubmitPull returns failed statuses without an error; Pull
+// returns an error matching [pdp.ErrPullFailed] unless every requested piece
+// completes. New ExtraData starts a separate pull, and a failed pull stays
+// failed until retried with new ExtraData. Providers keep pull records for a
+// limited time, so commit soon after every piece completes; the same ExtraData
+// authorizes the commit. A pull through ProviderContext does not create a data
+// set: pass its ExtraData to SubmitCreateAndAdd, which creates one data set per
+// authorization.
 //
 // # Service termination
 //

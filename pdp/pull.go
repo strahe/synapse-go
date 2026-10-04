@@ -1,6 +1,7 @@
 package pdp
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -81,7 +82,10 @@ type pullPieceWireItem struct {
 //
 // The endpoint is idempotent: calling again with the same extraData returns
 // the status of the existing pull request rather than creating a duplicate.
-// This makes it safe to poll for status using repeated calls. Requests
+// This makes it safe to poll for status using repeated calls. Transient
+// failures are retried. When the provider's pull queue is full, the error
+// matches ErrPullQueueFull and is returned without retrying; send the same
+// request again after the wrapped *HTTPError's RetryAfter. Requests
 // exceeding MaxAddPiecesMessageSize are rejected before submission. Existing
 // legacy data sets also have a MaxLegacyAddPiecesBatchSize count limit when
 // WithLegacyPieceStorageIDLimit configures their deployment's cutoff.
@@ -132,7 +136,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 		return nil, err
 	}
 
-	_, body, err := c.postJSONRetryable(ctx, "pdp/piece/pull", wire, http.StatusOK, http.StatusCreated, http.StatusAccepted)
+	body, err := c.postPull(ctx, wire)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +148,69 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 	return &out, nil
 }
 
+// postPull sends one pull request and retries transient failures. A full pull
+// queue is returned at once as ErrPullQueueFull so the caller decides when to
+// send it again.
+func (c *Client) postPull(ctx context.Context, wire pullPiecesWire) ([]byte, error) {
+	const path = "pdp/piece/pull"
+	u, err := c.resolve(path)
+	if err != nil {
+		return nil, fmt.Errorf("pdp: resolve %s: %w", path, err)
+	}
+	buf, err := json.Marshal(wire)
+	if err != nil {
+		return nil, fmt.Errorf("pdp: marshal %s: %w", path, err)
+	}
+	_, body, err := c.doRetryableWithExecutor(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
+		if err != nil {
+			return nil, fmt.Errorf("pdp: build POST %s: %w", path, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	}, func(req *http.Request) (*http.Response, []byte, error) {
+		resp, body, err := c.do(req, http.StatusOK, http.StatusCreated, http.StatusAccepted)
+		if err != nil && resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			// The status and Retry-After arrive before the body, so a body
+			// read failure still reports a full queue.
+			if _, ok := errors.AsType[*HTTPError](err); !ok {
+				err = errors.Join(newHTTPError(req, resp, body), err)
+			}
+			err = fmt.Errorf("pdp.PullPieces: %w: %w", ErrPullQueueFull, err)
+		}
+		return resp, body, err
+	})
+	return body, err
+}
+
+const (
+	// defaultPullQueueFullDelay applies when a full pull queue gives no
+	// usable Retry-After.
+	defaultPullQueueFullDelay = time.Minute
+	// minPullQueueFullDelay is the shortest Retry-After honored, so a malformed
+	// header cannot turn the wait into back-to-back requests.
+	minPullQueueFullDelay = time.Second
+	// maxPullQueueFullDelay bounds the provider's Retry-After so one response
+	// cannot stall a wait that has no deadline.
+	maxPullQueueFullDelay = 5 * time.Minute
+)
+
+// pullQueueFullDelay returns how long to wait before resending a pull that the
+// provider declined because its queue was full.
+func pullQueueFullDelay(err error) time.Duration {
+	httpErr, ok := errors.AsType[*HTTPError](err)
+	if !ok || httpErr.RetryAfter < minPullQueueFullDelay {
+		return defaultPullQueueFullDelay
+	}
+	return min(httpErr.RetryAfter, maxPullQueueFullDelay)
+}
+
 // WaitForPullComplete polls PullPieces until the overall pull status is
 // "complete" or "failed". On failure it returns (result, ErrPullFailed) so
-// callers can inspect the per-piece statuses.
+// callers can inspect the per-piece statuses. When the provider's pull queue
+// is full, it waits for the provider's Retry-After (one minute when absent or
+// under a second, at most five minutes) and sends the request again until ctx
+// ends.
 //
 // onStatus is invoked after each poll (may be nil). A zero pollInterval
 // defaults to 4 seconds.
@@ -162,6 +226,22 @@ func (c *Client) WaitForPullComplete(
 
 	for {
 		res, err := c.PullPieces(ctx, req)
+		if errors.Is(err, ErrPullQueueFull) {
+			delayFn := c.pullQueueFullDelayFn
+			if delayFn == nil {
+				delayFn = pullQueueFullDelay
+			}
+			delay := delayFn(err)
+			if c.logger != nil {
+				c.logger.Debug("pdp pull queue full", "wait", delay)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

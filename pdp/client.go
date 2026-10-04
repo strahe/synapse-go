@@ -50,6 +50,7 @@ type Client struct {
 	logger                    *slog.Logger
 	maxRetries                int                                        // 0 = disabled; set to DefaultMaxRetries in New()
 	retryDelayFn              func(err error, attempt int) time.Duration // nil = httpRetryDelay
+	pullQueueFullDelayFn      func(err error) time.Duration              // nil = pullQueueFullDelay
 }
 
 // Option configures a Client. Nil options are ignored.
@@ -196,6 +197,7 @@ func (c *Client) doWithClient(client *http.Client, req *http.Request, expectStat
 //   - HTTP 4xx except 429
 //   - HTTP 501 Not Implemented
 //   - TLS alert errors (bad cert, expired cert, protocol violations)
+//   - ErrPullQueueFull, which the caller schedules from Retry-After
 //
 // Retryable (transient):
 //   - HTTP 5xx (except 501) and 429
@@ -214,7 +216,7 @@ func isRetryable(ctx context.Context, err error) bool {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
-	if errors.Is(err, ErrPingResponseMismatch) {
+	if errors.Is(err, ErrPingResponseMismatch) || errors.Is(err, ErrPullQueueFull) {
 		return false
 	}
 	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
@@ -366,28 +368,6 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, expect 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return c.do(req, expect...)
-}
-
-// postJSONRetryable builds a fresh POST request for each retry attempt.
-// It is only safe for endpoints whose server-side idempotency key is part
-// of the payload.
-func (c *Client) postJSONRetryable(ctx context.Context, path string, payload any, expect ...int) (*http.Response, []byte, error) {
-	u, err := c.resolve(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("pdp: resolve %s: %w", path, err)
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("pdp: marshal %s: %w", path, err)
-	}
-	return c.doRetryable(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(buf))
-		if err != nil {
-			return nil, fmt.Errorf("pdp: build POST %s: %w", path, err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		return req, nil
-	}, expect...)
 }
 
 // getJSON performs GET and decodes the JSON response into dst (may be nil

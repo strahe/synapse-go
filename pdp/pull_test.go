@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -245,7 +246,7 @@ func TestPullPieces_RetriesTransientHTTP(t *testing.T) {
 	c, _ := pullTestServer(t, func(_ pullPiecesBody, callCount int) (int, pullResponse) {
 		calls = callCount
 		if callCount == 1 {
-			return http.StatusTooManyRequests, pullResponse{}
+			return http.StatusServiceUnavailable, pullResponse{}
 		}
 		return http.StatusOK, pullResponse{
 			Status: "pending",
@@ -269,6 +270,143 @@ func TestPullPieces_RetriesTransientHTTP(t *testing.T) {
 	}
 	if res.Status != PullStatusPending {
 		t.Fatalf("status=%q want pending", res.Status)
+	}
+}
+
+func TestPullPieces_QueueFullNotRetried(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	tests := []struct {
+		name  string
+		write func(http.ResponseWriter)
+	}{
+		{
+			name: "complete body",
+			write: func(w http.ResponseWriter) {
+				http.Error(w, "pull queue backpressure", http.StatusTooManyRequests)
+			},
+		},
+		{
+			name: "truncated body",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Length", "100")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte("pull queue"))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.Header().Set("Retry-After", "120")
+				tt.write(w)
+			}))
+
+			_, err := c.PullPieces(context.Background(), PullRequest{
+				RecordKeeper: common.HexToAddress("0xabc"),
+				ExtraData:    []byte{0x01},
+				Pieces: []PullPieceInput{{
+					PieceCID:  pc,
+					SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
+				}},
+			})
+			if calls != 1 {
+				t.Fatalf("calls=%d want 1", calls)
+			}
+			if !errors.Is(err, ErrPullQueueFull) {
+				t.Fatalf("err=%v want ErrPullQueueFull", err)
+			}
+			httpErr, ok := errors.AsType[*HTTPError](err)
+			if !ok || httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != 2*time.Minute {
+				t.Fatalf("HTTPError=%+v ok=%t, want 429 with RetryAfter=2m", httpErr, ok)
+			}
+		})
+	}
+}
+
+func TestWaitForPullComplete_WaitsWhenQueueFull(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	req := PullRequest{
+		RecordKeeper: common.HexToAddress("0xabc"),
+		ExtraData:    []byte{0x01},
+		Pieces: []PullPieceInput{{
+			PieceCID:  pc,
+			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
+		}},
+	}
+	// newServer reports a full queue for the first queueFullCalls requests,
+	// then a complete pull.
+	newServer := func(t *testing.T, queueFullCalls int) (*Client, *int) {
+		calls := 0
+		c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls <= queueFullCalls {
+				w.Header().Set("Retry-After", "120")
+				http.Error(w, "pull queue backpressure", http.StatusTooManyRequests)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(pullResponse{
+				Status: "complete",
+				Pieces: []pullPieceRespItem{{PieceCid: pc.String(), Status: "complete"}},
+			})
+		}))
+		return c, &calls
+	}
+
+	t.Run("resends after Retry-After", func(t *testing.T) {
+		c, calls := newServer(t, 1)
+		var waits []time.Duration
+		c.pullQueueFullDelayFn = func(err error) time.Duration {
+			waits = append(waits, pullQueueFullDelay(err))
+			return 0
+		}
+		res, err := c.WaitForPullComplete(context.Background(), req, time.Millisecond, nil)
+		if err != nil {
+			t.Fatalf("WaitForPullComplete: %v", err)
+		}
+		if res.Status != PullStatusComplete || *calls != 2 {
+			t.Fatalf("status=%q calls=%d, want complete after 2 calls", res.Status, *calls)
+		}
+		// The provider's delay is used in full, not the 30s generic retry cap.
+		if len(waits) != 1 || waits[0] != 2*time.Minute {
+			t.Fatalf("waits=%v want [2m]", waits)
+		}
+	})
+
+	t.Run("stops when context ends", func(t *testing.T) {
+		c, calls := newServer(t, math.MaxInt)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		c.pullQueueFullDelayFn = func(error) time.Duration {
+			cancel()
+			return time.Hour
+		}
+		_, err := c.WaitForPullComplete(ctx, req, time.Millisecond, nil)
+		if !errors.Is(err, context.Canceled) || *calls != 1 {
+			t.Fatalf("err=%v calls=%d, want context.Canceled after 1 call", err, *calls)
+		}
+	})
+}
+
+func TestPullQueueFullDelay(t *testing.T) {
+	tests := []struct {
+		name       string
+		retryAfter time.Duration
+		want       time.Duration
+	}{
+		{name: "no Retry-After", want: time.Minute},
+		{name: "sub-second Retry-After", retryAfter: 512 * time.Nanosecond, want: time.Minute},
+		{name: "oversized Retry-After", retryAfter: time.Hour, want: 5 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := fmt.Errorf("%w: %w", ErrPullQueueFull, &HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: tt.retryAfter})
+			if got := pullQueueFullDelay(err); got != tt.want {
+				t.Fatalf("pullQueueFullDelay=%v want %v", got, tt.want)
+			}
+		})
 	}
 }
 

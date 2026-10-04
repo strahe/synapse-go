@@ -35,7 +35,7 @@ const defaultDownloadTimeout = 24 * time.Hour
 type storageContextOps interface {
 	legacyPieceStorageLimit() uint64
 	presignForCommit(context.Context, []PieceInput) ([]byte, error)
-	pull(context.Context, PullRequest) (*PullResult, error)
+	pull(ctx context.Context, req PullRequest, failWhenQueueFull bool) (*PullResult, error)
 	submitCommit(context.Context, commitRequest) (*CommitSubmission, error)
 	waitForCommit(context.Context, CommitSubmission) (*CommitResult, error)
 }
