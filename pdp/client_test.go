@@ -1296,6 +1296,7 @@ func TestHTTPRetryDelay(t *testing.T) {
 
 func TestParseRetryAfter(t *testing.T) {
 	now := time.Now().UTC()
+	maxRetryAfter := time.Duration(maxRetryAfterSeconds) * time.Second
 	tests := []struct {
 		input   string
 		wantMin time.Duration
@@ -1306,6 +1307,10 @@ func TestParseRetryAfter(t *testing.T) {
 		{"5", 5 * time.Second, 5 * time.Second},
 		{"120", 120 * time.Second, 120 * time.Second},
 		{"bad", 0, 0},
+		// Delays too long for time.Duration clamp instead of wrapping around.
+		{"9223372037", maxRetryAfter, maxRetryAfter},
+		{"20211507185753197", maxRetryAfter, maxRetryAfter},
+		{"99999999999999999999", maxRetryAfter, maxRetryAfter},
 		// HTTP-date format (future) — should return approximately the remaining duration.
 		{now.Add(10 * time.Second).Format(http.TimeFormat), 8 * time.Second, 11 * time.Second},
 		// HTTP-date format (past) — should return 0 (fall back to exponential backoff).

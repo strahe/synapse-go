@@ -932,6 +932,98 @@ func TestManagerUpload_ImplicitSecondaryReplacement(t *testing.T) {
 	}
 }
 
+// queueFullModeUploadContext records the queue-full mode of each pull the
+// upload pipeline sends to it.
+type queueFullModeUploadContext struct {
+	*fakeUploadContext
+	failWhenQueueFull []bool
+}
+
+func (c *queueFullModeUploadContext) pull(ctx context.Context, req PullRequest, failWhenQueueFull bool) (*PullResult, error) {
+	c.failWhenQueueFull = append(c.failWhenQueueFull, failWhenQueueFull)
+	return c.fakeUploadContext.pull(ctx, req, failWhenQueueFull)
+}
+
+func TestUploadSecondaryPullQueueFull(t *testing.T) {
+	data := bytes.Repeat([]byte("queue-full"), 128)
+	info, err := piece.CalculateFromBytes(data)
+	if err != nil {
+		t.Fatalf("CalculateFromBytes: %v", err)
+	}
+	newPrimary := func() *fakeUploadContext {
+		return &fakeUploadContext{
+			id:       types.NewBigInt(101),
+			endpoint: "https://primary.example.com",
+			pieceURL: "https://primary.example.com/piece/" + info.CIDv2.String(),
+			storeFn: func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+				return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			},
+			commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+				return &CommitResult{DataSet: testCommitDataSetRef(101, 1001), PieceIDs: []types.BigInt{types.NewBigInt(2001)}}, nil
+			},
+		}
+	}
+	newSecondary := func(id uint64, pullErr error) *fakeUploadContext {
+		return &fakeUploadContext{
+			id:       types.NewBigInt(id),
+			endpoint: fmt.Sprintf("https://secondary-%d.example.com", id),
+			presignFn: func(context.Context, []PieceInput) ([]byte, error) {
+				return []byte{0x01}, nil
+			},
+			pullFn: func(context.Context, PullRequest) (*PullResult, error) {
+				if pullErr != nil {
+					return nil, pullErr
+				}
+				return &PullResult{
+					Status: PullStatusComplete,
+					Pieces: []PullPieceResult{{PieceCID: info.CIDv2, Status: PullStatusComplete}},
+				}, nil
+			},
+			commitFn: func(context.Context, CommitRequest) (*CommitResult, error) {
+				return &CommitResult{DataSet: testCommitDataSetRef(id, 1002), PieceIDs: []types.BigInt{types.NewBigInt(2002)}}, nil
+			},
+		}
+	}
+
+	t.Run("Upload replaces the provider", func(t *testing.T) {
+		queueFull := fmt.Errorf("pdp.PullPieces: %w: %w", pdp.ErrPullQueueFull,
+			&pdp.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: time.Minute})
+		busy := &queueFullModeUploadContext{fakeUploadContext: newSecondary(202, queueFull)}
+		replacement := newSecondary(303, nil)
+		resolver := &fakeResolver{
+			contexts:     []StorageContext{newPrimary(), busy},
+			replacements: []StorageContext{replacement},
+		}
+		got, err := mustNewService(t, Options{Resolver: resolver}).Upload(context.Background(), bytes.NewReader(data), &UploadOptions{Copies: 2})
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		if !slices.Equal(busy.failWhenQueueFull, []bool{true}) {
+			t.Fatalf("busy provider pull modes=%v want [true]", busy.failWhenQueueFull)
+		}
+		if !got.Complete || len(got.Copies) != 2 || !got.Copies[1].ProviderID.Equal(replacement.id) {
+			t.Fatalf("result=%+v want complete with replacement provider %s", got, replacement.id)
+		}
+		if len(got.FailedAttempts) != 1 || !errors.Is(got.FailedAttempts[0].Err, pdp.ErrPullQueueFull) {
+			t.Fatalf("failed attempts=%+v want one matching pdp.ErrPullQueueFull", got.FailedAttempts)
+		}
+	})
+
+	t.Run("UploadToContexts waits for the provider", func(t *testing.T) {
+		secondary := &queueFullModeUploadContext{fakeUploadContext: newSecondary(202, nil)}
+		got, err := mustNewService(t, Options{}).UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{newPrimary(), secondary}, nil)
+		if err != nil {
+			t.Fatalf("UploadToContexts: %v", err)
+		}
+		if !slices.Equal(secondary.failWhenQueueFull, []bool{false}) {
+			t.Fatalf("secondary pull modes=%v want [false]", secondary.failWhenQueueFull)
+		}
+		if !got.Complete {
+			t.Fatalf("result=%+v want complete", got)
+		}
+	})
+}
+
 func TestServiceUploadReplacementRejectsInvalidTargets(t *testing.T) {
 	data := bytes.Repeat([]byte("rq"), 128)
 	info, err := piece.CalculateFromBytes(data)
@@ -1067,6 +1159,9 @@ func TestManagerUpload_ReplacementKeepsImmutableClientDataSetID(t *testing.T) {
 
 	dsID := types.NewBigInt(404)
 	replacementClient := &fakePDPProviderClient{
+		pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+			return &pdp.PullResult{Status: pdp.PullStatusPending}, nil
+		},
 		waitForPullFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
 			if req.DataSetID == nil || !req.DataSetID.Equal(dsID) {
 				t.Fatalf("pull dataSetID=%v want %s", req.DataSetID, dsID.String())
@@ -1335,7 +1430,7 @@ func (c *fakeUploadContext) Pull(ctx context.Context, req PullRequest) (*PullRes
 	return c.pullFn(ctx, req)
 }
 
-func (c *fakeUploadContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
+func (c *fakeUploadContext) pull(ctx context.Context, req PullRequest, _ bool) (*PullResult, error) {
 	return c.Pull(ctx, req)
 }
 

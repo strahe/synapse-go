@@ -3,6 +3,7 @@ package pdp
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,7 +32,8 @@ type HTTPError struct {
 	Body       string
 	// RetryAfter is the server-requested wait duration from the Retry-After
 	// header. Non-zero on HTTP 429 (Too Many Requests) and 503 (Service
-	// Unavailable) responses when the server provides the header.
+	// Unavailable) responses when the server provides the header. Delays too
+	// long for time.Duration are clamped to the longest whole-second duration.
 	RetryAfter time.Duration
 }
 
@@ -48,15 +50,22 @@ func newHTTPError(req *http.Request, resp *http.Response, body []byte) *HTTPErro
 	return e
 }
 
+// maxRetryAfterSeconds is the longest whole-second delay time.Duration holds.
+const maxRetryAfterSeconds = math.MaxInt64 / int64(time.Second)
+
 // parseRetryAfter parses a Retry-After header value. It accepts both
 // delay-seconds (e.g. "30") and HTTP-date formats.
 func parseRetryAfter(v string) time.Duration {
 	if v == "" {
 		return 0
 	}
-	// Numeric: delay in seconds.
-	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
+	// Numeric: delay in seconds. A delay too long to represent still means a
+	// long wait, so clamp it instead of letting the conversion wrap around.
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if n <= 0 {
+			return 0
+		}
+		return time.Duration(min(n, maxRetryAfterSeconds)) * time.Second
 	}
 	// HTTP-date format.
 	if t, err := http.ParseTime(v); err == nil {

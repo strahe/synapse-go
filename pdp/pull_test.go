@@ -275,30 +275,53 @@ func TestPullPieces_RetriesTransientHTTP(t *testing.T) {
 
 func TestPullPieces_QueueFullNotRetried(t *testing.T) {
 	pc := testPieceInfoV2(t).CIDv2
-	calls := 0
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
-		w.Header().Set("Retry-After", "120")
-		http.Error(w, "pull queue backpressure", http.StatusTooManyRequests)
-	}))
+	tests := []struct {
+		name  string
+		write func(http.ResponseWriter)
+	}{
+		{
+			name: "complete body",
+			write: func(w http.ResponseWriter) {
+				http.Error(w, "pull queue backpressure", http.StatusTooManyRequests)
+			},
+		},
+		{
+			name: "truncated body",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Length", "100")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte("pull queue"))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.Header().Set("Retry-After", "120")
+				tt.write(w)
+			}))
 
-	_, err := c.PullPieces(context.Background(), PullRequest{
-		RecordKeeper: common.HexToAddress("0xabc"),
-		ExtraData:    []byte{0x01},
-		Pieces: []PullPieceInput{{
-			PieceCID:  pc,
-			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
-		}},
-	})
-	if calls != 1 {
-		t.Fatalf("calls=%d want 1", calls)
-	}
-	if !errors.Is(err, ErrPullQueueFull) {
-		t.Fatalf("err=%v want ErrPullQueueFull", err)
-	}
-	httpErr, ok := errors.AsType[*HTTPError](err)
-	if !ok || httpErr.RetryAfter != 2*time.Minute {
-		t.Fatalf("HTTPError=%+v ok=%t, want RetryAfter=2m", httpErr, ok)
+			_, err := c.PullPieces(context.Background(), PullRequest{
+				RecordKeeper: common.HexToAddress("0xabc"),
+				ExtraData:    []byte{0x01},
+				Pieces: []PullPieceInput{{
+					PieceCID:  pc,
+					SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s", pc.String()),
+				}},
+			})
+			if calls != 1 {
+				t.Fatalf("calls=%d want 1", calls)
+			}
+			if !errors.Is(err, ErrPullQueueFull) {
+				t.Fatalf("err=%v want ErrPullQueueFull", err)
+			}
+			httpErr, ok := errors.AsType[*HTTPError](err)
+			if !ok || httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != 2*time.Minute {
+				t.Fatalf("HTTPError=%+v ok=%t, want 429 with RetryAfter=2m", httpErr, ok)
+			}
+		})
 	}
 }
 
@@ -374,6 +397,7 @@ func TestPullQueueFullDelay(t *testing.T) {
 		want       time.Duration
 	}{
 		{name: "no Retry-After", want: time.Minute},
+		{name: "sub-second Retry-After", retryAfter: 512 * time.Nanosecond, want: time.Minute},
 		{name: "oversized Retry-After", retryAfter: time.Hour, want: 5 * time.Minute},
 	}
 	for _, tt := range tests {

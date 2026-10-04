@@ -238,10 +238,12 @@ func (p *uploadPipeline) pullAttempt(index int) bool {
 			p.opts.OnPullProgress(target.ProviderID(), pieceCID, status)
 		}
 	}
+	// With replacement allowed, another provider is a better use of a full
+	// queue than waiting for this one.
 	result, err := pullTarget.pull(p.ctx, PullRequest{
 		Pieces: []cid.Cid{p.storeResult.PieceCID}, From: p.copies[0].target.PieceURL,
 		ExtraData: extraData, OnProgress: onProgress,
-	})
+	}, p.allowReplacement)
 	if err == nil {
 		switch {
 		case result == nil:

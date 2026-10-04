@@ -923,6 +923,55 @@ func TestContextPullRoutesByConcreteType(t *testing.T) {
 	}
 }
 
+func TestContextPullFailWhenQueueFull(t *testing.T) {
+	info := mustPieceInfo(t)
+	queueFull := fmt.Errorf("pdp.PullPieces: %w: %w", pdp.ErrPullQueueFull,
+		&pdp.HTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: time.Minute})
+	tests := []struct {
+		name      string
+		pullErr   error
+		wantWaits int
+	}{
+		{name: "full queue fails without waiting", pullErr: queueFull},
+		{name: "accepted pull is waited for", wantWaits: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waits := 0
+			client := &fakePDPProviderClient{
+				pullPiecesFn: func(context.Context, pdp.PullRequest) (*pdp.PullResult, error) {
+					if tt.pullErr != nil {
+						return nil, tt.pullErr
+					}
+					return &pdp.PullResult{Status: pdp.PullStatusPending}, nil
+				},
+				waitForPullFn: func(_ context.Context, req pdp.PullRequest) (*pdp.PullResult, error) {
+					waits++
+					return completePullResult(req), nil
+				},
+			}
+			c := mustDataSetContext(t, client, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), WithRecordKeeper(testRecordKeeper()))
+			res, err := c.pull(context.Background(), PullRequest{
+				Pieces:    []cid.Cid{info.CIDv2},
+				From:      func(cid.Cid) string { return "https://source.example.com/piece" },
+				ExtraData: []byte{0x01},
+			}, true)
+			if waits != tt.wantWaits {
+				t.Fatalf("WaitForPullComplete calls=%d want %d", waits, tt.wantWaits)
+			}
+			if tt.pullErr != nil {
+				if !errors.Is(err, pdp.ErrPullQueueFull) {
+					t.Fatalf("pull error=%v want pdp.ErrPullQueueFull", err)
+				}
+				return
+			}
+			if err != nil || res.Status != PullStatusComplete {
+				t.Fatalf("pull result=%+v error=%v want complete", res, err)
+			}
+		})
+	}
+}
+
 func TestContextSubmitPullSendsOneRequest(t *testing.T) {
 	info := mustPieceInfo(t)
 	dataSetID := types.NewBigInt(42)

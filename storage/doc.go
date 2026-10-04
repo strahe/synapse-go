@@ -218,10 +218,12 @@
 // errors, rather than caller argument or unavailable-dataset errors.
 //
 // UploadToContexts does not select replacements. The first context stores the
-// reader; later contexts pull from it. Configure this path with
-// [UploadToContextsOptions]. Service.Upload retains automatic replacement for
-// failed secondary copies. Direct [ProviderContext.Upload] and
-// [DataSetContext.Upload] calls store one copy and accept [ContextUploadOptions].
+// reader; later contexts pull from it, waiting while a provider's pull queue is
+// full. Configure this path with [UploadToContextsOptions]. Service.Upload
+// retains automatic replacement for failed secondary copies and replaces a
+// provider whose pull queue is full without waiting. Direct
+// [ProviderContext.Upload] and [DataSetContext.Upload] calls store one copy and
+// accept [ContextUploadOptions].
 // [StorageContext] is the sealed, ordered mixed-target view used by selection,
 // preparation, and UploadToContexts; commit lifecycle methods remain on the
 // concrete context whose target determines their meaning.

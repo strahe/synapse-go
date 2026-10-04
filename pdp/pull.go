@@ -170,7 +170,12 @@ func (c *Client) postPull(ctx context.Context, wire pullPiecesWire) ([]byte, err
 		return req, nil
 	}, func(req *http.Request) (*http.Response, []byte, error) {
 		resp, body, err := c.do(req, http.StatusOK, http.StatusCreated, http.StatusAccepted)
-		if httpErr, ok := errors.AsType[*HTTPError](err); ok && httpErr.StatusCode == http.StatusTooManyRequests {
+		if err != nil && resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			// The status and Retry-After arrive before the body, so a body
+			// read failure still reports a full queue.
+			if _, ok := errors.AsType[*HTTPError](err); !ok {
+				err = errors.Join(newHTTPError(req, resp, body), err)
+			}
 			err = fmt.Errorf("pdp.PullPieces: %w: %w", ErrPullQueueFull, err)
 		}
 		return resp, body, err
@@ -180,8 +185,11 @@ func (c *Client) postPull(ctx context.Context, wire pullPiecesWire) ([]byte, err
 
 const (
 	// defaultPullQueueFullDelay applies when a full pull queue gives no
-	// Retry-After.
+	// usable Retry-After.
 	defaultPullQueueFullDelay = time.Minute
+	// minPullQueueFullDelay is the shortest Retry-After honored, so a malformed
+	// header cannot turn the wait into back-to-back requests.
+	minPullQueueFullDelay = time.Second
 	// maxPullQueueFullDelay bounds the provider's Retry-After so one response
 	// cannot stall a wait that has no deadline.
 	maxPullQueueFullDelay = 5 * time.Minute
@@ -191,7 +199,7 @@ const (
 // provider declined because its queue was full.
 func pullQueueFullDelay(err error) time.Duration {
 	httpErr, ok := errors.AsType[*HTTPError](err)
-	if !ok || httpErr.RetryAfter <= 0 {
+	if !ok || httpErr.RetryAfter < minPullQueueFullDelay {
 		return defaultPullQueueFullDelay
 	}
 	return min(httpErr.RetryAfter, maxPullQueueFullDelay)
@@ -200,8 +208,9 @@ func pullQueueFullDelay(err error) time.Duration {
 // WaitForPullComplete polls PullPieces until the overall pull status is
 // "complete" or "failed". On failure it returns (result, ErrPullFailed) so
 // callers can inspect the per-piece statuses. When the provider's pull queue
-// is full, it waits for the provider's Retry-After (one minute when absent, at
-// most five minutes) and sends the request again until ctx ends.
+// is full, it waits for the provider's Retry-After (one minute when absent or
+// under a second, at most five minutes) and sends the request again until ctx
+// ends.
 //
 // onStatus is invoked after each poll (may be nil). A zero pollInterval
 // defaults to 4 seconds.

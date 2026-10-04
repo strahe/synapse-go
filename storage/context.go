@@ -595,11 +595,11 @@ func presignCommitAuthorization(
 // [pdp.ErrPullFailed] and the result carries each piece status the provider
 // reported.
 func (c *ProviderContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
-	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req)
+	return c.pull(ctx, req, false)
 }
 
-func (c *ProviderContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
-	return c.Pull(ctx, req)
+func (c *ProviderContext) pull(ctx context.Context, req PullRequest, failWhenQueueFull bool) (*PullResult, error) {
+	return c.core.pull(ctx, "storage.ProviderContext.Pull", nil, req, failWhenQueueFull)
 }
 
 // SubmitPull makes one pull request for a new data set and returns the
@@ -630,11 +630,11 @@ func (c *ProviderContext) SubmitPull(ctx context.Context, req PullRequest) (*Pul
 // [pdp.ErrPullFailed] and the result carries each piece status the provider
 // reported.
 func (c *DataSetContext) Pull(ctx context.Context, req PullRequest) (*PullResult, error) {
-	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req)
+	return c.pull(ctx, req, false)
 }
 
-func (c *DataSetContext) pull(ctx context.Context, req PullRequest) (*PullResult, error) {
-	return c.Pull(ctx, req)
+func (c *DataSetContext) pull(ctx context.Context, req PullRequest, failWhenQueueFull bool) (*PullResult, error) {
+	return c.core.pull(ctx, "storage.DataSetContext.Pull", &c.ref, req, failWhenQueueFull)
 }
 
 // SubmitPull makes one pull request for the bound data set and returns the
@@ -655,10 +655,19 @@ func (c *DataSetContext) SubmitPull(ctx context.Context, req PullRequest) (*Pull
 	return c.core.submitPull(ctx, "storage.DataSetContext.SubmitPull", &c.ref, req)
 }
 
-func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req PullRequest) (*PullResult, error) {
+// pull waits for req to end. With failWhenQueueFull, a provider whose pull
+// queue is full fails the pull instead, so Upload can try another provider.
+func (c *contextCore) pull(ctx context.Context, op string, ref *DataSetRef, req PullRequest, failWhenQueueFull bool) (*PullResult, error) {
 	pdpReq, err := c.buildPullRequest(op, ref, req)
 	if err != nil {
 		return nil, err
+	}
+	if failWhenQueueFull {
+		// WaitForPullComplete waits out a full queue. Providers check the queue
+		// only when they first accept a pull, so one request decides it.
+		if _, err := c.client.PullPieces(ctx, pdpReq); err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
 	}
 	// A malformed status cannot be reported, so stop polling rather than
 	// waiting for the pull to end.
