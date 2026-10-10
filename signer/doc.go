@@ -25,6 +25,8 @@
 // Standalone contract services accept custom [EVMSigner] implementations.
 // [EVMSigner.Transactor] must return non-nil transaction options on success;
 // returning an error aborts the write before nonce acquisition or broadcast.
+// Services construct the transaction with NoSend enabled, then broadcast it
+// themselves. NoSend in signer-provided options does not disable submission.
 //
 // # Raw hash signing
 //

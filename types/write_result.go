@@ -14,9 +14,11 @@ import (
 //
 // Error semantics (observe WriteResult and err together):
 //
-//   - WriteResult == nil, err != nil: pre-broadcast failure (validation,
-//     signing, or broadcast itself failed). The transaction was never
-//     submitted to the chain and it is safe to retry with fresh state.
+//   - WriteResult == nil, err != nil: no successful submission result is
+//     available. When sending returned an error, err wraps [BroadcastError],
+//     which preserves the original signed transaction. A nil result does not
+//     establish that the node rejected the transaction; do not blindly retry
+//     the business operation with a new transaction.
 //   - WriteResult != nil, err == nil: transaction was broadcast
 //     successfully. Without a wait option, Receipt is nil. With a wait
 //     option, Receipt is non-nil and Status == 1 (successful execution).

@@ -98,7 +98,11 @@ func TestExternalModuleCanConfigureServiceOptions(t *testing.T) {
 import (
 	"context"
 	"iter"
+	"errors"
+	"fmt"
+	"io"
 	"math/big"
+	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -118,6 +122,18 @@ type paymentRailsReader interface {
 	GetRailsAsPayee(context.Context, common.Address, common.Address, types.ListOptions) (*payments.RailPage, error)
 	IterateAllRailsAsPayer(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
 	IterateAllRailsAsPayee(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
+}
+
+func TestBroadcastErrorAliases(t *testing.T) {
+	want := &types.BroadcastError{Cause: io.ErrUnexpectedEOF}
+	err := fmt.Errorf("write: %w", want)
+	p, pOK := errors.AsType[*payments.BroadcastError](err)
+	s, sOK := errors.AsType[*sessionkey.BroadcastError](err)
+	r, rOK := errors.AsType[*spregistry.BroadcastError](err)
+	w, wOK := errors.AsType[*warmstorage.BroadcastError](err)
+	if !pOK || !sOK || !rOK || !wOK || p != want || s != want || r != want || w != want || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("broadcast aliases did not preserve identity and cause: %v", err)
+	}
 }
 
 var _ paymentRailsReader = (*payments.Service)(nil)

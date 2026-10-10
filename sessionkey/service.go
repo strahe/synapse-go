@@ -178,7 +178,9 @@ func (s *Service) LoginWithOptions(ctx context.Context, sessionKeyAddr common.Ad
 	}
 	defer release()
 
-	tx, err := s.registryTx.Login(txOpts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.registryTx.Login(opts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.Login: %w", err)
@@ -223,7 +225,9 @@ func (s *Service) LoginAndFundWithOptions(ctx context.Context, sessionKeyAddr co
 	}
 	defer release()
 
-	tx, err := s.registryTx.LoginAndFund(txOpts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.registryTx.LoginAndFund(opts, sessionKeyAddr, new(big.Int).SetUint64(lo.ExpiresAt), perms, lo.Origin)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.LoginAndFund: %w", err)
@@ -261,7 +265,9 @@ func (s *Service) RevokeWithOptions(ctx context.Context, sessionKeyAddr common.A
 	}
 	defer release()
 
-	tx, err := s.registryTx.Revoke(txOpts, sessionKeyAddr, perms, ro.Origin)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.registryTx.Revoke(opts, sessionKeyAddr, perms, ro.Origin)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("sessionkey.Revoke: %w", err)
@@ -461,6 +467,14 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	}
 	txOpts.Nonce = new(big.Int).SetUint64(nonce)
 	return txOpts, release, nil
+}
+
+func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, build func(*bind.TransactOpts) (*types.Transaction, error)) (*types.Transaction, error) {
+	tx, err := txutil.SignAndSend(ctx, s.backend, opts, build)
+	if err != nil && tx != nil {
+		err = &BroadcastError{Transaction: tx, Cause: err}
+	}
+	return tx, err
 }
 
 func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {

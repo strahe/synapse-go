@@ -5,14 +5,22 @@ package payments_test
 import (
 	"context"
 	"errors"
+	"io"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -25,6 +33,9 @@ func TestIntegration_Payments(t *testing.T) {
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
+	if client.Chain() != chain.Calibration {
+		t.Fatal("payment write integration tests require Calibration")
+	}
 	p := client.Payments()
 
 	// Trivially covered — assert non-zero shape.
@@ -96,90 +107,191 @@ func TestIntegration_Payments(t *testing.T) {
 		t.Logf("FundSync tx=%s", syncRes.Hash)
 	})
 
-	t.Run("WithdrawAndRestore", func(t *testing.T) {
-		one := big.NewInt(1)
-		before, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
-		if err != nil {
-			t.Fatalf("AccountInfo(before): %v", err)
+	for _, loseResponse := range []bool{false, true} {
+		name := "WithdrawAndRestore"
+		if loseResponse {
+			name = "WithdrawAcceptedThenEOFAndRestore"
 		}
-		if before == nil {
-			t.Fatal("AccountInfo(before) returned nil")
-		}
-		if available := before.AvailableFunds(); available == nil || available.Cmp(one) < 0 {
-			t.Fatalf("available funds %v are insufficient for a one atto-USDFC withdrawal", available)
-		}
-		beforeWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
-		if err != nil {
-			t.Fatalf("WalletBalance(before): %v", err)
-		}
-		allowance, err := p.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
-		if err != nil {
-			t.Fatalf("Allowance(before withdrawal): %v", err)
-		}
-		if allowance == nil {
-			t.Fatal("Allowance(before withdrawal) returned nil")
-		}
-		if allowance.Cmp(one) < 0 {
-			approve, err := p.Approve(ctx, addrs.USDFC, addrs.Payments, one, payments.WithWait(90*time.Second))
+		t.Run(name, func(t *testing.T) {
+			writer := p
+			rpc, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
 			if err != nil {
-				t.Fatalf("Approve(restore amount): %v", err)
+				t.Fatal(err)
 			}
-			if approve == nil || approve.Receipt == nil || approve.Receipt.Status != 1 {
-				t.Fatalf("Approve receipt = %+v", approve.Receipt)
+			t.Cleanup(rpc.Close)
+			chainID, err := rpc.ChainID(ctx)
+			if err != nil || chainID.Cmp(big.NewInt(integrationtest.CalibrationChainID)) != 0 {
+				t.Fatalf("withdrawal RPC must be Calibration: chain=%v error=%v", chainID, err)
 			}
-		}
+			var lostResponse *lostBroadcastResponseBackend
+			if loseResponse {
+				key, err := crypto.HexToECDSA(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
+				if err != nil {
+					t.Fatal("invalid integration signing key")
+				}
+				defer key.D.SetInt64(0)
+				sg, err := signer.NewSecp256k1Signer(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lostResponse = &lostBroadcastResponseBackend{Backend: rpc}
+				writer, err = payments.New(payments.Options{
+					Backend: lostResponse, Signer: sg,
+					ChainID:       types.ChainID(integrationtest.CalibrationChainID),
+					FilPayAddress: addrs.Payments,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			one := big.NewInt(1)
+			before, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
+			if err != nil {
+				t.Fatalf("AccountInfo(before): %v", err)
+			}
+			if before == nil {
+				t.Fatal("AccountInfo(before) returned nil")
+			}
+			if available := before.AvailableFunds(); available == nil || available.Cmp(one) < 0 {
+				t.Fatalf("available funds %v are insufficient for a one atto-USDFC withdrawal", available)
+			}
+			beforeWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
+			if err != nil {
+				t.Fatalf("WalletBalance(before): %v", err)
+			}
+			allowance, err := p.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
+			if err != nil {
+				t.Fatalf("Allowance(before withdrawal): %v", err)
+			}
+			if allowance == nil {
+				t.Fatal("Allowance(before withdrawal) returned nil")
+			}
+			if allowance.Cmp(one) < 0 {
+				approve, err := p.Approve(ctx, addrs.USDFC, addrs.Payments, one, payments.WithWait(90*time.Second))
+				if err != nil {
+					t.Fatalf("Approve(restore amount): %v", err)
+				}
+				if approve == nil || approve.Receipt == nil || approve.Receipt.Status != 1 {
+					t.Fatalf("Approve receipt = %+v", approve.Receipt)
+				}
+			}
 
-		withdrawn := false
-		restored := false
-		t.Cleanup(func() {
-			if !withdrawn || restored {
-				return
+			withdrawn := false
+			restored := false
+			var withdrawTx *ethtypes.Transaction
+			var restoreTx *ethtypes.Transaction
+			t.Cleanup(func() {
+				if restored || !withdrawn && withdrawTx == nil {
+					return
+				}
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cleanupCancel()
+				if restoreTx != nil {
+					receipt, err := bind.WaitMined(cleanupCtx, rpc, restoreTx)
+					if err != nil {
+						t.Errorf("cleanup could not determine deposit outcome: %v", err)
+						return
+					}
+					if receipt.Status == ethtypes.ReceiptStatusSuccessful {
+						return
+					}
+				}
+				if !withdrawn {
+					receipt, err := bind.WaitMined(cleanupCtx, rpc, withdrawTx)
+					if err != nil {
+						t.Errorf("cleanup could not determine withdrawal outcome: %v", err)
+						return
+					}
+					if receipt.Status != ethtypes.ReceiptStatusSuccessful {
+						return
+					}
+				}
+				if _, err := p.Deposit(cleanupCtx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second)); err != nil {
+					t.Errorf("cleanup Deposit(1 atto-USDFC): %v", err)
+				}
+			})
+
+			withdraw, err := writer.Withdraw(ctx, addrs.USDFC, one, payments.WithWait(90*time.Second))
+			if broadcast, ok := errors.AsType[*payments.BroadcastError](err); ok {
+				withdrawTx = broadcast.Transaction
 			}
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cleanupCancel()
-			if _, err := p.Deposit(cleanupCtx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second)); err != nil {
-				t.Logf("cleanup Deposit(1 atto-USDFC): %v", err)
+			if loseResponse && lostResponse.accepted != nil {
+				withdrawTx = lostResponse.accepted
 			}
+			if loseResponse {
+				broadcast, ok := errors.AsType[*payments.BroadcastError](err)
+				if withdraw != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || lostResponse.accepted == nil || lostResponse.sends != 1 {
+					t.Fatalf("lost response result=%v error=%v sends=%d", withdraw, err, lostResponse.sends)
+				}
+				if broadcast.Transaction.Hash() != lostResponse.accepted.Hash() || broadcast.Transaction.Nonce() != lostResponse.accepted.Nonce() {
+					t.Fatal("broadcast error lost the accepted transaction identity")
+				}
+				recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 90*time.Second)
+				defer recoveryCancel()
+				receipt, waitErr := bind.WaitMined(recoveryCtx, rpc, broadcast.Transaction)
+				if waitErr != nil {
+					t.Fatalf("query original withdrawal: %v", waitErr)
+				}
+				withdraw = &types.WriteResult{Hash: broadcast.Transaction.Hash(), Receipt: receipt}
+				err = nil
+				t.Logf("recovered accepted withdrawal after EOF: tx=%s nonce=%d", withdraw.Hash, broadcast.Transaction.Nonce())
+			}
+			if err != nil {
+				t.Fatalf("Withdraw(1 atto-USDFC): %v", err)
+			}
+			if withdraw == nil || withdraw.Receipt == nil || withdraw.Receipt.Status != 1 {
+				t.Fatalf("Withdraw receipt = %+v", withdraw.Receipt)
+			}
+			withdrawn = true
+
+			deposit, err := p.Deposit(ctx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second))
+			if err != nil {
+				if broadcast, ok := errors.AsType[*payments.BroadcastError](err); ok {
+					restoreTx = broadcast.Transaction
+				}
+				t.Fatalf("Deposit(restore 1 atto-USDFC): %v", err)
+			}
+			if deposit == nil || deposit.Receipt == nil || deposit.Receipt.Status != 1 {
+				t.Fatalf("Deposit receipt = %+v", deposit.Receipt)
+			}
+			restored = true
+
+			after, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
+			if err != nil {
+				t.Fatalf("AccountInfo(after): %v", err)
+			}
+			if after == nil {
+				t.Fatal("AccountInfo(after) returned nil")
+			}
+			afterWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
+			if err != nil {
+				t.Fatalf("WalletBalance(after): %v", err)
+			}
+			if after.Funds.Cmp(before.Funds) != 0 {
+				t.Fatalf("deposited funds after restore = %s, want %s", after.Funds, before.Funds)
+			}
+			t.Logf(
+				"Withdraw/Deposit restored principal: account funds delta=%s, available delta=%s, wallet delta=%s, lockup-current delta=%s",
+				new(big.Int).Sub(after.Funds, before.Funds),
+				new(big.Int).Sub(after.AvailableFunds(), before.AvailableFunds()),
+				new(big.Int).Sub(afterWallet, beforeWallet),
+				new(big.Int).Sub(after.LockupCurrent, before.LockupCurrent),
+			)
 		})
+	}
+}
 
-		withdraw, err := p.Withdraw(ctx, addrs.USDFC, one, payments.WithWait(90*time.Second))
-		if err != nil {
-			t.Fatalf("Withdraw(1 atto-USDFC): %v", err)
-		}
-		if withdraw == nil || withdraw.Receipt == nil || withdraw.Receipt.Status != 1 {
-			t.Fatalf("Withdraw receipt = %+v", withdraw.Receipt)
-		}
-		withdrawn = true
+type lostBroadcastResponseBackend struct {
+	payments.Backend
+	accepted *ethtypes.Transaction
+	sends    int
+}
 
-		deposit, err := p.Deposit(ctx, addrs.USDFC, client.Address(), one, payments.WithWait(90*time.Second))
-		if err != nil {
-			t.Fatalf("Deposit(restore 1 atto-USDFC): %v", err)
-		}
-		if deposit == nil || deposit.Receipt == nil || deposit.Receipt.Status != 1 {
-			t.Fatalf("Deposit receipt = %+v", deposit.Receipt)
-		}
-		restored = true
-
-		after, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
-		if err != nil {
-			t.Fatalf("AccountInfo(after): %v", err)
-		}
-		if after == nil {
-			t.Fatal("AccountInfo(after) returned nil")
-		}
-		afterWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
-		if err != nil {
-			t.Fatalf("WalletBalance(after): %v", err)
-		}
-		if after.Funds.Cmp(before.Funds) != 0 {
-			t.Fatalf("deposited funds after restore = %s, want %s", after.Funds, before.Funds)
-		}
-		t.Logf(
-			"Withdraw/Deposit restored principal: account funds delta=%s, available delta=%s, wallet delta=%s, lockup-current delta=%s",
-			new(big.Int).Sub(after.Funds, before.Funds),
-			new(big.Int).Sub(after.AvailableFunds(), before.AvailableFunds()),
-			new(big.Int).Sub(afterWallet, beforeWallet),
-			new(big.Int).Sub(after.LockupCurrent, before.LockupCurrent),
-		)
-	})
+func (b *lostBroadcastResponseBackend) SendTransaction(ctx context.Context, tx *ethtypes.Transaction) error {
+	b.sends++
+	if err := b.Backend.SendTransaction(ctx, tx); err != nil {
+		return err
+	}
+	b.accepted = tx
+	return io.ErrUnexpectedEOF
 }

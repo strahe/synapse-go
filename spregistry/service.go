@@ -199,6 +199,14 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	return topts, release, nil
 }
 
+func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, build func(*bind.TransactOpts) (*ethtypes.Transaction, error)) (*ethtypes.Transaction, error) {
+	tx, err := txutil.SignAndSend(ctx, s.backend, opts, build)
+	if err != nil && tx != nil {
+		err = &BroadcastError{Transaction: tx, Cause: err}
+	}
+	return tx, err
+}
+
 // finalize applies WriteOption post-broadcast semantics: it returns the
 // transaction hash immediately, unless the caller asked to wait for a
 // receipt (WithWait). When the transaction reverts on-chain, the returned

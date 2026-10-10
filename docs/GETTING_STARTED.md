@@ -297,7 +297,10 @@ fmt.Println("service ends at epoch:", termination.EndEpoch)
 Relayed termination ends service immediately. Direct termination keeps service
 and payments active until `EndEpoch`. Neither deletes the data. A direct wait
 can time out after the transaction was broadcast, so record the hash from
-`OnSubmitted` and do not resubmit blindly.
+`OnSubmitted` and do not resubmit blindly. If sending itself returns an error,
+use [types.BroadcastError](https://pkg.go.dev/github.com/strahe/synapse-go/types#BroadcastError)
+to obtain the original transaction for lookup; the error does not establish
+whether the node accepted it.
 
 ## Services
 

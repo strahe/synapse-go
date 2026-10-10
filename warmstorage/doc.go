@@ -26,6 +26,8 @@
 // Write methods accept [WithOnSubmitted] to report successful broadcast
 // synchronously, before any receipt waiting. This notification does not indicate
 // confirmation. Waiting errors retain the submission hash in types.WriteResult.
+// Sending errors return [BroadcastError] with the original signed transaction
+// and cause; a nil result does not establish that the node rejected it.
 //
 // Errors are returned as wrapped sentinels or typed errors. Use errors.Is for
 // sentinels and errors.AsType for typed errors:

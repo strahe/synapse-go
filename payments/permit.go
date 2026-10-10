@@ -229,15 +229,15 @@ func (s *Service) depositWithPermit(
 	}
 	defer release()
 
-	var tx *ethtypes.Transaction
-	if operator == nil {
-		tx, err = s.filPayWrite.DepositWithPermit(txOpts, token, recipient, amount, deadline, sig.V, sig.R, sig.S)
-	} else {
-		tx, err = s.filPayWrite.DepositWithPermitAndApproveOperator(
-			txOpts, token, recipient, amount, deadline, sig.V, sig.R, sig.S,
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		if operator == nil {
+			return s.filPayWrite.DepositWithPermit(opts, token, recipient, amount, deadline, sig.V, sig.R, sig.S)
+		}
+		return s.filPayWrite.DepositWithPermitAndApproveOperator(
+			opts, token, recipient, amount, deadline, sig.V, sig.R, sig.S,
 			*operator, rateAllowance, lockupAllowance, maxLockupPeriod,
 		)
-	}
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.%s: %w", method, err)

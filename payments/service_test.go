@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math/big"
 	"sync"
 	"testing"
@@ -59,7 +60,8 @@ type mockBackend struct {
 	nonceErr error
 
 	// sendErr, when set, makes SendTransaction return this error
-	sendErr error
+	sendErr            error
+	sendErrAfterAccept error
 	// estimateGasErr, when set, makes EstimateGas return this error
 	estimateGasErr error
 }
@@ -226,7 +228,7 @@ func (m *mockBackend) SendTransaction(_ context.Context, tx *types.Transaction) 
 		return m.sendErr
 	}
 	m.sent = append(m.sent, tx)
-	return nil
+	return m.sendErrAfterAccept
 }
 
 // --- ContractFilterer ---
@@ -341,6 +343,39 @@ func TestNewTransactOptsRejectsNilSignerOptions(t *testing.T) {
 	}
 	if release != nil {
 		t.Fatal("newTransactOpts returned a release function, want nil")
+	}
+}
+
+type noSendSigner struct {
+	signer.EVMSigner
+	opts       *bind.TransactOpts
+	signatures int
+}
+
+func (s *noSendSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	opts, err := s.EVMSigner.Transactor(chainID)
+	if err != nil {
+		return nil, err
+	}
+	opts.NoSend = true
+	sign := opts.Signer
+	opts.Signer = func(address common.Address, tx *types.Transaction) (*types.Transaction, error) {
+		s.signatures++
+		return sign(address, tx)
+	}
+	s.opts = opts
+	return opts, nil
+}
+
+func TestApprove_SignerNoSendStillBroadcastsOnce(t *testing.T) {
+	sg := &noSendSigner{EVMSigner: newTestSigner(t)}
+	s, mb := newTestServiceWith(t, sg)
+	res, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+	if err != nil || res == nil || len(mb.sent) != 1 || sg.signatures != 1 {
+		t.Fatalf("result=%v error=%v sent=%d signatures=%d", res, err, len(mb.sent), sg.signatures)
+	}
+	if res.Hash != mb.sent[0].Hash() || !sg.opts.NoSend {
+		t.Fatal("broadcast identity changed or signer options were mutated")
 	}
 }
 
@@ -1714,56 +1749,79 @@ func TestBalance_Success(t *testing.T) {
 	}
 }
 
-func TestApprove_SendError(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.sendErr = errors.New("send failed")
-	_, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
-	if err == nil {
-		t.Error("expected send error")
-	}
-}
-
-func TestDeposit_SendError(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.sendErr = errors.New("send failed")
-	_, err := s.Deposit(context.Background(), tokenAddr, otherAddr, big.NewInt(1), WithSkipPrecheck())
-	if err == nil {
-		t.Error("expected send error")
-	}
-}
-
-func TestWithdraw_SendError(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.sendErr = errors.New("send failed")
-	_, err := s.Withdraw(context.Background(), tokenAddr, big.NewInt(1), WithSkipPrecheck())
-	if err == nil {
-		t.Error("expected send error")
-	}
-}
-
-func TestApproveService_SendError(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.sendErr = errors.New("send failed")
-	_, err := s.ApproveService(context.Background(), tokenAddr, operatorAddr, big.NewInt(0), big.NewInt(0), big.NewInt(0))
-	if err == nil {
-		t.Error("expected send error")
-	}
-}
-
-func TestRevokeService_SendError(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.sendErr = errors.New("send failed")
-	_, err := s.RevokeService(context.Background(), tokenAddr, operatorAddr)
-	if err == nil {
-		t.Error("expected send error")
+func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
+	ctx := context.Background()
+	one, zero := big.NewInt(1), new(big.Int)
+	for _, tt := range []struct {
+		name  string
+		write func(*Service) (*sdktypes.WriteResult, error)
+	}{
+		{"Approve", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Approve(ctx, tokenAddr, filPayAddr, one, WithWait(time.Second))
+		}},
+		{"Deposit", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Deposit(ctx, tokenAddr, otherAddr, one, WithSkipPrecheck(), WithWait(time.Second))
+		}},
+		{"Withdraw", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Withdraw(ctx, tokenAddr, one, WithSkipPrecheck(), WithWait(time.Second))
+		}},
+		{"ApproveService", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.ApproveService(ctx, tokenAddr, operatorAddr, zero, zero, zero, WithWait(time.Second))
+		}},
+		{"RevokeService", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.RevokeService(ctx, tokenAddr, operatorAddr, WithWait(time.Second))
+		}},
+		{"DepositWithPermit", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.DepositWithPermit(ctx, tokenAddr, otherAddr, one, nil, WithSkipPrecheck(), WithWait(time.Second))
+		}},
+		{"DepositWithPermitAndApproveOperator", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, one, nil, operatorAddr, one, one, one, WithSkipPrecheck(), WithWait(time.Second))
+		}},
+		{"Settle", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Settle(ctx, sdktypes.NewBigInt(1), one, WithWait(time.Second))
+		}},
+		{"SettleTerminatedRail", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.SettleTerminatedRail(ctx, sdktypes.NewBigInt(1), WithWait(time.Second))
+		}},
+		{"Fund", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Fund(ctx, one, WithFundNeedsFwssApproval(false), WithSkipPrecheck(), WithWait(time.Second))
+		}},
+		{"FundSync", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.FundSync(ctx, one, WithFundNeedsFwssApproval(false), WithSkipPrecheck())
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			s.usdfcToken, s.warmStorage = tokenAddr, operatorAddr
+			seedPermitInputs(t, mb)
+			mb.sendErrAfterAccept = io.ErrUnexpectedEOF
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				t.Error("broadcast error entered receipt polling")
+				return nil, ethereum.NotFound
+			}
+			res, err := tt.write(s)
+			broadcast, ok := errors.AsType[*BroadcastError](err)
+			if res != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || len(mb.sent) != 1 {
+				t.Fatalf("result=%v error=%v sent=%d", res, err, len(mb.sent))
+			}
+			if broadcast.Transaction != mb.sent[0] {
+				t.Fatal("broadcast error lost the actual signed transaction")
+			}
+			sender, err := types.Sender(types.LatestSignerForChainID(broadcast.Transaction.ChainId()), broadcast.Transaction)
+			if err != nil || sender != s.Account() {
+				t.Fatalf("recovered sender=%s error=%v", sender, err)
+			}
+		})
 	}
 }
 
 func TestApprove_EstimateGasError(t *testing.T) {
 	s, mb := newTestService(t)
-	mb.estimateGasErr = errors.New("execution reverted: insufficient balance")
-	_, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
-	if err == nil {
-		t.Error("expected gas estimation error")
+	want := errors.New("execution reverted: insufficient balance")
+	mb.estimateGasErr = want
+	res, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+	_, broadcast := errors.AsType[*BroadcastError](err)
+	if res != nil || !errors.Is(err, want) || broadcast || len(mb.sent) != 0 {
+		t.Fatalf("result=%v error=%v broadcast=%t sent=%d", res, err, broadcast, len(mb.sent))
 	}
 }

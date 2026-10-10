@@ -92,6 +92,7 @@ func TestContext_TerminateService_SkipProviderPropagatesError(t *testing.T) {
 
 func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 	broadcastErr := errors.New("broadcast rejected")
+	lostResponse := &types.BroadcastError{Transaction: coretypes.NewTx(&coretypes.LegacyTx{Nonce: 7}), Cause: context.DeadlineExceeded}
 	tests := []struct {
 		name         string
 		sendErr      error
@@ -100,6 +101,7 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 	}{
 		{name: "confirmed"},
 		{name: "broadcast rejected", sendErr: broadcastErr},
+		{name: "broadcast response lost", sendErr: lostResponse},
 		{name: "receipt timeout", waitErr: context.DeadlineExceeded},
 		{name: "canceled after submission", cancelOnHash: true, waitErr: context.Canceled},
 		{name: "reverted transaction", waitErr: types.ErrTxFailed},
@@ -182,6 +184,12 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 					}
 					if callbackCalls != wantCalls {
 						t.Fatalf("callback calls=%d, want %d", callbackCalls, wantCalls)
+					}
+					if errors.Is(tt.sendErr, lostResponse) {
+						got, ok := errors.AsType[*types.BroadcastError](err)
+						if !ok || got != lostResponse || !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("direct termination lost broadcast error: %v", err)
+						}
 					}
 				})
 			}

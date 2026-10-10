@@ -25,6 +25,10 @@
 // created automatically for standalone use; the root synapse Client injects a
 // shared coordinator across all write-capable services.
 //
+// Sending errors return [BroadcastError], preserving the original signed
+// transaction and cause. A nil WriteResult does not establish that the node
+// rejected the transaction.
+//
 //   - RegisterProvider: declares the caller as a provider and, in the
 //     same transaction, registers a PDP product. Reads REGISTRATION_FEE
 //     from the contract unless WithValue overrides.

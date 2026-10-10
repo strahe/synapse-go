@@ -3,6 +3,7 @@ package spregistry
 import (
 	"context"
 	"errors"
+	"io"
 	"math/big"
 	"strings"
 	"sync"
@@ -24,14 +25,14 @@ import (
 // Suggest* / EstimateGas / SendTransaction / TransactionReceipt /
 // BlockNumber) so spregistry.New can bind a transactor and the write
 // methods can broadcast through it. Captured transactions are held on
-// `sent` for assertions; SendTransaction always returns nil so the
-// finalize path is exercised.
+// `sent` for assertions; sendErr simulates a lost response after acceptance.
 type mockWriteBackend struct {
 	*mockCaller
 
-	mu     sync.Mutex
-	sent   []*coretypes.Transaction
-	nonces map[common.Address]uint64
+	mu      sync.Mutex
+	sent    []*coretypes.Transaction
+	sendErr error
+	nonces  map[common.Address]uint64
 
 	// failRegistrationFee causes the REGISTRATION_FEE view call to fail
 	// before any transaction is assembled. Used to exercise the fee-read
@@ -108,7 +109,7 @@ func (m *mockWriteBackend) SendTransaction(_ context.Context, tx *coretypes.Tran
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, tx)
-	return nil
+	return m.sendErr
 }
 
 func (m *mockWriteBackend) FilterLogs(_ context.Context, _ ethereum.FilterQuery) ([]coretypes.Log, error) {
@@ -657,6 +658,50 @@ func TestFinalize_Success(t *testing.T) {
 	}
 	if res.Receipt == nil || res.Receipt.Status != 1 {
 		t.Fatalf("expected success receipt; got %+v", res.Receipt)
+	}
+}
+
+func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		write func(*Service) (*WriteResult, error)
+	}{
+		{"RegisterProvider", func(s *Service) (*WriteResult, error) {
+			return s.RegisterProvider(context.Background(), sampleRegistration(), WithWait(time.Second))
+		}},
+		{"UpdateProviderInfo", func(s *Service) (*WriteResult, error) {
+			return s.UpdateProviderInfo(context.Background(), "name", "description", WithWait(time.Second))
+		}},
+		{"RemoveProvider", func(s *Service) (*WriteResult, error) {
+			return s.RemoveProvider(context.Background(), WithWait(time.Second))
+		}},
+		{"AddPDPProduct", func(s *Service) (*WriteResult, error) {
+			return s.AddPDPProduct(context.Background(), sampleOffering(), nil, WithWait(time.Second))
+		}},
+		{"UpdatePDPProduct", func(s *Service) (*WriteResult, error) {
+			return s.UpdatePDPProduct(context.Background(), sampleOffering(), nil, WithWait(time.Second))
+		}},
+		{"RemoveProduct", func(s *Service) (*WriteResult, error) {
+			return s.RemoveProduct(context.Background(), ProductTypePDP, WithWait(time.Second))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newWriteTestService(t)
+			mb.set(t, "REGISTRATION_FEE", registrationFeeWei())
+			mb.sendErr = io.ErrUnexpectedEOF
+			mb.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
+				t.Error("broadcast error entered receipt polling")
+				return nil, ethereum.NotFound
+			}
+			res, err := tt.write(s)
+			broadcast, ok := errors.AsType[*BroadcastError](err)
+			if res != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || len(mb.sent) != 1 {
+				t.Fatalf("result=%v error=%v sent=%d", res, err, len(mb.sent))
+			}
+			if broadcast.Transaction != mb.sent[0] {
+				t.Fatal("broadcast error lost the actual signed transaction")
+			}
+		})
 	}
 }
 

@@ -83,7 +83,9 @@ func (s *Service) RegisterProvider(ctx context.Context, info ProviderRegistratio
 	defer release()
 	topts.Value = fee
 
-	tx, err := s.write.RegisterProvider(topts, info.Payee, info.Name, info.Description, uint8(ProductTypePDP), keys, values)
+	tx, err := s.signAndSend(ctx, topts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.write.RegisterProvider(opts, info.Payee, info.Name, info.Description, uint8(ProductTypePDP), keys, values)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.RegisterProvider: broadcast: %w", err)
@@ -109,7 +111,9 @@ func (s *Service) UpdateProviderInfo(ctx context.Context, name, description stri
 		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: %w", err)
 	}
 	defer release()
-	tx, err := s.write.UpdateProviderInfo(topts, name, description)
+	tx, err := s.signAndSend(ctx, topts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.write.UpdateProviderInfo(opts, name, description)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.UpdateProviderInfo: broadcast: %w", err)
@@ -132,7 +136,9 @@ func (s *Service) RemoveProvider(ctx context.Context, opts ...WriteOption) (*Wri
 		return nil, fmt.Errorf("spregistry.RemoveProvider: %w", err)
 	}
 	defer release()
-	tx, err := s.write.RemoveProvider(topts)
+	tx, err := s.signAndSend(ctx, topts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.write.RemoveProvider(opts)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.RemoveProvider: broadcast: %w", err)
@@ -170,7 +176,9 @@ func (s *Service) RemoveProduct(ctx context.Context, productType ProductType, op
 		return nil, fmt.Errorf("spregistry.RemoveProduct: %w", err)
 	}
 	defer release()
-	tx, err := s.write.RemoveProduct(topts, uint8(productType))
+	tx, err := s.signAndSend(ctx, topts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.write.RemoveProduct(opts, uint8(productType))
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.RemoveProduct: broadcast: %w", err)
@@ -204,7 +212,9 @@ func (s *Service) writeProduct(
 		return nil, fmt.Errorf("spregistry.%s: %w", method, err)
 	}
 	defer release()
-	tx, err := fn(topts, uint8(ProductTypePDP), keys, values)
+	tx, err := s.signAndSend(ctx, topts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return fn(opts, uint8(ProductTypePDP), keys, values)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("spregistry.%s: broadcast: %w", method, err)
