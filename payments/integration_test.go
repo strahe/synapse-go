@@ -88,6 +88,74 @@ func TestIntegration_Payments(t *testing.T) {
 	}
 	t.Logf("total account fixed lockup: %s", fixed)
 
+	t.Run("Uint256Overflow", func(t *testing.T) {
+		limit := new(big.Int).Lsh(big.NewInt(1), 256)
+		for _, tt := range []struct {
+			name string
+			call func(*big.Int) (*types.WriteResult, error)
+		}{
+			{name: "Approve", call: func(v *big.Int) (*types.WriteResult, error) {
+				return p.Approve(ctx, addrs.USDFC, addrs.Payments, v)
+			}},
+			{name: "Deposit", call: func(v *big.Int) (*types.WriteResult, error) {
+				return p.Deposit(ctx, addrs.USDFC, client.Address(), v, payments.WithSkipPrecheck())
+			}},
+			{name: "Withdraw", call: func(v *big.Int) (*types.WriteResult, error) {
+				return p.Withdraw(ctx, addrs.USDFC, v, payments.WithSkipPrecheck())
+			}},
+			{name: "Fund", call: func(v *big.Int) (*types.WriteResult, error) {
+				return p.Fund(ctx, v, payments.WithSkipPrecheck())
+			}},
+			{name: "ApproveService", call: func(v *big.Int) (*types.WriteResult, error) {
+				return p.ApproveService(ctx, addrs.USDFC, addrs.FWSS, v, big.NewInt(1), big.NewInt(1))
+			}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				for _, delta := range []int64{0, 7} {
+					res, err := tt.call(new(big.Int).Add(limit, big.NewInt(delta)))
+					if res != nil || !errors.Is(err, payments.ErrInvalidArgument) {
+						t.Fatalf("overflow+%d: result=%v error=%v, want invalid argument", delta, res, err)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("MaximumERC20Allowance", func(t *testing.T) {
+		original, err := p.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
+		if err != nil {
+			t.Fatalf("Allowance before approval: %v", err)
+		}
+		t.Cleanup(func() {
+			restoreCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			res, err := p.Approve(restoreCtx, addrs.USDFC, addrs.Payments, original, payments.WithWait(90*time.Second))
+			if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Errorf("restore allowance: result=%v error=%v", res, err)
+				return
+			}
+			got, err := p.Allowance(restoreCtx, addrs.USDFC, client.Address(), addrs.Payments)
+			if err != nil {
+				t.Errorf("Allowance after restore: %v", err)
+			} else if got.Cmp(original) != 0 {
+				t.Errorf("restored allowance=%s, want %s", got, original)
+			}
+		})
+		maximum := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+		res, err := p.Approve(ctx, addrs.USDFC, addrs.Payments, maximum, payments.WithWait(90*time.Second))
+		if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+			t.Fatalf("maximum allowance approval: result=%v error=%v", res, err)
+		}
+		got, err := p.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
+		if err != nil {
+			t.Fatalf("Allowance after approval: %v", err)
+		}
+		if got.Cmp(maximum) != 0 {
+			t.Fatalf("allowance=%s, want maximum %s", got, maximum)
+		}
+		t.Logf("maximum allowance confirmed: tx=%s", res.Hash)
+	})
+
 	t.Run("FundSync", func(t *testing.T) {
 		// Deposit a trivial amount to assert the permit-based chain path.
 		one := big.NewInt(1)

@@ -29,6 +29,10 @@
 // Sending errors return [BroadcastError] with the original signed transaction
 // and cause; a nil result does not establish that the node rejected it.
 //
+// [Service.TopUpCDNPaymentRails] requires each amount to be within [0, 2^256-1]
+// and at least one amount to be positive. Invalid amounts return
+// [ErrInvalidArgument] before nonce acquisition or signing.
+//
 // Errors are returned as wrapped sentinels or typed errors. Use errors.Is for
 // sentinels and errors.AsType for typed errors:
 //

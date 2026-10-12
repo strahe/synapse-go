@@ -101,7 +101,7 @@ func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Add
 // required.
 //
 // `to` is the credited depositor; when zero, defaults to the signer EOA.
-// `deadline` is the permit expiry (unix seconds); when nil, now +
+// `deadline` is the permit expiry (unix seconds); when nil or non-positive, now +
 // [PermitDeadlineDuration] is used. `token` must be an ERC-2612 /
 // ERC20Permit-compliant token (e.g. USDFC).
 func (s *Service) DepositWithPermit(
@@ -155,6 +155,11 @@ func (s *Service) depositWithPermit(
 	}
 	if err := validatePositive("payments."+method+" amount", amount); err != nil {
 		return nil, err
+	}
+	if deadline != nil && deadline.Sign() > 0 {
+		if err := validatePositive("payments."+method+" deadline", deadline); err != nil {
+			return nil, err
+		}
 	}
 	if operator != nil {
 		if (*operator == common.Address{}) {
@@ -332,10 +337,10 @@ func (s *Service) watchPermitReceiptAndRelease(txHash common.Hash, confirmations
 }
 
 func validatePositive(name string, v *big.Int) error {
-	if v == nil {
-		return fmt.Errorf("%s: %w: nil", name, ErrInvalidArgument)
+	if err := validateNonNegative(name, v); err != nil {
+		return err
 	}
-	if v.Sign() <= 0 {
+	if v.Sign() == 0 {
 		return fmt.Errorf("%s: %w: must be > 0", name, ErrInvalidArgument)
 	}
 	return nil

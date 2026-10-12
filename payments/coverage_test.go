@@ -114,26 +114,33 @@ func TestSettle_InvalidRailID(t *testing.T) {
 }
 
 func TestSettle_DefaultUntilEpochUsesBlockNumber(t *testing.T) {
-	s, mb := newTestService(t)
-	// blockFn default in mockBackend returns 10. resolveUntilEpoch should
-	// substitute that when untilEpoch is nil or zero.
-	if _, err := s.Settle(context.Background(), sdktypes.NewBigInt(1), nil); err != nil {
-		t.Fatalf("Settle default epoch: %v", err)
-	}
-	if len(mb.sent) != 1 {
-		t.Fatalf("sent = %d, want 1", len(mb.sent))
-	}
-	args, err := mb.filPayABI.Methods["settleRail"].Inputs.Unpack(mb.sent[0].Data()[4:])
-	if err != nil {
-		t.Fatalf("unpack settleRail: %v", err)
-	}
-	if got := args[0].(*big.Int); got.Cmp(big.NewInt(1)) != 0 {
-		t.Fatalf("railId arg = %s, want 1", got)
-	}
-	// blockFn returns 10; that value must have been substituted into the
-	// outgoing calldata — the core invariant this test is named after.
-	if got := args[1].(*big.Int); got.Cmp(big.NewInt(10)) != 0 {
-		t.Fatalf("untilEpoch arg = %s, want 10 (mock block number)", got)
+	for _, tt := range []struct {
+		name  string
+		epoch *big.Int
+	}{
+		{name: "nil"},
+		{name: "zero", epoch: new(big.Int)},
+		{name: "negative", epoch: big.NewInt(-1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			if _, err := s.Settle(context.Background(), sdktypes.NewBigInt(1), tt.epoch); err != nil {
+				t.Fatalf("Settle default epoch: %v", err)
+			}
+			if len(mb.sent) != 1 {
+				t.Fatalf("sent = %d, want 1", len(mb.sent))
+			}
+			args, err := mb.filPayABI.Methods["settleRail"].Inputs.Unpack(mb.sent[0].Data()[4:])
+			if err != nil {
+				t.Fatalf("unpack settleRail: %v", err)
+			}
+			if got := args[0].(*big.Int); got.Cmp(big.NewInt(1)) != 0 {
+				t.Fatalf("railId arg = %s, want 1", got)
+			}
+			if got := args[1].(*big.Int); got.Cmp(big.NewInt(10)) != 0 {
+				t.Fatalf("untilEpoch arg = %s, want 10 (mock block number)", got)
+			}
+		})
 	}
 }
 
@@ -161,15 +168,22 @@ func TestSettleAuto_RoutesByRailEndEpoch(t *testing.T) {
 	tests := []struct {
 		name       string
 		endEpoch   int64
+		untilEpoch *big.Int
 		wantMethod string
+		wantErr    bool
 	}{
-		{name: "active rail", endEpoch: 0, wantMethod: "settleRail"},
-		{name: "terminated rail", endEpoch: 99, wantMethod: "settleTerminatedRailWithoutValidation"},
+		{name: "active rail", endEpoch: 0, untilEpoch: big.NewInt(20), wantMethod: "settleRail"},
+		{name: "active rail overflow", endEpoch: 0, untilEpoch: new(big.Int).Lsh(big.NewInt(1), 256), wantErr: true},
+		{name: "terminated rail", endEpoch: 99, untilEpoch: big.NewInt(20), wantMethod: "settleTerminatedRailWithoutValidation"},
+		{name: "terminated rail ignores epoch", endEpoch: 99, untilEpoch: new(big.Int).Lsh(big.NewInt(1), 256), wantMethod: "settleTerminatedRailWithoutValidation"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, mb := newTestService(t)
+			sg := &validationSigner{EVMSigner: s.signer}
+			nonces := &recordingNonceManager{}
+			s.signer, s.nonces = sg, nonces
 			mb.setFilPayReply(t, filPayAddr, "getRail", filpaybind.FilecoinPayV1RailView{
 				Token:               tokenAddr,
 				From:                otherAddr,
@@ -185,7 +199,17 @@ func TestSettleAuto_RoutesByRailEndEpoch(t *testing.T) {
 				ServiceFeeRecipient: common.Address{},
 			})
 
-			if _, err := s.SettleAuto(context.Background(), sdktypes.NewBigInt(7), big.NewInt(20)); err != nil {
+			res, err := s.SettleAuto(context.Background(), sdktypes.NewBigInt(7), tt.untilEpoch)
+			if tt.wantErr {
+				if res != nil || !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("result=%v error=%v, want invalid untilEpoch", res, err)
+				}
+				if nonces.acquired != 0 || sg.transactors != 0 || sg.signatures != 0 || len(mb.sent) != 0 {
+					t.Fatalf("nonce=%d transactors=%d signatures=%d sent=%d", nonces.acquired, sg.transactors, sg.signatures, len(mb.sent))
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("SettleAuto: %v", err)
 			}
 			if len(mb.sent) != 1 {

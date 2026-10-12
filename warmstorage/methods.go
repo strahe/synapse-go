@@ -588,11 +588,11 @@ func (s *Service) TopUpCDNPaymentRails(
 	if dataSetID.IsZero() {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: zero dataSetID", ErrInvalidArgument)
 	}
-	if cdnAmountToAdd == nil || cdnAmountToAdd.Sign() < 0 {
-		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: invalid cdnAmountToAdd", ErrInvalidArgument)
+	if err := txutil.ValidateUint256(cdnAmountToAdd); err != nil {
+		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: cdnAmountToAdd: %w", ErrInvalidArgument, err)
 	}
-	if cacheMissAmountToAdd == nil || cacheMissAmountToAdd.Sign() < 0 {
-		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: invalid cacheMissAmountToAdd", ErrInvalidArgument)
+	if err := txutil.ValidateUint256(cacheMissAmountToAdd); err != nil {
+		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: cacheMissAmountToAdd: %w", ErrInvalidArgument, err)
 	}
 	if cdnAmountToAdd.Sign() == 0 && cacheMissAmountToAdd.Sign() == 0 {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w: at least one top-up amount must be > 0", ErrInvalidArgument)

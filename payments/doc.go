@@ -24,6 +24,11 @@
 // returns an error. It preserves the original transaction and cause; a nil
 // WriteResult does not establish that the transaction was rejected.
 //
+// Amounts, operator allowances, and positive epochs or permit deadlines used in
+// contract calls must fit uint256. Out-of-range caller arguments return
+// [ErrInvalidArgument] before nonce acquisition or signing. Maximum allowances
+// use 2^256-1; larger values are rejected. [WithSkipPrecheck] keeps these checks.
+//
 // # Rail pagination
 //
 // GetRailsAsPayer and GetRailsAsPayee require types.ListOptions with Limit > 0.

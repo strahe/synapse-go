@@ -21,30 +21,38 @@ import (
 )
 
 func TestTopUpCDNPaymentRails_BroadcastsExpectedCall(t *testing.T) {
-	svc, backend := newWriteTestService(t)
-	var submitted common.Hash
-	res, err := svc.TopUpCDNPaymentRails(
-		context.Background(),
-		sdktypes.NewBigInt(7),
-		big.NewInt(11),
-		big.NewInt(13),
-		WithOnSubmitted(func(hash common.Hash) { submitted = hash }),
-	)
-	if err != nil {
-		t.Fatalf("TopUpCDNPaymentRails: %v", err)
-	}
-	if len(backend.sent) != 1 || res == nil || res.Hash != backend.sent[0].Hash() || submitted != res.Hash {
-		t.Fatalf("result=%+v sent=%d", res, len(backend.sent))
-	}
-	method := backend.fwssABI.Methods["topUpCDNPaymentRails"]
-	args, err := method.Inputs.Unpack(backend.sent[0].Data()[4:])
-	if err != nil {
-		t.Fatalf("unpack calldata: %v", err)
-	}
-	if args[0].(*big.Int).Cmp(big.NewInt(7)) != 0 ||
-		args[1].(*big.Int).Cmp(big.NewInt(11)) != 0 ||
-		args[2].(*big.Int).Cmp(big.NewInt(13)) != 0 {
-		t.Fatalf("TopUpCDNPaymentRails args = %v", args)
+	maximum := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	for _, tt := range []struct {
+		name           string
+		cdn, cacheMiss *big.Int
+	}{
+		{name: "ordinary amounts", cdn: big.NewInt(11), cacheMiss: big.NewInt(13)},
+		{name: "maximum amounts", cdn: maximum, cacheMiss: maximum},
+		{name: "zero CDN", cdn: new(big.Int), cacheMiss: maximum},
+		{name: "zero cache miss", cdn: maximum, cacheMiss: new(big.Int)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, backend := newWriteTestService(t)
+			var submitted common.Hash
+			res, err := svc.TopUpCDNPaymentRails(context.Background(), sdktypes.NewBigInt(7), tt.cdn, tt.cacheMiss,
+				WithOnSubmitted(func(hash common.Hash) { submitted = hash }))
+			if err != nil {
+				t.Fatalf("TopUpCDNPaymentRails: %v", err)
+			}
+			if len(backend.sent) != 1 || res == nil || res.Hash != backend.sent[0].Hash() || submitted != res.Hash {
+				t.Fatalf("result=%+v sent=%d", res, len(backend.sent))
+			}
+			method := backend.fwssABI.Methods["topUpCDNPaymentRails"]
+			args, err := method.Inputs.Unpack(backend.sent[0].Data()[4:])
+			if err != nil {
+				t.Fatalf("unpack calldata: %v", err)
+			}
+			if args[0].(*big.Int).Cmp(big.NewInt(7)) != 0 ||
+				args[1].(*big.Int).Cmp(tt.cdn) != 0 ||
+				args[2].(*big.Int).Cmp(tt.cacheMiss) != 0 {
+				t.Fatalf("TopUpCDNPaymentRails args = %v", args)
+			}
+		})
 	}
 }
 
@@ -112,6 +120,7 @@ func TestNewTransactOptsRejectsNilSignerOptions(t *testing.T) {
 }
 
 func TestTopUpCDNPaymentRails_ValidatesArguments(t *testing.T) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 256)
 	tests := []struct {
 		name      string
 		dataSetID sdktypes.BigInt
@@ -123,19 +132,47 @@ func TestTopUpCDNPaymentRails_ValidatesArguments(t *testing.T) {
 		{name: "negative CDN amount", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(-1), cacheMiss: big.NewInt(1)},
 		{name: "nil cache miss amount", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(1)},
 		{name: "negative cache miss amount", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(1), cacheMiss: big.NewInt(-1)},
+		{name: "overflow CDN amount", dataSetID: sdktypes.NewBigInt(1), cdn: limit, cacheMiss: big.NewInt(1)},
+		{name: "overflow CDN with low bits", dataSetID: sdktypes.NewBigInt(1), cdn: new(big.Int).Add(limit, big.NewInt(7)), cacheMiss: big.NewInt(1)},
+		{name: "overflow cache miss amount", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(1), cacheMiss: limit},
+		{name: "overflow cache miss with low bits", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(1), cacheMiss: new(big.Int).Add(limit, big.NewInt(7))},
 		{name: "both zero", dataSetID: sdktypes.NewBigInt(1), cdn: big.NewInt(0), cacheMiss: big.NewInt(0)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, backend := newWriteTestService(t)
-			if _, err := svc.TopUpCDNPaymentRails(context.Background(), tt.dataSetID, tt.cdn, tt.cacheMiss); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("error = %v, want ErrInvalidArgument", err)
+			sg := &validationWriteSigner{EVMSigner: svc.signer}
+			nonces := &validationNonceManager{NonceManager: svc.nonces}
+			svc.signer, svc.nonces = sg, nonces
+			res, err := svc.TopUpCDNPaymentRails(context.Background(), tt.dataSetID, tt.cdn, tt.cacheMiss)
+			if res != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("result=%v error=%v, want nil result and ErrInvalidArgument", res, err)
 			}
-			if len(backend.sent) != 0 {
-				t.Fatalf("sent tx count = %d, want 0", len(backend.sent))
+			if sg.transactors != 0 || nonces.acquired != 0 || len(backend.sent) != 0 {
+				t.Fatalf("transactors=%d nonce acquisitions=%d sent=%d, want all zero", sg.transactors, nonces.acquired, len(backend.sent))
 			}
 		})
 	}
+}
+
+type validationWriteSigner struct {
+	signer.EVMSigner
+	transactors int
+}
+
+func (s *validationWriteSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	s.transactors++
+	return s.EVMSigner.Transactor(chainID)
+}
+
+type validationNonceManager struct {
+	NonceManager
+	acquired int
+}
+
+func (n *validationNonceManager) Acquire(ctx context.Context) (uint64, func(), error) {
+	n.acquired++
+	return n.NonceManager.Acquire(ctx)
 }
 
 func TestWriteMethods_UseBackendPendingNonce(t *testing.T) {

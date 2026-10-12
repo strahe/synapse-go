@@ -624,11 +624,8 @@ func copyBig(v *big.Int) *big.Int {
 }
 
 func validateNonNegative(name string, v *big.Int) error {
-	if v == nil {
-		return fmt.Errorf("%s: %w: nil", name, ErrInvalidArgument)
-	}
-	if v.Sign() < 0 {
-		return fmt.Errorf("%s: %w: negative", name, ErrInvalidArgument)
+	if err := txutil.ValidateUint256(v); err != nil {
+		return fmt.Errorf("%s: %w: %w", name, ErrInvalidArgument, err)
 	}
 	return nil
 }
