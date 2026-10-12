@@ -53,16 +53,26 @@ func TestFund_WithFundNeedsFwssApprovalFalseSkipsApprovalCheck(t *testing.T) {
 }
 
 func TestFund_UsesInjectedApprovalLockupPeriod(t *testing.T) {
-	s, mb := newTestService(t)
-	s.warmStorage = operatorAddr
-	s.usdfcToken = tokenAddr
-	s.lockups = &fakeApprovalLockupReader{period: big.NewInt(123)}
+	for _, tt := range []struct {
+		name   string
+		period *big.Int
+	}{
+		{name: "ordinary period", period: big.NewInt(123)},
+		{name: "maximum period", period: new(big.Int).Set(maxUint256)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			s.warmStorage = operatorAddr
+			s.usdfcToken = tokenAddr
+			s.lockups = &fakeApprovalLockupReader{period: tt.period}
 
-	if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
-		t.Fatalf("Fund: %v", err)
-	}
-	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(big.NewInt(123)) != 0 {
-		t.Fatalf("maxLockupPeriod=%s want 123", got)
+			if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
+				t.Fatalf("Fund: %v", err)
+			}
+			if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(tt.period) != 0 {
+				t.Fatalf("maxLockupPeriod=%s want %s", got, tt.period)
+			}
+		})
 	}
 }
 

@@ -10,12 +10,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/txutil"
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
 const defaultApprovalLockupPeriodEpochs int64 = chain.EpochsPerMonth
 
-// maxUint256 is the ERC-2612-style "unlimited" allowance used by Fund.
+// maxUint256 is the maximum operator allowance used by Fund.
 var maxUint256 = func() *big.Int {
 	x, _ := new(big.Int).SetString(
 		"115792089237316195423570985008687907853269984665640564039457584007913129639935", 10,
@@ -53,11 +54,8 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 	if err := s.requireSigner("Fund"); err != nil {
 		return nil, err
 	}
-	if amount == nil {
-		return nil, fmt.Errorf("payments.Fund: %w: amount must not be nil", ErrInvalidArgument)
-	}
-	if amount.Sign() < 0 {
-		return nil, fmt.Errorf("payments.Fund: %w: amount must be >= 0", ErrInvalidArgument)
+	if err := validateNonNegative("payments.Fund amount", amount); err != nil {
+		return nil, err
 	}
 	if (s.warmStorage == common.Address{}) {
 		return nil, fmt.Errorf("payments.Fund: %w: WarmStorageAddress not configured", ErrInvalidArgument)
@@ -161,8 +159,8 @@ func (s *Service) isFwssMaxApproved(ctx context.Context, requiredLockupPeriod *b
 
 func (s *Service) resolveFundApprovalLockupPeriod(ctx context.Context, cfg writeConfig) (*big.Int, error) {
 	if cfg.fundApprovalLockup != nil {
-		if cfg.fundApprovalLockup.Sign() <= 0 {
-			return nil, fmt.Errorf("%w: approval lockup period must be > 0", ErrInvalidArgument)
+		if err := validatePositive("approval lockup period", cfg.fundApprovalLockup); err != nil {
+			return nil, err
 		}
 		return new(big.Int).Set(cfg.fundApprovalLockup), nil
 	}
@@ -173,6 +171,9 @@ func (s *Service) resolveFundApprovalLockupPeriod(ctx context.Context, cfg write
 		}
 		if period == nil || period.Sign() <= 0 {
 			return nil, fmt.Errorf("%w: approval lockup period must be > 0", ErrInvalidArgument)
+		}
+		if err := txutil.ValidateUint256(period); err != nil {
+			return nil, fmt.Errorf("approval lockup period reader: %w", err)
 		}
 		return new(big.Int).Set(period), nil
 	}

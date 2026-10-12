@@ -59,6 +59,7 @@ func WithConfirmations(n uint64) WriteOption {
 // WithSkipPrecheck disables client-side balance / allowance / funds checks
 // before broadcasting. Useful when the caller has already validated state
 // or wants to probe an on-chain revert for diagnostic purposes.
+// Static argument validation, including uint256 bounds, still applies.
 func WithSkipPrecheck() WriteOption {
 	return func(c *writeConfig) { c.skipPrecheck = true }
 }

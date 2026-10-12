@@ -25,7 +25,7 @@ type SettlementResult struct {
 }
 
 // Settle triggers a rail settlement up to `untilEpoch`. When `untilEpoch`
-// is nil or zero, the current block number is used.
+// is nil or non-positive, the current block number is used.
 func (s *Service) Settle(ctx context.Context, railID sdktypes.BigInt, untilEpoch *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -172,9 +172,12 @@ func (s *Service) GetSettlementAmounts(ctx context.Context, railID sdktypes.BigI
 }
 
 // resolveUntilEpoch returns untilEpoch when non-nil and positive; otherwise
-// it queries the current block number to match the TS default.
+// it queries the current block number.
 func (s *Service) resolveUntilEpoch(ctx context.Context, untilEpoch *big.Int) (*big.Int, error) {
 	if untilEpoch != nil && untilEpoch.Sign() > 0 {
+		if err := validatePositive("untilEpoch", untilEpoch); err != nil {
+			return nil, err
+		}
 		return new(big.Int).Set(untilEpoch), nil
 	}
 	bn, err := s.backend.BlockNumber(ctx)
