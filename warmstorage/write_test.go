@@ -3,6 +3,7 @@ package warmstorage
 import (
 	"context"
 	"errors"
+	"io"
 	"math/big"
 	"slices"
 	"strings"
@@ -44,6 +45,38 @@ func TestTopUpCDNPaymentRails_BroadcastsExpectedCall(t *testing.T) {
 		args[1].(*big.Int).Cmp(big.NewInt(11)) != 0 ||
 		args[2].(*big.Int).Cmp(big.NewInt(13)) != 0 {
 		t.Fatalf("TopUpCDNPaymentRails args = %v", args)
+	}
+}
+
+func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		write func(*Service, WriteOption) (*sdktypes.WriteResult, error)
+	}{
+		{"TopUpCDNPaymentRails", func(s *Service, callback WriteOption) (*sdktypes.WriteResult, error) {
+			return s.TopUpCDNPaymentRails(context.Background(), sdktypes.NewBigInt(7), big.NewInt(11), big.NewInt(13), callback, WithWait(time.Second))
+		}},
+		{"TerminateDataSet", func(s *Service, callback WriteOption) (*sdktypes.WriteResult, error) {
+			return s.TerminateDataSet(context.Background(), sdktypes.NewBigInt(7), callback, WithWait(time.Second))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newWriteTestService(t)
+			mb.sendErrAfterAccept = io.ErrUnexpectedEOF
+			mb.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
+				t.Error("broadcast error entered receipt polling")
+				return nil, errors.New("unexpected receipt lookup")
+			}
+			callbackCalls := 0
+			res, err := tt.write(s, WithOnSubmitted(func(common.Hash) { callbackCalls++ }))
+			broadcast, ok := errors.AsType[*BroadcastError](err)
+			if res != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || len(mb.sent) != 1 || callbackCalls != 0 {
+				t.Fatalf("result=%v error=%v sent=%d callbacks=%d", res, err, len(mb.sent), callbackCalls)
+			}
+			if broadcast.Transaction != mb.sent[0] {
+				t.Fatal("broadcast error lost the actual signed transaction")
+			}
+		})
 	}
 }
 

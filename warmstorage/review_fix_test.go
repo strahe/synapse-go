@@ -403,13 +403,14 @@ func TestGetClientDataSetsWithDetails_StopsAfterTopLevelBatchFailure(t *testing.
 type mockWriteBackend struct {
 	*mockCaller
 
-	mu          sync.Mutex
-	sent        []*coretypes.Transaction
-	nonces      map[common.Address]uint64
-	receiptFn   func(context.Context, common.Hash) (*coretypes.Receipt, error)
-	blockNumber uint64
-	nonceErr    error
-	sendErr     error
+	mu                 sync.Mutex
+	sent               []*coretypes.Transaction
+	nonces             map[common.Address]uint64
+	receiptFn          func(context.Context, common.Hash) (*coretypes.Receipt, error)
+	blockNumber        uint64
+	nonceErr           error
+	sendErr            error
+	sendErrAfterAccept error
 }
 
 func newMockWriteBackend(t *testing.T) *mockWriteBackend {
@@ -456,7 +457,7 @@ func (m *mockWriteBackend) SendTransaction(_ context.Context, tx *coretypes.Tran
 		return m.sendErr
 	}
 	m.sent = append(m.sent, tx)
-	return nil
+	return m.sendErrAfterAccept
 }
 
 func (m *mockWriteBackend) FilterLogs(_ context.Context, _ ethereum.FilterQuery) ([]coretypes.Log, error) {

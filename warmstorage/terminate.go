@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
@@ -38,7 +39,9 @@ func (s *Service) TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigIn
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w", err)
 	}
 	defer release()
-	tx, err := s.fwssWrite.TerminateService(txOpts, dataSetID.Big())
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.fwssWrite.TerminateService(opts, dataSetID.Big())
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.TerminateDataSet: %w", err)

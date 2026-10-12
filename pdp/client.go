@@ -250,7 +250,7 @@ func isRetryable(ctx context.Context, err error) bool {
 		return true
 	}
 	// HTTP/2: retry on GOAWAY and stream-level recoverable errors.
-	if _, ok := errors.AsType[http2.GoAwayError](err); ok {
+	if _, ok := errors.AsType[http2.GoAwayError](err); ok { //nolint:staticcheck // Go 1.26 x/net/http2 transports still return this error.
 		return true
 	}
 	if streamErr, ok := errors.AsType[http2.StreamError](err); ok {

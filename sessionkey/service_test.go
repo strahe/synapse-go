@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"slices"
@@ -47,6 +48,7 @@ type mockBackend struct {
 	multicallSizes []int
 
 	sent      []*types.Transaction
+	sendErr   error
 	receipts  map[common.Hash]*types.Receipt
 	receiptFn func(context.Context, common.Hash) (*types.Receipt, error)
 	blockFn   func(context.Context) (uint64, error)
@@ -203,7 +205,7 @@ func (m *mockBackend) SendTransaction(_ context.Context, tx *types.Transaction) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, tx)
-	return nil
+	return m.sendErr
 }
 
 func (m *mockBackend) FilterLogs(_ context.Context, _ ethereum.FilterQuery) ([]types.Log, error) {
@@ -678,6 +680,41 @@ func TestRevokeWithOptions_CustomParams(t *testing.T) {
 	gotOrigin := args[2].(string)
 	if gotOrigin != "my-app" {
 		t.Errorf("origin = %q, want %q", gotOrigin, "my-app")
+	}
+}
+
+func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		write func(*Service) (*sdktypes.WriteResult, error)
+	}{
+		{"Login", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Login(context.Background(), common.HexToAddress("0x1234"), WithWait(time.Second))
+		}},
+		{"LoginAndFund", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.LoginAndFund(context.Background(), common.HexToAddress("0x1234"), big.NewInt(7), WithWait(time.Second))
+		}},
+		{"Revoke", func(s *Service) (*sdktypes.WriteResult, error) {
+			return s.Revoke(context.Background(), common.HexToAddress("0x1234"), WithWait(time.Second))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mb := newMockBackend(t)
+			s := newTestService(t, mb, newTestSigner(t))
+			mb.sendErr = io.ErrUnexpectedEOF
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				t.Error("broadcast error entered receipt polling")
+				return nil, ethereum.NotFound
+			}
+			res, err := tt.write(s)
+			broadcast, ok := errors.AsType[*BroadcastError](err)
+			if res != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || len(mb.sent) != 1 {
+				t.Fatalf("result=%v error=%v sent=%d", res, err, len(mb.sent))
+			}
+			if broadcast.Transaction != mb.sent[0] {
+				t.Fatal("broadcast error lost the actual signed transaction")
+			}
+		})
 	}
 }
 

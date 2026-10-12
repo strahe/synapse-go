@@ -49,3 +49,7 @@ var ErrWriteNotConfigured = errors.New("spregistry: write operations not configu
 // payments and sessionkey. The [types.WriteResult.Receipt] is preserved
 // alongside the error for callers that need the full on-chain status.
 var ErrTxFailed = types.ErrTxFailed
+
+// BroadcastError is a convenience re-export of the same [types.BroadcastError]
+// type. Either type can be used to match a transaction send error.
+type BroadcastError = types.BroadcastError

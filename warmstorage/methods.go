@@ -602,7 +602,9 @@ func (s *Service) TopUpCDNPaymentRails(
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w", err)
 	}
 	defer release()
-	tx, err := s.fwssWrite.TopUpCDNPaymentRails(txOpts, dataSetID.Big(), cdnAmountToAdd, cacheMissAmountToAdd)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.fwssWrite.TopUpCDNPaymentRails(opts, dataSetID.Big(), cdnAmountToAdd, cacheMissAmountToAdd)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("warmstorage.TopUpCDNPaymentRails: %w", err)
@@ -628,6 +630,14 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	}
 	topts.Nonce = new(big.Int).SetUint64(nonce)
 	return topts, release, nil
+}
+
+func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, build func(*bind.TransactOpts) (*ethtypes.Transaction, error)) (*ethtypes.Transaction, error) {
+	tx, err := txutil.SignAndSend(ctx, s.backend, opts, build)
+	if err != nil && tx != nil {
+		err = &BroadcastError{Transaction: tx, Cause: err}
+	}
+	return tx, err
 }
 
 func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {

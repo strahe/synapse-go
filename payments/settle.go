@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -44,7 +45,9 @@ func (s *Service) Settle(ctx context.Context, railID sdktypes.BigInt, untilEpoch
 		return nil, fmt.Errorf("payments.Settle: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SettleRail(txOpts, railID.Big(), resolved)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.filPayWrite.SettleRail(opts, railID.Big(), resolved)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.Settle: %w", err)
@@ -71,7 +74,9 @@ func (s *Service) SettleTerminatedRail(ctx context.Context, railID sdktypes.BigI
 		return nil, fmt.Errorf("payments.SettleTerminatedRail: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SettleTerminatedRailWithoutValidation(txOpts, railID.Big())
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*ethtypes.Transaction, error) {
+		return s.filPayWrite.SettleTerminatedRailWithoutValidation(opts, railID.Big())
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.SettleTerminatedRail: %w", err)
@@ -125,7 +130,7 @@ func (s *Service) GetSettlementAmounts(ctx context.Context, railID sdktypes.BigI
 		return nil, fmt.Errorf("payments.GetSettlementAmounts: %w", err)
 	}
 	bound := bind.NewBoundContract(s.filPayAddr, filPayStaticABI, s.backend, nil, nil)
-	var out []interface{}
+	var out []any
 	if err := bound.Call(&bind.CallOpts{Context: ctx}, &out, "settleRail", railID.Big(), resolved); err != nil {
 		return nil, fmt.Errorf("payments.GetSettlementAmounts: static call: %w", err)
 	}

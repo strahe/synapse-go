@@ -379,7 +379,7 @@ func TestDepositWithPermit_AcquireErrorMentionsPermitLock(t *testing.T) {
 	}
 }
 
-func TestDepositWithPermit_ReleasesLockOnPreBroadcastError(t *testing.T) {
+func TestDepositWithPermit_ReleasesLockOnWriteError(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		setup func(*mockBackend)

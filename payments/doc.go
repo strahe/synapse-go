@@ -20,6 +20,10 @@
 // Fund lockup-period fallback unless an ApprovalLockupPeriod reader is
 // supplied.
 //
+// Write methods return [BroadcastError] when sending a signed transaction
+// returns an error. It preserves the original transaction and cause; a nil
+// WriteResult does not establish that the transaction was rejected.
+//
 // # Rail pagination
 //
 // GetRailsAsPayer and GetRailsAsPayee require types.ListOptions with Limit > 0.

@@ -1231,7 +1231,7 @@ func TestIsRetryable(t *testing.T) {
 		{"syscall ECONNRESET", syscall.ECONNRESET, true},
 		{"syscall EPIPE", syscall.EPIPE, true},
 		{"io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
-		{"HTTP2 GOAWAY value", http2.GoAwayError{LastStreamID: 1, ErrCode: http2.ErrCodeNo}, true},
+		{"HTTP2 GOAWAY value", http2.GoAwayError{LastStreamID: 1, ErrCode: http2.ErrCodeNo}, true}, //nolint:staticcheck // Go 1.26 x/net/http2 transports still return this error.
 		{"HTTP2 stream refused value", http2.StreamError{StreamID: 1, Code: http2.ErrCodeRefusedStream}, true},
 		// url.Error wrapping transient syscall error — retry.
 		{"url.Error+ECONNRESET", &url.Error{Op: "Get", URL: "http://x", Err: &net.OpError{Op: "read", Err: syscall.ECONNRESET}}, true},

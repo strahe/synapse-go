@@ -360,7 +360,9 @@ func (s *Service) Approve(ctx context.Context, token, spender common.Address, am
 		return nil, fmt.Errorf("payments.Approve: %w", err)
 	}
 	defer release()
-	tx, err := tw.Approve(txOpts, spender, amount)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return tw.Approve(opts, spender, amount)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.Approve: %w", err)
@@ -413,7 +415,9 @@ func (s *Service) Deposit(ctx context.Context, token, to common.Address, amount 
 		return nil, fmt.Errorf("payments.Deposit: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.Deposit(txOpts, token, recipient, amount)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.filPayWrite.Deposit(opts, token, recipient, amount)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.Deposit: %w", err)
@@ -454,7 +458,9 @@ func (s *Service) Withdraw(ctx context.Context, token common.Address, amount *bi
 		return nil, fmt.Errorf("payments.Withdraw: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.Withdraw(txOpts, token, amount)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.filPayWrite.Withdraw(opts, token, amount)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.Withdraw: %w", err)
@@ -493,7 +499,9 @@ func (s *Service) ApproveService(ctx context.Context, token, operator common.Add
 		return nil, fmt.Errorf("payments.ApproveService: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SetOperatorApproval(txOpts, token, operator, true, rateAllowance, lockupAllowance, maxLockupPeriod)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.filPayWrite.SetOperatorApproval(opts, token, operator, true, rateAllowance, lockupAllowance, maxLockupPeriod)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.ApproveService: %w", err)
@@ -522,7 +530,9 @@ func (s *Service) RevokeService(ctx context.Context, token, operator common.Addr
 		return nil, fmt.Errorf("payments.RevokeService: %w", err)
 	}
 	defer release()
-	tx, err := s.filPayWrite.SetOperatorApproval(txOpts, token, operator, false, zero, zero, zero)
+	tx, err := s.signAndSend(ctx, txOpts, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return s.filPayWrite.SetOperatorApproval(opts, token, operator, false, zero, zero, zero)
+	})
 	release()
 	if err != nil {
 		return nil, fmt.Errorf("payments.RevokeService: %w", err)
@@ -562,6 +572,14 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	}
 	opts.Nonce = new(big.Int).SetUint64(nonce)
 	return opts, release, nil
+}
+
+func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, build func(*bind.TransactOpts) (*types.Transaction, error)) (*types.Transaction, error) {
+	tx, err := txutil.SignAndSend(ctx, s.backend, opts, build)
+	if err != nil && tx != nil {
+		err = &BroadcastError{Transaction: tx, Cause: err}
+	}
+	return tx, err
 }
 
 func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {

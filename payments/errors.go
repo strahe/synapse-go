@@ -14,6 +14,10 @@ import (
 // are the same sentinel and can be matched interchangeably.
 var ErrTxFailed = types.ErrTxFailed
 
+// BroadcastError is a convenience re-export of the same [types.BroadcastError]
+// type. Either type can be used to match a transaction send error.
+type BroadcastError = types.BroadcastError
+
 // ErrUninitialized is returned when a method is invoked on a zero-value
 // Service (one that was not constructed via [New]). Match with
 // errors.Is(err, payments.ErrUninitialized).

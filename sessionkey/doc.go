@@ -7,6 +7,10 @@
 // Client can remain the storage payer and direct transaction signer while a
 // separately authorized key signs Storage EIP-712 messages.
 //
+// Write methods return [BroadcastError] when sending returns an error. It
+// preserves the original signed transaction and cause; a nil WriteResult
+// does not establish that the node rejected the transaction.
+//
 // This is separate from the signer package because session keys represent
 // a higher-level authorization concept, not just a signing primitive.
 //
