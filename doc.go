@@ -1,7 +1,7 @@
 // Package synapse provides the root [Client] for the Filecoin Onchain Cloud
 // (FOC) Go SDK.
 //
-// Create a client with [New], passing a private key and an RPC endpoint (or
+// Create a client with [New], passing a signer or private key and an RPC endpoint (or
 // an existing [ethclient.Client]). The client auto-detects the chain, resolves
 // contract addresses, and eagerly initialises all sub-services before returning.
 //
@@ -20,7 +20,7 @@
 //	result, err := client.Storage().Upload(ctx, data, &storage.UploadOptions{Copies: 2})
 //
 // [WithStorageSigner] can delegate Storage EIP-712 authorization signatures to
-// an authorized key while the root key continues to determine [Client.Address]
+// an authorized key while the root signer continues to determine [Client.Address]
 // and remains the payer and transaction signer. Authorize the delegated address
 // through [Client.SessionKey] before the first storage write; [New] does not
 // check that authorization during client construction.

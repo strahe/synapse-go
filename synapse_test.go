@@ -22,6 +22,7 @@ import (
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -656,8 +657,13 @@ func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
 		Payee:           common.HexToAddress("0x1002"),
 	}
 	var typedNil *kmsStorageSigner
+	rootSigner, err := signer.NewSecp256k1Signer(rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name       string
+		rootOpt    ClientOption
 		opt        ClientOption
 		wantSigner common.Address
 	}{
@@ -665,6 +671,8 @@ func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
 		{name: "nil", opt: WithStorageSigner(nil), wantSigner: rootAddress},
 		{name: "typed nil", opt: WithStorageSigner(typedNil), wantSigner: rootAddress},
 		{name: "delegated", opt: WithStorageSigner(delegatedSigner), wantSigner: delegatedSigner.EVMAddress()},
+		{name: "external root", rootOpt: WithSigner(rootSigner), wantSigner: rootAddress},
+		{name: "external root with delegation", rootOpt: WithSigner(rootSigner), opt: WithStorageSigner(delegatedSigner), wantSigner: delegatedSigner.EVMAddress()},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -675,7 +683,11 @@ func TestNew_WithStorageSignerWiresPayerAndContextSigner(t *testing.T) {
 			})
 			defer srv.Close()
 			defer ec.Close()
-			opts := []ClientOption{WithPrivateKey(rootKey), WithEthClient(ec)}
+			rootOpt := tc.rootOpt
+			if rootOpt == nil {
+				rootOpt = WithPrivateKey(rootKey)
+			}
+			opts := []ClientOption{rootOpt, WithEthClient(ec)}
 			if tc.opt != nil {
 				opts = append(opts, tc.opt)
 			}
@@ -1019,8 +1031,8 @@ func TestNew_MissingKey(t *testing.T) {
 
 func TestNew_IgnoresNilOption(t *testing.T) {
 	_, err := New(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "missing private key") {
-		t.Fatalf("New(nil) error = %v, want missing private key", err)
+	if err == nil || !strings.Contains(err.Error(), "missing signer") {
+		t.Fatalf("New(nil) error = %v, want missing signer", err)
 	}
 }
 
@@ -2108,5 +2120,63 @@ func TestWithAllowPrivateNetworks_WithHTTPClientWins(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("downloaded bytes mismatch")
+	}
+}
+
+type externalRootSigner struct {
+	signer.RootSigner
+	err     error
+	chainID *big.Int
+}
+
+func (s *externalRootSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	s.chainID = new(big.Int).Set(chainID)
+	return nil, s.err
+}
+
+func TestNew_WithSignerRoutesPaymentSigning(t *testing.T) {
+	root, err := signer.NewSecp256k1Signer(testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingErr := errors.New("remote signer unavailable")
+	remote := &externalRootSigner{RootSigner: root, err: signingErr}
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+	client, err := New(t.Context(), WithSigner(remote), WithEthClient(ec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.Payments().Approve(t.Context(), client.ResolvedAddresses().USDFC, client.ResolvedAddresses().Payments, big.NewInt(1))
+	if !errors.Is(err, signingErr) {
+		t.Fatalf("Approve error = %v, want external signer error", err)
+	}
+	if client.Address() != remote.EVMAddress() || remote.chainID == nil || remote.chainID.Int64() != 314159 {
+		t.Fatalf("payer or signing chain did not reach external root signer")
+	}
+}
+
+func TestNew_WithSignerRejectsAmbiguousCredentialsBeforeRPC(t *testing.T) {
+	root, err := signer.NewSecp256k1Signer(testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typedNil *externalRootSigner
+	for _, tc := range []struct {
+		name string
+		opts []ClientOption
+	}{
+		{"key", []ClientOption{WithSigner(root), WithPrivateKey(testKey(t))}},
+		{"hex", []ClientOption{WithSigner(root), WithPrivateKeyHex("not-a-key")}},
+		{"typed nil", []ClientOption{WithSigner(typedNil)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(t.Context(), append(tc.opts, WithRPCURL("http://127.0.0.1:1"))...)
+			if err == nil || strings.Contains(err.Error(), "dial RPC") {
+				t.Fatalf("error = %v, want credential error before RPC", err)
+			}
+		})
 	}
 }

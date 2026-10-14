@@ -10,6 +10,7 @@
 //   - [HashSigner] signs pre-computed 32-byte digests.
 //   - [StorageSigner] combines an EVM address with HashSigner without requiring
 //     native message or transaction signing.
+//   - [RootSigner] combines EVMSigner and StorageSigner for the root client.
 //
 // The package provides concrete implementations:
 //
@@ -22,7 +23,8 @@
 //
 // # External transaction signers
 //
-// Standalone contract services accept custom [EVMSigner] implementations.
+// Standalone contract services accept custom [EVMSigner] implementations; the
+// root client accepts [RootSigner] through synapse.WithSigner.
 // [EVMSigner.Transactor] must return non-nil transaction options on success;
 // returning an error aborts the write before nonce acquisition or broadcast.
 // Services construct the transaction with NoSend enabled, then broadcast it

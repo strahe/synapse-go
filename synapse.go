@@ -73,6 +73,7 @@ type Client struct {
 }
 
 type clientConfig struct {
+	rootSigner             signer.RootSigner
 	privateKey             *ecdsa.PrivateKey
 	privateKeyHex          string
 	storageSigner          signer.StorageSigner
@@ -94,6 +95,14 @@ type clientConfig struct {
 // ClientOption configures a [Client] via [New]. Nil options are ignored.
 type ClientOption func(*clientConfig)
 
+// WithSigner uses an external root signer for payments, operator approvals,
+// session-key management, and storage authorizations. It cannot be combined with
+// WithPrivateKey or WithPrivateKeyHex. The caller owns the signer's lifetime;
+// Close does not close it. WithStorageSigner may still override storage signing.
+func WithSigner(rootSigner signer.RootSigner) ClientOption {
+	return func(cfg *clientConfig) { cfg.rootSigner = rootSigner }
+}
+
 // WithPrivateKey sets the ECDSA private key used for transaction signing.
 // If both WithPrivateKey and [WithPrivateKeyHex] are provided,
 // WithPrivateKey takes precedence.
@@ -109,7 +118,7 @@ func WithPrivateKeyHex(hex string) ClientOption {
 }
 
 // WithStorageSigner sets the signer used for Storage EIP-712 authorizations.
-// The root private key remains the payer and continues to sign transactions,
+// The root signer remains the payer and continues to sign transactions,
 // including payments, operator approvals, and direct storage termination via
 // Storage().TerminateService with SkipProvider or WarmStorage().TerminateDataSet.
 //
@@ -272,7 +281,7 @@ func WithAllowPrivateNetworks(allow bool) ClientOption {
 // New creates a Client, connecting to the given RPC endpoint and
 // resolving the chain and contract addresses.
 //
-// Required options: a private key ([WithPrivateKey] or [WithPrivateKeyHex]).
+// Required options: [WithSigner], [WithPrivateKey], or [WithPrivateKeyHex].
 // If no RPC source is provided, the client uses the selected chain's default
 // RPC endpoint, defaulting to Calibration when no chain is selected.
 func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
@@ -286,7 +295,7 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 		return nil, fmt.Errorf("synapse.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
 	}
 
-	cleanup, err := resolvePrivateKey(&cfg)
+	cleanup, err := resolveRootSigner(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("synapse.New: %w", err)
 	}
@@ -355,7 +364,7 @@ func (c *Client) Chain() chain.Chain {
 	return c.selectedChain
 }
 
-// Address returns the root EVM address derived from the private key.
+// Address returns the root payer's EVM address.
 func (c *Client) Address() common.Address {
 	return c.evmSigner.EVMAddress()
 }
@@ -378,7 +387,16 @@ func parsePrivateKeyHex(raw string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-func resolvePrivateKey(cfg *clientConfig) (func(), error) {
+func resolveRootSigner(cfg *clientConfig) (func(), error) {
+	cfg.rootSigner = ifaceutil.NormalizeNil(cfg.rootSigner)
+	if cfg.rootSigner != nil {
+		if cfg.privateKey != nil || cfg.privateKeyHex != "" {
+			return nil, errors.New("WithSigner cannot be combined with WithPrivateKey or WithPrivateKeyHex")
+		}
+		return func() {}, nil
+	}
+	cleanup := func() {}
+
 	if cfg.privateKey == nil && cfg.privateKeyHex != "" {
 		key, err := parsePrivateKeyHex(cfg.privateKeyHex)
 		if err != nil {
@@ -386,13 +404,18 @@ func resolvePrivateKey(cfg *clientConfig) (func(), error) {
 		}
 		cfg.privateKey = key
 		// Return a cleanup that zeros only this intermediate key.
-		return func() { zeroPrivateKey(cfg.privateKey) }, nil
+		cleanup = func() { zeroPrivateKey(cfg.privateKey) }
 	}
 	if cfg.privateKey == nil {
-		return nil, errors.New("missing private key (use WithPrivateKey or WithPrivateKeyHex)")
+		return nil, errors.New("missing signer (use WithSigner, WithPrivateKey or WithPrivateKeyHex)")
 	}
-	// No cleanup for user-provided key.
-	return func() {}, nil
+	rootSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("create signer: %w", err)
+	}
+	cfg.rootSigner = rootSigner
+	return cleanup, nil
 }
 
 // zeroPrivateKey clears the private key D scalar. The signer deep-copies D,
@@ -458,10 +481,7 @@ func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) 
 }
 
 func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses ResolvedAddresses) (*Client, error) {
-	evmSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("create signer: %w", err)
-	}
+	evmSigner := cfg.rootSigner
 	storageSigner := ifaceutil.NormalizeNil(cfg.storageSigner)
 	if storageSigner == nil {
 		storageSigner = evmSigner

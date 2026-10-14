@@ -33,6 +33,12 @@ keys. Mainnet and Calibration are detected from the RPC endpoint unless you
 pass `WithChain`. `WithSource` namespaces the data sets your application
 creates.
 
+For a KMS/HSM or remote wallet, replace `WithPrivateKeyHex` with
+`WithSigner(rootSigner)`. The signer must implement `signer.RootSigner`, using
+the same account for transaction and EIP-712 signatures. Do not combine it
+with a private-key option. The caller owns the signer's lifetime;
+`client.Close()` does not close it.
+
 Other common options:
 
 - `WithCDN`: default CDN setting for new uploads.
@@ -47,7 +53,7 @@ Other common options:
 
 With `WithStorageSigner`, authorize the signer's address with
 `client.SessionKey().Login(...)` before the first storage write. The root
-private key still pays and signs payment, approval, and direct termination
+signer still pays and signs payment, approval, and direct termination
 transactions. The signer receives only a 32-byte digest, so use a dedicated key
 and do not expose its signing endpoint as a general signing service.
 

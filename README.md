@@ -48,6 +48,13 @@ detected from the RPC endpoint. Uploads wait about 3 seconds before committing
 so concurrent uploads can share a transaction; see
 [Commit Batching](docs/GETTING_STARTED.md#commit-batching) to change this.
 
+For a KMS/HSM or remote wallet, pass `synapse.WithSigner(rootSigner)` instead
+of either private-key option. Implement `signer.RootSigner` so payments,
+operator approvals, session-key operations, and storage EIP-712 authorizations
+all use that wallet. The SDK derives its payer identity from `EVMAddress()` and
+does not read or close the external signer. `WithStorageSigner` can independently
+override storage authorizations for an authorized delegated signer.
+
 ## Package Map
 
 | Package | Purpose |

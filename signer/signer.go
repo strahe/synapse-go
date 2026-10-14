@@ -44,6 +44,15 @@ type StorageSigner interface {
 	HashSigner
 }
 
+// RootSigner controls the root client's payer account and storage authorizations.
+// KMS/HSM and remote implementations can supply it without exposing a private key.
+// EVMAddress must identify the key used by both transaction and hash signing.
+// Calls may be concurrent; implementations must support that or serialize them.
+type RootSigner interface {
+	EVMSigner
+	StorageSigner
+}
+
 // AsEVM checks whether a Signer can also sign EVM transactions.
 // Returns nil, false for key types that don't support EVM (e.g., BLS).
 func AsEVM(s Signer) (EVMSigner, bool) {
