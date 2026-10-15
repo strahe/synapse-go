@@ -34,8 +34,10 @@ var (
 )
 
 // NewSecp256k1Signer creates a dual-protocol signer from a go-ethereum ECDSA
-// private key. The key is deep-copied so the signer owns an independent
-// copy; the caller may safely zero or mutate the original.
+// private key. The key must use the go-ethereum secp256k1 curve and its public
+// key must match its private scalar; invalid keys return an error.
+// The caller must not modify the key until this call returns. The signer owns
+// an independent copy, so the caller may then clear or mutate the original.
 func NewSecp256k1Signer(key *ecdsa.PrivateKey) (*Secp256k1Signer, error) {
 	keyCopy, err := cloneSecp256k1PrivateKey(key)
 	if err != nil {
@@ -107,14 +109,10 @@ func (s *Secp256k1Signer) Sign(msg []byte) (*crypto.Signature, error) {
 // on the given chain. The returned opts embed their own key copy so they
 // remain valid for the lifetime of the opts independent of the signer.
 func (s *Secp256k1Signer) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
-	keyCopy, err := cloneSecp256k1PrivateKey(s.ecdsaKey)
-	if err != nil {
-		return nil, fmt.Errorf("signer.Transactor: %w", err)
-	}
-	return bind.NewKeyedTransactorWithChainID(keyCopy, chainID)
+	return bind.NewKeyedTransactorWithChainID(copySecp256k1PrivateKey(s.ecdsaKey), chainID)
 }
 
-//nolint:staticcheck // secp256k1 copies need D; stdlib raw helpers do not support this curve.
+//nolint:staticcheck // secp256k1 needs raw key fields; stdlib encoding does not support this curve.
 func cloneSecp256k1PrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
 	if key == nil {
 		return nil, fmt.Errorf("signer: nil private key")
@@ -122,9 +120,43 @@ func cloneSecp256k1PrivateKey(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) 
 	if key.D == nil {
 		return nil, fmt.Errorf("signer: nil private scalar")
 	}
-	keyCopy := *key
-	keyCopy.D = new(big.Int).Set(key.D)
-	return &keyCopy, nil
+	curve := ethcrypto.S256()
+	if key.Curve != curve {
+		return nil, fmt.Errorf("signer: private key must use the go-ethereum secp256k1 curve")
+	}
+	params := curve.Params()
+	if key.D.Sign() <= 0 || key.D.Cmp(params.N) >= 0 {
+		return nil, fmt.Errorf("signer: private scalar must be greater than zero and less than the curve order")
+	}
+	if key.X == nil || key.Y == nil {
+		return nil, fmt.Errorf("signer: missing public key coordinates")
+	}
+	if key.X.Sign() < 0 || key.X.Cmp(params.P) >= 0 || key.Y.Sign() < 0 || key.Y.Cmp(params.P) >= 0 {
+		return nil, fmt.Errorf("signer: public key coordinates out of range")
+	}
+	var raw [32]byte
+	defer clear(raw[:])
+	key.D.FillBytes(raw[:])
+	keyCopy, err := ethcrypto.ToECDSA(raw[:])
+	if err != nil {
+		return nil, fmt.Errorf("signer: invalid secp256k1 key: %w", err)
+	}
+	if key.X.Cmp(keyCopy.X) != 0 || key.Y.Cmp(keyCopy.Y) != 0 {
+		return nil, fmt.Errorf("signer: public key does not match private scalar")
+	}
+	return keyCopy, nil
+}
+
+//nolint:staticcheck // secp256k1 copies need raw key fields; stdlib encoding does not support this curve.
+func copySecp256k1PrivateKey(key *ecdsa.PrivateKey) *ecdsa.PrivateKey {
+	return &ecdsa.PrivateKey{
+		PublicKey: ecdsa.PublicKey{
+			Curve: ethcrypto.S256(),
+			X:     new(big.Int).Set(key.X),
+			Y:     new(big.Int).Set(key.Y),
+		},
+		D: new(big.Int).Set(key.D),
+	}
 }
 
 // SignHash signs a pre-computed 32-byte hash using the secp256k1 key.
