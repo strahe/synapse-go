@@ -475,7 +475,7 @@ func TestIntegration(t *testing.T) {
 		uploadedRailID    types.BigInt
 	)
 	run := fmt.Sprintf("storage-http-%d", time.Now().UnixNano())
-	ownedDataSets := make(map[string]bool)
+	dataSetTerminated := make(map[string]bool)
 	suite := t
 
 	// --- Costs subtest ---
@@ -690,12 +690,12 @@ func TestIntegration(t *testing.T) {
 				t.Fatalf("cannot verify dataset %s belongs to run %s: metadata=%v error=%v; refusing cleanup", cp.DataSetID, run, metadata, err)
 			}
 			id := cp.DataSetID
-			if _, registered := ownedDataSets[id.String()]; registered {
+			if _, registered := dataSetTerminated[id.String()]; registered {
 				continue
 			}
-			ownedDataSets[id.String()] = false
+			dataSetTerminated[id.String()] = false
 			suite.Cleanup(func() {
-				if ownedDataSets[id.String()] {
+				if dataSetTerminated[id.String()] {
 					return
 				}
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -705,7 +705,7 @@ func TestIntegration(t *testing.T) {
 					suite.Errorf("cleanup verified run dataset %s: result=%+v error=%v", id, res, err)
 					return
 				}
-				ownedDataSets[id.String()] = true
+				dataSetTerminated[id.String()] = true
 				suite.Logf("cleaned up verified run dataset %s tx=%s", id, res.Hash)
 			})
 		}
@@ -2086,7 +2086,7 @@ func TestIntegration(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
 		}
-		if _, verified := ownedDataSets[uploadedDataSetID.String()]; !verified {
+		if _, verified := dataSetTerminated[uploadedDataSetID.String()]; !verified {
 			t.Fatal("dataset ownership was not verified; refusing lifecycle operations")
 		}
 		cctx, cancel := context.WithTimeout(ctx, 7*time.Minute)
@@ -2122,7 +2122,7 @@ func TestIntegration(t *testing.T) {
 		if termRes == nil || termRes.EndEpoch == 0 {
 			t.Fatalf("TerminateService result=%+v, want a confirmed termination epoch", termRes)
 		}
-		ownedDataSets[uploadedDataSetID.String()] = true
+		dataSetTerminated[uploadedDataSetID.String()] = true
 		if termRes.TxHash == nil && submitted == (common.Hash{}) {
 			t.Errorf("TerminateService returned no tx hash")
 		}
