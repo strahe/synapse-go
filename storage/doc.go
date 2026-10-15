@@ -138,8 +138,9 @@
 // DataSetID. Downloading by data set ID reads its ownership and CDN metadata.
 // CDN-enabled data sets can be read even when their provider is inactive;
 // provider fallback and writable contexts still require an active PDP product.
-// Data-set and context downloads require PieceCIDv2, enforce its raw size, and
-// verify integrity at EOF. Always check the final Read or io.ReadAll error.
+// Data-set and context downloads require PieceCIDv2. All download paths enforce
+// its raw size and verify integrity at the response's actual EOF. Always check
+// the final Read or io.ReadAll error; closing early skips verification.
 //
 // The root Client configures the data-set download path automatically.
 // Standalone services set Options.DataSetDownloader to their ServiceResolver
@@ -351,7 +352,9 @@
 // [Service.Download] uses the Service HTTP client. Its default client rejects
 // private and reserved network destinations; configure
 // [Options.AllowPrivateNetworks] only for trusted private infrastructure.
-// [Options.DownloadMaxBytes] can cap URL-based downloads.
+// URL downloads enforce the raw size in PieceCIDv2; [Options.DownloadMaxBytes]
+// can impose a smaller limit. PieceCIDv1 URL downloads use only that configured
+// limit.
 //
 // # Custom storage components
 //

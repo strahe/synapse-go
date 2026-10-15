@@ -37,7 +37,7 @@ func TestPullPiecesLayoutLimits(t *testing.T) {
 			requests := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				requests++
-				_, _ = w.Write([]byte(`{"status":"complete","pieces":[]}`))
+				_, _ = w.Write([]byte(`{"status":"pending","pieces":[]}`))
 			}))
 			defer server.Close()
 			client, err := New(server.URL, WithLegacyPieceStorageIDLimit(test.limit), WithMaxRetries(0))

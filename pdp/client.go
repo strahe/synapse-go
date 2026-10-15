@@ -25,8 +25,8 @@ import (
 // DefaultUserAgent is set on every outgoing request unless overridden.
 const DefaultUserAgent = "synapse-go/pdp"
 
-// DefaultHTTPTimeout applies to simple JSON operations. Streaming uploads
-// use a separate, longer timeout (or none at all) negotiated per call.
+// DefaultHTTPTimeout applies to control requests. Streaming requests have no
+// total HTTP timeout by default and can be bounded by the caller's context.
 const DefaultHTTPTimeout = 30 * time.Second
 
 // DefaultMaxRetries is the number of retries attempted for transient failures
@@ -46,6 +46,7 @@ type Client struct {
 	legacyPieceStorageIDLimit uint64
 	baseURL                   *url.URL
 	httpClient                *http.Client
+	streamingHTTPClient       *http.Client
 	userAgent                 string
 	logger                    *slog.Logger
 	maxRetries                int                                        // 0 = disabled; set to DefaultMaxRetries in New()
@@ -62,12 +63,26 @@ func WithLegacyPieceStorageIDLimit(limit uint64) Option {
 	return func(c *Client) { c.legacyPieceStorageIDLimit = limit }
 }
 
-// WithHTTPClient supplies a custom *http.Client. Useful to inject timeouts,
-// custom transports, or test doubles.
+// WithHTTPClient supplies the client for control and streaming requests.
+// Its Timeout applies to the entire request, including reading the response body.
+// A later WithStreamingHTTPClient option can override only streaming requests.
+// A nil client is ignored.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
 			c.httpClient = h
+			c.streamingHTTPClient = h
+		}
+	}
+}
+
+// WithStreamingHTTPClient supplies the client for streaming GET and PUT requests.
+// Its Timeout and the caller's context both bound the request lifetime.
+// A nil client is ignored.
+func WithStreamingHTTPClient(h *http.Client) Option {
+	return func(c *Client) {
+		if h != nil {
+			c.streamingHTTPClient = h
 		}
 	}
 }
@@ -116,10 +131,11 @@ func New(serviceURL string, opts ...Option) (*Client, error) {
 		u.Path += "/"
 	}
 	c := &Client{
-		baseURL:    u,
-		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
-		userAgent:  DefaultUserAgent,
-		maxRetries: DefaultMaxRetries,
+		baseURL:             u,
+		httpClient:          &http.Client{Transport: http.DefaultTransport, Timeout: DefaultHTTPTimeout},
+		streamingHTTPClient: &http.Client{Transport: http.DefaultTransport},
+		userAgent:           DefaultUserAgent,
+		maxRetries:          DefaultMaxRetries,
 	}
 	for _, opt := range opts {
 		if opt != nil {

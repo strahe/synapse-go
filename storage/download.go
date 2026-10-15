@@ -74,13 +74,12 @@ func validatePieceCID(c cid.Cid) error {
 }
 
 // Download retrieves a piece by URL, through a DownloadContext, or from a data
-// set by ID. When URL is used, the response body is streamed through a
-// validating reader; the terminal read error from io.ReadAll (or any last Read
-// call that returns io.EOF) carries the integrity check result — callers must
-// not discard it.
-// URL downloads are capped by non-zero [Options.DownloadMaxBytes]. Exceeding
-// the cap returns [ErrMaxBytesExceeded] either before streaming starts, when
-// Content-Length is too large, or as the terminal Read error.
+// set by ID. URL downloads verify integrity at the response's actual EOF. Check
+// the final Read or io.ReadAll error; closing early skips verification.
+// PieceCIDv2 caps URL downloads at its raw payload size; a positive
+// [Options.DownloadMaxBytes] can impose a smaller limit. PieceCIDv1 uses only
+// that configured limit. Exceeding a cap returns [ErrMaxBytesExceeded] before
+// streaming when Content-Length is too large, or from Read.
 func (s *Service) Download(ctx context.Context, pieceCID cid.Cid, opts *DownloadOptions) (io.ReadCloser, error) {
 	if err := s.checkInit(); err != nil {
 		return io.ReadCloser(nil), err
@@ -226,15 +225,21 @@ func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid)
 		if err == nil && body != nil {
 			return newValidatingReadCloser(body, pieceCID, info.RawSize), nil
 		}
+		if body != nil {
+			_ = body.Close()
+		}
 		if err == nil {
 			err = errors.New("CDN retriever returned nil body")
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("%s: CDN: %w", op, err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return nil, fmt.Errorf("%s: CDN: %w", op, errors.Join(err, ctx.Err()))
 		}
 	}
 	body, contentLength, err := c.client.DownloadPiece(ctx, pieceCID)
 	if err != nil {
+		if body != nil {
+			_ = body.Close()
+		}
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	if body == nil {
@@ -248,6 +253,13 @@ func (c *contextCore) download(ctx context.Context, op string, pieceCID cid.Cid)
 }
 
 func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceCID cid.Cid) (io.ReadCloser, error) {
+	maxBytes := uint64(0)
+	if s.downloadMaxBytes > 0 {
+		maxBytes = uint64(s.downloadMaxBytes)
+	}
+	if info, err := piece.ParseV2(pieceCID); err == nil && (maxBytes == 0 || info.RawSize < maxBytes) {
+		maxBytes = info.RawSize
+	}
 	safeURL := redact.URLString(rawURL)
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -270,13 +282,9 @@ func (s *Service) downloadAndValidate(ctx context.Context, rawURL string, pieceC
 		_ = resp.Body.Close()
 		return nil, &DownloadError{URL: safeURL, StatusCode: resp.StatusCode}
 	}
-	if s.downloadMaxBytes > 0 && resp.ContentLength > s.downloadMaxBytes {
+	if maxBytes > 0 && resp.ContentLength >= 0 && uint64(resp.ContentLength) > maxBytes {
 		_ = resp.Body.Close()
-		return nil, &DownloadError{URL: safeURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, s.downloadMaxBytes)}
-	}
-	maxBytes := uint64(0)
-	if s.downloadMaxBytes > 0 {
-		maxBytes = uint64(s.downloadMaxBytes)
+		return nil, &DownloadError{URL: safeURL, Cause: fmt.Errorf("%w: Content-Length %d > %d", ErrMaxBytesExceeded, resp.ContentLength, maxBytes)}
 	}
 	return newValidatingReadCloser(resp.Body, pieceCID, maxBytes), nil
 }

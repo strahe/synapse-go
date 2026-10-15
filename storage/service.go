@@ -204,8 +204,9 @@ type Options struct {
 	AllowPrivateNetworks bool
 
 	// DownloadMaxBytes caps the number of bytes a single URL-based
-	// Service.Download will return. Zero (the default) disables the cap;
-	// negative values are invalid. Exceeding a positive limit returns
+	// Service.Download will return. Zero (the default) adds no configured cap;
+	// PieceCIDv2 always caps downloads at its raw payload size. Negative values
+	// are invalid. Exceeding the effective limit returns
 	// ErrMaxBytesExceeded either eagerly (via Content-Length) or at the terminal
 	// Read of the returned reader.
 	DownloadMaxBytes int64

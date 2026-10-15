@@ -267,6 +267,9 @@ func (c *Client) newPDPClient(serviceURL string, opts ...pdp.Option) (*pdp.Clien
 	if httpClient := c.serviceHTTPClient(pdp.DefaultHTTPTimeout); httpClient != nil {
 		pdpOpts = append(pdpOpts, pdp.WithHTTPClient(httpClient))
 	}
+	if httpClient := c.serviceHTTPClient(0); httpClient != nil {
+		pdpOpts = append(pdpOpts, pdp.WithStreamingHTTPClient(httpClient))
+	}
 	pdpOpts = append(pdpOpts, opts...)
 	return pdp.New(serviceURL, pdpOpts...)
 }

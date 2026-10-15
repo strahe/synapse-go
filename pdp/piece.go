@@ -61,9 +61,9 @@ type UploadStreamingResult struct {
 //  3. POST /pdp/piece/uploads/{uuid}  — finalize with the PieceCID;
 //     server validates that the uploaded bytes hash to the same value
 //
-// The PUT clears the default Client timeout so large transfers are not
-// capped at DefaultHTTPTimeout. Callers needing stricter limits should
-// pass a context deadline or use a custom HTTP client.
+// The default streaming HTTP client has no total timeout. A context deadline
+// or a custom HTTP client's Timeout can bound the PUT. Session creation and
+// finalization use the control HTTP client.
 func (c *Client) UploadPieceStreaming(
 	ctx context.Context,
 	data io.Reader,
@@ -121,17 +121,7 @@ func (c *Client) UploadPieceStreaming(
 	if opts.Size > 0 {
 		putReq.ContentLength = opts.Size
 	}
-	// Always clone and clear the timeout for the streaming PUT so large
-	// transfers are not capped by the default client timeout. This mirrors
-	// the pattern used in DownloadPiece; the context deadline is the sole
-	// lifecycle authority for the duration of the transfer.
-	putClient := &http.Client{Timeout: 0}
-	if c.httpClient != nil {
-		cloned := *c.httpClient
-		cloned.Timeout = 0
-		putClient = &cloned
-	}
-	_, _, putErr := c.doWithClient(putClient, putReq, http.StatusNoContent)
+	_, _, putErr := c.doWithClient(c.streamingHTTPClient, putReq, http.StatusNoContent)
 	uploaded, progressPanic := counted.finish()
 	if progressPanic != nil {
 		if c.logger != nil {
@@ -288,7 +278,17 @@ func (c *Client) FindPiece(ctx context.Context, pieceCID cid.Cid) (*FindPieceRes
 	}
 	var out FindPieceResult
 	if err := jsonUnmarshal(body, &out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pdp.FindPiece: %w: decode response: %w", ErrInvalidStatus, err)
+	}
+	foundCID, err := cid.Parse(out.PieceCID)
+	if err != nil {
+		return nil, fmt.Errorf("pdp.FindPiece: %w: response CID: %w", ErrInvalidStatus, err)
+	}
+	if _, err := piece.ParseV2(foundCID); err != nil {
+		return nil, fmt.Errorf("pdp.FindPiece: %w: response CID: %w", ErrInvalidStatus, err)
+	}
+	if !foundCID.Equals(pieceCID) {
+		return nil, invalidStatusf("pdp.FindPiece", "response CID %s does not match requested CID %s", foundCID, pieceCID)
 	}
 	return &out, nil
 }

@@ -1,6 +1,7 @@
 package pdp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,10 +9,12 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -151,6 +154,135 @@ func TestPullPieces_ExistingDataSet(t *testing.T) {
 	}
 	if res.Status != PullStatusInProgress {
 		t.Errorf("status=%q want inProgress", res.Status)
+	}
+}
+
+func TestPullPieces_ResponseStatuses(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	other, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0xcd}, 512))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := func(statuses ...PullStatus) []PullPieceStatus {
+		pieces := make([]PullPieceStatus, len(statuses))
+		for i, status := range statuses {
+			pieces[i] = PullPieceStatus{PieceCID: pc.String(), Status: status}
+		}
+		return pieces
+	}
+	tests := []struct {
+		name string
+		want PullResult
+		body string
+	}{
+		{name: "pending", want: PullResult{Status: PullStatusPending, Pieces: items(PullStatusPending)}},
+		{name: "in progress", want: PullResult{Status: PullStatusInProgress, Pieces: items(PullStatusInProgress)}},
+		{name: "retrying", want: PullResult{Status: PullStatusRetrying, Pieces: items(PullStatusRetrying)}},
+		{name: "complete", want: PullResult{Status: PullStatusComplete, Pieces: items(PullStatusComplete)}},
+		{name: "failed", want: PullResult{Status: PullStatusFailed, Pieces: items(PullStatusFailed)}},
+		{name: "retrying takes precedence", want: PullResult{Status: PullStatusRetrying, Pieces: items(PullStatusComplete, PullStatusInProgress, PullStatusRetrying, PullStatusPending, PullStatusFailed)}},
+		{name: "in progress takes precedence", want: PullResult{Status: PullStatusInProgress, Pieces: items(PullStatusComplete, PullStatusPending, PullStatusInProgress, PullStatusFailed)}},
+		{name: "duplicate complete and pending", want: PullResult{Status: PullStatusPending, Pieces: items(PullStatusComplete, PullStatusPending)}},
+		{name: "duplicate complete and failed", want: PullResult{Status: PullStatusComplete, Pieces: items(PullStatusComplete, PullStatusFailed)}},
+		{
+			name: "extra piece and original order",
+			want: PullResult{Status: PullStatusComplete, Pieces: []PullPieceStatus{
+				{PieceCID: other.CIDv2.String(), Status: PullStatusFailed},
+				{PieceCID: pc.String(), Status: PullStatusComplete},
+			}},
+		},
+		{name: "missing pending pieces", want: PullResult{Status: PullStatusPending}, body: `{"status":"pending"}`},
+		{name: "null pending pieces", want: PullResult{Status: PullStatusPending}, body: `{"status":"pending","pieces":null}`},
+		{name: "empty pending pieces", want: PullResult{Status: PullStatusPending}, body: `{"status":"pending","pieces":[]}`},
+		{
+			name: "unknown fields",
+			want: PullResult{Status: PullStatusComplete, Pieces: items(PullStatusComplete)},
+			body: fmt.Sprintf(`{"status":"complete","future":true,"pieces":[{"pieceCid":%q,"status":"complete","sourceUrl":"https://source.example/piece"}]}`, pc.String()),
+		},
+	}
+	req := PullRequest{
+		RecordKeeper: common.HexToAddress("0xabc"),
+		ExtraData:    []byte{0x01},
+		Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: "https://source.example/piece"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := tt.body
+			if body == "" {
+				encoded, err := json.Marshal(tt.want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(encoded)
+			}
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			got, err := c.PullPieces(context.Background(), req)
+			if err != nil {
+				t.Fatalf("PullPieces: %v", err)
+			}
+			if got.Status != tt.want.Status || !slices.Equal(got.Pieces, tt.want.Pieces) {
+				t.Fatalf("result = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForPullComplete_RejectsInvalidResponseBeforeProgress(t *testing.T) {
+	info := testPieceInfoV2(t)
+	pc := info.CIDv2
+	for _, tt := range []struct {
+		name      string
+		body      string
+		wantCause error
+		syntax    bool
+	}{
+		{name: "unknown overall", body: `{"status":"done","pieces":[]}`},
+		{name: "missing status", body: `{"pieces":[]}`},
+		{name: "unknown piece status", body: fmt.Sprintf(`{"status":"pending","pieces":[{"pieceCid":%q,"status":"queued"}]}`, pc.String())},
+		{name: "missing piece status", body: fmt.Sprintf(`{"status":"pending","pieces":[{"pieceCid":%q}]}`, pc.String())},
+		{name: "complete with empty pieces", body: `{"status":"complete","pieces":[]}`},
+		{name: "failed with empty pieces", body: `{"status":"failed"}`},
+		{name: "retrying with empty pieces", body: `{"status":"retrying","pieces":null}`},
+		{name: "in progress with empty pieces", body: `{"status":"inProgress","pieces":[]}`},
+		{name: "malformed JSON", body: `{"status":`, syntax: true},
+		{name: "null response", body: `null`},
+		{name: "invalid CID", body: `{"status":"complete","pieces":[{"pieceCid":"invalid","status":"complete"}]}`},
+		{name: "missing CID", body: `{"status":"complete","pieces":[{"status":"complete"}]}`},
+		{name: "v1 CID", body: fmt.Sprintf(`{"status":"complete","pieces":[{"pieceCid":%q,"status":"complete"}]}`, info.CIDv1.String()), wantCause: piece.ErrNotV2},
+		{name: "complete before pending", body: fmt.Sprintf(`{"status":"complete","pieces":[{"pieceCid":%q,"status":"complete"},{"pieceCid":%q,"status":"pending"}]}`, pc.String(), pc.String())},
+		{name: "failed with completed record", body: fmt.Sprintf(`{"status":"failed","pieces":[{"pieceCid":%q,"status":"complete"},{"pieceCid":%q,"status":"failed"}]}`, pc.String(), pc.String())},
+		{name: "pending before retrying", body: fmt.Sprintf(`{"status":"pending","pieces":[{"pieceCid":%q,"status":"pending"},{"pieceCid":%q,"status":"retrying"}]}`, pc.String(), pc.String())},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls, progress int
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			result, err := c.WaitForPullComplete(ctx, PullRequest{
+				RecordKeeper: common.HexToAddress("0xabc"),
+				ExtraData:    []byte{0x01},
+				Pieces:       []PullPieceInput{{PieceCID: pc, SourceURL: "https://source.example/piece"}},
+			}, time.Millisecond, func(*PullResult) { progress++ })
+			if result != nil || !errors.Is(err, ErrInvalidStatus) {
+				t.Fatalf("result = %+v, error = %v, want nil and ErrInvalidStatus", result, err)
+			}
+			if calls != 1 || progress != 0 {
+				t.Fatalf("requests = %d, callbacks = %d, want 1 and 0", calls, progress)
+			}
+			if tt.wantCause != nil && !errors.Is(err, tt.wantCause) {
+				t.Fatalf("error = %v, want cause %v", err, tt.wantCause)
+			}
+			if tt.syntax {
+				if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+					t.Fatalf("error = %v, want JSON syntax cause", err)
+				}
+			}
+		})
 	}
 }
 

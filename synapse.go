@@ -211,12 +211,13 @@ func WithLogger(l *slog.Logger) ClientOption {
 // If nil, the root client installs HTTP clients that reject private and
 // reserved network destinations with [ErrPrivateNetwork] and do not use
 // environment-variable proxies. PDP control requests keep their 30-second
-// timeout, FilBeam keeps no client-wide timeout, and Storage URL downloads
-// keep their 24-hour timeout.
+// timeout, PDP streaming requests and FilBeam have no client-wide timeout, and
+// Storage URL downloads keep their 24-hour timeout.
 //
-// A non-nil client is passed through unchanged. Its transport is responsible
-// for SSRF protection, proxy policy, redirects, and timeouts. [Client.Close]
-// does not close a caller-provided client.
+// A non-nil client is passed through unchanged. Its Timeout bounds control and
+// streaming requests, including response body reads. The caller configures
+// SSRF protection, proxy policy, and redirects. [Client.Close] does not close
+// a caller-provided client.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.httpClient = c }
 }

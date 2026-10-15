@@ -1,7 +1,6 @@
 package pdp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -913,18 +912,21 @@ func TestCreateDataSet_ServerError(t *testing.T) {
 // ---------- WithHTTPClient nil ----------
 
 func TestWithHTTPClient_Nil(t *testing.T) {
-	c, err := New("https://example.com", WithHTTPClient(nil))
+	c, err := New("https://example.com", WithHTTPClient(nil), WithStreamingHTTPClient(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.httpClient == nil {
-		t.Error("nil client should keep default")
+	if c.httpClient == nil || c.streamingHTTPClient == nil {
+		t.Fatal("nil client should keep default")
 	}
 	if c.httpClient.Timeout != DefaultHTTPTimeout {
 		t.Errorf("default timeout = %v, want %v", c.httpClient.Timeout, DefaultHTTPTimeout)
 	}
-	if c.httpClient.Transport != nil {
-		t.Errorf("default Transport = %T, want nil", c.httpClient.Transport)
+	if c.streamingHTTPClient.Timeout != 0 {
+		t.Errorf("default streaming timeout = %v, want 0", c.streamingHTTPClient.Timeout)
+	}
+	if c.httpClient.Transport != http.DefaultTransport || c.streamingHTTPClient.Transport != c.httpClient.Transport {
+		t.Error("default clients should share http.DefaultTransport")
 	}
 }
 
@@ -1036,38 +1038,5 @@ func TestGetAddPiecesStatus_FullWidthDataSetID(t *testing.T) {
 	}
 	if status.DataSetID.String() != "99999999999999999999999999999999" {
 		t.Fatalf("dataSetID=%s", status.DataSetID.String())
-	}
-}
-
-// ---------- UploadPieceStreaming with non-default client timeout ----------
-
-func TestUploadPieceStreaming_NonDefaultClientTimeout(t *testing.T) {
-	var gotUA string
-	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		gotUA = r.Header.Get("User-Agent")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
-			h := make(http.Header)
-			h.Set("Location", "/pdp/piece/uploads/u1")
-			return &http.Response{StatusCode: http.StatusCreated, Header: h, Body: io.NopCloser(strings.NewReader(""))}, nil
-		case r.Method == http.MethodPut:
-			_, _ = io.Copy(io.Discard, r.Body)
-			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
-		case r.Method == http.MethodPost:
-			_, _ = io.Copy(io.Discard, r.Body)
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
-		}
-		return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-	})
-	c, err := New("https://example.com", WithHTTPClient(&http.Client{Timeout: 5 * time.Minute, Transport: rt}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte{0xab}, 512)
-	if _, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{Size: int64(len(payload))}); err != nil {
-		t.Fatal(err)
-	}
-	if gotUA != DefaultUserAgent {
-		t.Errorf("ua=%q", gotUA)
 	}
 }

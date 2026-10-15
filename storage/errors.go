@@ -93,10 +93,10 @@ var ErrPrivateNetwork = safehttp.ErrPrivateNetwork
 var ErrUnsupportedScheme = errors.New("storage: unsupported URL scheme")
 
 // ErrMaxBytesExceeded is returned when a download exceeds its byte limit.
-// Context downloads use the raw payload size encoded in PieceCIDv2; URL-based
-// Service.Download calls use a non-zero Options.DownloadMaxBytes. The error is
-// surfaced either eagerly when a trustworthy Content-Length is too large or
-// via the terminal Read on the returned reader.
+// PieceCIDv2 downloads are bounded by their raw payload size. For URL downloads,
+// a positive Options.DownloadMaxBytes can impose a smaller limit; PieceCIDv1
+// URL downloads use only that configured limit. The error is returned before
+// streaming when Content-Length exceeds the limit, or from Read.
 var ErrMaxBytesExceeded = errors.New("storage: download exceeded MaxBytes")
 
 // DataSetPDPPaymentTerminatedError is returned when an existing data set's

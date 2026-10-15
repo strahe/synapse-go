@@ -344,6 +344,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"math/big"
+	"net/http"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -425,7 +426,7 @@ func TestStorageSignerContract(t *testing.T) {
 	_ = synapse.WithUploadPullConcurrency(1)
 	_ = storage.Options{PullConcurrency: 1}
 	_ = storage.Options{Signer: kms, UploadBatcher: batcher}
-	pdpClient, err := pdp.New("https://pdp.example.com")
+	pdpClient, err := pdp.New("https://pdp.example.com", pdp.WithStreamingHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatalf("pdp.New: %v", err)
 	}

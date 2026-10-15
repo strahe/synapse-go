@@ -22,6 +22,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multibase"
 	"golang.org/x/net/http2"
 
 	"github.com/strahe/synapse-go/chain"
@@ -576,41 +577,121 @@ func TestUploadPieceStreaming_RejectsPieceCIDv1(t *testing.T) {
 	}
 }
 
-func TestUploadPieceStreaming_DoesNotUseDefaultClientTimeout(t *testing.T) {
-	var putDeadlineOK bool
-	var createDone, putDone bool
+func TestUploadPieceStreaming_HTTPTimeoutPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		custom          bool
+		timeout         time.Duration
+		contextDeadline bool
+	}{
+		{name: "default"},
+		{name: "custom zero", custom: true},
+		{name: "custom positive", custom: true, timeout: 2 * time.Minute},
+		{name: "custom default duration", custom: true, timeout: DefaultHTTPTimeout},
+		{name: "earlier context", custom: true, timeout: DefaultHTTPTimeout, contextDeadline: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			var contextDeadline time.Time
+			if tt.contextDeadline {
+				contextDeadline = time.Now().Add(2 * time.Second)
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, contextDeadline)
+				defer cancel()
+			}
+			var methods []string
+			rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				methods = append(methods, r.Method)
+				wantTimeout := tt.timeout
+				if !tt.custom && r.Method != http.MethodPut {
+					wantTimeout = DefaultHTTPTimeout
+				}
+				deadline, hasDeadline := r.Context().Deadline()
+				switch {
+				case tt.contextDeadline:
+					if !deadline.Equal(contextDeadline) {
+						t.Errorf("%s deadline = %v, want context deadline %v", r.Method, deadline, contextDeadline)
+					}
+				case wantTimeout == 0:
+					if hasDeadline {
+						t.Errorf("%s has unexpected deadline %v", r.Method, deadline)
+					}
+				default:
+					if remaining := time.Until(deadline); !hasDeadline || remaining > wantTimeout || remaining < wantTimeout-time.Second {
+						t.Errorf("%s deadline = %v, want timeout %v", r.Method, deadline, wantTimeout)
+					}
+				}
+				response := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
+					response.StatusCode = http.StatusCreated
+					response.Header.Set("Location", "/pdp/piece/uploads/u1")
+				case r.Method == http.MethodPut && r.URL.Path == "/pdp/piece/uploads/u1":
+					_, _ = io.Copy(io.Discard, r.Body)
+					response.StatusCode = http.StatusNoContent
+				case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads/u1":
+					response.StatusCode = http.StatusOK
+				default:
+					return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+				return response, nil
+			})
+			var opts []Option
+			if tt.custom {
+				opts = append(opts, WithHTTPClient(&http.Client{Timeout: tt.timeout, Transport: rt}))
+			}
+			c, err := New("https://example.com", opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tt.custom {
+				c.httpClient.Transport = rt
+				c.streamingHTTPClient.Transport = rt
+			}
+			payload := bytes.Repeat([]byte{0xab}, 512)
+			if _, err := c.UploadPieceStreaming(ctx, bytes.NewReader(payload), UploadPieceStreamingOptions{Size: int64(len(payload))}); err != nil {
+				t.Fatalf("UploadPieceStreaming: %v", err)
+			}
+			if len(methods) != 3 || methods[0] != http.MethodPost || methods[1] != http.MethodPut || methods[2] != http.MethodPost {
+				t.Fatalf("request methods = %v, want [POST PUT POST]", methods)
+			}
+		})
+	}
+}
+
+func TestUploadPieceStreaming_PUTTimeoutDoesNotFinalize(t *testing.T) {
+	var puts, finalizes int
 	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads":
-			createDone = true
+		if r.URL.Path == "/pdp/piece/uploads" {
 			h := make(http.Header)
 			h.Set("Location", "/pdp/piece/uploads/u1")
 			return &http.Response{StatusCode: http.StatusCreated, Header: h, Body: io.NopCloser(strings.NewReader(""))}, nil
-		case r.Method == http.MethodPut && r.URL.Path == "/pdp/piece/uploads/u1":
-			_, hasDeadline := r.Context().Deadline()
-			putDeadlineOK = !hasDeadline
-			putDone = true
-			_, _ = io.Copy(io.Discard, r.Body)
-			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
-		case r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads/u1":
-			_, _ = io.Copy(io.Discard, r.Body)
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
 		}
-		return nil, fmt.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		if r.Method == http.MethodPut {
+			puts++
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
+		finalizes++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
 	})
-	c, err := New("https://example.com", WithHTTPClient(&http.Client{Timeout: DefaultHTTPTimeout, Transport: rt}))
+	c, err := New("https://example.com",
+		WithHTTPClient(&http.Client{Transport: rt}),
+		WithStreamingHTTPClient(&http.Client{Transport: rt, Timeout: 100 * time.Millisecond}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := bytes.Repeat([]byte{0xab}, 512)
-	if _, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader(payload), UploadPieceStreamingOptions{Size: int64(len(payload))}); err != nil {
-		t.Fatalf("UploadPieceStreaming: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = c.UploadPieceStreaming(ctx, bytes.NewReader(bytes.Repeat([]byte{0xab}, 512)), UploadPieceStreamingOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
 	}
-	if !createDone || !putDone {
-		t.Fatalf("createDone=%v putDone=%v", createDone, putDone)
+	if ctx.Err() != nil {
+		t.Fatalf("caller deadline expired before the streaming HTTP timeout: %v", ctx.Err())
 	}
-	if !putDeadlineOK {
-		t.Error("PUT request inherited client timeout deadline")
+	if puts != 1 || finalizes != 0 {
+		t.Fatalf("PUTs = %d, finalizes = %d, want 1 and 0", puts, finalizes)
 	}
 }
 
@@ -642,6 +723,76 @@ func TestFindPiece_FoundAndMissing(t *testing.T) {
 	}))
 	if _, err := c2.FindPiece(context.Background(), pc); !errors.Is(err, ErrPieceNotFound) {
 		t.Fatalf("want ErrPieceNotFound, got %v", err)
+	}
+}
+
+func TestFindPiece_AcceptsEquivalentMultibase(t *testing.T) {
+	pc := testPieceInfoV2(t).CIDv2
+	encoded, err := pc.StringOfBase(multibase.Base58BTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"pieceCid":%q,"future":true}`, encoded)
+	}))
+	result, err := c.FindPiece(context.Background(), pc)
+	if err != nil {
+		t.Fatalf("FindPiece: %v", err)
+	}
+	if result.PieceCID != encoded {
+		t.Fatalf("response CID = %q, want %q", result.PieceCID, encoded)
+	}
+}
+
+func TestWaitForPieceParked_RejectsInvalidSuccessResponse(t *testing.T) {
+	info := testPieceInfoV2(t)
+	otherRoot, err := piece.CalculateFromBytes(bytes.Repeat([]byte{0xcd}, 512))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSize, err := piece.PieceInfoFromV1(info.CIDv1, info.RawSize-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name      string
+		body      string
+		wantCause error
+		syntax    bool
+	}{
+		{name: "empty body", syntax: true},
+		{name: "malformed JSON", body: `{"pieceCid":`, syntax: true},
+		{name: "empty object", body: `{}`},
+		{name: "null", body: `null`},
+		{name: "invalid CID", body: `{"pieceCid":"invalid"}`},
+		{name: "v1 CID", body: fmt.Sprintf(`{"pieceCid":%q}`, info.CIDv1.String()), wantCause: piece.ErrNotV2},
+		{name: "different root", body: fmt.Sprintf(`{"pieceCid":%q}`, otherRoot.CIDv2.String())},
+		{name: "different raw size", body: fmt.Sprintf(`{"pieceCid":%q}`, otherSize.CIDv2.String())},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := c.WaitForPieceParked(ctx, info.CIDv2, time.Millisecond)
+			if !errors.Is(err, ErrInvalidStatus) {
+				t.Fatalf("error = %v, want ErrInvalidStatus", err)
+			}
+			if calls != 1 {
+				t.Fatalf("requests = %d, want 1", calls)
+			}
+			if tt.wantCause != nil && !errors.Is(err, tt.wantCause) {
+				t.Fatalf("error = %v, want cause %v", err, tt.wantCause)
+			}
+			if tt.syntax {
+				if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+					t.Fatalf("error = %v, want JSON syntax cause", err)
+				}
+			}
+		})
 	}
 }
 
