@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
@@ -515,7 +516,11 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	defer srv.Close()
 	defer ec.Close()
 
-	key := testKey(t)
+	key, err := ethcrypto.ToECDSA(bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ethcrypto.PubkeyToAddress(key.PublicKey)
 	client, err := New(context.Background(),
 		WithPrivateKey(key),
 		WithEthClient(ec),
@@ -524,13 +529,35 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
+	zeroPrivateKey(key)
+	key.X.SetInt64(0)
+	key.Y.SetInt64(0)
 
 	if client.Chain() != chain.Calibration {
 		t.Errorf("chain = %v, want Calibration", client.Chain())
 	}
-	want := ethcrypto.PubkeyToAddress(key.PublicKey)
 	if client.Address() != want {
 		t.Errorf("address = %v, want %v", client.Address(), want)
+	}
+	chainID := chain.Calibration.BigChainID()
+	opts, err := client.evmSigner.Transactor(chainID)
+	if err != nil {
+		t.Fatalf("Transactor: %v", err)
+	}
+	if opts.From != want {
+		t.Fatalf("Transactor.From = %s, want %s", opts.From, want)
+	}
+	tx := ethtypes.NewTransaction(0, common.Address{19: 1}, new(big.Int), 21_000, big.NewInt(1), nil)
+	signed, err := opts.Signer(opts.From, tx)
+	if err != nil {
+		t.Fatalf("sign transaction: %v", err)
+	}
+	from, err := ethtypes.Sender(ethtypes.LatestSignerForChainID(chainID), signed)
+	if err != nil {
+		t.Fatalf("recover transaction sender: %v", err)
+	}
+	if from != want {
+		t.Errorf("transaction sender = %s, want %s", from, want)
 	}
 	if got := client.ResolvedAddresses(); got != wantAddresses {
 		t.Fatalf("ResolvedAddresses = %+v, want %+v", got, wantAddresses)
@@ -1456,6 +1483,37 @@ func TestWithSource(t *testing.T) {
 	}
 	// Storage() returns the manager; verify it works with source set.
 	_ = client.Storage()
+}
+
+func TestNew_InvalidPrivateKey(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+
+	tests := []struct {
+		name   string
+		mutate func(*ecdsa.PrivateKey)
+	}{
+		{name: "zero scalar", mutate: zeroPrivateKey},
+		{name: "missing public coordinate", mutate: func(key *ecdsa.PrivateKey) { key.X = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, err := ethcrypto.ToECDSA(bytes.Repeat([]byte{0x42}, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(key)
+			client, err := New(context.Background(), WithPrivateKey(key), WithEthClient(ec))
+			if client != nil {
+				_ = client.Close()
+				t.Error("New returned a client for an invalid private key")
+			}
+			if err == nil {
+				t.Error("New returned no error for an invalid private key")
+			}
+		})
+	}
 }
 
 func TestNew_InvalidPrivateKeyHex(t *testing.T) {

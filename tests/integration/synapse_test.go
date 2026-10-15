@@ -520,6 +520,17 @@ func TestIntegration(t *testing.T) {
 	t.Run("Payments", func(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
+		key, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(integrationtest.RequirePrivateKey(t)), "0x"))
+		if err != nil {
+			t.Fatal("invalid integration private key")
+		}
+		client := integrationtest.NewDefaultClient(t, cctx, synapse.WithPrivateKey(key))
+		key.D.SetInt64(0) //nolint:staticcheck // secp256k1 scalar mutation exercises caller-owned key isolation.
+		key.X.SetInt64(0)
+		key.Y.SetInt64(0)
+		if client.Address() != addr {
+			t.Fatalf("client address = %s, want %s", client.Address(), addr)
+		}
 
 		// Query initial account state.
 		acct, err := client.Payments().AccountInfo(cctx, usdfc, addr)
@@ -608,7 +619,10 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
-		if res.Receipt != nil && res.Receipt.Status != 1 {
+		if res == nil || res.Receipt == nil {
+			t.Fatal("Deposit returned no transaction receipt")
+		}
+		if res.Receipt.Status != 1 {
 			t.Fatalf("Deposit tx failed: status=%d", res.Receipt.Status)
 		}
 		t.Logf("deposited %s USDFC, tx=%s", depositAmount, res.Hash)
