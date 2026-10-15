@@ -25,17 +25,25 @@ import (
 )
 
 type pipelineGateTransport struct {
-	base     http.RoundTripper
-	mu       sync.Mutex
-	endpoint string
-	entered  chan struct{}
-	release  <-chan struct{}
-	once     *sync.Once
+	base         http.RoundTripper
+	mu           sync.Mutex
+	endpoint     string
+	entered      chan struct{}
+	release      <-chan struct{}
+	once         *sync.Once
+	putDeadlines []time.Duration
 }
 
 func (tr *pipelineGateTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	tr.mu.Lock()
 	endpoint, entered, release, once := tr.endpoint, tr.entered, tr.release, tr.once
+	if req.Method == http.MethodPut {
+		remaining := time.Duration(0)
+		if deadline, ok := req.Context().Deadline(); ok {
+			remaining = time.Until(deadline)
+		}
+		tr.putDeadlines = append(tr.putDeadlines, remaining)
+	}
 	tr.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.String() == endpoint {
 		once.Do(func() { close(entered) })
@@ -171,6 +179,17 @@ func TestIntegration_UploadPipelines(t *testing.T) {
 						t.Fatalf("open confirmed pipeline dataset: %v", err)
 					}
 					contexts[i] = bound
+				}
+			}
+			transport.mu.Lock()
+			putDeadlines := slices.Clone(transport.putDeadlines)
+			transport.mu.Unlock()
+			if len(putDeadlines) == 0 {
+				t.Fatal("no streaming PUT observed")
+			}
+			for _, remaining := range putDeadlines {
+				if remaining <= 0 || remaining > 10*time.Minute {
+					t.Fatalf("streaming PUT deadline remaining=%s, want within custom HTTP timeout of 10m", remaining)
 				}
 			}
 			t.Run("cancel-after-completed-pull", func(t *testing.T) {

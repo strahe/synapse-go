@@ -474,6 +474,9 @@ func TestIntegration(t *testing.T) {
 		uploadedDataSetID types.BigInt
 		uploadedRailID    types.BigInt
 	)
+	run := fmt.Sprintf("storage-http-%d", time.Now().UnixNano())
+	ownedDataSets := make(map[string]bool)
+	suite := t
 
 	// --- Costs subtest ---
 	t.Run("Costs", func(t *testing.T) {
@@ -666,11 +669,45 @@ func TestIntegration(t *testing.T) {
 		start := time.Now()
 		t.Log("start Upload Storage.Upload")
 		result, err := client.Storage().Upload(cctx, bytes.NewReader(testData), tracedUploadOptions(t, "Upload", &storage.UploadOptions{
-			Copies: 1,
+			Copies:          1,
+			DataSetMetadata: map[string]string{"run": run},
 		}))
 		t.Logf("done Upload Storage.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
 			t.Fatalf("Upload: %v", err)
+		}
+		if result == nil {
+			t.Fatal("Upload returned nil result; no dataset registered for cleanup")
+		}
+		for _, cp := range result.Copies {
+			if !cp.IsNewDataSet || cp.DataSetID.IsZero() {
+				t.Fatalf("Upload reused or omitted dataset %s; refusing lifecycle operations", cp.DataSetID)
+			}
+			metadata, err := retryIntegrationRead(cctx, func(ctx context.Context) (map[string]string, error) {
+				return client.WarmStorage().GetAllDataSetMetadata(ctx, cp.DataSetID)
+			})
+			if err != nil || metadata["run"] != run {
+				t.Fatalf("cannot verify dataset %s belongs to run %s: metadata=%v error=%v; refusing cleanup", cp.DataSetID, run, metadata, err)
+			}
+			id := cp.DataSetID
+			if _, registered := ownedDataSets[id.String()]; registered {
+				continue
+			}
+			ownedDataSets[id.String()] = false
+			suite.Cleanup(func() {
+				if ownedDataSets[id.String()] {
+					return
+				}
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer cancel()
+				res, err := client.WarmStorage().TerminateDataSet(cleanupCtx, id, warmstorage.WithWait(txWaitTimeout))
+				if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+					suite.Errorf("cleanup verified run dataset %s: result=%+v error=%v", id, res, err)
+					return
+				}
+				ownedDataSets[id.String()] = true
+				suite.Logf("cleaned up verified run dataset %s tx=%s", id, res.Hash)
+			})
 		}
 
 		// Upload returns the Curio piece CID boundary value, which is PieceCIDv2.
@@ -783,6 +820,22 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("downloaded data does not match uploaded data")
 		}
 		t.Logf("download verified: %d bytes match", len(downloaded))
+		limited, err := storage.New(storage.Options{DownloadMaxBytes: testDataSize / 2, AllowPrivateNetworks: true})
+		if err != nil {
+			t.Fatalf("storage.New with URL limit: %v", err)
+		}
+		body, err := limited.Download(cctx, uploadedCID, &storage.DownloadOptions{URL: uploadedURL})
+		var got []byte
+		if body != nil {
+			got, lastErr = io.ReadAll(body)
+			_ = body.Close()
+			if err == nil {
+				err = lastErr
+			}
+		}
+		if !errors.Is(err, storage.ErrMaxBytesExceeded) || len(got) > testDataSize/2 {
+			t.Fatalf("limited URL download bytes=%d error=%v, want ErrMaxBytesExceeded and at most %d bytes", len(got), err, testDataSize/2)
+		}
 	})
 
 	// --- Multicopy subtest ---
@@ -2033,6 +2086,9 @@ func TestIntegration(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
 		}
+		if _, verified := ownedDataSets[uploadedDataSetID.String()]; !verified {
+			t.Fatal("dataset ownership was not verified; refusing lifecycle operations")
+		}
 		cctx, cancel := context.WithTimeout(ctx, 7*time.Minute)
 		defer cancel()
 
@@ -2063,9 +2119,10 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TerminateService: %v", err)
 		}
-		if termRes.EndEpoch == 0 {
-			t.Errorf("TerminateService EndEpoch=0")
+		if termRes == nil || termRes.EndEpoch == 0 {
+			t.Fatalf("TerminateService result=%+v, want a confirmed termination epoch", termRes)
 		}
+		ownedDataSets[uploadedDataSetID.String()] = true
 		if termRes.TxHash == nil && submitted == (common.Hash{}) {
 			t.Errorf("TerminateService returned no tx hash")
 		}

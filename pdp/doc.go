@@ -18,9 +18,11 @@
 // preserve their I/O and HTTP classifications and follow the transient retry
 // policy.
 //
-// Streaming piece downloads (DownloadPiece) are executed once with the
-// caller's context as the sole lifetime control; they do not go through
-// the automatic retry loop.
+// Streaming GET and PUT requests have no total HTTP timeout by default and
+// use the caller's context to limit their lifetime. WithHTTPClient applies a
+// custom client's timeout to control and streaming requests;
+// WithStreamingHTTPClient overrides only streaming requests. Piece downloads
+// and streaming uploads do not go through the automatic retry loop.
 // Non-success PDP HTTP responses surface *HTTPError. Use
 // errors.AsType[*pdp.HTTPError] to inspect status code, response body, and
 // Retry-After.

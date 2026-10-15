@@ -146,7 +146,7 @@ type contextCore struct {
 }
 
 // NewProviderContext creates an immutable context for the given provider and
-// PDP client. CreateAndAdd and Pull create a new data set.
+// PDP client. CreateAndAdd creates a data set; Pull stages pieces for Commit.
 // provider.ID, provider.ServiceURL, and client are validated here. storageSigner
 // may be nil or typed-nil; signing prerequisites (such as a non-nil signer plus
 // chain/payer/record-keeper options) are validated by the write paths that need

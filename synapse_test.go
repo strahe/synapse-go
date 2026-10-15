@@ -1951,6 +1951,81 @@ func TestRootManagedHTTPClientConfiguration(t *testing.T) {
 	}
 }
 
+func TestPDPFactoryHTTPPolicy(t *testing.T) {
+	info, err := piece.CalculateFromBytes(bytes.Repeat([]byte("pdp"), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		custom     bool
+		timeout    time.Duration
+		streamOnly bool
+	}{
+		{name: "managed"},
+		{name: "custom zero", custom: true},
+		{name: "custom default duration", custom: true, timeout: 30 * time.Second},
+		{name: "custom positive", custom: true, timeout: 37 * time.Second},
+		{name: "factory override", streamOnly: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen []time.Duration
+			transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				remaining := time.Duration(0)
+				if deadline, ok := req.Context().Deadline(); ok {
+					remaining = time.Until(deadline)
+				}
+				seen = append(seen, remaining)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("curio-pdp")), Request: req}, nil
+			})
+			hc := &http.Client{Transport: transport, Timeout: tc.timeout}
+			var opts []ClientOption
+			if tc.custom {
+				opts = append(opts, WithHTTPClient(hc))
+			}
+			client, cleanup := makeLoopbackDownloadClient(t, opts...)
+			defer cleanup()
+			if !tc.custom {
+				client.httpClient.Transport = transport
+			}
+			var pdpOpts []pdp.Option
+			if tc.streamOnly {
+				pdpOpts = append(pdpOpts, pdp.WithStreamingHTTPClient(&http.Client{Transport: transport, Timeout: 41 * time.Second}))
+			}
+			provider, err := client.newPDPClient("https://provider.example", pdpOpts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := provider.Ping(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			body, _, err := provider.DownloadPiece(context.Background(), info.CIDv2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = body.Close()
+			want := []time.Duration{pdp.DefaultHTTPTimeout, 0}
+			if tc.custom {
+				want = []time.Duration{tc.timeout, tc.timeout}
+			}
+			if tc.streamOnly {
+				want[1] = 41 * time.Second
+			}
+			if len(seen) != len(want) {
+				t.Fatalf("requests=%d, want %d", len(seen), len(want))
+			}
+			for i, timeout := range want {
+				if (timeout == 0 && seen[i] != 0) || (timeout > 0 && (seen[i] <= 0 || seen[i] > timeout || timeout-seen[i] > time.Second)) {
+					t.Errorf("request %d deadline remaining=%s, want timeout %s", i, seen[i], timeout)
+				}
+			}
+			if hc.Timeout != tc.timeout {
+				t.Fatal("caller HTTP client mutated")
+			}
+		})
+	}
+}
+
 func TestRootManagedHTTPClientRejectsLoopback(t *testing.T) {
 	var requests atomic.Int32
 	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

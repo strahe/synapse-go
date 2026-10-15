@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -143,9 +144,72 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 
 	var out PullResult
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("pdp.PullPieces: decode response: %w", err)
+		return nil, fmt.Errorf("pdp.PullPieces: %w: decode response: %w", ErrInvalidStatus, err)
+	}
+	if err := validatePullResult(out); err != nil {
+		return nil, err
 	}
 	return &out, nil
+}
+
+func validatePullResult(result PullResult) error {
+	const op = "pdp.PullPieces"
+	if !validPullStatus(result.Status) {
+		return invalidStatusf(op, "unknown overall status %q", result.Status)
+	}
+	var hasRetrying, hasInProgress, hasPending, hasComplete bool
+	failedCount := 0
+	for i, item := range result.Pieces {
+		if !validPullStatus(item.Status) {
+			return invalidStatusf(op, "piece %d has unknown status %q", i, item.Status)
+		}
+		pieceCID, err := cid.Parse(item.PieceCID)
+		if err != nil {
+			return fmt.Errorf("%s: %w: piece %d CID: %w", op, ErrInvalidStatus, i, err)
+		}
+		if _, err := piece.ParseV2(pieceCID); err != nil {
+			return fmt.Errorf("%s: %w: piece %d CID: %w", op, ErrInvalidStatus, i, err)
+		}
+		switch item.Status {
+		case PullStatusRetrying:
+			hasRetrying = true
+		case PullStatusInProgress:
+			hasInProgress = true
+		case PullStatusPending:
+			hasPending = true
+		case PullStatusComplete:
+			hasComplete = true
+		case PullStatusFailed:
+			failedCount++
+		}
+	}
+
+	overall := PullStatusPending
+	switch {
+	case hasRetrying:
+		overall = PullStatusRetrying
+	case hasInProgress:
+		overall = PullStatusInProgress
+	case hasPending:
+		overall = PullStatusPending
+	case len(result.Pieces) > 0 && failedCount == len(result.Pieces):
+		overall = PullStatusFailed
+	case hasComplete:
+		overall = PullStatusComplete
+	}
+	if result.Status != overall {
+		return invalidStatusf(op, "overall status %q does not match piece statuses (%q)", result.Status, overall)
+	}
+	return nil
+}
+
+func validPullStatus(status PullStatus) bool {
+	switch status {
+	case PullStatusPending, PullStatusInProgress, PullStatusRetrying, PullStatusComplete, PullStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // postPull sends one pull request and retries transient failures. A full pull
@@ -211,6 +275,8 @@ func pullQueueFullDelay(err error) time.Duration {
 // is full, it waits for the provider's Retry-After (one minute when absent or
 // under a second, at most five minutes) and sends the request again until ctx
 // ends.
+// An overall "complete" result can contain failed pieces when another piece
+// completed; callers requiring every piece must inspect the per-piece statuses.
 //
 // onStatus is invoked after each poll (may be nil). A zero pollInterval
 // defaults to 4 seconds.

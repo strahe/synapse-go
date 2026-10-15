@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/idconv"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/types"
@@ -321,15 +323,19 @@ func TestContextDownload_WithCDNFallbacksToPDPOnRetrieverError(t *testing.T) {
 
 	cdnCalls := 0
 	pdpCalls := 0
+	cdnBody := &trackingReadCloser{Reader: strings.NewReader("rejected CDN response"), closeErr: errors.New("close failed")}
 	cdn := fakeCDNRetriever{
 		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
 			cdnCalls++
-			return nil, errors.New("cdn miss")
+			return cdnBody, errors.New("cdn miss")
 		},
 	}
 	fake := &fakePDPProviderClient{
 		downloadPieceFn: func(_ context.Context, pieceCID cid.Cid) (io.ReadCloser, int64, error) {
 			pdpCalls++
+			if !cdnBody.closed {
+				t.Fatal("CDN response must be closed before PDP fallback")
+			}
 			if pieceCID != info.CIDv2 {
 				t.Fatalf("pdp pieceCID=%s want %s", pieceCID, info.CIDv2)
 			}
@@ -361,34 +367,61 @@ func TestContextDownload_WithCDNFallbacksToPDPOnRetrieverError(t *testing.T) {
 }
 
 func TestContextDownload_WithCDNContextCancellationDoesNotFallback(t *testing.T) {
-	data := bytes.Repeat([]byte("cancel"), 128)
-	info, err := piece.CalculateFromBytes(data)
-	if err != nil {
-		t.Fatalf("CalculateFromBytes: %v", err)
+	info := mustPieceInfo(t)
+	cdnFailure := errors.New("CDN failed")
+	tests := []struct {
+		name      string
+		cdnErr    error
+		cancelCtx bool
+		wantErr   error
+	}{
+		{name: "retriever canceled", cdnErr: context.Canceled, wantErr: context.Canceled},
+		{name: "retriever deadline", cdnErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded},
+		{name: "caller canceled with another CDN error", cdnErr: cdnFailure, cancelCtx: true, wantErr: context.Canceled},
+		{name: "caller canceled with nil CDN body", cancelCtx: true, wantErr: context.Canceled},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			body := &trackingReadCloser{Reader: strings.NewReader("rejected"), closeErr: errors.New("close failed")}
+			cdn := fakeCDNRetriever{downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
+				if tt.cancelCtx {
+					cancel()
+				}
+				if tt.cdnErr == nil {
+					return nil, nil
+				}
+				return body, tt.cdnErr
+			}}
+			client := &fakePDPProviderClient{downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+				t.Fatal("PDP must not be requested after cancellation")
+				return nil, 0, nil
+			}}
+			storageCtx := mustProviderContext(t, client, WithCDN(true), WithCDNRetriever(cdn))
+			reader, err := storageCtx.Download(callCtx, info.CIDv2)
+			if reader != nil || !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Download reader=%v error=%v, want %v", reader, err, tt.wantErr)
+			}
+			if tt.cdnErr != nil && (!body.closed || !errors.Is(err, tt.cdnErr)) {
+				t.Fatalf("CDN body closed=%t error=%v, want cause %v", body.closed, err, tt.cdnErr)
+			}
+		})
+	}
+}
 
-	cdn := fakeCDNRetriever{
-		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, error) {
-			return nil, context.Canceled
-		},
-	}
-	fake := &fakePDPProviderClient{
-		downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
-			t.Fatal("PDP direct should not be called after CDN cancellation")
-			return nil, 0, nil
-		},
-	}
-	ctx, err := NewProviderContext(testProvider(), fake, mustTestSigner(t),
-		WithCDN(true),
-		WithCDNRetriever(cdn),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	_, err = ctx.Download(context.Background(), info.CIDv2)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("want context.Canceled, got %v", err)
+func TestContextDownload_ClosesProviderBodyOnError(t *testing.T) {
+	info := mustPieceInfo(t)
+	failure := errors.New("provider failed")
+	closeFailure := errors.New("close failed")
+	body := &trackingReadCloser{Reader: strings.NewReader("rejected"), closeErr: closeFailure}
+	client := &fakePDPProviderClient{downloadPieceFn: func(context.Context, cid.Cid) (io.ReadCloser, int64, error) {
+		return body, -1, failure
+	}}
+	storageCtx := mustProviderContext(t, client)
+	reader, err := storageCtx.Download(context.Background(), info.CIDv2)
+	if reader != nil || !body.closed || !errors.Is(err, failure) || errors.Is(err, closeFailure) {
+		t.Fatalf("Download reader=%v closed=%t error=%v, want provider error", reader, body.closed, err)
 	}
 }
 
@@ -447,10 +480,14 @@ func (f fakeCDNRetriever) DownloadPiece(ctx context.Context, pieceCID cid.Cid) (
 
 type scriptedReader struct {
 	chunks [][]byte
+	endErr error
 }
 
 func (r *scriptedReader) Read(p []byte) (int, error) {
 	if len(r.chunks) == 0 {
+		if r.endErr != nil {
+			return 0, r.endErr
+		}
 		return 0, errors.New("unexpected read beyond scripted overflow")
 	}
 	n := copy(p, r.chunks[0])
@@ -463,12 +500,13 @@ func (r *scriptedReader) Read(p []byte) (int, error) {
 
 type trackingReadCloser struct {
 	io.Reader
-	closed bool
+	closed   bool
+	closeErr error
 }
 
 func (r *trackingReadCloser) Close() error {
 	r.closed = true
-	return nil
+	return r.closeErr
 }
 
 func TestManagerDownload_URLValidatesPiece(t *testing.T) {
@@ -943,61 +981,117 @@ func TestManagerDownload_RejectsUnsupportedScheme(t *testing.T) {
 	}
 }
 
-// TestManagerDownload_MaxBytesContentLength verifies eager rejection when
-// Content-Length reports a body larger than the cap.
 func TestManagerDownload_MaxBytesContentLength(t *testing.T) {
-	data := bytes.Repeat([]byte("q"), 4096)
+	data := bytes.Repeat([]byte("q"), 1024)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
-		t.Fatalf("CalculateFromBytes: %v", err)
+		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "4096")
-		_, _ = w.Write(data)
-	}))
-	defer server.Close()
-
-	mgr := mustNewService(t, Options{AllowPrivateNetworks: true, DownloadMaxBytes: 128})
-	_, err = mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
-	if err == nil {
-		t.Fatal("expected ErrMaxBytesExceeded, got nil")
+	tests := []struct {
+		name       string
+		cid        cid.Cid
+		configured int64
+		length     int64
+		wantReject bool
+	}{
+		{name: "v2 default raw size", cid: info.CIDv2, length: 1025, wantReject: true},
+		{name: "v2 smaller configuration", cid: info.CIDv2, configured: 128, length: 129, wantReject: true},
+		{name: "v2 larger configuration", cid: info.CIDv2, configured: 2048, length: 1025, wantReject: true},
+		{name: "v2 exact raw size", cid: info.CIDv2, length: 1024},
+		{name: "v1 no configured cap", cid: info.CIDv1, length: 1025},
+		{name: "v1 configured cap", cid: info.CIDv1, configured: 128, length: 129, wantReject: true},
 	}
-	if !errors.Is(err, ErrMaxBytesExceeded) {
-		t.Fatalf("expected ErrMaxBytesExceeded, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &trackingReadCloser{Reader: bytes.NewReader(data)}
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, ContentLength: tt.length, Body: body, Header: make(http.Header)}, nil
+			})}
+			svc := mustNewService(t, Options{HTTPClient: client, DownloadMaxBytes: tt.configured})
+			reader, err := svc.Download(context.Background(), tt.cid, &DownloadOptions{URL: "https://piece.example"})
+			if tt.wantReject {
+				if !errors.Is(err, ErrMaxBytesExceeded) || reader != nil || !body.closed {
+					t.Fatalf("reader=%v error=%v closed=%t, want rejected closed response", reader, err, body.closed)
+				}
+				if _, ok := errors.AsType[*DownloadError](err); !ok {
+					t.Fatalf("error=%T, want *DownloadError", err)
+				}
+				return
+			}
+			if err != nil || reader == nil || body.closed {
+				t.Fatalf("reader=%v error=%v closed=%t, want caller-owned response", reader, err, body.closed)
+			}
+			_ = reader.Close()
+		})
 	}
 }
 
-// TestManagerDownload_MaxBytesStreaming verifies that a body exceeding the
-// cap mid-stream surfaces ErrMaxBytesExceeded as the terminal Read error
-// even when Content-Length is absent.
 func TestManagerDownload_MaxBytesStreaming(t *testing.T) {
-	data := bytes.Repeat([]byte("s"), 4096)
+	data := bytes.Repeat([]byte("s"), 1024)
 	info, err := piece.CalculateFromBytes(data)
 	if err != nil {
-		t.Fatalf("CalculateFromBytes: %v", err)
+		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Transfer-Encoding", "chunked")
-		_, _ = w.Write(data[:256])
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		_, _ = w.Write(data[256:])
-	}))
-	defer server.Close()
-
-	mgr := mustNewService(t, Options{AllowPrivateNetworks: true, DownloadMaxBytes: 128})
-	reader, err := mgr.Download(context.Background(), info.CIDv2, &DownloadOptions{URL: server.URL})
-	if err != nil {
-		t.Fatalf("Download: %v", err)
+	overflow := append(bytes.Clone(data), 0xff)
+	wrong := bytes.Repeat([]byte("w"), len(data))
+	tests := []struct {
+		name         string
+		v1           bool
+		configured   int64
+		length       int64
+		chunks       [][]byte
+		want         []byte
+		wantLimit    bool
+		wantMismatch bool
+	}{
+		{name: "v2 default overflow in same read", length: -1, chunks: [][]byte{overflow}, want: data, wantLimit: true},
+		{name: "v2 default overflow in later read", length: -1, chunks: [][]byte{data, {0xff}}, want: data, wantLimit: true},
+		{name: "v2 declared length smaller than body", length: 1, chunks: [][]byte{overflow}, want: data, wantLimit: true},
+		{name: "v2 smaller configured limit", configured: 128, length: -1, chunks: [][]byte{data}, want: data[:128], wantLimit: true},
+		{name: "v2 larger configured limit", configured: 2048, length: -1, chunks: [][]byte{overflow}, want: data, wantLimit: true},
+		{name: "v2 exact raw size", length: -1, chunks: [][]byte{data}, want: data},
+		{name: "v2 exact configured raw size", configured: 1024, length: -1, chunks: [][]byte{data}, want: data},
+		{name: "v2 truncated", length: -1, chunks: [][]byte{data[:len(data)-1]}, want: data[:len(data)-1], wantMismatch: true},
+		{name: "v2 same length wrong content", length: -1, chunks: [][]byte{wrong}, want: wrong, wantMismatch: true},
+		{name: "v1 unlimited suffix reaches integrity check", v1: true, length: -1, chunks: [][]byte{overflow}, want: overflow, wantMismatch: true},
+		{name: "v1 configured limit", v1: true, configured: 128, length: -1, chunks: [][]byte{data}, want: data[:128], wantLimit: true},
 	}
-	defer func() { _ = reader.Close() }()
-	_, err = io.ReadAll(reader)
-	if err == nil {
-		t.Fatal("expected ErrMaxBytesExceeded, got nil")
-	}
-	if !errors.Is(err, ErrMaxBytesExceeded) {
-		t.Fatalf("expected ErrMaxBytesExceeded, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &trackingReadCloser{Reader: &scriptedReader{chunks: append([][]byte(nil), tt.chunks...), endErr: io.EOF}}
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, ContentLength: tt.length, Body: body, Header: make(http.Header)}, nil
+			})}
+			svc := mustNewService(t, Options{HTTPClient: client, DownloadMaxBytes: tt.configured})
+			pieceCID := info.CIDv2
+			if tt.v1 {
+				pieceCID = info.CIDv1
+			}
+			reader, err := svc.Download(context.Background(), pieceCID, &DownloadOptions{URL: "https://piece.example"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, readErr := io.ReadAll(reader)
+			if body.closed {
+				t.Fatal("stream was closed before caller Close")
+			}
+			_ = reader.Close()
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("got %d bytes, want %d", len(got), len(tt.want))
+			}
+			switch {
+			case tt.wantLimit:
+				if !errors.Is(readErr, ErrMaxBytesExceeded) {
+					t.Fatalf("read error=%v, want ErrMaxBytesExceeded", readErr)
+				}
+			case tt.wantMismatch:
+				if _, ok := errors.AsType[*CIDMismatchError](readErr); !ok {
+					t.Fatalf("read error=%v, want CIDMismatchError", readErr)
+				}
+			case readErr != nil:
+				t.Fatal(readErr)
+			}
+		})
 	}
 }
 
@@ -1084,6 +1178,7 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 		wrongPayer   bool
 		cdnErr       error
 		cdnNilBody   bool
+		cancelCtx    bool
 		oversized    bool
 		wantErr      error
 		wantReadErr  error
@@ -1099,6 +1194,7 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 		{name: "nil CDN body falls back", active: true, withCDN: true, cdnNilBody: true, wantCDNCalls: 1, wantPDPCalls: 1},
 		{name: "CDN canceled", active: true, withCDN: true, cdnErr: context.Canceled, wantErr: context.Canceled, wantCDNCalls: 1},
 		{name: "CDN deadline", active: true, withCDN: true, cdnErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded, wantCDNCalls: 1},
+		{name: "caller canceled after CDN miss", active: true, withCDN: true, cdnErr: cdnMiss, cancelCtx: true, wantErr: context.Canceled, wantCDNCalls: 1},
 		{name: "oversized CDN response", withCDN: true, oversized: true, wantCDNCalls: 1, wantReadErr: ErrMaxBytesExceeded},
 		{name: "different payer", withCDN: true, wrongPayer: true, wantErr: ErrInvalidArgument},
 	}
@@ -1119,6 +1215,9 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 				fixture.activeProviders = []spregistry.PDPProvider{testPDPProvider(types.NewBigInt(1), "https://provider.test")}
 			}
 			cdnCalls, pdpCalls, factoryCalls := 0, 0, 0
+			callCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var rejectedCDNBody *trackingReadCloser
 			var retriever CDNRetriever
 			if !tt.noRetriever {
 				retriever = fakeCDNRetriever{downloadPieceFn: func(_ context.Context, gotCID cid.Cid) (io.ReadCloser, error) {
@@ -1126,8 +1225,15 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 					if !gotCID.Equals(info.CIDv2) {
 						t.Fatalf("CDN CID=%s want %s", gotCID, info.CIDv2)
 					}
-					if tt.cdnErr != nil || tt.cdnNilBody {
-						return nil, tt.cdnErr
+					if tt.cancelCtx {
+						cancel()
+					}
+					if tt.cdnErr != nil {
+						rejectedCDNBody = &trackingReadCloser{Reader: strings.NewReader("rejected CDN response")}
+						return rejectedCDNBody, tt.cdnErr
+					}
+					if tt.cdnNilBody {
+						return nil, nil
 					}
 					payload := bytes.Clone(data)
 					if tt.oversized {
@@ -1153,7 +1259,7 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 				t.Fatal(err)
 			}
 			svc := mustNewService(t, Options{DataSetDownloader: resolver})
-			body, err := svc.Download(context.Background(), info.CIDv2, &DownloadOptions{DataSetID: new(types.NewBigInt(17))})
+			body, err := svc.Download(callCtx, info.CIDv2, &DownloadOptions{DataSetID: new(types.NewBigInt(17))})
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) || body != nil {
 					t.Fatalf("body=%v err=%v want %v", body, err, tt.wantErr)
@@ -1174,6 +1280,9 @@ func TestManagerDownload_DataSetID(t *testing.T) {
 				} else if readErr != nil || !bytes.Equal(got, data) {
 					t.Fatalf("download bytes=%d read error=%v", len(got), readErr)
 				}
+			}
+			if rejectedCDNBody != nil && !rejectedCDNBody.closed {
+				t.Fatal("rejected CDN response was not closed")
 			}
 			if cdnCalls != tt.wantCDNCalls || pdpCalls != tt.wantPDPCalls || factoryCalls != tt.wantPDPCalls {
 				t.Fatalf("CDN/PDP/factory calls=%d/%d/%d want %d/%d/%d", cdnCalls, pdpCalls, factoryCalls, tt.wantCDNCalls, tt.wantPDPCalls, tt.wantPDPCalls)
@@ -1206,5 +1315,33 @@ func TestManagerDownload_DataSetIDOptions(t *testing.T) {
 				t.Fatalf("error=%v want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestContextPullRejectsInvalidHTTPResponseBeforeProgress(t *testing.T) {
+	info := mustPieceInfo(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"complete","pieces":[{"pieceCid":%q,"status":"pending"}]}`, info.CIDv2.String())
+	}))
+	defer server.Close()
+	client, err := pdp.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageCtx := mustProviderContext(t, client, WithRecordKeeper(testRecordKeeper()))
+	progress := 0
+	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := storageCtx.Pull(callCtx, PullRequest{
+		Pieces:     []cid.Cid{info.CIDv2},
+		From:       func(cid.Cid) string { return "https://source.example/piece" },
+		ExtraData:  []byte{0x01},
+		OnProgress: func(cid.Cid, PullStatus) { progress++ },
+	})
+	if !errors.Is(err, pdp.ErrInvalidStatus) || res != nil || requests.Load() != 1 || progress != 0 {
+		t.Fatalf("result=%+v error=%v requests=%d progress=%d, want immediate invalid status", res, err, requests.Load(), progress)
 	}
 }
