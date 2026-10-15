@@ -115,10 +115,8 @@ func TestNonceManager_ConcurrentAcquireSerializesAndProducesUniqueNonces(t *test
 	const N = 50
 	var wg sync.WaitGroup
 	out := make(chan uint64, N)
-	for i := 0; i < N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range N {
+		wg.Go(func() {
 			n, release, err := nm.Acquire(ctx)
 			if err != nil {
 				t.Errorf("acquire: %v", err)
@@ -128,7 +126,7 @@ func TestNonceManager_ConcurrentAcquireSerializesAndProducesUniqueNonces(t *test
 			client.markBroadcast()
 			out <- n
 			release()
-		}()
+		})
 	}
 	wg.Wait()
 	close(out)
@@ -229,31 +227,53 @@ func TestNonceManager_AcquirePanicReleasesLock(t *testing.T) {
 	}
 }
 
-func TestNonceManager_AcquireBlocksWhileAnotherHoldsLock(t *testing.T) {
+func TestNonceManager_AcquireCanceledBeforeAcquiring(t *testing.T) {
 	client := &fakeNonceClient{pending: 7}
 	nm := NewNonceManager(client, common.Address{})
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	_, release1, err := nm.Acquire(ctx)
+	_, release, err := nm.Acquire(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Acquire error = %v, want cancellation", err)
+	}
+	release()
+	if calls := client.calls.Load(); calls != 0 {
+		t.Fatalf("canceled Acquire made %d RPC calls", calls)
+	}
+}
+
+func TestNonceManager_QueuedCancellationLeavesLockUsable(t *testing.T) {
+	client := &fakeNonceClient{pending: 7}
+	nm := NewNonceManager(client, common.Address{})
+
+	_, release1, err := nm.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer release1()
 
-	got2 := make(chan uint64, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := &nonceWaitContext{Context: ctx, waiting: make(chan struct{})}
+	done := make(chan error, 1)
 	go func() {
-		n, release, err := nm.Acquire(ctx)
-		if err != nil {
-			t.Errorf("acquire: %v", err)
-			return
-		}
-		got2 <- n
+		_, release, err := nm.Acquire(waiting)
 		release()
+		done <- err
 	}()
-
+	<-waiting.waiting
+	cancel()
 	select {
-	case n := <-got2:
-		t.Fatalf("second Acquire returned %d before first released", n)
-	case <-time.After(20 * time.Millisecond):
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Acquire error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Acquire did not stop while the first caller held the lock")
+	}
+	if calls := client.calls.Load(); calls != 1 {
+		t.Fatalf("queued canceled Acquire reached RPC: %d calls, want 1", calls)
 	}
 
 	client.mu.Lock()
@@ -261,12 +281,79 @@ func TestNonceManager_AcquireBlocksWhileAnotherHoldsLock(t *testing.T) {
 	client.mu.Unlock()
 	release1()
 
+	n, release, err := nm.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if n != 8 {
+		t.Fatalf("Acquire after cancellation = %d, want 8", n)
+	}
+}
+
+type nonceWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *nonceWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestNonceManager_CancellationDuringRPCReleasesLock(t *testing.T) {
+	entered := make(chan struct{})
+	client := &fakeNonceClient{pending: 7, waitOn: entered, releaseOn: make(chan struct{})}
+	nm := NewNonceManager(client, common.Address{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, release, err := nm.Acquire(ctx)
+		release()
+		done <- err
+	}()
+	<-entered
+	cancel()
+
 	select {
-	case n := <-got2:
-		if n != 8 {
-			t.Fatalf("expected nonce 8 after release, got %d", n)
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Acquire error = %v, want cancellation", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("second Acquire did not unblock after release")
+		t.Fatal("Acquire RPC did not stop after cancellation")
 	}
+	_, release, err := nm.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
+type nonceProviderFunc func(context.Context, common.Address) (uint64, error)
+
+func (f nonceProviderFunc) PendingNonceAt(ctx context.Context, address common.Address) (uint64, error) {
+	return f(ctx, address)
+}
+
+func TestNonceManager_CancellationBeforeRPCSuccessReleasesLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := nonceProviderFunc(func(context.Context, common.Address) (uint64, error) {
+		cancel()
+		return 7, nil
+	})
+	nm := NewNonceManager(client, common.Address{})
+	_, release, err := nm.Acquire(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Acquire error = %v, want cancellation", err)
+	}
+	release()
+	_, release, err = nm.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -44,8 +45,8 @@ func WaitForReceipt(ctx context.Context, client ReceiptClient, txHash common.Has
 	return waitForReceipt(ctx, client, txHash, cfg, 0)
 }
 
-// WaitForConfirmation waits until the transaction is mined and its inclusion
-// block has accumulated the requested number of confirmations.
+// WaitForConfirmation waits until the transaction's inclusion block has the
+// requested confirmations, then returns its receipt and any transaction failure.
 func WaitForConfirmation(ctx context.Context, client ReceiptClient, txHash common.Hash, confirmations uint64) (*types.Receipt, error) {
 	return waitForReceipt(ctx, client, txHash, DefaultReceiptWaitConfig(), confirmations)
 }
@@ -54,6 +55,20 @@ func WaitForConfirmation(ctx context.Context, client ReceiptClient, txHash commo
 // required confirmations.
 func WaitForReceiptWithConfig(ctx context.Context, client ReceiptClient, txHash common.Hash, cfg ReceiptWaitConfig, confirmations uint64) (*types.Receipt, error) {
 	return waitForReceipt(ctx, client, txHash, cfg, confirmations)
+}
+
+// HasConfirmations reports whether the inclusion block has the requested depth.
+// The inclusion block counts as the first confirmation. A zero requirement does
+// not require a block number or head.
+func HasConfirmations(blockNumber *big.Int, head, confirmations uint64) bool {
+	if confirmations == 0 {
+		return true
+	}
+	if blockNumber == nil || !blockNumber.IsUint64() {
+		return false
+	}
+	inclusion := blockNumber.Uint64()
+	return head >= inclusion && head-inclusion >= confirmations-1
 }
 
 func waitForReceipt(ctx context.Context, client ReceiptClient, txHash common.Hash, cfg ReceiptWaitConfig, confirmations uint64) (*types.Receipt, error) {
@@ -80,63 +95,70 @@ func waitForReceipt(ctx context.Context, client ReceiptClient, txHash common.Has
 		lastErr     error
 	)
 
+	waitError := func() error {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return fmt.Errorf("receipt wait canceled after %d polls: %w", polls, ctx.Err())
+		}
+		if lastErr != nil {
+			return fmt.Errorf("%w after %d polls: %w (last err: %w)", ErrReceiptTimeout, polls, ctx.Err(), lastErr)
+		}
+		return fmt.Errorf("%w after %d polls: %w", ErrReceiptTimeout, polls, ctx.Err())
+	}
+
 	tryPoll := func() (*types.Receipt, bool, error) {
-		polls++
 		receipt, err := client.TransactionReceipt(ctx, txHash)
 		if err != nil {
 			if errors.Is(err, ethereum.NotFound) {
-				consecutive = 0
 				return nil, false, nil
 			}
-			if !IsRetryableRPCError(err) {
-				return nil, false, fmt.Errorf("%w: %w", ErrReceiptRPCFailure, err)
-			}
-			consecutive++
-			lastErr = err
-			if consecutive >= maxErr {
-				return nil, false, fmt.Errorf("%w: %d consecutive errors after %d polls, last err: %w", ErrReceiptRPCFailure, consecutive, polls, lastErr)
-			}
+			return nil, false, err
+		}
+		if receipt == nil {
 			return nil, false, nil
 		}
-		consecutive = 0
+		var head uint64
+		if confirmations > 0 {
+			if receipt.BlockNumber == nil || !receipt.BlockNumber.IsUint64() {
+				return nil, false, nil
+			}
+			head, err = client.BlockNumber(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+		}
+		if !HasConfirmations(receipt.BlockNumber, head, confirmations) {
+			return nil, false, nil
+		}
 		if receipt.Status != types.ReceiptStatusSuccessful {
-			return receipt, false, fmt.Errorf("%w: status=%d tx=%s", ErrTxFailed, receipt.Status, txHash.Hex())
+			return receipt, true, fmt.Errorf("%w: status=%d tx=%s", ErrTxFailed, receipt.Status, txHash.Hex())
 		}
-		if confirmations == 0 {
-			return receipt, true, nil
-		}
-		if receipt.BlockNumber == nil {
-			return nil, false, nil
-		}
-		head, err := client.BlockNumber(ctx)
-		if err != nil {
-			if !IsRetryableRPCError(err) {
-				return nil, false, fmt.Errorf("%w: %w", ErrReceiptRPCFailure, err)
-			}
-			consecutive++
-			lastErr = err
-			if consecutive >= maxErr {
-				return nil, false, fmt.Errorf("%w: %d consecutive errors after %d polls, last err: %w", ErrReceiptRPCFailure, consecutive, polls, lastErr)
-			}
-			return nil, false, nil
-		}
-		requiredHead := receipt.BlockNumber.Uint64() + confirmations - 1
-		if head >= requiredHead {
-			return receipt, true, nil
-		}
-		return nil, false, nil
+		return receipt, true, nil
 	}
 
 	for {
-		if receipt, done, err := tryPoll(); done || err != nil {
+		if ctx.Err() != nil {
+			return nil, waitError()
+		}
+		polls++
+		receipt, done, err := tryPoll()
+		if done {
 			return receipt, err
+		}
+		if err != nil && ctx.Err() != nil {
+			return nil, waitError()
+		}
+		if err != nil {
+			lastErr = err
+			consecutive++
+			if !IsRetryableRPCError(err) || consecutive >= maxErr {
+				return nil, fmt.Errorf("%w: %d consecutive errors after %d polls, last err: %w", ErrReceiptRPCFailure, consecutive, polls, err)
+			}
+		} else {
+			consecutive = 0
 		}
 		select {
 		case <-ctx.Done():
-			if lastErr != nil {
-				return nil, fmt.Errorf("%w after %d polls: %w (last err: %w)", ErrReceiptTimeout, polls, ctx.Err(), lastErr)
-			}
-			return nil, fmt.Errorf("%w after %d polls: %w", ErrReceiptTimeout, polls, ctx.Err())
+			return nil, waitError()
 		case <-ticker.C:
 		}
 	}

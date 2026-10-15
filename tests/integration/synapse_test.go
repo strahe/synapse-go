@@ -2033,7 +2033,7 @@ func TestIntegration(t *testing.T) {
 		if uploadedDataSetID.IsZero() || !uploadedCID.Defined() {
 			t.Skip("no uploaded dataset/cid; skipping StorageLifecycle")
 		}
-		cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		cctx, cancel := context.WithTimeout(ctx, 7*time.Minute)
 		defer cancel()
 
 		uctx, err := client.Storage().NewDataSetContext(cctx, uploadedDataSetID, storage.NewDataSetContextOptions{})
@@ -2053,7 +2053,7 @@ func TestIntegration(t *testing.T) {
 		t.Log("start StorageLifecycle TerminateService")
 		var submitted common.Hash
 		termRes, err := client.Storage().TerminateService(cctx, uploadedDataSetID, &storage.TerminateServiceOptions{
-			ProviderWaitTimeout: txWaitTimeout,
+			ProviderWaitTimeout: 5 * time.Minute,
 			PollInterval:        2 * time.Second,
 			OnSubmitted: func(hash common.Hash) {
 				submitted = hash

@@ -448,12 +448,9 @@ func (s *Service) txOpts(ctx context.Context, value *big.Int) (*bind.TransactOpt
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
-	if txOpts == nil {
-		return nil, nil, fmt.Errorf("transactor: %w: signer returned nil options", ErrInvalidArgument)
-	}
-	txOpts.Context = ctx
-	if value != nil {
-		txOpts.Value = value
+	txOpts, err = txutil.PrepareTransactOpts(txOpts, s.signer.EVMAddress(), ctx, value)
+	if err != nil {
+		return nil, nil, fmt.Errorf("transactor: %w: %w", ErrInvalidArgument, err)
 	}
 	if s.nonces == nil {
 		return txOpts, func() {}, nil

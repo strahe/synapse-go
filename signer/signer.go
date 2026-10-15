@@ -29,7 +29,11 @@ type EVMSigner interface {
 	EVMAddress() common.Address
 
 	// Transactor returns go-ethereum TransactOpts bound to the given chain ID.
-	// On success, the returned options must be non-nil.
+	// On success, the options and Signer must be non-nil, and From must match
+	// EVMAddress. Services copy the options before setting the operation's
+	// context, nonce, and value, so implementations may return a shared read-only
+	// template. Calls to Transactor and its Signer may run concurrently;
+	// implementations must serialize any mutable state they share.
 	Transactor(chainID *big.Int) (*bind.TransactOpts, error)
 }
 

@@ -39,7 +39,9 @@ func WithOnSubmitted(fn func(common.Hash)) WriteOption {
 	return func(c *writeConfig) { c.onSubmitted = fn }
 }
 
-// WithConfirmations requires N block confirmations in addition to WithWait.
+// WithConfirmations requires n confirmations for successful and failed receipts,
+// counting the inclusion block as the first. Zero waits only for inclusion.
+// It has no effect unless WithWait is also passed with a positive timeout.
 func WithConfirmations(n uint64) WriteOption {
 	return func(c *writeConfig) { c.confirmations = n }
 }

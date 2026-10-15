@@ -6,26 +6,32 @@ import (
 	"context"
 	"crypto/ecdsa"
 	cryptorand "crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/sessionkey"
+	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/types"
 )
 
-// TestIntegration_SessionKey exercises the WithOptions / AndFund / GetExpirations
-// surface of sessionkey.Service that the existing cross-package SessionKey
-// subtest does not already cover (which uses the simpler Login / Revoke).
+// TestIntegration_SessionKey covers custom permissions, authorization reads,
+// and funded login followed by revocation.
 //
 // Each subtest uses a freshly generated ephemeral session key so we can
 // assert strict invariants on each lifecycle step without interference
 // from prior runs.
 func TestIntegration_SessionKey(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -130,57 +136,144 @@ func TestIntegration_SessionKey(t *testing.T) {
 	})
 
 	t.Run("LoginAndFund+LoginAndFundWithOptions", func(t *testing.T) {
-		// Generate a session key and fund it with 1 attoFIL via LoginAndFund.
-		skPriv1, err := ecdsa.GenerateKey(crypto.S256(), cryptorand.Reader)
+		rpc, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
 		if err != nil {
-			t.Fatalf("generate session key: %v", err)
+			t.Fatal(err)
 		}
-		skAddr1 := crypto.PubkeyToAddress(skPriv1.PublicKey)
+		t.Cleanup(rpc.Close)
+		chainID, err := rpc.ChainID(ctx)
+		if err != nil || chainID.Cmp(big.NewInt(integrationtest.CalibrationChainID)) != 0 {
+			t.Fatalf("session key RPC must be Calibration: chain=%v error=%v", chainID, err)
+		}
+		key, err := hex.DecodeString(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
+		if err != nil {
+			t.Fatal("invalid integration signing key")
+		}
+		defer clear(key)
+		sg, err := signer.NewSecp256k1SignerFromBytes(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer, err := sessionkey.New(sessionkey.Options{
+			Backend: rpc, Signer: &cachedTransactorSigner{EVMSigner: sg},
+			ChainID:         types.ChainID(integrationtest.CalibrationChainID),
+			RegistryAddress: sk.RegistryAddress(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, explicit := range []bool{false, true} {
+			name := "DefaultOptions"
+			if explicit {
+				name = "ExplicitOptions"
+			}
+			t.Run(name, func(t *testing.T) {
+				skPriv, err := ecdsa.GenerateKey(crypto.S256(), cryptorand.Reader)
+				if err != nil {
+					t.Fatalf("generate session key: %v", err)
+				}
+				skAddr := crypto.PubkeyToAddress(skPriv.PublicKey)
+				perms := sessionkey.DefaultFWSSPermissions()
+				origin := "synapse"
+				if explicit {
+					perms = []sessionkey.Permission{sessionkey.CreateDataSetPermission()}
+					origin = "integration-test"
+				}
+				revoked := false
+				verifyRevoked := func(checkCtx context.Context) error {
+					for _, permission := range perms {
+						expired, err := sk.IsExpired(checkCtx, rootAddr, skAddr, permission)
+						if err != nil {
+							return fmt.Errorf("IsExpired(%s): %w", permission.Hex(), err)
+						}
+						if !expired {
+							return fmt.Errorf("permission %s is still authorized", permission.Hex())
+						}
+					}
+					return nil
+				}
+				t.Cleanup(func() {
+					if revoked {
+						return
+					}
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					defer cleanupCancel()
+					res, err := sk.RevokeWithOptions(cleanupCtx, skAddr, &sessionkey.RevokeOptions{
+						Permissions: perms, Origin: origin,
+					}, sessionkey.WithWait(txWait))
+					if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+						t.Errorf("cleanup RevokeWithOptions(session=%s): result=%v error=%v", skAddr, res, err)
+						return
+					}
+					if err := verifyRevoked(cleanupCtx); err != nil {
+						t.Errorf("cleanup authorization check(session=%s): %v", skAddr, err)
+					}
+				})
 
-		one := big.NewInt(1)
-		res, err := sk.LoginAndFund(ctx, skAddr1, one, sessionkey.WithWait(txWait))
-		if err != nil {
-			t.Fatalf("LoginAndFund: %v", err)
-		}
-		if res.Receipt == nil || res.Receipt.Status != 1 {
-			t.Fatalf("LoginAndFund tx not successful")
-		}
-		t.Logf("LoginAndFund tx=%s", res.Hash)
-
-		bal, err := client.Payments().WalletBalance(ctx, common.Address{}, skAddr1)
-		if err != nil {
-			t.Fatalf("WalletBalance(sk1): %v", err)
-		}
-		if bal.Sign() <= 0 {
-			t.Errorf("session key should have > 0 FIL after LoginAndFund, got %s", bal)
-		}
-
-		// LoginAndFundWithOptions — custom permissions + funding.
-		skPriv2, err := ecdsa.GenerateKey(crypto.S256(), cryptorand.Reader)
-		if err != nil {
-			t.Fatalf("generate session key: %v", err)
-		}
-		skAddr2 := crypto.PubkeyToAddress(skPriv2.PublicKey)
-
-		res2, err := sk.LoginAndFundWithOptions(ctx, skAddr2, one, &sessionkey.LoginOptions{
-			Permissions: []sessionkey.Permission{sessionkey.CreateDataSetPermission()},
-			ExpiresAt:   uint64(time.Now().Add(10 * time.Minute).Unix()),
-			Origin:      "integration-test",
-		}, sessionkey.WithWait(txWait))
-		if err != nil {
-			t.Fatalf("LoginAndFundWithOptions: %v", err)
-		}
-		if res2.Receipt == nil || res2.Receipt.Status != 1 {
-			t.Fatalf("LoginAndFundWithOptions tx not successful")
-		}
-
-		// Only CreateDataSet should be authorised.
-		expAdd, err := sk.AuthorizationExpiry(ctx, rootAddr, skAddr2, sessionkey.AddPiecesPermission())
-		if err != nil {
-			t.Fatalf("AuthorizationExpiry(AddPieces): %v", err)
-		}
-		if expAdd != 0 {
-			t.Errorf("AddPieces expiry = %d, want 0 (only CreateDataSet was requested)", expAdd)
+				one := big.NewInt(1)
+				var res *types.WriteResult
+				if explicit {
+					res, err = writer.LoginAndFundWithOptions(ctx, skAddr, one, &sessionkey.LoginOptions{
+						Permissions: perms,
+						ExpiresAt:   uint64(time.Now().Add(10 * time.Minute).Unix()),
+						Origin:      origin,
+					}, sessionkey.WithWait(txWait))
+				} else {
+					res, err = writer.LoginAndFund(ctx, skAddr, one, sessionkey.WithWait(txWait))
+				}
+				if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+					t.Fatalf("funded login: result=%v error=%v", res, err)
+				}
+				t.Logf("funded login tx=%s", res.Hash)
+				bal, err := client.Payments().WalletBalance(ctx, common.Address{}, skAddr)
+				if err != nil {
+					t.Fatalf("WalletBalance(session key): %v", err)
+				}
+				if bal == nil || bal.Cmp(one) != 0 {
+					t.Fatalf("session key FIL balance = %v, want 1 attoFIL", bal)
+				}
+				for _, permission := range perms {
+					expired, err := sk.IsExpired(ctx, rootAddr, skAddr, permission)
+					if err != nil || expired {
+						t.Fatalf("permission %s after login: expired=%v error=%v", permission.Hex(), expired, err)
+					}
+				}
+				if explicit {
+					exp, expiryErr := sk.AuthorizationExpiry(ctx, rootAddr, skAddr, sessionkey.AddPiecesPermission())
+					if expiryErr != nil || exp != 0 {
+						t.Fatalf("unrequested AddPieces expiry = %d error=%v, want 0", exp, expiryErr)
+					}
+					res, err = writer.RevokeWithOptions(ctx, skAddr, &sessionkey.RevokeOptions{
+						Permissions: perms, Origin: origin,
+					}, sessionkey.WithWait(txWait))
+				} else {
+					res, err = writer.Revoke(ctx, skAddr, sessionkey.WithWait(txWait))
+				}
+				if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+					t.Fatalf("revoke after funded login: result=%v error=%v", res, err)
+				}
+				if err := verifyRevoked(ctx); err != nil {
+					t.Fatal(err)
+				}
+				revoked = true
+				t.Logf("revoke tx=%s", res.Hash)
+			})
 		}
 	})
+}
+
+type cachedTransactorSigner struct {
+	signer.EVMSigner
+	opts *bind.TransactOpts
+}
+
+func (s *cachedTransactorSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	if s.opts == nil {
+		opts, err := s.EVMSigner.Transactor(chainID)
+		if err != nil {
+			return nil, err
+		}
+		s.opts = opts
+	}
+	return s.opts, nil
 }

@@ -559,10 +559,10 @@ func (s *Service) newTransactOpts(ctx context.Context) (*bind.TransactOpts, func
 	if err != nil {
 		return nil, nil, fmt.Errorf("transactor: %w", err)
 	}
-	if opts == nil {
-		return nil, nil, fmt.Errorf("transactor: %w: signer returned nil options", ErrInvalidArgument)
+	opts, err = txutil.PrepareTransactOpts(opts, s.signer.EVMAddress(), ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("transactor: %w: %w", ErrInvalidArgument, err)
 	}
-	opts.Context = ctx
 	nonce, release, err := s.nonces.Acquire(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("nonce: %w", err)

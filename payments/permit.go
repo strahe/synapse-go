@@ -302,15 +302,12 @@ func (s *Service) watchPermitReceiptAndRelease(txHash common.Hash, confirmations
 				switch {
 				case receipt == nil:
 					// Keep polling; some clients may return nil, nil while pending.
-				case receipt.Status != ethtypes.ReceiptStatusSuccessful:
-					return
 				case confirmations == 0:
 					return
-				case receipt.BlockNumber != nil:
+				case receipt.BlockNumber != nil && receipt.BlockNumber.IsUint64():
 					head, err := s.backend.BlockNumber(ctx)
 					if err == nil {
-						requiredHead := receipt.BlockNumber.Uint64() + confirmations - 1
-						if head >= requiredHead {
+						if txutil.HasConfirmations(receipt.BlockNumber, head, confirmations) {
 							return
 						}
 					} else {
