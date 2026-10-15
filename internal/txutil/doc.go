@@ -2,7 +2,7 @@
 // transactions.
 //
 // Key components:
-//   - NonceManager: thread-safe nonce tracking with failure recovery
+//   - NonceManager: cancellable serialization of nonce allocation and submission
 //   - Gas estimation: configurable gas limits with FEVM workarounds
-//   - Receipt polling: exponential backoff receipt confirmation
+//   - Receipt polling: bounded RPC retries and block confirmation checks
 package txutil

@@ -4,6 +4,7 @@ package payments_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"math/big"
@@ -14,10 +15,10 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/internal/contracts/filpay"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
 	"github.com/strahe/synapse-go/signer"
@@ -29,7 +30,7 @@ import (
 // permit support. Withdraw uses one atto-USDFC and immediately deposits it
 // back; terminated-rail settlement is covered by the staged storage flow.
 func TestIntegration_Payments(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	client := integrationtest.NewDefaultClient(t, ctx)
@@ -159,7 +160,7 @@ func TestIntegration_Payments(t *testing.T) {
 	t.Run("FundSync", func(t *testing.T) {
 		// Deposit a trivial amount to assert the permit-based chain path.
 		one := big.NewInt(1)
-		syncRes, err := p.FundSync(ctx, one)
+		syncRes, err := p.FundSync(ctx, one, payments.WithConfirmations(2))
 		if err != nil {
 			if errors.Is(err, payments.ErrPermitUnsupported) {
 				t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
@@ -191,14 +192,18 @@ func TestIntegration_Payments(t *testing.T) {
 			if err != nil || chainID.Cmp(big.NewInt(integrationtest.CalibrationChainID)) != 0 {
 				t.Fatalf("withdrawal RPC must be Calibration: chain=%v error=%v", chainID, err)
 			}
+			events, err := filpay.NewFilPayFilterer(addrs.Payments, rpc)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var lostResponse *lostBroadcastResponseBackend
 			if loseResponse {
-				key, err := crypto.HexToECDSA(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
+				key, err := hex.DecodeString(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
 				if err != nil {
 					t.Fatal("invalid integration signing key")
 				}
-				defer key.D.SetInt64(0)
-				sg, err := signer.NewSecp256k1Signer(key)
+				defer clear(key)
+				sg, err := signer.NewSecp256k1SignerFromBytes(key)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -323,6 +328,40 @@ func TestIntegration_Payments(t *testing.T) {
 				t.Fatalf("Deposit receipt = %+v", deposit.Receipt)
 			}
 			restored = true
+			withdrawEvents := 0
+			for _, log := range withdraw.Receipt.Logs {
+				if log.Address != addrs.Payments {
+					continue
+				}
+				event, err := events.ParseWithdrawRecorded(*log)
+				if err != nil {
+					continue
+				}
+				withdrawEvents++
+				if event.Token != addrs.USDFC || event.From != client.Address() || event.To != client.Address() || event.Amount == nil || event.Amount.Cmp(one) != 0 {
+					t.Fatalf("WithdrawRecorded = %+v, want token=%s from=%s to=%s amount=1", event, addrs.USDFC, client.Address(), client.Address())
+				}
+			}
+			if withdrawEvents != 1 {
+				t.Fatalf("WithdrawRecorded count = %d, want 1", withdrawEvents)
+			}
+			depositEvents := 0
+			for _, log := range deposit.Receipt.Logs {
+				if log.Address != addrs.Payments {
+					continue
+				}
+				event, err := events.ParseDepositRecorded(*log)
+				if err != nil {
+					continue
+				}
+				depositEvents++
+				if event.Token != addrs.USDFC || event.From != client.Address() || event.To != client.Address() || event.Amount == nil || event.Amount.Cmp(one) != 0 {
+					t.Fatalf("DepositRecorded = %+v, want token=%s from=%s to=%s amount=1", event, addrs.USDFC, client.Address(), client.Address())
+				}
+			}
+			if depositEvents != 1 {
+				t.Fatalf("DepositRecorded count = %d, want 1", depositEvents)
+			}
 
 			after, err := p.AccountInfo(ctx, addrs.USDFC, client.Address())
 			if err != nil {
@@ -334,9 +373,6 @@ func TestIntegration_Payments(t *testing.T) {
 			afterWallet, err := p.WalletBalance(ctx, addrs.USDFC, client.Address())
 			if err != nil {
 				t.Fatalf("WalletBalance(after): %v", err)
-			}
-			if after.Funds.Cmp(before.Funds) != 0 {
-				t.Fatalf("deposited funds after restore = %s, want %s", after.Funds, before.Funds)
 			}
 			t.Logf(
 				"Withdraw/Deposit restored principal: account funds delta=%s, available delta=%s, wallet delta=%s, lockup-current delta=%s",

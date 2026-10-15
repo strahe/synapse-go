@@ -17,6 +17,14 @@ import (
 // to this sentinel; they are all the same error value.
 var ErrTxFailed = txutil.ErrTxFailed
 
+// ErrReceiptTimeout reports that the receipt wait or its parent context reached
+// its deadline. Returned wait errors also match context.DeadlineExceeded.
+var ErrReceiptTimeout = txutil.ErrReceiptTimeout
+
+// ErrReceiptRPCFailure reports an RPC failure that cannot be retried or exhausted
+// the receipt wait's consecutive error budget. The error preserves the RPC cause.
+var ErrReceiptRPCFailure = txutil.ErrReceiptRPCFailure
+
 // BroadcastError reports an error returned while sending a signed transaction.
 // It does not establish whether the node rejected or accepted the transaction.
 // SDK-originated errors always contain Transaction and Cause. Use errors.AsType

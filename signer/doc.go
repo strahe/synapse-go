@@ -23,8 +23,12 @@
 // # External transaction signers
 //
 // Standalone contract services accept custom [EVMSigner] implementations.
-// [EVMSigner.Transactor] must return non-nil transaction options on success;
-// returning an error aborts the write before nonce acquisition or broadcast.
+// [EVMSigner.Transactor] must return non-nil options with a non-nil signing
+// function and From equal to EVMAddress. Invalid options abort the write before
+// nonce acquisition or broadcast. Services copy the options, including mutable
+// fields; implementations may return a shared read-only template. Services set
+// Context, Nonce, and Value for each operation. Implementations must synchronize
+// their own mutable state and signing functions for concurrent calls.
 // Services construct the transaction with NoSend enabled, then broadcast it
 // themselves. NoSend in signer-provided options does not disable submission.
 //

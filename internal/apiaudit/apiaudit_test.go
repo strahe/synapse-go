@@ -516,6 +516,117 @@ func TestDataSetDetailsPromotedZeroFields(t *testing.T) {
 }
 `)
 
+	writeFile(t, filepath.Join(dir, "receipt_errors_test.go"), `package apiconfigtest
+
+import (
+	"context"
+	"errors"
+	"math/big"
+	"testing"
+	"time"
+
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+
+	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/sessionkey"
+	"github.com/strahe/synapse-go/signer"
+	"github.com/strahe/synapse-go/spregistry"
+	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
+)
+
+type receiptBackend struct {
+	bind.ContractBackend
+	timeout bool
+}
+
+func (*receiptBackend) SendTransaction(context.Context, *ethtypes.Transaction) error { return nil }
+func (*receiptBackend) BalanceAt(context.Context, common.Address, *big.Int) (*big.Int, error) {
+	return new(big.Int), nil
+}
+func (*receiptBackend) BlockNumber(context.Context) (uint64, error) { return 1, nil }
+func (b *receiptBackend) TransactionReceipt(ctx context.Context, _ common.Hash) (*ethtypes.Receipt, error) {
+	if b.timeout {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return nil, context.DeadlineExceeded
+}
+
+type receiptSigner struct { signer.EVMSigner }
+
+func (s receiptSigner) Transactor(chainID *big.Int) (*bind.TransactOpts, error) {
+	opts, err := s.EVMSigner.Transactor(chainID)
+	if err != nil { return nil, err }
+	opts.GasLimit, opts.GasPrice = 100000, big.NewInt(1)
+	return opts, nil
+}
+
+func TestReceiptErrorsThroughServices(t *testing.T) {
+	for _, aliases := range [][2]error{
+		{payments.ErrReceiptTimeout, payments.ErrReceiptRPCFailure},
+		{sessionkey.ErrReceiptTimeout, sessionkey.ErrReceiptRPCFailure},
+		{spregistry.ErrReceiptTimeout, spregistry.ErrReceiptRPCFailure},
+		{warmstorage.ErrReceiptTimeout, warmstorage.ErrReceiptRPCFailure},
+	} {
+		if aliases[0] != types.ErrReceiptTimeout || aliases[1] != types.ErrReceiptRPCFailure {
+			t.Fatal("receipt error aliases must preserve sentinel identity")
+		}
+	}
+	key, err := signer.NewSecp256k1SignerFromBytes([]byte{1})
+	if err != nil { t.Fatal(err) }
+	sg := receiptSigner{key}
+	addr := common.HexToAddress("0x1001")
+	for _, timeout := range []bool{false, true} {
+		name := "backend deadline"
+		want, other := types.ErrReceiptRPCFailure, types.ErrReceiptTimeout
+		if timeout {
+			name = "wait deadline"
+			want, other = other, want
+		}
+		t.Run(name, func(t *testing.T) {
+			backend := &receiptBackend{timeout: timeout}
+			p, err := payments.New(payments.Options{Backend: backend, ChainID: 314159, FilPayAddress: addr, Signer: sg, NonceManager: nonceManager{}})
+			if err != nil { t.Fatal(err) }
+			s, err := sessionkey.New(sessionkey.Options{Backend: backend, ChainID: 314159, RegistryAddress: addr, Signer: sg, NonceManager: nonceManager{}})
+			if err != nil { t.Fatal(err) }
+			r, err := spregistry.New(spregistry.Options{Client: backend, Backend: backend, ChainID: 314159, Address: addr, Signer: sg, NonceManager: nonceManager{}})
+			if err != nil { t.Fatal(err) }
+			w, err := warmstorage.New(warmstorage.Options{Client: backend, Backend: backend, ChainID: 314159, FWSS: addr, ViewContract: addr, Signer: sg, NonceManager: nonceManager{}})
+			if err != nil { t.Fatal(err) }
+			wait := 50 * time.Millisecond
+			writes := map[string]func() (*types.WriteResult, error){
+				"payments": func() (*types.WriteResult, error) {
+					return p.Withdraw(context.Background(), addr, big.NewInt(1), payments.WithSkipPrecheck(), payments.WithWait(wait))
+				},
+				"sessionkey": func() (*types.WriteResult, error) {
+					return s.Revoke(context.Background(), addr, sessionkey.WithWait(wait))
+				},
+				"spregistry": func() (*types.WriteResult, error) {
+					return r.RemoveProvider(context.Background(), spregistry.WithWait(wait))
+				},
+				"warmstorage": func() (*types.WriteResult, error) {
+					return w.TopUpCDNPaymentRails(context.Background(), types.NewBigInt(1), big.NewInt(1), new(big.Int), warmstorage.WithWait(wait))
+				},
+			}
+			for name, write := range writes {
+				t.Run(name, func(t *testing.T) {
+					result, err := write()
+					if !errors.Is(err, want) || errors.Is(err, other) || !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("wait error = %v, want %v with cause and without %v", err, want, other)
+					}
+					if result == nil || result.Hash == (common.Hash{}) || result.Receipt != nil {
+						t.Fatalf("waiting error must retain only submission hash: %+v", result)
+					}
+				})
+			}
+		})
+	}
+}
+`)
+
 	cmd := exec.Command("go", "test", "-mod=mod", ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

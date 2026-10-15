@@ -23,17 +23,17 @@ type NonceProvider interface {
 // release is called no other goroutine can acquire a nonce.
 //
 // Each transaction round-trips to the node for its nonce, with no client-side
-// cache. The added serialization is the cost of guaranteeing monotonically
-// increasing nonces across concurrent goroutines.
+// cache. Acquisition and submission are serialized; the node determines the
+// pending nonce returned to each caller.
 type NonceManager struct {
-	mu      sync.Mutex
+	gate    chan struct{}
 	client  NonceProvider
 	address common.Address
 }
 
 // NewNonceManager constructs a NonceManager for the given address.
 func NewNonceManager(client NonceProvider, address common.Address) *NonceManager {
-	return &NonceManager{client: client, address: address}
+	return &NonceManager{gate: make(chan struct{}, 1), client: client, address: address}
 }
 
 // Acquire locks the manager and returns the next pending nonce together with
@@ -42,25 +42,35 @@ func NewNonceManager(client NonceProvider, address common.Address) *NonceManager
 // callers may invoke it more than once. On error, the returned release is a
 // no-op.
 //
-// Acquire blocks until it can take the manager mutex; ctx only governs the
-// PendingNonceAt RPC call. If ctx is cancelled while another goroutine holds
-// the lock, this call will continue to wait for the lock — this matches the
-// semantics of stdlib sync.Mutex.
+// ctx governs both waiting for the manager and the PendingNonceAt RPC call.
 func (m *NonceManager) Acquire(ctx context.Context) (nonce uint64, release func(), err error) {
-	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return 0, func() {}, fmt.Errorf("txutil.NonceManager.Acquire: %w", err)
+	}
+	select {
+	case m.gate <- struct{}{}:
+	case <-ctx.Done():
+		return 0, func() {}, fmt.Errorf("txutil.NonceManager.Acquire: %w", ctx.Err())
+	}
 	locked := true
 	defer func() {
 		if locked {
-			m.mu.Unlock()
+			<-m.gate
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return 0, func() {}, fmt.Errorf("txutil.NonceManager.Acquire: %w", err)
+	}
 
 	n, err := m.client.PendingNonceAt(ctx, m.address)
+	if err := ctx.Err(); err != nil {
+		return 0, func() {}, fmt.Errorf("txutil.NonceManager.Acquire: %w", err)
+	}
 	if err != nil {
 		return 0, func() {}, fmt.Errorf("txutil.NonceManager.Acquire: %w", err)
 	}
 
 	var once sync.Once
 	locked = false
-	return n, func() { once.Do(m.mu.Unlock) }, nil
+	return n, func() { once.Do(func() { <-m.gate }) }, nil
 }

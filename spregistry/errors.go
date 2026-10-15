@@ -50,6 +50,14 @@ var ErrWriteNotConfigured = errors.New("spregistry: write operations not configu
 // alongside the error for callers that need the full on-chain status.
 var ErrTxFailed = types.ErrTxFailed
 
+// ErrReceiptTimeout is a convenience re-export of [types.ErrReceiptTimeout].
+// The same value can be matched interchangeably with errors.Is.
+var ErrReceiptTimeout = types.ErrReceiptTimeout
+
+// ErrReceiptRPCFailure is a convenience re-export of [types.ErrReceiptRPCFailure].
+// The same value can be matched interchangeably with errors.Is.
+var ErrReceiptRPCFailure = types.ErrReceiptRPCFailure
+
 // BroadcastError is a convenience re-export of the same [types.BroadcastError]
 // type. Either type can be used to match a transaction send error.
 type BroadcastError = types.BroadcastError
