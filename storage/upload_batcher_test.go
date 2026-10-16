@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -170,7 +171,10 @@ func TestUploadBatcherFlushCombinesCompatiblePieces(t *testing.T) {
 		defer mu.Unlock()
 		submitCalls++
 		submitted = append([]PieceInput(nil), req.Pieces...)
-		return &CommitSubmission{TransactionID: "0xbatch", PieceCIDs: pieceCIDs(req.Pieces)}, nil
+		submission := CommitSubmission{TransactionID: "0xbatch", PieceCIDs: pieceCIDs(req.Pieces)}
+		req.OnSubmitted(copyCommitSubmission(submission))
+		req.OnSubmitted(copyCommitSubmission(submission))
+		return &submission, nil
 	}
 	target.waitCommitFn = func(_ context.Context, _ CommitSubmission) (*CommitResult, error) {
 		mu.Lock()
@@ -191,11 +195,18 @@ func TestUploadBatcherFlushCombinesCompatiblePieces(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 	var txA, txB string
-	resultA, _, err := taskA.wait(context.Background(), func(tx string) { txA = tx })
+	var callbacks int
+	resultA, _, err := taskA.wait(context.Background(), func(tx string) {
+		txA = tx
+		callbacks++
+	})
 	if err != nil {
 		t.Fatalf("wait A: %v", err)
 	}
-	resultB, _, err := taskB.wait(context.Background(), func(tx string) { txB = tx })
+	resultB, _, err := taskB.wait(context.Background(), func(tx string) {
+		txB = tx
+		callbacks++
+	})
 	if err != nil {
 		t.Fatalf("wait B: %v", err)
 	}
@@ -206,6 +217,9 @@ func TestUploadBatcherFlushCombinesCompatiblePieces(t *testing.T) {
 	}
 	if txA != "0xbatch" || txB != "0xbatch" {
 		t.Fatalf("transaction IDs=(%q,%q), want shared 0xbatch", txA, txB)
+	}
+	if callbacks != 2 {
+		t.Fatalf("submission callbacks=%d, want one per task", callbacks)
 	}
 	if got := resultA.PieceIDs[0].String(); got != "101" {
 		t.Fatalf("piece A ID=%s, want 101", got)
@@ -448,30 +462,51 @@ func TestUploadBatcherFlushMayIncludeCompatiblePostBarrierSlot(t *testing.T) {
 	}
 }
 
-func TestUploadBatcherRejectsReorderedSubmissionForWholeBatch(t *testing.T) {
-	identity := serviceTestIdentity()
-	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
-	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
-	pieceA := batchTestPiece(t, "ordered-a")
-	pieceB := batchTestPiece(t, "ordered-b")
-	target.submitCommitFn = func(context.Context, CommitRequest) (*CommitSubmission, error) {
-		return &CommitSubmission{TransactionID: "0xreordered", PieceCIDs: []cid.Cid{pieceB.PieceCID, pieceA.PieceCID}}, nil
-	}
-	target.waitCommitFn = func(context.Context, CommitSubmission) (*CommitResult, error) {
-		return nil, errors.New("WaitForCommit must not run for a reordered submission")
-	}
-	tasks := []*uploadBatchTask{
-		enqueueBatchTestPiece(t, batcher, target, pieceA),
-		enqueueBatchTestPiece(t, batcher, target, pieceB),
-	}
-	err := batcher.Flush(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "submission piece order") {
-		t.Fatalf("Flush error=%v, want submission piece order error", err)
-	}
-	for i, task := range tasks {
-		if _, _, err := task.wait(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "submission piece order") {
-			t.Fatalf("task %d error=%v, want whole-batch order error", i, err)
-		}
+func TestUploadBatcherRejectsInvalidSubmissionForWholeBatch(t *testing.T) {
+	for _, invalidOrder := range []bool{true, false} {
+		t.Run(fmt.Sprintf("invalidOrder=%t", invalidOrder), func(t *testing.T) {
+			identity := serviceTestIdentity()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+			target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+			pieceA := batchTestPiece(t, "ordered-a")
+			pieceB := batchTestPiece(t, "ordered-b")
+			wantError := "submission piece count"
+			if invalidOrder {
+				wantError = "submission piece order"
+			}
+			target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+				invalid := CommitSubmission{TransactionID: "0xinvalid", PieceCIDs: []cid.Cid{pieceB.PieceCID}}
+				if invalidOrder {
+					invalid.PieceCIDs = append(invalid.PieceCIDs, pieceA.PieceCID)
+				}
+				req.OnSubmitted(invalid)
+				return &CommitSubmission{TransactionID: "0xvalid", PieceCIDs: pieceCIDs(req.Pieces)}, nil
+			}
+			var confirmations atomic.Int32
+			target.waitCommitFn = func(context.Context, CommitSubmission) (*CommitResult, error) {
+				confirmations.Add(1)
+				return nil, errors.New("confirmation must not run for an invalid submission")
+			}
+			tasks := []*uploadBatchTask{
+				enqueueBatchTestPiece(t, batcher, target, pieceA),
+				enqueueBatchTestPiece(t, batcher, target, pieceB),
+			}
+			if err := batcher.Flush(context.Background()); err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("Flush error=%v, want %s", err, wantError)
+			}
+			for i, task := range tasks {
+				_, submission, err := task.wait(context.Background(), nil)
+				if err == nil || !strings.Contains(err.Error(), wantError) {
+					t.Fatalf("task %d error=%v, want whole-batch %s", i, err, wantError)
+				}
+				if submission != nil {
+					t.Fatalf("task %d published invalid submission %+v", i, submission)
+				}
+			}
+			if confirmations.Load() != 0 {
+				t.Fatal("confirmation ran for an invalid submission")
+			}
+		})
 	}
 }
 
@@ -913,6 +948,39 @@ func TestUploadBatcherDefaultHasNoMaxWait(t *testing.T) {
 	}
 }
 
+func TestUploadBatcherMaxWaitSealsBeforeSubmissionSlotIsAvailable(t *testing.T) {
+	identity := serviceTestIdentity()
+	clock := newManualUploadBatchClock()
+	batcher := mustUploadBatcher(t, identity, mustTestSigner(t),
+		WithoutUploadIdleWait(), WithUploadMaxWait(10*time.Second),
+		WithUploadMaxConcurrentSubmissions(1), withUploadBatchClock(clock))
+	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
+	submitted := captureBatchTestSubmissions(target)
+	batcher.submissionSlots <- struct{}{}
+	task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "queued-at-max"))
+	clock.Advance(10 * time.Second)
+	select {
+	case <-submitted:
+		t.Fatal("submission started without a submission slot")
+	default:
+	}
+	next := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "after-max"))
+	<-batcher.submissionSlots
+	if got := waitBatchTestSubmission(t, submitted); got != 1 {
+		t.Fatalf("submitted pieces=%d, want the batch sealed before the next piece", got)
+	}
+	if _, _, err := task.wait(context.Background(), nil); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	clock.Advance(10 * time.Second)
+	if got := waitBatchTestSubmission(t, submitted); got != 1 {
+		t.Fatalf("later submitted pieces=%d, want a separate batch", got)
+	}
+	if _, _, err := next.wait(context.Background(), nil); err != nil {
+		t.Fatalf("later wait: %v", err)
+	}
+}
+
 func TestUploadBatcherZeroIdleWaitWaitsForTransfers(t *testing.T) {
 	identity := serviceTestIdentity()
 	clock := newManualUploadBatchClock()
@@ -1234,45 +1302,99 @@ func TestUploadBatchTaskPublishedTerminalResultWinsCancellationAndClose(t *testi
 	}
 }
 
-// Pins the contract rather than the interleaving: it does not reproduce a Close
-// that races the publish itself.
-func TestUploadBatcherCloseKeepsAcceptedSubmission(t *testing.T) {
-	identity := serviceTestIdentity()
-	batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
-	target := batchTestTarget(identity, testCommitDataSetRef(1, 11))
-	accepted := make(chan struct{})
-	release := make(chan struct{})
-	target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
-		return &CommitSubmission{TransactionID: "0xaccepted", PieceCIDs: pieceCIDs(req.Pieces)}, nil
-	}
-	target.waitCommitFn = func(ctx context.Context, _ CommitSubmission) (*CommitResult, error) {
-		close(accepted)
-		<-release
-		return nil, ctx.Err()
-	}
-
-	task := enqueueBatchTestPiece(t, batcher, target, batchTestPiece(t, "accepted-then-close"))
-	flushDone := make(chan error, 1)
-	go func() { flushDone <- batcher.Flush(context.Background()) }()
-	select {
-	case <-accepted:
-	case <-time.After(time.Second):
-		t.Fatal("provider did not accept the batch")
-	}
-	if err := batcher.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	close(release)
-
-	_, submission, err := task.wait(context.Background(), nil)
-	if !errors.Is(err, ErrClosed) {
-		t.Fatalf("wait error=%v, want ErrClosed", err)
-	}
-	if submission == nil || submission.TransactionID != "0xaccepted" {
-		t.Fatalf("submission=%+v, want the accepted transaction 0xaccepted", submission)
-	}
-	if err := <-flushDone; !errors.Is(err, ErrClosed) {
-		t.Fatalf("Flush error=%v, want ErrClosed", err)
+func TestUploadBatcherCloseOrdersSubmissionRegistration(t *testing.T) {
+	for _, registeredFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("registeredFirst=%t", registeredFirst), func(t *testing.T) {
+			identity := serviceTestIdentity()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithoutUploadIdleWait(), WithoutUploadMaxWait())
+			ref := testCommitDataSetRef(1, 11)
+			target := batchTestTarget(identity, ref)
+			pieces := []PieceInput{batchTestPiece(t, "close-first"), batchTestPiece(t, "close-second")}
+			want := CommitSubmission{
+				Kind: CommitKindAddPieces, TransactionID: "0xaccepted",
+				StatusURL:  "https://provider.example.com/status/accepted",
+				ProviderID: ref.ProviderID(), Identity: identity, DataSet: &ref,
+				PieceCIDs: pieceCIDs(pieces),
+			}
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(release) })
+				waitForNoUploadBatchFlights(t, batcher)
+			})
+			target.submitCommitFn = func(_ context.Context, req CommitRequest) (*CommitSubmission, error) {
+				if registeredFirst {
+					input := copyCommitSubmission(want)
+					req.OnSubmitted(input)
+					input.PieceCIDs[0] = cid.Undef
+					*input.DataSet = DataSetRef{}
+				}
+				close(started)
+				<-release
+				if !registeredFirst {
+					req.OnSubmitted(copyCommitSubmission(want))
+				}
+				result := copyCommitSubmission(want)
+				return &result, nil
+			}
+			var confirmations atomic.Int32
+			target.waitCommitFn = func(context.Context, CommitSubmission) (*CommitResult, error) {
+				confirmations.Add(1)
+				return nil, errors.New("confirmation must not start after Close")
+			}
+			tasks := []*uploadBatchTask{
+				enqueueBatchTestPiece(t, batcher, target, pieces[0]),
+				enqueueBatchTestPiece(t, batcher, target, pieces[1]),
+			}
+			flushDone := make(chan error, 1)
+			go func() { flushDone <- batcher.Flush(context.Background()) }()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("submission did not start")
+			}
+			if err := batcher.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			var callbacks int
+			for i, task := range tasks {
+				_, submission, err := task.wait(context.Background(), func(string) { callbacks++ })
+				if !errors.Is(err, ErrClosed) {
+					t.Fatalf("task %d error=%v, want ErrClosed", i, err)
+				}
+				if registeredFirst {
+					if !reflect.DeepEqual(submission, &want) {
+						t.Fatalf("task %d submission=%+v, want %+v", i, submission, want)
+					}
+					submission.PieceCIDs[0] = cid.Undef
+					*submission.DataSet = DataSetRef{}
+				} else if submission != nil {
+					t.Fatalf("task %d submission=%+v, want unknown", i, submission)
+				}
+			}
+			if callbacks != 0 {
+				t.Fatalf("callbacks=%d, want none after Close", callbacks)
+			}
+			select {
+			case err := <-flushDone:
+				if !errors.Is(err, ErrClosed) {
+					t.Fatalf("Flush error=%v, want ErrClosed", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Close waited for the provider response")
+			}
+			releaseOnce.Do(func() { close(release) })
+			waitForNoUploadBatchFlights(t, batcher)
+			if confirmations.Load() != 0 {
+				t.Fatal("confirmation ran after Close")
+			}
+			for _, task := range tasks {
+				if len(task.slot.events) != 0 {
+					t.Fatal("submission was published after the closed terminal event")
+				}
+			}
+		})
 	}
 }
 
@@ -1975,6 +2097,90 @@ func TestServiceUploadToContextsBatchesConcurrentCommits(t *testing.T) {
 	}
 	if got := submitCount.Load(); got != 1 {
 		t.Fatalf("SubmitCommit calls=%d, want 1", got)
+	}
+}
+
+func TestServiceUploadToContextsRetainsRegisteredSubmissionOnFailure(t *testing.T) {
+	for _, closeBeforeReturn := range []bool{true, false} {
+		t.Run(fmt.Sprintf("closeBeforeReturn=%t", closeBeforeReturn), func(t *testing.T) {
+			identity := serviceTestIdentity()
+			batcher := mustUploadBatcher(t, identity, mustTestSigner(t), WithUploadIdleWait(0))
+			target := sharedBatchTestTarget(identity, 1)
+			data := bytes.Repeat([]byte("recover-create-submission"), 128)
+			info, err := piece.CalculateFromBytes(data)
+			if err != nil {
+				t.Fatalf("CalculateFromBytes: %v", err)
+			}
+			target.storeFn = func(context.Context, io.Reader, *StoreOptions) (*StoreResult, error) {
+				return &StoreResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
+			}
+			registered := make(chan CommitSubmission, 1)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() {
+				_ = batcher.Close()
+				releaseOnce.Do(func() { close(release) })
+				waitForNoUploadBatchFlights(t, batcher)
+			})
+			failure := errors.New("submit failed after registration")
+			target.commitRequestFn = func(_ context.Context, req commitRequest) (*CommitSubmission, error) {
+				submission := CommitSubmission{
+					Kind: CommitKindCreateAndAdd, TransactionID: common.HexToHash("0x123").Hex(),
+					StatusURL:  "https://provider.example.com/status/create",
+					ProviderID: target.ProviderID(), Identity: identity,
+					ClientDataSetID: copyBigIntPtr(req.clientDataSetID), PieceCIDs: pieceCIDs(req.Pieces),
+				}
+				req.OnSubmitted(copyCommitSubmission(submission))
+				registered <- copyCommitSubmission(submission)
+				*submission.ClientDataSetID = types.NewBigInt(999)
+				submission.PieceCIDs[0] = cid.Undef
+				<-release
+				return nil, failure
+			}
+			var confirmations atomic.Int32
+			target.waitCommitFn = func(context.Context, CommitSubmission) (*CommitResult, error) {
+				confirmations.Add(1)
+				return nil, errors.New("confirmation must not start after submission failure")
+			}
+			service := mustNewService(t, Options{UploadBatcher: batcher})
+			uploadDone := make(chan error, 1)
+			go func() {
+				_, err := service.UploadToContexts(context.Background(), bytes.NewReader(data), []StorageContext{target}, nil)
+				uploadDone <- err
+			}()
+			var want CommitSubmission
+			select {
+			case want = <-registered:
+			case <-time.After(time.Second):
+				t.Fatal("submission was not registered")
+			}
+			wantError := failure
+			if closeBeforeReturn {
+				wantError = ErrClosed
+				if err := batcher.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+			} else {
+				releaseOnce.Do(func() { close(release) })
+			}
+			select {
+			case err := <-uploadDone:
+				commitErr, ok := errors.AsType[*CommitError](err)
+				if !ok || !errors.Is(err, wantError) || len(commitErr.FailedAttempts) != 1 {
+					t.Fatalf("UploadToContexts error=%v, want CommitError with %v", err, wantError)
+				}
+				if got := commitErr.FailedAttempts[0].Submission; !reflect.DeepEqual(got, &want) {
+					t.Fatalf("failed submission=%+v, want %+v", got, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("upload waited for the blocked submission to return")
+			}
+			releaseOnce.Do(func() { close(release) })
+			waitForNoUploadBatchFlights(t, batcher)
+			if confirmations.Load() != 0 {
+				t.Fatal("confirmation started after submission failure")
+			}
+		})
 	}
 }
 

@@ -53,11 +53,12 @@
 // [synapse.WithoutUploadBatching].
 //
 // [WithUploadIdleWait] changes the three-second delay. [WithUploadMaxWait]
-// submits a batch at most that long after its first piece is ready.
-// [WithoutUploadIdleWait] with a zero [WithUploadMaxWait] submits every piece
-// immediately. With both timers disabled, a batch is submitted only by
-// [Service.Flush], the 80-piece legacy limit, a candidate exceeding the message
-// size limit, or a repeated piece CID.
+// ends batch formation at most that long after its first piece is ready. The
+// batch then queues for submission; signing, provider requests, and confirmation
+// are outside this limit. [WithoutUploadIdleWait] with a zero
+// [WithUploadMaxWait] queues every piece immediately. With both timers disabled,
+// a batch is submitted only by [Service.Flush], the 80-piece legacy limit, a
+// candidate exceeding the message size limit, or a repeated piece CID.
 //
 // Compatible uploads share a window only when their immutable target matches.
 // Existing data sets match by provider, complete DataSetRef, and exact service
@@ -289,10 +290,12 @@
 // WaitForCreateAndAdd and WaitForCommit report the same terminal state as
 // [CommitRejectedError].
 //
-// Uploads keep the same handle. When an upload commit fails after the provider
-// accepted its submission, including a failed or timed-out wait, the
-// [FailedAttempt] in [UploadResult.FailedAttempts] or
-// [CommitError.FailedAttempts] carries it as Submission. Resume a
+// A failed upload carries its validated submission handle in
+// [UploadResult.FailedAttempts] or [CommitError.FailedAttempts] when the SDK
+// registered it before the attempt ended. Cancellation, Close, or a lost response
+// can leave Submission nil even if the provider accepted the submission; nil
+// does not establish that retrying is safe. Handles received after an attempt
+// returns are not added to its result. Resume a
 // create-and-add submission on [Service.NewProviderContext] for its ProviderID
 // and call WaitForCreateAndAdd with its StatusURL and original ClientDataSetID.
 // For add-pieces, open its DataSet with [Service.NewDataSetContext] and call

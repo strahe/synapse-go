@@ -17,11 +17,8 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// PieceStatus captures the current state of a piece relative to its data
-// set's proving schedule.
-//
-// PieceID is zero when the piece is not present in the data set (Exists =
-// false); callers should treat (Exists == false) as the "null" TS return.
+// PieceStatus captures piece membership and data-set scheduling information.
+// Estimated timing does not establish proof history or a missed proof.
 type PieceStatus struct {
 	// Exists reports whether the piece is currently present in the data set.
 	Exists bool
@@ -30,31 +27,31 @@ type PieceStatus struct {
 	// Exists is true.
 	PieceID types.BigInt
 
-	// DataSetLastProven is the wall-clock time of the most recent
-	// proof submission for the enclosing data set. Zero time indicates
-	// "never proven" or "unknown".
-	DataSetLastProven time.Time
+	// DataSetNextChallengeAt is the time of the scheduled challenge epoch,
+	// which may be in the past. Zero time indicates unavailable timing.
+	DataSetNextChallengeAt time.Time
 
-	// DataSetNextProofDue is the wall-clock deadline by which the next
-	// proof must be submitted. Zero time indicates "unknown".
-	DataSetNextProofDue time.Time
+	// DataSetEstimatedProofDeadline adds the configured window length to the
+	// challenge epoch. It need not equal the contract's actual deadline.
+	// Zero time indicates unavailable timing.
+	DataSetEstimatedProofDeadline time.Time
 
 	// RetrievalURL is the HTTPS URL at which the piece can be retrieved
 	// from the provider. Empty when provider info is not available.
 	RetrievalURL string
 
-	// InChallengeWindow reports whether the data set is currently inside
-	// its challenge window (proof submission is required).
-	InChallengeWindow bool
+	// InEstimatedChallengeWindow reports whether the head epoch lies in the
+	// estimated interval [challenge epoch, estimated deadline). False also
+	// covers unavailable estimates and does not establish data-set health.
+	InEstimatedChallengeWindow bool
 
-	// HoursUntilChallengeWindow is the number of hours between now and
-	// the start of the next challenge window. Zero when inside or past
-	// the window.
-	HoursUntilChallengeWindow float64
+	// HoursUntilNextChallenge is the nonnegative epoch difference in hours.
+	// Zero also covers an unavailable challenge schedule.
+	HoursUntilNextChallenge float64
 
-	// IsProofOverdue reports whether the proving deadline has passed
-	// without a proof being submitted.
-	IsProofOverdue bool
+	// EstimatedProofDeadlinePassed reports whether the head epoch has reached
+	// the estimated deadline. False also covers unavailable estimates.
+	EstimatedProofDeadlinePassed bool
 }
 
 // GetScheduledRemovals returns the list of piece ids that have been
@@ -72,14 +69,14 @@ func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigI
 }
 
 // PieceStatus returns the current status of pieceCID relative to this
-// context's data set and the proving schedule. If the piece is not present
+// context's data set and the challenge schedule. If the piece is not present
 // in the data set, Exists is false and the other fields are zero-valued.
 // Missing or non-live data sets return [ErrDataSetUnavailable].
 //
-// The call performs up to five concurrent reads: findPieceIdsByCid,
-// getNextChallengeEpoch, BlockNumber, getPDPConfig, and provider info.
-// Any individual failure surfaces as a wrapped error; a nil pdpConfig is
-// tolerated (proof-timing fields remain zero).
+// Chain state and the head epoch are read independently, not at a fixed block.
+// Missing or failed optional PDP configuration leaves estimates unavailable;
+// the challenge time and remaining hours do not require that configuration.
+// Other read failures and caller cancellation return wrapped errors.
 func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStatus, error) {
 	if c.core.pdpCaller == nil {
 		return nil, errors.New("storage.DataSetContext.PieceStatus: PDPVerifier reader not configured")
@@ -127,7 +124,7 @@ func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*Pi
 		}
 		cfg, err := c.core.pdpConfig.GetPDPConfig(gctx)
 		if err != nil {
-			// Proof-timing fields remain zero when the optional config read fails.
+			// Optional configuration failures leave estimates unavailable.
 			return nil //nolint:nilerr
 		}
 		pdpConfig = cfg
@@ -138,6 +135,9 @@ func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*Pi
 		return nil
 	})
 	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w", err)
 	}
 
@@ -151,38 +151,31 @@ func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*Pi
 		out.RetrievalURL = pieceRetrievalURL(providerInfo.ServiceURL, pieceCID)
 	}
 
-	if pdpConfig == nil || nextChallengeEpoch == nil || nextChallengeEpoch.Sign() == 0 {
+	if nextChallengeEpoch == nil || nextChallengeEpoch.Sign() <= 0 {
 		return out, nil
 	}
 
 	cur := new(big.Int).SetUint64(currentEpoch)
-	window := pdpConfig.ChallengeWindowSize
-	if window == nil {
-		window = new(big.Int)
-	}
-	challengeStart := new(big.Int).Set(nextChallengeEpoch)
-	provingDeadline := new(big.Int).Add(challengeStart, window)
-
 	chainResolved, err := chain.FromID(c.core.chainID.Int64())
 	if err == nil {
-		out.DataSetNextProofDue = chain.EpochToTime(chainResolved, provingDeadline)
-		if pdpConfig.MaxProvingPeriod > 0 {
-			lastProvenEpoch := new(big.Int).Sub(challengeStart, new(big.Int).SetUint64(pdpConfig.MaxProvingPeriod))
-			if lastProvenEpoch.Sign() > 0 {
-				out.DataSetLastProven = chain.EpochToTime(chainResolved, lastProvenEpoch)
-			}
-		}
+		out.DataSetNextChallengeAt = chain.EpochToTime(chainResolved, nextChallengeEpoch)
 	}
-
-	out.InChallengeWindow = cur.Cmp(challengeStart) >= 0 && cur.Cmp(provingDeadline) < 0
-	out.IsProofOverdue = cur.Cmp(provingDeadline) >= 0
-	if cur.Cmp(challengeStart) < 0 {
-		delta := new(big.Int).Sub(challengeStart, cur)
+	if cur.Cmp(nextChallengeEpoch) < 0 {
+		delta := new(big.Int).Sub(nextChallengeEpoch, cur)
 		seconds := new(big.Int).Mul(delta, big.NewInt(chain.EpochDurationSeconds))
 		if seconds.IsInt64() {
-			out.HoursUntilChallengeWindow = float64(seconds.Int64()) / 3600.0
+			out.HoursUntilNextChallenge = float64(seconds.Int64()) / 3600.0
 		}
 	}
+	if pdpConfig == nil || pdpConfig.ChallengeWindowSize == nil || pdpConfig.ChallengeWindowSize.Sign() <= 0 {
+		return out, nil
+	}
+	deadline := new(big.Int).Add(nextChallengeEpoch, pdpConfig.ChallengeWindowSize)
+	if err == nil {
+		out.DataSetEstimatedProofDeadline = chain.EpochToTime(chainResolved, deadline)
+	}
+	out.InEstimatedChallengeWindow = cur.Cmp(nextChallengeEpoch) >= 0 && cur.Cmp(deadline) < 0
+	out.EstimatedProofDeadlinePassed = cur.Cmp(deadline) >= 0
 	return out, nil
 }
 

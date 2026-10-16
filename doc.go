@@ -2,8 +2,9 @@
 // (FOC) Go SDK.
 //
 // Create a client with [New], passing a private key and an RPC endpoint (or
-// an existing [ethclient.Client]). The client auto-detects the chain, resolves
-// contract addresses, and eagerly initialises all sub-services before returning.
+// an existing [ethclient.Client]). The client detects the chain, verifies any
+// expected network set by [WithChain], resolves contract addresses, and eagerly
+// initialises all sub-services before returning.
 //
 //	client, err := synapse.New(ctx,
 //	    synapse.WithPrivateKeyHex("0x..."),

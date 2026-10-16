@@ -53,7 +53,6 @@ type Service struct {
 	signer            signer.EVMSigner
 	nonces            NonceManager
 	logger            *slog.Logger
-	receiptWait       time.Duration
 	lifecycle         interface{ CheckClosed() error }
 	maxMulticallCalls int
 }
@@ -76,8 +75,6 @@ type Options struct {
 	// leave this nil to create one for this Service. A typed-nil value is treated
 	// as nil.
 	NonceManager NonceManager
-	// ReceiptWait overrides the default receipt polling timeout.
-	ReceiptWait time.Duration
 	// MaxMulticallCalls limits the number of actual contract calls in each
 	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
 	// are invalid. Batches execute serially and may observe different blocks;
@@ -131,7 +128,6 @@ func New(opts Options) (*Service, error) {
 		signer:            opts.Signer,
 		logger:            opts.Logger,
 		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
-		receiptWait:       opts.ReceiptWait,
 		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}
@@ -490,9 +486,6 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	)
 	if cfg.confirmations > 0 {
 		waitCfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			waitCfg.Timeout = s.receiptWait
-		}
 		waitCfg.Timeout = cfg.waitTimeout
 		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
 	} else {

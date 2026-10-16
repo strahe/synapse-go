@@ -198,6 +198,7 @@ func TestTerminateDataSet_BroadcastsAndWaits(t *testing.T) {
 		{"default broadcast only", nil, false},
 		{"zero wait", []WriteOption{WithWait(0)}, false},
 		{"negative wait", []WriteOption{WithWait(-time.Second)}, false},
+		{"confirmations only", []WriteOption{WithConfirmations(3)}, false},
 		{"positive wait", []WriteOption{WithWait(time.Second)}, true},
 	}
 	for _, tt := range tests {

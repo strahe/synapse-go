@@ -236,32 +236,61 @@ func TestDepositWithPermit_RechecksBalanceAfterPermitLock(t *testing.T) {
 }
 
 func TestDepositWithPermit_NoWaitHoldsLockUntilBackgroundReceipt(t *testing.T) {
-	s, mb := newTestService(t)
-	seedPermitInputs(t, mb)
-	receiptReady := make(chan struct{})
-	mb.receiptFn = func(ctx context.Context, _ common.Hash) (*types.Receipt, error) {
-		select {
-		case <-receiptReady:
-			return successfulReceipt(), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	for _, wait := range []time.Duration{0, -time.Second, 5 * time.Second} {
+		t.Run(wait.String(), func(t *testing.T) {
+			s, mb := newTestService(t, func(opts *Options) {
+				opts.PermitReceiptWait = wait
+			})
+			seedPermitInputs(t, mb)
+			receiptReady := make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-receiptReady:
+				default:
+					close(receiptReady)
+				}
+			})
+			deadlines := make(chan time.Time, 2)
+			mb.receiptFn = func(ctx context.Context, _ common.Hash) (*types.Receipt, error) {
+				deadline, _ := ctx.Deadline()
+				deadlines <- deadline
+				select {
+				case <-receiptReady:
+					return successfulReceipt(), nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+
+			started := time.Now()
+			if err := depositWithPermitForRaceTest(context.Background(), s); err != nil {
+				t.Fatalf("first permit write: %v", err)
+			}
+			wantWait := wait
+			if wantWait <= 0 {
+				wantWait = 5 * time.Minute
+			}
+			select {
+			case deadline := <-deadlines:
+				if deadline.Before(started.Add(wantWait)) || deadline.After(time.Now().Add(wantWait)) {
+					t.Fatalf("watcher deadline = %s, want timeout %s", deadline, wantWait)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("background receipt watcher did not start")
+			}
+			waitForSentCount(t, mb, 1)
+
+			secondDone := make(chan error, 1)
+			go func() {
+				secondDone <- depositWithPermitForRaceTest(context.Background(), s)
+			}()
+
+			assertPermitWriteStillBlocked(t, mb, secondDone)
+			close(receiptReady)
+			waitPermitWriteDone(t, secondDone)
+			waitForSentCount(t, mb, 2)
+		})
 	}
-
-	if err := depositWithPermitForRaceTest(context.Background(), s); err != nil {
-		t.Fatalf("first permit write: %v", err)
-	}
-	waitForSentCount(t, mb, 1)
-
-	secondDone := make(chan error, 1)
-	go func() {
-		secondDone <- depositWithPermitForRaceTest(context.Background(), s)
-	}()
-
-	assertPermitWriteStillBlocked(t, mb, secondDone)
-	close(receiptReady)
-	waitPermitWriteDone(t, secondDone)
-	waitForSentCount(t, mb, 2)
 }
 
 func TestDepositWithPermit_WaitTimeoutKeepsLockWithBackgroundWatcher(t *testing.T) {
@@ -304,8 +333,9 @@ func TestDepositWithPermit_WaitTimeoutKeepsLockWithBackgroundWatcher(t *testing.
 func TestDepositWithPermit_WaitTimeoutWatcherWaitsForConfirmations(t *testing.T) {
 	for _, status := range []uint64{types.ReceiptStatusSuccessful, types.ReceiptStatusFailed} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			s, mb := newTestService(t)
-			s.receiptWait = 5 * time.Second
+			s, mb := newTestService(t, func(opts *Options) {
+				opts.PermitReceiptWait = 5 * time.Second
+			})
 			seedPermitInputs(t, mb)
 			confirmed := make(chan struct{})
 			headRequested := make(chan struct{}, 1)
@@ -359,8 +389,9 @@ func TestDepositWithPermit_WaitTimeoutWatcherWaitsForConfirmations(t *testing.T)
 func TestDepositWithPermit_WatcherHoldsLockUntilTimeoutOnRPCError(t *testing.T) {
 	for _, headError := range []bool{false, true} {
 		t.Run(fmt.Sprintf("head_%v", headError), func(t *testing.T) {
-			s, mb := newTestService(t)
-			s.receiptWait = 150 * time.Millisecond
+			s, mb := newTestService(t, func(opts *Options) {
+				opts.PermitReceiptWait = 150 * time.Millisecond
+			})
 			seedPermitInputs(t, mb)
 			watcherPolled := make(chan struct{})
 			var errorCalls atomic.Int32

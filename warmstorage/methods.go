@@ -655,12 +655,7 @@ func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts [
 	)
 	if cfg.confirmations > 0 {
 		waitCfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			waitCfg.Timeout = s.receiptWait
-		}
-		if cfg.waitTimeout > 0 {
-			waitCfg.Timeout = cfg.waitTimeout
-		}
+		waitCfg.Timeout = cfg.waitTimeout
 		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
 	} else {
 		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)

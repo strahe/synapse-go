@@ -3,6 +3,7 @@ package spregistry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"strings"
@@ -529,13 +530,34 @@ func TestUpdateProviderInfo_RejectsOversizedFields(t *testing.T) {
 }
 
 func TestRemoveProvider_Broadcasts(t *testing.T) {
-	s, backend := newWriteTestService(t)
-	if _, err := s.RemoveProvider(context.Background()); err != nil {
-		t.Fatalf("RemoveProvider: %v", err)
-	}
-	name, _ := decodeLastSentCalldata(t, backend)
-	if name != "removeProvider" {
-		t.Fatalf("called %s", name)
+	for _, tt := range []struct {
+		name string
+		opts []WriteOption
+	}{
+		{"omitted", nil},
+		{"zero", []WriteOption{WithWait(0)}},
+		{"negative", []WriteOption{WithWait(-time.Second)}},
+		{"confirmations only", []WriteOption{WithConfirmations(3)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, backend := newWriteTestService(t)
+			receiptCalls := 0
+			backend.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
+				receiptCalls++
+				return &coretypes.Receipt{Status: 1}, nil
+			}
+			res, err := s.RemoveProvider(context.Background(), tt.opts...)
+			if err != nil {
+				t.Fatalf("RemoveProvider: %v", err)
+			}
+			if res.Receipt != nil || receiptCalls != 0 {
+				t.Fatalf("receipt = %+v, lookups = %d, want no receipt polling", res.Receipt, receiptCalls)
+			}
+			name, _ := decodeLastSentCalldata(t, backend)
+			if name != "removeProvider" {
+				t.Fatalf("called %s", name)
+			}
+		})
 	}
 }
 
@@ -637,27 +659,26 @@ func TestFinalize_RevertPopulatesReceipt(t *testing.T) {
 	}
 }
 
-// TestFinalize_Success verifies the happy path: receipt Status==1 yields
-// no error and the populated Receipt is returned to the caller.
 func TestFinalize_Success(t *testing.T) {
-	s, backend := newWriteTestService(t)
-	backend.mu.Lock()
-	backend.receiptFn = func(_ context.Context, hash common.Hash) (*coretypes.Receipt, error) {
-		return &coretypes.Receipt{
-			Status:      1,
-			TxHash:      hash,
-			BlockNumber: big.NewInt(12),
-			GasUsed:     21000,
-		}, nil
-	}
-	backend.mu.Unlock()
-
-	res, err := s.RemoveProvider(context.Background(), WithWait(2*time.Second))
-	if err != nil {
-		t.Fatalf("RemoveProvider: %v", err)
-	}
-	if res.Receipt == nil || res.Receipt.Status != 1 {
-		t.Fatalf("expected success receipt; got %+v", res.Receipt)
+	for _, confirmations := range []uint64{0, 3} {
+		t.Run(fmt.Sprintf("confirmations_%d", confirmations), func(t *testing.T) {
+			s, backend := newWriteTestService(t)
+			backend.receiptFn = func(_ context.Context, hash common.Hash) (*coretypes.Receipt, error) {
+				return &coretypes.Receipt{
+					Status:      1,
+					TxHash:      hash,
+					BlockNumber: big.NewInt(8),
+					GasUsed:     21000,
+				}, nil
+			}
+			res, err := s.RemoveProvider(context.Background(), WithWait(2*time.Second), WithConfirmations(confirmations))
+			if err != nil {
+				t.Fatalf("RemoveProvider: %v", err)
+			}
+			if res.Receipt == nil || res.Receipt.Status != 1 {
+				t.Fatalf("expected success receipt; got %+v", res.Receipt)
+			}
+		})
 	}
 }
 

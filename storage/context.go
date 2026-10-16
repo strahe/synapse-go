@@ -293,8 +293,8 @@ func WithPDPVerifierReader(r PDPVerifierReader) ContextOption {
 	return func(c *contextCore) { c.pdpCaller = normalizeOptional(r) }
 }
 
-// WithPDPConfigReader injects a reader for FWSSView PDPConfig. Required by
-// [DataSetContext.PieceStatus] for challenge-window math.
+// WithPDPConfigReader injects an optional reader for FWSSView PDPConfig used
+// to estimate the challenge window and proof deadline in [DataSetContext.PieceStatus].
 func WithPDPConfigReader(r PDPConfigReader) ContextOption {
 	return func(c *contextCore) { c.pdpConfig = normalizeOptional(r) }
 }

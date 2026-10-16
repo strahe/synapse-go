@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"slices"
 	"strings"
-	"time"
 
 	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -63,7 +62,6 @@ type Service struct {
 	signer            signer.EVMSigner
 	nonces            NonceManager
 	logger            *slog.Logger
-	receiptWait       time.Duration
 	lifecycle         interface{ CheckClosed() error }
 	maxMulticallCalls int
 }
@@ -92,9 +90,6 @@ type Options struct {
 	NonceManager NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
-	// ReceiptWait overrides the default receipt polling timeout for
-	// WithWait calls. Zero uses the default receipt polling configuration.
-	ReceiptWait time.Duration
 	// MaxMulticallCalls limits the number of actual contract calls in each
 	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
 	// are invalid. Batches execute serially and may observe different blocks;
@@ -144,7 +139,6 @@ func New(opts Options) (*Service, error) {
 		signer:            opts.Signer,
 		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		logger:            opts.Logger,
-		receiptWait:       opts.ReceiptWait,
 		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}
@@ -227,12 +221,7 @@ func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts [
 	)
 	if cfg.confirmations > 0 {
 		waitCfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			waitCfg.Timeout = s.receiptWait
-		}
-		if cfg.waitTimeout > 0 {
-			waitCfg.Timeout = cfg.waitTimeout
-		}
+		waitCfg.Timeout = cfg.waitTimeout
 		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
 	} else {
 		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)

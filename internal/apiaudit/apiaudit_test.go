@@ -176,10 +176,17 @@ var (
 	sharedBuffer     int64
 	sharedTerminator storage.FWSSTerminator
 
-	_ = payments.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
+	_ = payments.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle, PermitReceiptWait: time.Minute}
 	_ = warmstorage.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = spregistry.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
 	_ = sessionkey.Options{NonceManager: sharedNonce, Lifecycle: sharedLifecycle}
+	_ = storage.PieceStatus{
+		DataSetNextChallengeAt:          time.Unix(1, 0),
+		DataSetEstimatedProofDeadline:   time.Unix(2, 0),
+		InEstimatedChallengeWindow:      true,
+		HoursUntilNextChallenge:         1,
+		EstimatedProofDeadlinePassed:   false,
+	}
 	_ costs.ContractCaller = blockNumberReader{}
 	_                      = costs.Options{Caller: blockNumberReader{}, Lifecycle: sharedLifecycle}
 	_ = costs.UploadCostOptions{

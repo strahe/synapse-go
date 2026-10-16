@@ -110,12 +110,9 @@ func (s *Service) Fund(ctx context.Context, amount *big.Int, opts ...WriteOption
 	return nil, ErrNothingToFund
 }
 
-// FundSync runs Fund and waits for the transaction to be mined. It is
-// equivalent to Fund(..., WithWait(timeout)) with a sensible default
-// timeout when the caller did not supply one.
+// FundSync runs Fund and waits for the transaction to be mined. A positive
+// WithWait sets the timeout; omitted or non-positive values use five minutes.
 func (s *Service) FundSync(ctx context.Context, amount *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-	// Append a default-wait fallback; runs last so explicit user-supplied
-	// WithWait continues to take precedence.
 	opts = append(opts, waitIfUnset)
 	return s.Fund(ctx, amount, opts...)
 }

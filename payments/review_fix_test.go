@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
@@ -133,36 +134,44 @@ func TestFund_StandaloneApprovalLockupPeriodFallback(t *testing.T) {
 	}
 }
 
-func TestFundSync_WithExplicitZeroWaitStillWaitsForReceipt(t *testing.T) {
-	s, mb := newTestService(t)
-	s.warmStorage = operatorAddr
-	s.usdfcToken = tokenAddr
-	receiptCalls := 0
-	mb.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
-		receiptCalls++
-		return &coretypes.Receipt{Status: 1}, nil
-	}
+func TestFundSync_WaitTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []WriteOption
+		wait time.Duration
+	}{
+		{"omitted", nil, 5 * time.Minute},
+		{"zero", []WriteOption{WithWait(0)}, 5 * time.Minute},
+		{"negative", []WriteOption{WithWait(-time.Second)}, 5 * time.Minute},
+		{"positive", []WriteOption{WithWait(time.Minute)}, time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t)
+			s.warmStorage = operatorAddr
+			s.usdfcToken = tokenAddr
+			receiptCalls := 0
+			started := time.Now()
+			mb.receiptFn = func(ctx context.Context, _ common.Hash) (*coretypes.Receipt, error) {
+				receiptCalls++
+				deadline, ok := ctx.Deadline()
+				if !ok || deadline.Before(started.Add(tt.wait)) || deadline.After(time.Now().Add(tt.wait)) {
+					t.Fatalf("receipt deadline = %s, want timeout %s", deadline, tt.wait)
+				}
+				return &coretypes.Receipt{Status: 1}, nil
+			}
 
-	got, err := s.FundSync(
-		context.Background(),
-		big.NewInt(0),
-		WithWait(0),
-		WithFundNeedsFwssApproval(true),
-	)
-	if err != nil {
-		t.Fatalf("FundSync wait=0: %v", err)
-	}
-	if got == nil {
-		t.Fatal("FundSync wait=0 returned nil result")
-	}
-	if got.Receipt == nil {
-		t.Fatal("FundSync wait=0 should still include a receipt")
-	}
-	if len(mb.sent) != 1 {
-		t.Fatalf("sent tx count = %d, want 1", len(mb.sent))
-	}
-	if receiptCalls != 1 {
-		t.Fatalf("receipt call count = %d, want 1", receiptCalls)
+			opts := append([]WriteOption{WithFundNeedsFwssApproval(true)}, tt.opts...)
+			got, err := s.FundSync(context.Background(), big.NewInt(0), opts...)
+			if err != nil {
+				t.Fatalf("FundSync: %v", err)
+			}
+			if got == nil || got.Receipt == nil {
+				t.Fatalf("FundSync result = %+v, want receipt", got)
+			}
+			if len(mb.sent) != 1 || receiptCalls != 1 {
+				t.Fatalf("sent = %d, receipt calls = %d, want one each", len(mb.sent), receiptCalls)
+			}
+		})
 	}
 }
 

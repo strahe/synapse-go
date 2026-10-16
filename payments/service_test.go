@@ -380,24 +380,28 @@ func TestApprove_SignerNoSendStillBroadcastsOnce(t *testing.T) {
 	}
 }
 
-func newTestServiceWith(t *testing.T, sg signer.EVMSigner) (*Service, *mockBackend) {
+func newTestServiceWith(t *testing.T, sg signer.EVMSigner, configure ...func(*Options)) (*Service, *mockBackend) {
 	t.Helper()
 	mb := newMockBackend(t)
-	s, err := New(Options{
+	opts := Options{
 		Backend:       mb,
 		ChainID:       sdktypes.ChainID(314159),
 		FilPayAddress: filPayAddr,
 		Signer:        sg,
-	})
+	}
+	for _, f := range configure {
+		f(&opts)
+	}
+	s, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, mb
 }
 
-func newTestService(t *testing.T) (*Service, *mockBackend) {
+func newTestService(t *testing.T, configure ...func(*Options)) (*Service, *mockBackend) {
 	t.Helper()
-	return newTestServiceWith(t, newTestSigner(t))
+	return newTestServiceWith(t, newTestSigner(t), configure...)
 }
 
 type recordingNonceManager struct {
@@ -465,8 +469,14 @@ func TestAccountInfoAndBalance(t *testing.T) {
 	if info.Funds.Int64() != 1000 || info.LockupCurrent.Int64() != 200 {
 		t.Errorf("unexpected: %+v", info)
 	}
-	if avail := info.AvailableFunds(); avail.Int64() != 123 {
+	avail := info.AvailableFunds()
+	if avail.Int64() != 123 {
 		t.Errorf("AvailableFunds = %s, want 123", avail)
+	}
+	avail.SetInt64(0)
+	info.Funds.SetInt64(2000)
+	if got := info.AvailableFunds(); got.Int64() != 123 {
+		t.Fatalf("observed balance changed after caller mutation: %s, want 123", got)
 	}
 	bal, err := s.Balance(context.Background(), tokenAddr, owner)
 	if err != nil {
@@ -1159,18 +1169,36 @@ func TestFinalize_RevertedTx_ReturnsReceipt(t *testing.T) {
 }
 
 func TestFinalize_NoWait_ReturnsHashOnly(t *testing.T) {
-	s, _ := newTestService(t)
-	tx := types.NewTx(&types.LegacyTx{Nonce: 7, To: &filPayAddr})
-
-	res, err := s.finalize(context.Background(), tx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Hash != tx.Hash() {
-		t.Fatalf("hash = %s, want %s", res.Hash, tx.Hash())
-	}
-	if res.Receipt != nil {
-		t.Fatalf("expected nil receipt when not waiting, got %+v", res.Receipt)
+	for _, tt := range []struct {
+		name string
+		opts []WriteOption
+	}{
+		{"omitted", nil},
+		{"zero", []WriteOption{WithWait(0)}},
+		{"negative", []WriteOption{WithWait(-time.Second)}},
+		{"confirmations only", []WriteOption{WithConfirmations(2)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestService(t, func(opts *Options) {
+				opts.PermitReceiptWait = time.Second
+			})
+			receiptCalls := 0
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				receiptCalls++
+				return &types.Receipt{Status: types.ReceiptStatusSuccessful}, nil
+			}
+			tx := types.NewTx(&types.LegacyTx{Nonce: 7, To: &filPayAddr})
+			res, err := s.finalize(context.Background(), tx, tt.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Hash != tx.Hash() {
+				t.Fatalf("hash = %s, want %s", res.Hash, tx.Hash())
+			}
+			if res.Receipt != nil || receiptCalls != 0 {
+				t.Fatalf("receipt = %+v, lookups = %d, want no receipt polling", res.Receipt, receiptCalls)
+			}
+		})
 	}
 }
 

@@ -289,8 +289,8 @@ func (s *Service) watchPermitReceiptAndRelease(txHash common.Hash, confirmations
 	go func() {
 		defer releasePermit()
 		cfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			cfg.Timeout = s.receiptWait
+		if s.permitReceiptWait > 0 {
+			cfg.Timeout = s.permitReceiptWait
 		}
 		if cfg.Timeout <= 0 {
 			cfg.Timeout = txutil.DefaultReceiptWaitConfig().Timeout
