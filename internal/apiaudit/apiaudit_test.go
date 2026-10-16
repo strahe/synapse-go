@@ -107,6 +107,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/payments"
@@ -122,6 +123,17 @@ type paymentRailsReader interface {
 	GetRailsAsPayee(context.Context, common.Address, common.Address, types.ListOptions) (*payments.RailPage, error)
 	IterateAllRailsAsPayer(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
 	IterateAllRailsAsPayee(context.Context, common.Address, common.Address) iter.Seq2[payments.RailListItem, error]
+}
+
+func TestConstructorInvalidArguments(t *testing.T) {
+	client, err := synapse.New(context.Background())
+	if client != nil || !errors.Is(err, synapse.ErrInvalidArgument) {
+		t.Fatalf("New = %v, %v; want nil and ErrInvalidArgument", client, err)
+	}
+	service, err := costs.New(costs.Options{})
+	if service != nil || !errors.Is(err, costs.ErrInvalidArgument) {
+		t.Fatalf("costs.New = %v, %v; want nil and ErrInvalidArgument", service, err)
+	}
 }
 
 func TestBroadcastErrorAliases(t *testing.T) {

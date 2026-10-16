@@ -2,8 +2,10 @@ package costs
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -232,26 +234,31 @@ func TestCalculateMultiContextCosts_AggregatesReservePerContextAndAccountDebtOnc
 	assertBigIntEquals(t, "deposit", got.DepositNeeded, bi(96))
 }
 
-func TestCalculateMultiContextCosts_NilPriceListUsesZeroValue(t *testing.T) {
-	svc := buildSvc(t,
-		&mockWS{nilPriceListResult: true},
-		&mockPay{
-			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
-			approval: maxApproval(),
+func TestCalculateMultiContextCosts_RejectsMissingReaderResults(t *testing.T) {
+	for _, method := range []string{"GetPriceList", "AccountInfo", "ServiceApproval"} {
+		t.Run(method, func(t *testing.T) {
+			ws := &mockWS{}
+			pay := &mockPay{account: &payments.AccountState{}, approval: maxApproval()}
+			switch method {
+			case "GetPriceList":
+				ws.nilPriceListResult = true
+			case "AccountInfo":
+				pay.account = nil
+			case "ServiceApproval":
+				pay.approval = nil
+			}
+			svc := buildSvc(t, ws, pay)
+			got, err := svc.CalculateMultiContextCosts(
+				context.Background(), common.Address{}, []uint64{1024},
+				[]MultiContextRef{{IsNewDataSet: true}}, nil,
+			)
+			if got != nil || err == nil {
+				t.Fatalf("CalculateMultiContextCosts = %v, %v; want nil estimate and error", got, err)
+			}
+			if !strings.Contains(err.Error(), method) || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error = %v; want %s context without ErrInvalidArgument", err, method)
+			}
 		})
-
-	got, err := svc.CalculateMultiContextCosts(
-		context.Background(),
-		common.Address{},
-		[]uint64{1024},
-		[]MultiContextRef{{IsNewDataSet: true}},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("CalculateMultiContextCosts: %v", err)
-	}
-	if got.RatePerMonth.Sign() != 0 || got.Fees.Total.Sign() != 0 {
-		t.Fatalf("got non-zero price-derived values: rate=%s fees=%s", got.RatePerMonth, got.Fees.Total)
 	}
 }
 

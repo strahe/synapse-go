@@ -76,6 +76,7 @@ type Service struct {
 
 // Options bundle the caller and contract addresses.
 type Options struct {
+	// Client is required; nil and typed-nil are invalid.
 	Client       EthClient
 	FWSS         common.Address
 	ViewContract common.Address
@@ -86,10 +87,10 @@ type Options struct {
 	PDPVerifier common.Address
 	// ChainID is required only when writes are used (TopUpCDNPaymentRails).
 	ChainID types.ChainID
-	// Backend provides a full RPC surface for writes. When nil Service is
-	// read-only; write methods return ErrWriteNotConfigured.
+	// Backend provides a full RPC surface for writes. Nil or typed-nil keeps the
+	// Service read-only; write methods return ErrWriteNotConfigured.
 	Backend Backend
-	// Signer signs write transactions. Optional.
+	// Signer signs write transactions. Nil or typed-nil keeps writes disabled.
 	Signer signer.EVMSigner
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
@@ -119,6 +120,9 @@ type Options struct {
 // The root synapse Client supplies the canonical chain addresses; low-level
 // callers must provide the addresses they want this Service to use.
 func New(opts Options) (*Service, error) {
+	opts.Client = ifaceutil.NormalizeNil(opts.Client)
+	opts.Backend = ifaceutil.NormalizeNil(opts.Backend)
+	opts.Signer = ifaceutil.NormalizeNil(opts.Signer)
 	if opts.Client == nil {
 		return nil, fmt.Errorf("warmstorage.New: %w: nil Client", ErrInvalidArgument)
 	}

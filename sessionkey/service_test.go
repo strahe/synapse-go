@@ -325,11 +325,13 @@ func newTestService(t *testing.T, mb *mockBackend, s signer.EVMSigner) *Service 
 // ---------------------------------------------------------------------------
 
 func TestNew_ValidatesRequired(t *testing.T) {
+	var typedNilBackend *mockBackend
 	tests := []struct {
 		name string
 		opts Options
 	}{
 		{"nil backend", Options{ChainID: testChainID, RegistryAddress: testRegistryAddr}},
+		{"typed-nil backend", Options{Backend: typedNilBackend, ChainID: testChainID, RegistryAddress: testRegistryAddr}},
 		{"zero chainID", Options{Backend: newMockBackend(t), RegistryAddress: testRegistryAddr}},
 		{"negative chainID", Options{Backend: newMockBackend(t), ChainID: sdktypes.ChainID(-1), RegistryAddress: testRegistryAddr}},
 		{"zero registry", Options{Backend: newMockBackend(t), ChainID: testChainID}},
@@ -337,11 +339,14 @@ func TestNew_ValidatesRequired(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.opts)
-			if err == nil {
-				t.Fatal("expected error")
+			svc, err := New(tt.opts)
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New() = (%v, %v), want nil service and ErrInvalidArgument", svc, err)
 			}
 		})
+	}
+	if svc, err := New(Options{Backend: newMockBackend(t), ChainID: testChainID, RegistryAddress: testRegistryAddr}); svc == nil || err != nil {
+		t.Fatalf("New(valid) = (%v, %v)", svc, err)
 	}
 }
 
@@ -529,19 +534,21 @@ func TestLogin_DedupPermissions(t *testing.T) {
 }
 
 func TestLogin_NilSigner(t *testing.T) {
-	mb := newMockBackend(t)
-	svc, err := New(Options{
-		Backend:         mb,
-		ChainID:         testChainID,
-		RegistryAddress: testRegistryAddr,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = svc.Login(context.Background(), common.HexToAddress("0xBEEF"))
-	if err == nil {
-		t.Fatal("expected error for nil signer")
+	var typedNil *signer.Secp256k1Signer
+	for _, tt := range []struct {
+		name   string
+		signer signer.EVMSigner
+	}{
+		{"nil signer", nil},
+		{"typed-nil signer", typedNil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService(t, newMockBackend(t), tt.signer)
+			result, err := svc.Login(context.Background(), common.HexToAddress("0xBEEF"))
+			if result != nil || !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "nil signer") {
+				t.Fatalf("Login() = (%v, %v), want nil signer ErrInvalidArgument", result, err)
+			}
+		})
 	}
 }
 

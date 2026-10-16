@@ -51,9 +51,8 @@ var ErrInvalidArgument = errors.New("payments: invalid argument")
 // Match with errors.Is.
 var ErrInvalidRailPage = errors.New("payments: invalid rail page")
 
-// ErrPermitUnsupported is returned by DepositWithPermit and
-// DepositWithPermitAndApproveOperator when the token contract does not
-// expose the EIP-2612 permit ABI (name / version / nonces probes fail).
-// Callers can branch on this with errors.Is to fall back to Approve +
-// Deposit instead of surfacing a generic precondition error.
+// ErrPermitUnsupported reports a token with no contract code or undecodable
+// name, version, or nonces results required for permit signing. The underlying
+// cause is preserved. RPC errors, cancellation, timeouts, and contract reverts
+// do not match this sentinel; its absence does not establish permit support.
 var ErrPermitUnsupported = errors.New("payments: token contract does not support EIP-2612 permit")

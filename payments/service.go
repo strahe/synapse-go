@@ -72,7 +72,7 @@ type Service struct {
 
 // Options bundles the dependencies for constructing a Service.
 type Options struct {
-	// Backend is the Ethereum RPC client. Required.
+	// Backend is the Ethereum RPC client. Required; nil and typed-nil are invalid.
 	Backend Backend
 	// ChainID of the target FEVM chain. Required; must be > 0.
 	ChainID sdktypes.ChainID
@@ -93,10 +93,10 @@ type Options struct {
 	// return ErrInvalidArgument.
 	MaxMulticallCalls int
 	// Signer is used to sign transactions. Required for write methods;
-	// may be nil when the Service is used for reads only.
+	// may be nil or typed-nil when the Service is used for reads only.
 	Signer signer.EVMSigner
 	// ApprovalLockupPeriod reads the default WarmStorage approval lockup
-	// period. Optional; Fund falls back to one Filecoin month when omitted.
+	// period. Nil or typed-nil uses a fallback of one Filecoin month.
 	ApprovalLockupPeriod ApprovalLockupPeriodReader
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
@@ -120,6 +120,9 @@ type Options struct {
 
 // New constructs a Service.
 func New(opts Options) (*Service, error) {
+	opts.Backend = ifaceutil.NormalizeNil(opts.Backend)
+	opts.Signer = ifaceutil.NormalizeNil(opts.Signer)
+	opts.ApprovalLockupPeriod = ifaceutil.NormalizeNil(opts.ApprovalLockupPeriod)
 	if opts.Backend == nil {
 		return nil, fmt.Errorf("payments.New: %w: nil Backend", ErrInvalidArgument)
 	}

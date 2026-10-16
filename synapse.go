@@ -370,11 +370,11 @@ func parsePrivateKeyHex(raw string) (*ecdsa.PrivateKey, error) {
 		}
 	}()
 	if err != nil {
-		return nil, fmt.Errorf("decode private key hex: %w", err)
+		return nil, fmt.Errorf("decode private key hex: %w: %w", ErrInvalidArgument, err)
 	}
 	key, err := ethcrypto.ToECDSA(decoded)
 	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
+		return nil, fmt.Errorf("invalid private key: %w: %w", ErrInvalidArgument, err)
 	}
 	return key, nil
 }
@@ -390,7 +390,7 @@ func resolvePrivateKey(cfg *clientConfig) (func(), error) {
 		return func() { zeroPrivateKey(cfg.privateKey) }, nil
 	}
 	if cfg.privateKey == nil {
-		return nil, errors.New("missing private key (use WithPrivateKey or WithPrivateKeyHex)")
+		return nil, fmt.Errorf("%w: missing private key (use WithPrivateKey or WithPrivateKeyHex)", ErrInvalidArgument)
 	}
 	// No cleanup for user-provided key.
 	return func() {}, nil
@@ -461,7 +461,7 @@ func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) 
 func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses ResolvedAddresses) (*Client, error) {
 	evmSigner, err := signer.NewSecp256k1Signer(cfg.privateKey)
 	if err != nil {
-		return nil, fmt.Errorf("create signer: %w", err)
+		return nil, fmt.Errorf("create signer: %w: %w", ErrInvalidArgument, err)
 	}
 	storageSigner := ifaceutil.NormalizeNil(cfg.storageSigner)
 	if storageSigner == nil {

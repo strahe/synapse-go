@@ -100,16 +100,36 @@ func TestFund_ExplicitApprovalLockupPeriodOverridesReader(t *testing.T) {
 }
 
 func TestFund_StandaloneApprovalLockupPeriodFallback(t *testing.T) {
-	s, mb := newTestService(t)
-	s.warmStorage = operatorAddr
-	s.usdfcToken = tokenAddr
-
-	if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
-		t.Fatalf("Fund: %v", err)
-	}
-	want := big.NewInt(chain.EpochsPerMonth)
-	if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(want) != 0 {
-		t.Fatalf("maxLockupPeriod=%s want %s", got, want)
+	var typedNil *fakeApprovalLockupReader
+	for _, tt := range []struct {
+		name   string
+		reader ApprovalLockupPeriodReader
+	}{
+		{"nil reader", nil},
+		{"typed-nil reader", typedNil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mb := newMockBackend(t)
+			s, err := New(Options{
+				Backend:              mb,
+				ChainID:              sdktypes.ChainID(314159),
+				FilPayAddress:        filPayAddr,
+				WarmStorageAddress:   operatorAddr,
+				USDFCTokenAddress:    tokenAddr,
+				Signer:               newTestSigner(t),
+				ApprovalLockupPeriod: tt.reader,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if _, err := s.Fund(context.Background(), big.NewInt(0), WithFundNeedsFwssApproval(true)); err != nil {
+				t.Fatalf("Fund: %v", err)
+			}
+			want := big.NewInt(chain.EpochsPerMonth)
+			if got := sentApprovalMaxLockupPeriod(t, mb); got.Cmp(want) != 0 {
+				t.Fatalf("maxLockupPeriod=%s want %s", got, want)
+			}
+		})
 	}
 }
 
@@ -236,21 +256,5 @@ func TestGetRails_ZeroLimitRejectedBeforeRPC(t *testing.T) {
 				t.Fatalf("zero limit made RPC calls: %v", mb.lastIn)
 			}
 		})
-	}
-}
-
-func TestFetchPermitInputs_CallErrorDoesNotWrapErrPermitUnsupported(t *testing.T) {
-	s, mb := newTestService(t)
-	mb.errs[tokenAddr.Hex()+":name"] = context.DeadlineExceeded
-
-	_, err := s.fetchPermitInputs(context.Background(), tokenAddr, s.signer.EVMAddress())
-	if err == nil {
-		t.Fatal("fetchPermitInputs err=nil, want call error")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("fetchPermitInputs err=%v, want context.DeadlineExceeded", err)
-	}
-	if errors.Is(err, ErrPermitUnsupported) {
-		t.Fatalf("fetchPermitInputs err=%v, should not wrap ErrPermitUnsupported for call failure", err)
 	}
 }

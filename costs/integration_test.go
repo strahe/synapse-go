@@ -42,9 +42,22 @@ func TestIntegration_Costs(t *testing.T) {
 		t.Fatalf("GetPriceList divergence: costs=%+v warmstorage=%+v", priceList, warmStoragePriceList)
 	}
 
-	// CalculateMultiContextCosts across two prospective contexts (one new,
-	// one incremental with a synthetic, explicitly supplied leaf count).
 	pieceSizes := []uint64{256 * 1024}
+	single, err := c.GetUploadCosts(ctx, client.Address(), pieceSizes, &costs.UploadCostOptions{IsNewDataSet: true})
+	if err != nil {
+		t.Fatalf("GetUploadCosts: %v", err)
+	}
+	if single.Rate.RatePerEpoch == nil || single.Rate.RatePerEpoch.Sign() <= 0 ||
+		single.Rate.RatePerMonth == nil || single.Rate.RatePerMonth.Sign() <= 0 {
+		t.Fatalf("single estimate has invalid rates: %+v", single.Rate)
+	}
+	if single.DepositNeeded == nil || single.DepositNeeded.Sign() < 0 {
+		t.Fatalf("single DepositNeeded should be >= 0, got %v", single.DepositNeeded)
+	}
+	t.Logf("single: rate/epoch=%s rate/month=%s deposit=%s ready=%v needsApproval=%v",
+		single.Rate.RatePerEpoch, single.Rate.RatePerMonth, single.DepositNeeded, single.Ready, single.NeedsFWSSMaxApproval)
+
+	// Both prospective contexts share the payer's account and approval state.
 	activeEndEpoch := types.Epoch(0)
 	refs := []costs.MultiContextRef{
 		{IsNewDataSet: true, WithCDN: false},

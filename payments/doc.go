@@ -29,6 +29,10 @@
 // [ErrInvalidArgument] before nonce acquisition or signing. Maximum allowances
 // use 2^256-1; larger values are rejected. [WithSkipPrecheck] keeps these checks.
 //
+// Permit writes require token name, version, and nonces metadata.
+// [ErrPermitUnsupported] identifies missing contract code or undecodable
+// metadata; other call failures preserve their cause without that sentinel.
+//
 // # Rail pagination
 //
 // GetRailsAsPayer and GetRailsAsPayee require types.ListOptions with Limit > 0.

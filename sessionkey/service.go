@@ -60,14 +60,14 @@ type Service struct {
 
 // Options bundles the dependencies for constructing a Service.
 type Options struct {
-	// Backend is the Ethereum RPC client. Required.
+	// Backend is the Ethereum RPC client. Required; nil and typed-nil are invalid.
 	Backend Backend
 	// ChainID of the target FEVM chain. Required; must be > 0.
 	ChainID sdktypes.ChainID
 	// RegistryAddress is the SessionKeyRegistry contract address. Required.
 	RegistryAddress common.Address
 	// Signer is used to sign transactions. Required for write methods
-	// (Login, Revoke); may be nil when the Service is used for reads only.
+	// (Login, Revoke); may be nil or typed-nil for reads only.
 	Signer signer.EVMSigner
 	// Logger is optional. When nil, logging is disabled.
 	Logger *slog.Logger
@@ -94,6 +94,8 @@ type Options struct {
 
 // New constructs a Service.
 func New(opts Options) (*Service, error) {
+	opts.Backend = ifaceutil.NormalizeNil(opts.Backend)
+	opts.Signer = ifaceutil.NormalizeNil(opts.Signer)
 	if opts.Backend == nil {
 		return nil, fmt.Errorf("sessionkey.New: %w: nil Backend", ErrInvalidArgument)
 	}
