@@ -18,6 +18,7 @@ import (
 	fwssbind "github.com/strahe/synapse-go/internal/contracts/fwss"
 	fwssviewbind "github.com/strahe/synapse-go/internal/contracts/fwssview"
 	pdpbind "github.com/strahe/synapse-go/internal/contracts/pdpverifier"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -348,26 +349,56 @@ func dataSetInfoView(id int64) fwssviewbind.FilecoinWarmStorageServiceDataSetInf
 
 func TestNew_Validation(t *testing.T) {
 	mc := newMockCaller(t)
-	_, err := New(Options{FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for nil client, got %v", err)
+	var typedNilCaller *mockCaller
+	for _, tt := range []struct {
+		name string
+		opts Options
+	}{
+		{"nil client", Options{FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")}},
+		{"typed-nil client", Options{Client: typedNilCaller, FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")}},
+		{"zero FWSS", Options{Client: mc, ViewContract: common.HexToAddress("0x02")}},
+		{"zero view contract", Options{Client: mc, FWSS: common.HexToAddress("0x01")}},
+		{"negative max multicall calls", Options{Client: mc, FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02"), MaxMulticallCalls: -1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, err := New(tt.opts)
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New() = (%v, %v), want nil service and ErrInvalidArgument", svc, err)
+			}
+		})
 	}
-	_, err = New(Options{Client: mc, ViewContract: common.HexToAddress("0x02")})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for zero FWSS, got %v", err)
+	if svc, err := New(Options{Client: mc, FWSS: common.HexToAddress("0x01"), ViewContract: common.HexToAddress("0x02")}); svc == nil || err != nil {
+		t.Fatalf("New(valid) = (%v, %v)", svc, err)
 	}
-	_, err = New(Options{Client: mc, FWSS: common.HexToAddress("0x01")})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for zero View, got %v", err)
-	}
-	_, err = New(Options{
-		Client:            mc,
-		FWSS:              common.HexToAddress("0x01"),
-		ViewContract:      common.HexToAddress("0x02"),
-		MaxMulticallCalls: -1,
-	})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for negative MaxMulticallCalls, got %v", err)
+}
+
+func TestNew_TypedNilWriteDependenciesRemainReadOnly(t *testing.T) {
+	var nilBackend *mockWriteBackend
+	var nilSigner *signer.Secp256k1Signer
+	for _, tt := range []struct {
+		name    string
+		backend Backend
+		signer  signer.EVMSigner
+	}{
+		{"typed-nil backend", nilBackend, newWriteTestSigner(t)},
+		{"typed-nil signer", newMockWriteBackend(t), nilSigner},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := New(Options{
+				Client:       newMockCaller(t),
+				FWSS:         common.HexToAddress("0x01"),
+				ViewContract: common.HexToAddress("0x02"),
+				Backend:      tt.backend,
+				Signer:       tt.signer,
+			})
+			if err != nil {
+				t.Fatalf("New without write ChainID: %v", err)
+			}
+			result, err := s.TerminateDataSet(context.Background(), types.NewBigInt(1))
+			if result != nil || !errors.Is(err, ErrWriteNotConfigured) {
+				t.Fatalf("TerminateDataSet() = (%v, %v), want ErrWriteNotConfigured", result, err)
+			}
+		})
 	}
 }
 

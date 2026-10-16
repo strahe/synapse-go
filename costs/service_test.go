@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -41,16 +42,18 @@ func (m *mockWS) GetPriceList(_ context.Context) (*warmstorage.PriceList, error)
 }
 
 type mockPay struct {
-	account  *payments.AccountState
-	approval *payments.OperatorApproval
+	account     *payments.AccountState
+	approval    *payments.OperatorApproval
+	accountErr  error
+	approvalErr error
 }
 
 func (m *mockPay) AccountInfo(_ context.Context, _, _ common.Address) (*payments.AccountState, error) {
-	return m.account, nil
+	return m.account, m.accountErr
 }
 
 func (m *mockPay) ServiceApproval(_ context.Context, _, _, _ common.Address) (*payments.OperatorApproval, error) {
-	return m.approval, nil
+	return m.approval, m.approvalErr
 }
 
 type strictPay struct {
@@ -165,15 +168,25 @@ func TestGetPriceList(t *testing.T) {
 	}
 }
 
-func TestGetPriceList_PropagatesReaderError(t *testing.T) {
+func TestGetPriceList_RejectsMissingOrFailedRead(t *testing.T) {
 	wantErr := errors.New("price list unavailable")
-	svc := buildSvc(t, &mockWS{priceListErr: wantErr}, &mockPay{
-		account:  &payments.AccountState{},
-		approval: &payments.OperatorApproval{},
-	})
-
-	if _, err := svc.GetPriceList(context.Background()); !errors.Is(err, wantErr) {
-		t.Fatalf("GetPriceList error = %v, want %v", err, wantErr)
+	for name, ws := range map[string]*mockWS{
+		"reader error": {priceListErr: wantErr},
+		"nil result":   {nilPriceListResult: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := buildSvc(t, ws, &mockPay{})
+			got, err := svc.GetPriceList(context.Background())
+			if got != nil || err == nil {
+				t.Fatalf("GetPriceList = %v, %v; want nil result and error", got, err)
+			}
+			if !strings.Contains(err.Error(), "GetPriceList") || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("GetPriceList error = %v; want reader context without ErrInvalidArgument", err)
+			}
+			if ws.priceListErr != nil && !errors.Is(err, wantErr) {
+				t.Fatalf("GetPriceList error = %v, want %v", err, wantErr)
+			}
+		})
 	}
 }
 
@@ -520,20 +533,47 @@ func TestCostServicesRejectNegativeBufferEpochsBeforeBackendReads(t *testing.T) 
 	}
 }
 
-func TestGetUploadCosts_NilPriceListUsesZeroValue(t *testing.T) {
-	svc := buildSvc(t,
-		&mockWS{nilPriceListResult: true},
-		&mockPay{
-			account:  &payments.AccountState{Funds: usdfc(1_000_000), LockupCurrent: new(big.Int), LockupRate: new(big.Int)},
-			approval: maxApproval(),
+func TestGetUploadCosts_RejectsMissingReaderResults(t *testing.T) {
+	for _, method := range []string{"GetPriceList", "AccountInfo", "ServiceApproval"} {
+		t.Run(method, func(t *testing.T) {
+			ws := &mockWS{}
+			pay := &mockPay{account: &payments.AccountState{}, approval: maxApproval()}
+			switch method {
+			case "GetPriceList":
+				ws.nilPriceListResult = true
+			case "AccountInfo":
+				pay.account = nil
+			case "ServiceApproval":
+				pay.approval = nil
+			}
+			svc := buildSvc(t, ws, pay)
+			got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingUploadCostOptions(new(big.Int)))
+			if got != nil || err == nil {
+				t.Fatalf("GetUploadCosts = %v, %v; want nil estimate and error", got, err)
+			}
+			if !strings.Contains(err.Error(), method) || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error = %v; want %s context without ErrInvalidArgument", err, method)
+			}
 		})
+	}
+}
 
-	got, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingUploadCostOptions(new(big.Int)))
+func TestCostServices_AcceptZeroValuePriceList(t *testing.T) {
+	svc := buildSvc(t, &mockWS{priceList: &warmstorage.PriceList{}}, &mockPay{
+		account:  &payments.AccountState{},
+		approval: &payments.OperatorApproval{},
+	})
+	single, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{IsNewDataSet: true})
 	if err != nil {
 		t.Fatalf("GetUploadCosts: %v", err)
 	}
-	if got.Rate.RatePerMonth.Sign() != 0 || got.Fees.Total.Sign() != 0 {
-		t.Fatalf("got non-zero price-derived values: rate=%s fees=%s", got.Rate.RatePerMonth, got.Fees.Total)
+	multi, err := svc.CalculateMultiContextCosts(context.Background(), common.Address{}, []uint64{1024}, []MultiContextRef{{IsNewDataSet: true}}, nil)
+	if err != nil {
+		t.Fatalf("CalculateMultiContextCosts: %v", err)
+	}
+	if single.Rate.RatePerMonth.Sign() != 0 || single.Fees.Total.Sign() != 0 ||
+		multi.RatePerMonth.Sign() != 0 || multi.Fees.Total.Sign() != 0 {
+		t.Fatalf("zero price produced non-zero rates or fees: single=%+v multi=%+v", single, multi)
 	}
 }
 
@@ -608,56 +648,86 @@ func TestCurrentEpochErrorsWhenBlockNumberFails(t *testing.T) {
 	}
 }
 
-func TestGetUploadCosts_PartialGoroutineFailure(t *testing.T) {
-	// payments goroutines fail; GetPriceList succeeds. Verify error is propagated.
-	payErr := fmt.Errorf("rpc unavailable")
-	svc := buildSvc(t,
-		&mockWS{},
-		&mockPayErr{err: payErr})
-
-	_, err := svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, existingUploadCostOptions(new(big.Int)))
-	if err == nil {
-		t.Fatal("expected error when payments RPC fails")
-	}
-	// Both AccountInfo and ServiceApproval fail — errors.Join wraps both.
-	// Verify at least one is reachable via unwrap chain.
-	if !errors.Is(err, payErr) {
-		t.Errorf("expected wrapped payErr in error chain, got: %v", err)
+func TestCostServices_PreserveReaderErrors(t *testing.T) {
+	for _, entry := range []string{"single", "multi"} {
+		t.Run(entry, func(t *testing.T) {
+			priceErr := errors.New("price RPC unavailable")
+			payErr := errors.New("payment RPC unavailable")
+			svc := buildSvc(t, &mockWS{priceListErr: priceErr}, &mockPay{
+				account:    &payments.AccountState{},
+				accountErr: payErr,
+			})
+			var err error
+			if entry == "single" {
+				var got *UploadCosts
+				got, err = svc.GetUploadCosts(context.Background(), common.Address{}, []uint64{1024}, &UploadCostOptions{IsNewDataSet: true})
+				if got != nil {
+					t.Fatalf("GetUploadCosts returned partial estimate: %+v", got)
+				}
+			} else {
+				var got *MultiContextCosts
+				got, err = svc.CalculateMultiContextCosts(context.Background(), common.Address{}, []uint64{1024}, []MultiContextRef{{IsNewDataSet: true}}, nil)
+				if got != nil {
+					t.Fatalf("CalculateMultiContextCosts returned partial estimate: %+v", got)
+				}
+			}
+			if !errors.Is(err, priceErr) || !errors.Is(err, payErr) {
+				t.Fatalf("error = %v; want both reader causes", err)
+			}
+			if !strings.Contains(err.Error(), "ServiceApproval") || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("error = %v; want missing approval context without ErrInvalidArgument", err)
+			}
+		})
 	}
 }
 
 // --- New validation ---
 
 func TestNew_NilWarmStorage(t *testing.T) {
-	_, err := New(Options{
-		Chain:    chain.Calibration,
-		Payments: &mockPay{},
-		Caller:   &mockCaller{},
-	})
-	if err == nil {
-		t.Fatal("expected error for nil WarmStorage")
+	for name, value := range map[string]WarmStorageReader{"nil": nil, "typed nil": (*mockWS)(nil)} {
+		t.Run(name, func(t *testing.T) {
+			svc, err := New(Options{
+				Chain:       chain.Calibration,
+				WarmStorage: value,
+				Payments:    &mockPay{},
+				Caller:      &mockCaller{},
+			})
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want nil service and ErrInvalidArgument", svc, err)
+			}
+		})
 	}
 }
 
 func TestNew_NilPayments(t *testing.T) {
-	_, err := New(Options{
-		Chain:       chain.Calibration,
-		WarmStorage: &mockWS{},
-		Caller:      &mockCaller{},
-	})
-	if err == nil {
-		t.Fatal("expected error for nil Payments")
+	for name, value := range map[string]PaymentsReader{"nil": nil, "typed nil": (*mockPay)(nil)} {
+		t.Run(name, func(t *testing.T) {
+			svc, err := New(Options{
+				Chain:       chain.Calibration,
+				WarmStorage: &mockWS{},
+				Payments:    value,
+				Caller:      &mockCaller{},
+			})
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want nil service and ErrInvalidArgument", svc, err)
+			}
+		})
 	}
 }
 
 func TestNew_NilCaller(t *testing.T) {
-	_, err := New(Options{
-		Chain:       chain.Calibration,
-		WarmStorage: &mockWS{},
-		Payments:    &mockPay{},
-	})
-	if err == nil {
-		t.Fatal("expected error for nil Caller")
+	for name, value := range map[string]ContractCaller{"nil": nil, "typed nil": (*mockCaller)(nil)} {
+		t.Run(name, func(t *testing.T) {
+			svc, err := New(Options{
+				Chain:       chain.Calibration,
+				WarmStorage: &mockWS{},
+				Payments:    &mockPay{},
+				Caller:      value,
+			})
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want nil service and ErrInvalidArgument", svc, err)
+			}
+		})
 	}
 }
 

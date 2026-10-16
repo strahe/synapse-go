@@ -23,13 +23,14 @@ type ContractCaller interface {
 }
 
 // WarmStorageReader provides the storage price list used by Service. The root
-// Client supplies warmstorage.Service.
+// Client supplies warmstorage.Service. Successful reads return a non-nil result.
 type WarmStorageReader interface {
 	GetPriceList(ctx context.Context) (*warmstorage.PriceList, error)
 }
 
 // PaymentsReader provides payment account and operator approval state for cost
-// estimates. The root Client supplies payments.Service.
+// estimates. The root Client supplies payments.Service. Successful reads return
+// non-nil results.
 type PaymentsReader interface {
 	AccountInfo(ctx context.Context, token, owner common.Address) (*payments.AccountState, error)
 	ServiceApproval(ctx context.Context, token, client, operator common.Address) (*payments.OperatorApproval, error)
@@ -84,16 +85,19 @@ type Options struct {
 }
 
 // New constructs a [Service].
-// WarmStorage, Payments and Caller must be non-nil.
+// WarmStorage, Payments and Caller reject nil and typed-nil values.
 func New(opts Options) (*Service, error) {
+	opts.WarmStorage = ifaceutil.NormalizeNil(opts.WarmStorage)
+	opts.Payments = ifaceutil.NormalizeNil(opts.Payments)
+	opts.Caller = ifaceutil.NormalizeNil(opts.Caller)
 	if opts.WarmStorage == nil {
-		return nil, fmt.Errorf("costs.New: WarmStorage is nil")
+		return nil, fmt.Errorf("costs.New: %w: WarmStorage is nil", ErrInvalidArgument)
 	}
 	if opts.Payments == nil {
-		return nil, fmt.Errorf("costs.New: Payments is nil")
+		return nil, fmt.Errorf("costs.New: %w: Payments is nil", ErrInvalidArgument)
 	}
 	if opts.Caller == nil {
-		return nil, fmt.Errorf("costs.New: Caller is nil")
+		return nil, fmt.Errorf("costs.New: %w: Caller is nil", ErrInvalidArgument)
 	}
 	addrs := opts.Chain.Addresses()
 	fwss := opts.WarmStorageAddress
@@ -127,7 +131,18 @@ func (s *Service) GetPriceList(ctx context.Context) (*warmstorage.PriceList, err
 	if err := s.checkInit(); err != nil {
 		return nil, err
 	}
-	return s.ws.GetPriceList(ctx)
+	return s.readPriceList(ctx)
+}
+
+func (s *Service) readPriceList(ctx context.Context) (*warmstorage.PriceList, error) {
+	priceList, err := s.ws.GetPriceList(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetPriceList: %w", err)
+	}
+	if priceList == nil {
+		return nil, errors.New("GetPriceList: returned nil result")
+	}
+	return priceList, nil
 }
 
 // GetUploadCosts returns cost and deposit information for an upload.
@@ -344,7 +359,7 @@ func (s *Service) calculateUploadCosts(
 }
 
 // readUploadCostInputs reads the price list, payer account and FWSS approval
-// concurrently. A nil price list is treated as zero-value prices.
+// concurrently.
 func (s *Service) readUploadCostInputs(
 	ctx context.Context,
 	payer common.Address,
@@ -362,11 +377,11 @@ func (s *Service) readUploadCostInputs(
 
 	go func() {
 		defer wg.Done()
-		p, err := s.ws.GetPriceList(ctx)
+		p, err := s.readPriceList(ctx)
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("GetPriceList: %w", err))
+			errs = append(errs, err)
 			return
 		}
 		priceList = p
@@ -381,6 +396,10 @@ func (s *Service) readUploadCostInputs(
 			errs = append(errs, fmt.Errorf("AccountInfo: %w", err))
 			return
 		}
+		if a == nil {
+			errs = append(errs, errors.New("AccountInfo: returned nil result"))
+			return
+		}
 		account = a
 	}()
 
@@ -393,6 +412,10 @@ func (s *Service) readUploadCostInputs(
 			errs = append(errs, fmt.Errorf("ServiceApproval: %w", err))
 			return
 		}
+		if ap == nil {
+			errs = append(errs, errors.New("ServiceApproval: returned nil result"))
+			return
+		}
 		approval = ap
 	}()
 
@@ -400,9 +423,6 @@ func (s *Service) readUploadCostInputs(
 
 	if len(errs) > 0 {
 		return nil, nil, nil, errors.Join(errs...)
-	}
-	if priceList == nil {
-		priceList = &warmstorage.PriceList{}
 	}
 	return priceList, account, approval, nil
 }

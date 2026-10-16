@@ -25,15 +25,7 @@ import (
 // permit deadline.
 const PermitDeadlineDuration = time.Hour
 
-// permitERC20ABI is the subset of the ERC-2612 / OpenZeppelin ERC20Permit
-// interface required to fetch the metadata needed to sign a permit:
-// - name() -> string
-// - version() -> string
-// - nonces(owner) -> uint256
-//
-// Maintained as a parsed ABI literal so we do not have to regenerate the
-// erc20 bindings just to expose three extra reads. USDFC and every other
-// OpenZeppelin-derived ERC20Permit implementation expose these methods.
+// permitERC20ABI contains the token metadata methods required to sign a permit.
 var permitERC20ABI = mustParsePermitABI()
 
 func mustParsePermitABI() abi.ABI {
@@ -55,44 +47,60 @@ type permitInputs struct {
 	Nonce   *big.Int
 }
 
-// fetchPermitInputs queries `name()`, `version()`, and `nonces(owner)` on the
-// token contract so the caller can assemble an ERC-2612 EIP-712 domain
-// and message.
-//
-// This helper does not co-fetch the balance; callers that need a pre-check
-// can use [Service.WalletBalance] instead.
 func (s *Service) fetchPermitInputs(ctx context.Context, token, owner common.Address) (*permitInputs, error) {
 	bound := bind.NewBoundContract(token, permitERC20ABI, s.backend, nil, nil)
 	call := &bind.CallOpts{Context: ctx}
 
-	var nameOut []any
-	if err := bound.Call(call, &nameOut, "name"); err != nil {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): %w", err)
+	nameOut, err := readPermitInput(bound, call, "name")
+	if err != nil {
+		return nil, err
 	}
-	name, ok := nameOut[0].(string)
+	name, ok := nameOut.(string)
 	if !ok {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): unexpected type %T: %w", nameOut[0], ErrPermitUnsupported)
+		return nil, fmt.Errorf("payments.fetchPermitInputs: name(): unexpected type %T: %w", nameOut, ErrPermitUnsupported)
 	}
 
-	var versionOut []any
-	if err := bound.Call(call, &versionOut, "version"); err != nil {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): %w", err)
+	versionOut, err := readPermitInput(bound, call, "version")
+	if err != nil {
+		return nil, err
 	}
-	version, ok := versionOut[0].(string)
+	version, ok := versionOut.(string)
 	if !ok {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): unexpected type %T: %w", versionOut[0], ErrPermitUnsupported)
+		return nil, fmt.Errorf("payments.fetchPermitInputs: version(): unexpected type %T: %w", versionOut, ErrPermitUnsupported)
 	}
 
-	var nonceOut []any
-	if err := bound.Call(call, &nonceOut, "nonces", owner); err != nil {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): %w", err)
+	nonceOut, err := readPermitInput(bound, call, "nonces", owner)
+	if err != nil {
+		return nil, err
 	}
-	nonce, ok := nonceOut[0].(*big.Int)
-	if !ok {
-		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): unexpected type %T: %w", nonceOut[0], ErrPermitUnsupported)
+	nonce, ok := nonceOut.(*big.Int)
+	if !ok || nonce == nil {
+		return nil, fmt.Errorf("payments.fetchPermitInputs: nonces(): unexpected type %T: %w", nonceOut, ErrPermitUnsupported)
 	}
 
 	return &permitInputs{Name: name, Version: version, Nonce: nonce}, nil
+}
+
+func readPermitInput(bound *bind.BoundContract, call *bind.CallOpts, method string, args ...any) (any, error) {
+	input, err := permitERC20ABI.Pack(method, args...)
+	if err != nil {
+		return nil, fmt.Errorf("payments.fetchPermitInputs: %s(): %w", method, err)
+	}
+	output, err := bound.CallRaw(call, input)
+	if err != nil {
+		if errors.Is(err, bind.ErrNoCode) {
+			return nil, fmt.Errorf("payments.fetchPermitInputs: %s(): %w: %w", method, ErrPermitUnsupported, err)
+		}
+		return nil, fmt.Errorf("payments.fetchPermitInputs: %s(): %w", method, err)
+	}
+	results, err := permitERC20ABI.Unpack(method, output)
+	if err != nil {
+		return nil, fmt.Errorf("payments.fetchPermitInputs: %s(): %w: %w", method, ErrPermitUnsupported, err)
+	}
+	if len(results) != 1 {
+		return nil, fmt.Errorf("payments.fetchPermitInputs: %s(): expected one result, got %d: %w", method, len(results), ErrPermitUnsupported)
+	}
+	return results[0], nil
 }
 
 // DepositWithPermit deposits `amount` of `token` into the Filecoin Pay

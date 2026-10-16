@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ipfs/go-cid"
 
@@ -1038,9 +1040,9 @@ func TestNew_MissingKey(t *testing.T) {
 	defer srv.Close()
 	defer ec.Close()
 
-	_, err := New(context.Background(), WithEthClient(ec))
-	if err == nil {
-		t.Fatal("expected error for missing private key")
+	client, err := New(context.Background(), WithEthClient(ec))
+	if client != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("New = %v, %v; want nil client and ErrInvalidArgument", client, err)
 	}
 }
 
@@ -1509,8 +1511,8 @@ func TestNew_InvalidPrivateKey(t *testing.T) {
 				_ = client.Close()
 				t.Error("New returned a client for an invalid private key")
 			}
-			if err == nil {
-				t.Error("New returned no error for an invalid private key")
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("New error = %v, want ErrInvalidArgument", err)
 			}
 		})
 	}
@@ -1521,26 +1523,42 @@ func TestNew_InvalidPrivateKeyHex(t *testing.T) {
 	defer srv.Close()
 	defer ec.Close()
 
-	_, err := New(context.Background(),
-		WithPrivateKeyHex("not-valid-hex"),
-		WithEthClient(ec),
-	)
-	if err == nil {
-		t.Fatal("expected error for invalid hex key")
+	for _, raw := range []string{"not-valid-hex", "0xabc"} {
+		t.Run(raw, func(t *testing.T) {
+			client, err := New(context.Background(), WithPrivateKeyHex(raw), WithEthClient(ec))
+			if client != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want nil client and ErrInvalidArgument", client, err)
+			}
+			if raw == "0xabc" {
+				if !errors.Is(err, hex.ErrLength) {
+					t.Fatalf("New error = %v, want hex.ErrLength cause", err)
+				}
+			} else if _, ok := errors.AsType[hex.InvalidByteError](err); !ok {
+				t.Fatalf("New error = %v, want hex.InvalidByteError cause", err)
+			}
+		})
 	}
 }
 
-func TestNew_ShortPrivateKeyHex(t *testing.T) {
+func TestNew_InvalidPrivateKeyBytes(t *testing.T) {
 	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
 	defer ec.Close()
 
-	_, err := New(context.Background(),
-		WithPrivateKeyHex("0xabcdef"),
-		WithEthClient(ec),
-	)
-	if err == nil {
-		t.Fatal("expected error for too-short key")
+	for _, tt := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "short", raw: "0xabcdef"},
+		{name: "zero scalar", raw: strings.Repeat("00", 32)},
+		{name: "scalar above curve order", raw: strings.Repeat("ff", 32)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := New(context.Background(), WithPrivateKeyHex(tt.raw), WithEthClient(ec))
+			if client != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want nil client and ErrInvalidArgument", client, err)
+			}
+		})
 	}
 }
 
@@ -1552,6 +1570,9 @@ func TestNew_RPCDialError(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error for RPC dial failure")
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("RPC failure classified as invalid argument: %v", err)
 	}
 }
 
@@ -1577,6 +1598,25 @@ func TestNew_ChainDetectionFailure(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error for chain detection failure")
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("RPC failure classified as invalid argument: %v", err)
+	}
+	if cause, ok := errors.AsType[rpc.Error](err); !ok || cause.ErrorCode() != -32000 {
+		t.Fatalf("New error = %v, want original RPC error", err)
+	}
+}
+
+func TestNew_ContextCanceled(t *testing.T) {
+	srv, ec := fakeRPCServer(t, "0x4cb2f")
+	defer srv.Close()
+	defer ec.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client, err := New(ctx, WithPrivateKey(testKey(t)), WithEthClient(ec))
+	if client != nil || !errors.Is(err, context.Canceled) || errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("New = %v, %v; want nil client and cancellation without ErrInvalidArgument", client, err)
 	}
 }
 
@@ -1611,6 +1651,9 @@ func TestNew_AddressResolutionFailure(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected error for address resolution failure")
+	}
+	if errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("address resolution failure classified as invalid argument: %v", err)
 	}
 	if !strings.Contains(err.Error(), "synapse.ResolveAddresses") {
 		t.Fatalf("error = %v, want synapse.ResolveAddresses", err)
@@ -1796,8 +1839,11 @@ func TestParsePrivateKeyHex_Empty(t *testing.T) {
 
 func TestParsePrivateKeyHex_InvalidHex(t *testing.T) {
 	_, err := parsePrivateKeyHex("0xzzzz")
-	if err == nil {
-		t.Fatal("expected error for invalid hex")
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+	if cause, ok := errors.AsType[hex.InvalidByteError](err); !ok || cause != hex.InvalidByteError('z') {
+		t.Fatalf("error = %v, want hex.InvalidByteError('z') cause", err)
 	}
 }
 

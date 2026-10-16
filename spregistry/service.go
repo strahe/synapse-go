@@ -70,6 +70,7 @@ type Service struct {
 
 // Options configures the service.
 type Options struct {
+	// Client is required; nil and typed-nil are invalid.
 	Client  EthClient
 	Address common.Address
 	// EndorsementsAddress is the independently deployed ProviderIdSet used
@@ -79,10 +80,10 @@ type Options struct {
 	EndorsementsAddress common.Address
 	// ChainID is required only when writes are used.
 	ChainID types.ChainID
-	// Backend provides a full RPC surface for writes. When nil Service is
-	// read-only; write methods return ErrWriteNotConfigured.
+	// Backend provides a full RPC surface for writes. Nil or typed-nil keeps the
+	// Service read-only; write methods return ErrWriteNotConfigured.
 	Backend Backend
-	// Signer signs write transactions. Optional.
+	// Signer signs write transactions. Nil or typed-nil keeps writes disabled.
 	Signer signer.EVMSigner
 	// NonceManager is optional. The root synapse Client injects a shared
 	// coordinator across all write-capable services; standalone callers may
@@ -110,6 +111,9 @@ type Options struct {
 
 // New creates a Service bound to the given registry address.
 func New(opts Options) (*Service, error) {
+	opts.Client = ifaceutil.NormalizeNil(opts.Client)
+	opts.Backend = ifaceutil.NormalizeNil(opts.Backend)
+	opts.Signer = ifaceutil.NormalizeNil(opts.Signer)
 	if opts.Client == nil {
 		return nil, fmt.Errorf("spregistry.New: %w: nil Client", ErrInvalidArgument)
 	}

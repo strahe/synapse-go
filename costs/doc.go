@@ -16,6 +16,10 @@
 //   - [PieceSizesToLeafCount] and [LeafCountToBillableBytes] — the size
 //     conversions to use when composing [CalculateEffectiveRate] directly.
 //
+// Service reads require non-nil price, account, and approval results. Missing
+// results return an error without an estimate. Explicit zero-value results are
+// accepted; pure calculation helpers retain their documented nil semantics.
+//
 // # Piece sizes and existing state
 //
 // Service entry points accept a non-empty []uint64 of raw payload sizes,

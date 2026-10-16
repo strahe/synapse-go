@@ -1620,9 +1620,24 @@ func TestContextValidationErrors(t *testing.T) {
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("zero provider error=%v", err)
 	}
-	_, err = NewProviderContext(testProvider(), nil, nil)
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil client error=%v", err)
+	var typedNil *pdp.Client
+	for _, tt := range []struct {
+		name   string
+		client PDPProviderClient
+	}{
+		{"nil client", nil},
+		{"typed-nil client", typedNil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			providerCtx, err := NewProviderContext(testProvider(), tt.client, nil)
+			if providerCtx != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("NewProviderContext() = (%v, %v), want nil context and ErrInvalidArgument", providerCtx, err)
+			}
+			dataSetCtx, err := NewDataSetContext(testProvider(), tt.client, nil, testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)))
+			if dataSetCtx != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("NewDataSetContext() = (%v, %v), want nil context and ErrInvalidArgument", dataSetCtx, err)
+			}
+		})
 	}
 	c := mustProviderContext(t, &fakePDPProviderClient{})
 	_, err = c.CreateAndAdd(context.Background(), CreateAndAddRequest{})

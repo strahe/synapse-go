@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1066,13 +1067,24 @@ func TestValidation_NegativeAmounts(t *testing.T) {
 }
 
 func TestNoSigner_WritesFail(t *testing.T) {
-	mb := newMockBackend(t)
-	s, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1)); err == nil {
-		t.Error("expected signer required error")
+	var typedNil *signer.Secp256k1Signer
+	for _, tt := range []struct {
+		name   string
+		signer signer.EVMSigner
+	}{
+		{"nil signer", nil},
+		{"typed-nil signer", typedNil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mb := newTestServiceWith(t, tt.signer)
+			result, err := s.Approve(context.Background(), tokenAddr, filPayAddr, big.NewInt(1))
+			if result != nil || err == nil || !strings.Contains(err.Error(), "signer required") {
+				t.Fatalf("Approve() = (%v, %v), want signer required error", result, err)
+			}
+			if len(mb.sent) != 0 {
+				t.Fatal("read-only service broadcast a transaction")
+			}
+		})
 	}
 }
 
@@ -1440,11 +1452,13 @@ func TestAccount_NilSigner(t *testing.T) {
 
 func TestNew_Validation(t *testing.T) {
 	mb := newMockBackend(t)
+	var typedNilBackend *mockBackend
 	tests := []struct {
 		name string
 		opts Options
 	}{
 		{"nil backend", Options{ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}},
+		{"typed-nil backend", Options{Backend: typedNilBackend, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}},
 		{"zero chainID (omitted)", Options{Backend: mb, FilPayAddress: filPayAddr}},
 		{"zero chainID", Options{Backend: mb, ChainID: sdktypes.ChainID(0), FilPayAddress: filPayAddr}},
 		{"negative chainID", Options{Backend: mb, ChainID: sdktypes.ChainID(-1), FilPayAddress: filPayAddr}},
@@ -1452,10 +1466,14 @@ func TestNew_Validation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := New(tc.opts); err == nil {
-				t.Error("expected error")
+			svc, err := New(tc.opts)
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New() = (%v, %v), want nil service and ErrInvalidArgument", svc, err)
 			}
 		})
+	}
+	if svc, err := New(Options{Backend: mb, ChainID: sdktypes.ChainID(1), FilPayAddress: filPayAddr}); svc == nil || err != nil {
+		t.Fatalf("New(valid) = (%v, %v)", svc, err)
 	}
 }
 

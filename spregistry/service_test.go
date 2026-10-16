@@ -15,6 +15,7 @@ import (
 
 	"github.com/strahe/synapse-go/chain"
 	sprbind "github.com/strahe/synapse-go/internal/contracts/spregistry"
+	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -169,18 +170,55 @@ func newTestService(t *testing.T) (*Service, *mockCaller) {
 }
 
 func TestNew_Validation(t *testing.T) {
-	_, err := New(Options{Address: common.HexToAddress("0x01")})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for nil Client, got %v", err)
-	}
 	mc := newMockCaller(t)
-	_, err = New(Options{Client: mc})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for zero Address, got %v", err)
+	var typedNilCaller *mockCaller
+	for _, tt := range []struct {
+		name string
+		opts Options
+	}{
+		{"nil client", Options{Address: common.HexToAddress("0x01")}},
+		{"typed-nil client", Options{Client: typedNilCaller, Address: common.HexToAddress("0x01")}},
+		{"zero address", Options{Client: mc}},
+		{"negative max multicall calls", Options{Client: mc, Address: common.HexToAddress("0x01"), MaxMulticallCalls: -1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, err := New(tt.opts)
+			if svc != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New() = (%v, %v), want nil service and ErrInvalidArgument", svc, err)
+			}
+		})
 	}
-	_, err = New(Options{Client: mc, Address: common.HexToAddress("0x01"), MaxMulticallCalls: -1})
-	if err == nil || !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("expected ErrInvalidArgument for negative MaxMulticallCalls, got %v", err)
+	if svc, err := New(Options{Client: mc, Address: common.HexToAddress("0x01")}); svc == nil || err != nil {
+		t.Fatalf("New(valid) = (%v, %v)", svc, err)
+	}
+}
+
+func TestNew_TypedNilWriteDependenciesRemainReadOnly(t *testing.T) {
+	var nilBackend *mockWriteBackend
+	var nilSigner *signer.Secp256k1Signer
+	for _, tt := range []struct {
+		name    string
+		backend Backend
+		signer  signer.EVMSigner
+	}{
+		{"typed-nil backend", nilBackend, newWriteTestSigner(t)},
+		{"typed-nil signer", newMockWriteBackend(t), nilSigner},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := New(Options{
+				Client:  newMockCaller(t),
+				Address: common.HexToAddress("0x01"),
+				Backend: tt.backend,
+				Signer:  tt.signer,
+			})
+			if err != nil {
+				t.Fatalf("New without write ChainID: %v", err)
+			}
+			result, err := s.RemoveProvider(context.Background())
+			if result != nil || !errors.Is(err, ErrWriteNotConfigured) {
+				t.Fatalf("RemoveProvider() = (%v, %v), want ErrWriteNotConfigured", result, err)
+			}
+		})
 	}
 }
 
@@ -394,10 +432,6 @@ func pdpProviderFixture(providerID int64, serviceProvider common.Address, name s
 		},
 		ProductCapabilityValues: values,
 	}
-}
-
-func addrPtr(addr common.Address) *common.Address {
-	return &addr
 }
 
 func TestGetPDPProvider(t *testing.T) {
@@ -884,7 +918,7 @@ func TestGetProvidersByIDs_MalformedResponse(t *testing.T) {
 // starting from startID, each using the given keys/values.
 func buildPaginatedRaw(startID int64, n int, keys []string, vals [][]byte, hasMore bool) sprbind.ServiceProviderRegistryStoragePaginatedProviders {
 	providers := make([]sprbind.ServiceProviderRegistryStorageProviderWithProduct, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		providers[i] = sprbind.ServiceProviderRegistryStorageProviderWithProduct{
 			ProviderId: big.NewInt(startID + int64(i)),
 			ProviderInfo: sprbind.ServiceProviderRegistryStorageServiceProviderInfo{
@@ -1007,7 +1041,7 @@ func TestSelectActivePDPProviders_FilterByPaymentToken(t *testing.T) {
 	mc.set(t, "getProvidersByProductType", buildPaginatedRaw(1, 1, keys, vals, false))
 
 	wantToken := common.HexToAddress("0xb3042734b608a1B16e9e86B374A3f3e389B4cDf0")
-	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(wantToken)})
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: new(wantToken)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1050,7 @@ func TestSelectActivePDPProviders_FilterByPaymentToken(t *testing.T) {
 	}
 
 	otherToken := common.HexToAddress("0xdead")
-	got, err = s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(otherToken)})
+	got, err = s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: new(otherToken)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1082,7 @@ func TestSelectActivePDPProviders_FilterByFILToken(t *testing.T) {
 	}
 	mc.set(t, "getProvidersByProductType", raw)
 
-	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: addrPtr(common.Address{})})
+	got, err := s.SelectActivePDPProviders(context.Background(), ProviderFilter{PaymentToken: new(common.Address{})})
 	if err != nil {
 		t.Fatal(err)
 	}
