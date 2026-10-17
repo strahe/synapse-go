@@ -180,9 +180,10 @@ func WithEthClient(c *ethclient.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.ethClient = c }
 }
 
-// WithChain selects the Filecoin network. When omitted, [New] detects the
-// chain from the RPC endpoint, except when both chain and RPC source are
-// omitted; that path defaults to Calibration.
+// WithChain sets the expected Filecoin network. [New] rejects an RPC endpoint
+// whose chain ID differs. When omitted, New detects the chain from the RPC
+// endpoint, except when both chain and RPC source are omitted; that path
+// defaults to Calibration and verifies the default endpoint's chain ID.
 func WithChain(c chain.Chain) ClientOption {
 	return func(cfg *clientConfig) {
 		cc := c
@@ -285,6 +286,9 @@ func New(ctx context.Context, opts ...ClientOption) (*Client, error) {
 	}
 	if cfg.maxMulticallCalls < 0 {
 		return nil, fmt.Errorf("synapse.New: %w: MaxMulticallCalls must be >= 0", ErrInvalidArgument)
+	}
+	if cfg.chain != nil && cfg.chain.ChainID() == 0 {
+		return nil, fmt.Errorf("synapse.New: %w: unsupported chain %v", ErrInvalidArgument, *cfg.chain)
 	}
 
 	cleanup, err := resolvePrivateKey(&cfg)
@@ -433,15 +437,18 @@ func resolveEthClient(ctx context.Context, cfg *clientConfig) (*ethclient.Client
 }
 
 func resolveChain(ctx context.Context, ec *ethclient.Client, cfg *clientConfig) (chain.Chain, error) {
-	if cfg.chain != nil {
-		return *cfg.chain, nil
-	}
 	chainID, err := ec.ChainID(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("detect chain: %w", err)
 	}
 	if !chainID.IsInt64() {
 		return 0, fmt.Errorf("chain ID %s exceeds int64 range", chainID)
+	}
+	if cfg.chain != nil {
+		if chainID.Int64() != cfg.chain.ChainID() {
+			return 0, fmt.Errorf("%w: RPC chain ID %s does not match expected chain ID %d", ErrInvalidArgument, chainID, cfg.chain.ChainID())
+		}
+		return *cfg.chain, nil
 	}
 	detected, err := chain.FromID(chainID.Int64())
 	if err != nil {

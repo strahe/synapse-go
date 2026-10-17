@@ -1410,17 +1410,31 @@ func TestRegistryAddress(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFinalize_NoWait(t *testing.T) {
-	mb := newMockBackend(t)
-	sig := newTestSigner(t)
-	svc := newTestService(t, mb, sig)
-
-	// Login without WithWait → finalize takes the waitTimeout<=0 path.
-	res, err := svc.Login(context.Background(), common.HexToAddress("0xAA"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Receipt != nil {
-		t.Error("expected nil receipt without WithWait")
+	for _, tt := range []struct {
+		name string
+		opts []WriteOption
+	}{
+		{"omitted", nil},
+		{"zero", []WriteOption{WithWait(0)}},
+		{"negative", []WriteOption{WithWait(-time.Second)}},
+		{"confirmations only", []WriteOption{WithConfirmations(3)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mb := newMockBackend(t)
+			svc := newTestService(t, mb, newTestSigner(t))
+			receiptCalls := 0
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				receiptCalls++
+				return &types.Receipt{Status: types.ReceiptStatusSuccessful}, nil
+			}
+			res, err := svc.Login(context.Background(), common.HexToAddress("0xAA"), tt.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Receipt != nil || receiptCalls != 0 {
+				t.Fatalf("receipt = %+v, lookups = %d, want no receipt polling", res.Receipt, receiptCalls)
+			}
+		})
 	}
 }
 

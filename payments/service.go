@@ -66,7 +66,7 @@ type Service struct {
 	permits           *permitCoordinator
 	lockups           ApprovalLockupPeriodReader
 	logger            *slog.Logger
-	receiptWait       time.Duration
+	permitReceiptWait time.Duration
 	lifecycle         interface{ CheckClosed() error }
 }
 
@@ -105,11 +105,9 @@ type Options struct {
 	// leave this nil to create one for this Service. A typed-nil value is treated
 	// as nil.
 	NonceManager NonceManager
-	// ReceiptWait overrides the default receipt polling timeout used by
-	// WithConfirmations when the call waits for a receipt but does not
-	// provide a more specific WithWait(timeout). Zero uses the default receipt
-	// polling configuration.
-	ReceiptWait time.Duration
+	// PermitReceiptWait limits background receipt tracking for permit writes.
+	// Non-positive values use five minutes. It is independent of WithWait.
+	PermitReceiptWait time.Duration
 	// Lifecycle is checked before service operations that can touch configured
 	// backends. Any error returned by CheckClosed is returned without touching
 	// those backends. The root synapse Client injects a shared checker whose
@@ -161,7 +159,7 @@ func New(opts Options) (*Service, error) {
 		logger:            opts.Logger,
 		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
 		permits:           newPermitCoordinator(),
-		receiptWait:       opts.ReceiptWait,
+		permitReceiptWait: opts.PermitReceiptWait,
 		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 	}
 	if s.nonces == nil && s.signer != nil {
@@ -191,11 +189,13 @@ func (s *Service) Account() common.Address {
 
 // ---------- reads ----------
 
-// AccountInfo returns the on-chain account record for (token, owner).
+// AccountInfo queries account state for (token, owner). ERC20 raw fields and
+// the balance projected by settlement are read separately at latest; they are
+// not an atomic snapshot. AvailableFunds returns the observed settled balance.
 //
-// When token is ZeroAddress, native FIL is queried via BalanceAt and returned
-// as AccountState.Funds. All lockup fields are zero because native FIL is not
-// tracked by the FilPay contract.
+// When token is ZeroAddress, one BalanceAt call supplies Funds and the observed
+// available balance. All lockup fields are zero because FilPay does not track
+// native FIL accounts.
 func (s *Service) AccountInfo(ctx context.Context, token, owner common.Address) (*AccountState, error) {
 	if err := s.checkInit(); err != nil {
 		return nil, err
@@ -608,12 +608,7 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 func (s *Service) waitForWriteReceipt(ctx context.Context, txHash common.Hash, cfg writeConfig) (*types.Receipt, error) {
 	if cfg.confirmations > 0 {
 		waitCfg := txutil.DefaultReceiptWaitConfig()
-		if s.receiptWait > 0 {
-			waitCfg.Timeout = s.receiptWait
-		}
-		if cfg.waitTimeout > 0 {
-			waitCfg.Timeout = cfg.waitTimeout
-		}
+		waitCfg.Timeout = cfg.waitTimeout
 		return txutil.WaitForReceiptWithConfig(ctx, s.backend, txHash, waitCfg, cfg.confirmations)
 	}
 	return txutil.WaitForReceipt(ctx, s.backend, txHash, cfg.waitTimeout)

@@ -478,6 +478,31 @@ func TestIntegration(t *testing.T) {
 	dataSetTerminated := make(map[string]bool)
 	suite := t
 
+	t.Run("ClientNetwork", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		matched := integrationtest.NewDefaultClient(t, cctx, synapse.WithChain(chain.Calibration))
+		if matched.Chain() != chain.Calibration {
+			t.Fatalf("explicit chain = %v, want Calibration", matched.Chain())
+		}
+		defaulted := integrationtest.NewDefaultClient(t, cctx, synapse.WithRPCURL(""))
+		if defaulted.Chain() != chain.Calibration {
+			t.Fatalf("default chain = %v, want Calibration", defaulted.Chain())
+		}
+		mismatched, err := synapse.New(cctx,
+			synapse.WithPrivateKeyHex(integrationtest.RequirePrivateKey(t)),
+			synapse.WithRPCURL(integrationtest.RPCURL()),
+			synapse.WithChain(chain.Mainnet),
+		)
+		if mismatched != nil {
+			_ = mismatched.Close()
+			t.Fatal("Calibration RPC accepted as Mainnet")
+		}
+		if !errors.Is(err, synapse.ErrInvalidArgument) {
+			t.Fatalf("network mismatch = %v, want ErrInvalidArgument", err)
+		}
+	})
+
 	// --- Costs subtest ---
 	t.Run("Costs", func(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -1235,6 +1260,16 @@ func TestIntegration(t *testing.T) {
 		}
 		if ps == nil {
 			t.Fatal("PieceStatus returned nil")
+		}
+		if !ps.Exists {
+			t.Fatal("confirmed upload is absent from PieceStatus")
+		}
+		if ps.HoursUntilNextChallenge < 0 {
+			t.Fatalf("HoursUntilNextChallenge = %v", ps.HoursUntilNextChallenge)
+		}
+		if !ps.DataSetEstimatedProofDeadline.IsZero() &&
+			!ps.DataSetEstimatedProofDeadline.After(ps.DataSetNextChallengeAt) {
+			t.Fatalf("estimated deadline %s is not after challenge %s", ps.DataSetEstimatedProofDeadline, ps.DataSetNextChallengeAt)
 		}
 
 		removals, err := uctx.GetScheduledRemovals(cctx)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"time"
 
 	gethabi "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -69,7 +68,6 @@ type Service struct {
 	signer            signer.EVMSigner
 	nonces            NonceManager
 	logger            *slog.Logger
-	receiptWait       time.Duration
 	lifecycle         interface{ CheckClosed() error }
 	maxMulticallCalls int
 }
@@ -99,9 +97,6 @@ type Options struct {
 	NonceManager NonceManager
 	// Logger is optional.
 	Logger *slog.Logger
-	// ReceiptWait overrides the default receipt polling timeout for
-	// WithWait calls. Zero uses the default receipt polling configuration.
-	ReceiptWait time.Duration
 	// MaxMulticallCalls limits the number of actual contract calls in each
 	// dynamic Multicall3 request. Zero uses the default of 64. Negative values
 	// are invalid. Batches execute serially and may observe different blocks;
@@ -159,7 +154,6 @@ func New(opts Options) (*Service, error) {
 		signer:            opts.Signer,
 		logger:            opts.Logger,
 		nonces:            ifaceutil.NormalizeNil(opts.NonceManager),
-		receiptWait:       opts.ReceiptWait,
 		lifecycle:         ifaceutil.NormalizeNil(opts.Lifecycle),
 		maxMulticallCalls: maxMulticallCalls,
 	}

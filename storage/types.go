@@ -264,10 +264,11 @@ type FailedAttempt struct {
 	Stage      CopyStage // pipeline stage where the failure occurred
 	Err        error
 	Explicit   bool // true when the provider was caller-specified (no auto-retry)
-	// Submission is set when the provider accepted a commit submission for
-	// this attempt, even if confirmation later failed or timed out. Use its
-	// StatusURL, and ClientDataSetID for create-and-add, to resume waiting; see
-	// Submission recovery in the package documentation.
+	// Submission is set when the SDK validated and registered the commit
+	// handle before this attempt ended. Nil means the handle is unknown, not
+	// that the provider rejected the submission; it does not imply retrying is
+	// safe. Use StatusURL, and ClientDataSetID for create-and-add, to resume
+	// waiting; see Submission recovery in the package documentation.
 	Submission *CommitSubmission
 }
 

@@ -29,9 +29,9 @@ defer client.Close()
 ```
 
 Load the key from your config or secret manager; never hardcode production
-keys. Mainnet and Calibration are detected from the RPC endpoint unless you
-pass `WithChain`. `WithSource` namespaces the data sets your application
-creates.
+keys. Mainnet and Calibration are detected from the RPC endpoint. Pass
+`WithChain` to require a matching network. `WithSource` namespaces the data
+sets your application creates.
 
 Other common options:
 
@@ -138,8 +138,9 @@ reader, err := client.Storage().Download(ctx, result.PieceCID, &storage.Download
 ### Commit Batching
 
 The root client batches commits from concurrent uploads to the same target.
-A batch is submitted when no other upload to that target is in progress and 3
-seconds pass without a new piece. Change this with `WithUploadBatching`:
+A batch is ready for submission when no other upload to that target is in
+progress and 3 seconds pass without a new piece. Change this with
+`WithUploadBatching`:
 
 ```go
 client, err := synapse.New(ctx,
@@ -152,9 +153,10 @@ client, err := synapse.New(ctx,
 )
 ```
 
-Pass `storage.WithoutUploadIdleWait()` and `storage.WithUploadMaxWait(0)` to
-submit every piece immediately, or use `synapse.WithoutUploadBatching()` to
-commit each upload on its own.
+`WithUploadMaxWait` limits the time spent forming a batch; submission and
+confirmation can take longer. Pass `storage.WithoutUploadIdleWait()` and
+`storage.WithUploadMaxWait(0)` to queue each piece immediately, or use
+`synapse.WithoutUploadBatching()` to commit each upload on its own.
 
 Once a piece joins a batch, canceling its `Upload` context stops only that
 call's wait; the piece may still be committed. Check provider or chain state

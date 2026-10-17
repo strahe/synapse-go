@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/ipfs/go-cid"
@@ -56,15 +57,17 @@ func (f *fakePDPConfigReader) GetPDPConfig(_ context.Context) (*warmstorage.PDPC
 	return f.cfg, f.err
 }
 
-func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg *fakePDPConfigReader) *DataSetContext {
+func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg PDPConfigReader, opts ...ContextOption) *DataSetContext {
 	t.Helper()
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)),
+	options := []ContextOption{
 		WithPayer(testPayer()),
 		WithRecordKeeper(testRecordKeeper()),
 		WithChainID(types.ChainID(314159)),
 		WithPDPVerifierReader(pdp),
 		WithPDPConfigReader(cfg),
-	)
+	}
+	options = append(options, opts...)
+	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)), options...)
 	if err != nil {
 		t.Fatalf("NewContext: %v", err)
 	}
@@ -111,109 +114,153 @@ func TestContext_PieceStatus_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PieceStatus: %v", err)
 	}
-	if st.Exists {
-		t.Fatalf("expected Exists=false, got %+v", st)
+	if st.Exists || !st.PieceID.IsZero() || st.RetrievalURL != "" || !st.DataSetNextChallengeAt.IsZero() ||
+		!st.DataSetEstimatedProofDeadline.IsZero() || st.HoursUntilNextChallenge != 0 ||
+		st.InEstimatedChallengeWindow || st.EstimatedProofDeadlinePassed {
+		t.Fatalf("expected zero status for absent piece, got %+v", st)
 	}
 }
 
-func TestContext_PieceStatus_BeforeChallengeWindow(t *testing.T) {
-	pdp := &fakePDPReader{
-		findIDs:       []types.BigInt{types.NewBigInt(99)},
-		nextChallenge: big.NewInt(1_000_000),
-		blockNumber:   500_000,
-	}
-	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 2880, ChallengeWindowSize: big.NewInt(60)}}
-	c := mustPieceStatusContext(t, pdp, cfg)
-	st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
-	if err != nil {
-		t.Fatalf("PieceStatus: %v", err)
-	}
-	if !st.Exists || !st.PieceID.Equal(types.NewBigInt(99)) {
-		t.Fatalf("expected Exists=true PieceID=99, got %+v", st)
-	}
-	if st.InChallengeWindow || st.IsProofOverdue {
-		t.Fatalf("expected outside challenge window, got %+v", st)
-	}
-	if st.HoursUntilChallengeWindow <= 0 {
-		t.Fatalf("expected positive hoursUntilChallengeWindow, got %v", st.HoursUntilChallengeWindow)
-	}
-}
-
-func TestContext_PieceStatus_InChallengeWindow(t *testing.T) {
-	pdp := &fakePDPReader{
-		findIDs:       []types.BigInt{types.NewBigInt(1)},
-		nextChallenge: big.NewInt(100),
-		blockNumber:   110,
-	}
-	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 200, ChallengeWindowSize: big.NewInt(60)}}
-	c := mustPieceStatusContext(t, pdp, cfg)
-	st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
-	if err != nil {
-		t.Fatalf("PieceStatus: %v", err)
-	}
-	if !st.InChallengeWindow {
-		t.Fatalf("expected InChallengeWindow=true, got %+v", st)
-	}
-	if st.IsProofOverdue {
-		t.Fatalf("expected IsProofOverdue=false, got %+v", st)
+func TestContext_PieceStatus_EstimatedWindow(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		head       uint64
+		inWindow   bool
+		passed     bool
+		untilHours float64
+	}{
+		{name: "before challenge", head: 40, untilHours: 0.5},
+		{name: "at challenge", head: 100, inWindow: true},
+		{name: "within estimated window", head: 110, inWindow: true},
+		{name: "at estimated deadline", head: 160, passed: true},
+		{name: "after estimated deadline", head: 161, passed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(99)}, nextChallenge: big.NewInt(100), blockNumber: tt.head}
+			cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: big.NewInt(60)}}
+			c := mustPieceStatusContext(t, pdp, cfg)
+			pieceCID := mustPieceInfo(t).CIDv2
+			st, err := c.PieceStatus(context.Background(), pieceCID)
+			if err != nil {
+				t.Fatalf("PieceStatus: %v", err)
+			}
+			if !st.Exists || !st.PieceID.Equal(types.NewBigInt(99)) || st.RetrievalURL != pieceRetrievalURL(testProvider().ServiceURL, pieceCID) {
+				t.Fatalf("unexpected piece identity: %+v", st)
+			}
+			if st.InEstimatedChallengeWindow != tt.inWindow || st.EstimatedProofDeadlinePassed != tt.passed || st.HoursUntilNextChallenge != tt.untilHours {
+				t.Fatalf("timing = %+v; want window=%v passed=%v hours=%v", st, tt.inWindow, tt.passed, tt.untilHours)
+			}
+		})
 	}
 }
 
-func TestContext_PieceStatus_Overdue(t *testing.T) {
-	pdp := &fakePDPReader{
-		findIDs:       []types.BigInt{types.NewBigInt(1)},
-		nextChallenge: big.NewInt(100),
-		blockNumber:   500,
-	}
-	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 200, ChallengeWindowSize: big.NewInt(60)}}
-	c := mustPieceStatusContext(t, pdp, cfg)
-	st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
-	if err != nil {
-		t.Fatalf("PieceStatus: %v", err)
-	}
-	if !st.IsProofOverdue {
-		t.Fatalf("expected IsProofOverdue=true, got %+v", st)
-	}
-}
-
-func TestContext_PieceStatus_MainnetPopulatesProofTimes(t *testing.T) {
-	pdp := &fakePDPReader{
-		findIDs:       []types.BigInt{types.NewBigInt(1)},
-		nextChallenge: big.NewInt(100),
-		blockNumber:   110,
-	}
-	cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{MaxProvingPeriod: 20, ChallengeWindowSize: big.NewInt(60)}}
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314)),
-		WithPDPVerifierReader(pdp),
-		WithPDPConfigReader(cfg),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
-
-	st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
-	if err != nil {
-		t.Fatalf("PieceStatus: %v", err)
-	}
-
-	wantDue := chain.EpochToTime(chain.Mainnet, big.NewInt(160))
-	if !st.DataSetNextProofDue.Equal(wantDue) {
-		t.Fatalf("DataSetNextProofDue=%v want %v", st.DataSetNextProofDue, wantDue)
-	}
-	wantLastProven := chain.EpochToTime(chain.Mainnet, big.NewInt(80))
-	if !st.DataSetLastProven.Equal(wantLastProven) {
-		t.Fatalf("DataSetLastProven=%v want %v", st.DataSetLastProven, wantLastProven)
+func TestContext_PieceStatus_ScheduleTimes(t *testing.T) {
+	for _, network := range []chain.Chain{chain.Mainnet, chain.Calibration} {
+		t.Run(network.String(), func(t *testing.T) {
+			pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(1)}, nextChallenge: big.NewInt(100), blockNumber: 110}
+			cfg := &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: big.NewInt(60)}}
+			c := mustPieceStatusContext(t, pdp, cfg, WithChainID(types.ChainID(network.ChainID())))
+			for _, period := range []uint64{0, 20, 2880} {
+				cfg.cfg.MaxProvingPeriod = period
+				st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
+				if err != nil {
+					t.Fatalf("PieceStatus: %v", err)
+				}
+				if want := chain.EpochToTime(network, big.NewInt(100)); !st.DataSetNextChallengeAt.Equal(want) {
+					t.Fatalf("period %d: challenge=%v want %v", period, st.DataSetNextChallengeAt, want)
+				}
+				if want := chain.EpochToTime(network, big.NewInt(160)); !st.DataSetEstimatedProofDeadline.Equal(want) {
+					t.Fatalf("period %d: estimated deadline=%v want %v", period, st.DataSetEstimatedProofDeadline, want)
+				}
+			}
+		})
 	}
 }
 
-func TestContext_PieceStatus_PropagatesFindError(t *testing.T) {
-	pdp := &fakePDPReader{findErr: errors.New("boom")}
-	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{})
-	if _, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2); err == nil {
-		t.Fatal("expected error")
+func TestContext_PieceStatus_OptionalConfig(t *testing.T) {
+	var typedNil *fakePDPConfigReader
+	for _, tt := range []struct {
+		name string
+		cfg  PDPConfigReader
+	}{
+		{name: "unset"},
+		{name: "typed nil", cfg: typedNil},
+		{name: "nil result", cfg: &fakePDPConfigReader{}},
+		{name: "read failure", cfg: &fakePDPConfigReader{err: errors.New("unavailable")}},
+		{name: "nil window", cfg: &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{}}},
+		{name: "zero window", cfg: &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: new(big.Int)}}},
+		{name: "negative window", cfg: &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: big.NewInt(-1)}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(1)}, nextChallenge: big.NewInt(100), blockNumber: 40}
+			c := mustPieceStatusContext(t, pdp, tt.cfg)
+			st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
+			if err != nil {
+				t.Fatalf("PieceStatus: %v", err)
+			}
+			if !st.Exists || !st.DataSetNextChallengeAt.Equal(chain.EpochToTime(chain.Calibration, big.NewInt(100))) || st.HoursUntilNextChallenge != 0.5 {
+				t.Fatalf("expected direct schedule without config, got %+v", st)
+			}
+			if !st.DataSetEstimatedProofDeadline.IsZero() || st.InEstimatedChallengeWindow || st.EstimatedProofDeadlinePassed {
+				t.Fatalf("expected unavailable estimates, got %+v", st)
+			}
+		})
+	}
+}
+
+func TestContext_PieceStatus_NoChallenge(t *testing.T) {
+	for _, challenge := range []*big.Int{nil, new(big.Int), big.NewInt(-1)} {
+		t.Run(challenge.String(), func(t *testing.T) {
+			pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(1)}, nextChallenge: challenge, blockNumber: 110}
+			c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: big.NewInt(60)}})
+			st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
+			if err != nil {
+				t.Fatalf("PieceStatus: %v", err)
+			}
+			if !st.Exists || !st.DataSetNextChallengeAt.IsZero() || !st.DataSetEstimatedProofDeadline.IsZero() || st.HoursUntilNextChallenge != 0 || st.InEstimatedChallengeWindow || st.EstimatedProofDeadlinePassed {
+				t.Fatalf("expected existing piece without timing, got %+v", st)
+			}
+		})
+	}
+}
+
+func TestContext_PieceStatus_UnknownChain(t *testing.T) {
+	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(1)}, nextChallenge: big.NewInt(100), blockNumber: 40}
+	c := mustPieceStatusContext(t, pdp, &fakePDPConfigReader{cfg: &warmstorage.PDPConfig{ChallengeWindowSize: big.NewInt(60)}}, WithChainID(types.ChainID(123)))
+	for _, head := range []uint64{40, 110, 160} {
+		pdp.blockNumber = head
+		st, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2)
+		if err != nil {
+			t.Fatalf("PieceStatus: %v", err)
+		}
+		if !st.Exists || !st.DataSetNextChallengeAt.IsZero() || !st.DataSetEstimatedProofDeadline.IsZero() {
+			t.Fatalf("unknown-chain wall-clock times must be unavailable: %+v", st)
+		}
+		if st.InEstimatedChallengeWindow != (head == 110) || st.EstimatedProofDeadlinePassed != (head == 160) {
+			t.Fatalf("epoch comparisons unavailable at head %d: %+v", head, st)
+		}
+		if head == 40 && st.HoursUntilNextChallenge != 0.5 {
+			t.Fatalf("hours=%v want 0.5", st.HoursUntilNextChallenge)
+		}
+	}
+}
+
+func TestContext_PieceStatus_PropagatesRequiredReadErrors(t *testing.T) {
+	wantErr := errors.New("read failed")
+	for _, tt := range []struct {
+		name string
+		pdp  *fakePDPReader
+	}{
+		{name: "find piece", pdp: &fakePDPReader{findErr: wantErr}},
+		{name: "challenge schedule", pdp: &fakePDPReader{nextChallengeErr: wantErr}},
+		{name: "head epoch", pdp: &fakePDPReader{blockNumberErr: wantErr}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := mustPieceStatusContext(t, tt.pdp, &fakePDPConfigReader{})
+			if _, err := c.PieceStatus(context.Background(), mustPieceInfo(t).CIDv2); !errors.Is(err, wantErr) {
+				t.Fatalf("PieceStatus error=%v want %v", err, wantErr)
+			}
+		})
 	}
 }
 
@@ -228,33 +275,43 @@ func TestContext_PieceStatus_UnavailableDataSet(t *testing.T) {
 	}
 }
 
-func TestContext_PieceStatus_TypedNilPDPConfigReaderTreatedAsUnset(t *testing.T) {
-	info := mustPieceInfo(t)
-	pdp := &fakePDPReader{
-		findIDs:       []types.BigInt{types.NewBigInt(1)},
-		nextChallenge: big.NewInt(0),
-		blockNumber:   0,
-	}
-	var cfg *fakePDPConfigReader
+type trackedPieceStatusReader struct {
+	*fakePDPReader
+	reads *sync.WaitGroup
+}
 
-	c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, mustTestSigner(t), testDataSetRef(types.NewBigInt(42), types.NewBigInt(7)),
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithPDPVerifierReader(pdp),
-		WithPDPConfigReader(cfg),
-	)
-	if err != nil {
-		t.Fatalf("NewContext: %v", err)
-	}
+func (f trackedPieceStatusReader) FindPieceIdsByCid(ctx context.Context, id types.BigInt, pieceCID cid.Cid, offset, limit uint64) ([]types.BigInt, error) {
+	defer f.reads.Done()
+	return f.fakePDPReader.FindPieceIdsByCid(ctx, id, pieceCID, offset, limit)
+}
 
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("PieceStatus panicked with typed-nil PDP config reader: %v", r)
-		}
+func (f trackedPieceStatusReader) GetNextChallengeEpoch(ctx context.Context, id types.BigInt) (*big.Int, error) {
+	defer f.reads.Done()
+	return f.fakePDPReader.GetNextChallengeEpoch(ctx, id)
+}
+
+func (f trackedPieceStatusReader) BlockNumber(ctx context.Context) (uint64, error) {
+	defer f.reads.Done()
+	return f.fakePDPReader.BlockNumber(ctx)
+}
+
+func TestContext_PieceStatus_CanceledWhileReadingOptionalConfig(t *testing.T) {
+	pdp := &fakePDPReader{findIDs: []types.BigInt{types.NewBigInt(1)}, nextChallenge: big.NewInt(100), blockNumber: 40}
+	c := mustPieceStatusContext(t, pdp, ctxAwarePDPConfigReader{})
+	var reads sync.WaitGroup
+	reads.Add(3)
+	c.core.pdpCaller = trackedPieceStatusReader{fakePDPReader: pdp, reads: &reads}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	pieceCID := mustPieceInfo(t).CIDv2
+	go func() {
+		_, err := c.PieceStatus(ctx, pieceCID)
+		result <- err
 	}()
-
-	if _, err := c.PieceStatus(context.Background(), info.CIDv2); err != nil {
-		t.Fatalf("PieceStatus: %v", err)
+	reads.Wait()
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("PieceStatus error=%v want context.Canceled", err)
 	}
 }

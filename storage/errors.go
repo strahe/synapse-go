@@ -156,10 +156,11 @@ func (e *StoreError) Unwrap() error {
 }
 
 // CommitError is returned when no copy was committed on-chain. The piece may
-// still be stored on providers, and a commit transaction may still confirm;
-// FailedAttempts records each attempt and any accepted submission. ProviderID,
-// Endpoint, and Cause describe the primary provider. When the SDK constructs
-// it, Endpoint is redacted in the same way as [StoreError.Endpoint].
+// still be stored on providers, and a commit transaction may still confirm.
+// FailedAttempts records failed attempts and any retained submission handles;
+// see [FailedAttempt.Submission] for recovery limits. ProviderID, Endpoint, and
+// Cause describe the primary provider. When the SDK constructs it, Endpoint is
+// redacted in the same way as [StoreError.Endpoint].
 type CommitError struct {
 	ProviderID types.BigInt
 	Endpoint   string

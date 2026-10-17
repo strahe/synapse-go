@@ -989,26 +989,94 @@ func TestNew_PaymentsAccountSummaryBatchLimit(t *testing.T) {
 	}
 }
 
-func TestNew_WithChain_SkipsDetection(t *testing.T) {
-	// Provide a chain explicitly — no RPC call for chain ID.
-	srv, ec := fakeRPCServer(t, "0xdeadbeef") // bogus chain ID
-	defer srv.Close()
-	defer ec.Close()
+func TestNew_WithChain_VerifiesNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		expected *chain.Chain
+		actual   chain.Chain
+	}{
+		{name: "detect-calibration", actual: chain.Calibration},
+		{name: "detect-mainnet", actual: chain.Mainnet},
+		{name: "calibration-match", expected: new(chain.Calibration), actual: chain.Calibration},
+		{name: "mainnet-match", expected: new(chain.Mainnet), actual: chain.Mainnet},
+		{name: "expected-calibration", expected: new(chain.Calibration), actual: chain.Mainnet},
+		{name: "expected-mainnet", expected: new(chain.Mainnet), actual: chain.Calibration},
+	} {
+		for _, owned := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/owned=%t", tc.name, owned), func(t *testing.T) {
+				var chainCalls, contractCalls atomic.Int32
+				resolved := testutil.FWSSAddressResolutionResultHex(t, tc.actual)
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req jsonRPCReq
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "bad json-rpc", http.StatusBadRequest)
+						return
+					}
+					var result string
+					switch req.Method {
+					case "eth_chainId":
+						chainCalls.Add(1)
+						result = fmt.Sprintf(`"0x%x"`, tc.actual.ChainID())
+					case "eth_call":
+						contractCalls.Add(1)
+						result = fmt.Sprintf("%q", resolved)
+					default:
+						t.Errorf("unexpected RPC method %s", req.Method)
+						result = "null"
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+				}))
+				defer srv.Close()
 
-	key := testKey(t)
-	cal := chain.Calibration
-	client, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithEthClient(ec),
-		WithChain(cal),
-	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	if client.Chain() != chain.Calibration {
-		t.Errorf("chain = %v, want Calibration", client.Chain())
+				opts := []ClientOption{WithPrivateKey(testKey(t))}
+				var borrowed *ethclient.Client
+				if owned {
+					opts = append(opts, WithRPCURL(srv.URL))
+				} else {
+					var err error
+					borrowed, err = ethclient.Dial(srv.URL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer borrowed.Close()
+					opts = append(opts, WithEthClient(borrowed))
+				}
+				if tc.expected != nil {
+					opts = append(opts, WithChain(*tc.expected))
+				}
+				client, err := New(t.Context(), opts...)
+				if tc.expected != nil && *tc.expected != tc.actual {
+					if client != nil || !errors.Is(err, ErrInvalidArgument) {
+						t.Fatalf("New = %v, %v; want invalid network", client, err)
+					}
+					for _, id := range []int64{tc.expected.ChainID(), tc.actual.ChainID()} {
+						if !strings.Contains(err.Error(), fmt.Sprint(id)) {
+							t.Fatalf("error = %v, missing chain ID %d", err, id)
+						}
+					}
+					if contractCalls.Load() != 0 {
+						t.Fatal("network mismatch reached contract calls")
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("New: %v", err)
+					}
+					defer func() { _ = client.Close() }()
+					if client.Chain() != tc.actual || contractCalls.Load() == 0 {
+						t.Fatalf("chain = %v, contract calls = %d", client.Chain(), contractCalls.Load())
+					}
+				}
+				if chainCalls.Load() != 1 {
+					t.Fatalf("chain ID reads = %d, want 1", chainCalls.Load())
+				}
+				if borrowed != nil {
+					if _, err := borrowed.ChainID(t.Context()); err != nil {
+						t.Fatalf("borrowed client closed by New: %v", err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -1072,33 +1140,46 @@ func TestResolveEthClient_DefaultsToCalibrationRPC(t *testing.T) {
 	}
 }
 
-func TestNew_WithChainDefaultsToChainRPC(t *testing.T) {
-	key := testKey(t)
-	client, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithChain(chain.Mainnet),
-	)
+func TestResolveEthClient_WithChainDefaultsToChainRPC(t *testing.T) {
+	cfg := clientConfig{chain: new(chain.Mainnet)}
+	client, ownsClient, err := resolveEthClient(t.Context(), &cfg)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("resolveEthClient: %v", err)
 	}
-	defer func() { _ = client.Close() }()
-
-	if client.Chain() != chain.Mainnet {
-		t.Errorf("chain = %v, want Mainnet", client.Chain())
+	defer client.Close()
+	if !ownsClient || cfg.rpcURL != chain.Mainnet.DefaultRPCURL() || cfg.chain == nil || *cfg.chain != chain.Mainnet {
+		t.Fatalf("rpcURL = %q, chain = %v, ownsClient = %t", cfg.rpcURL, cfg.chain, ownsClient)
 	}
 }
 
-func TestNew_MissingRPCSourceForChainWithoutDefault(t *testing.T) {
-	key := testKey(t)
-	_, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithChain(chain.Chain(255)),
-	)
-	if err == nil {
-		t.Fatal("expected error for missing RPC source")
+func TestNew_RejectsUnsupportedConfiguredChainBeforeRPC(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer srv.Close()
+	borrowed, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "missing RPC source") {
-		t.Fatalf("error = %v, want missing RPC source", err)
+	defer borrowed.Close()
+	for _, tc := range []struct {
+		name string
+		rpc  ClientOption
+	}{
+		{name: "default"},
+		{name: "owned", rpc: WithRPCURL(srv.URL)},
+		{name: "borrowed", rpc: WithEthClient(borrowed)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := New(t.Context(), WithPrivateKey(testKey(t)), WithChain(chain.Chain(255)), tc.rpc)
+			if client != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want invalid configured chain", client, err)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid configuration made %d RPC calls", calls.Load())
 	}
 }
 
@@ -1107,13 +1188,19 @@ func TestNew_UnsupportedChain(t *testing.T) {
 	defer srv.Close()
 	defer ec.Close()
 
-	key := testKey(t)
-	_, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithEthClient(ec),
-	)
-	if err == nil {
-		t.Fatal("expected error for unsupported chain")
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%t", explicit), func(t *testing.T) {
+			opts := []ClientOption{WithPrivateKey(testKey(t)), WithEthClient(ec)}
+			want := chain.ErrUnknownChain
+			if explicit {
+				opts = append(opts, WithChain(chain.Calibration))
+				want = ErrInvalidArgument
+			}
+			client, err := New(t.Context(), opts...)
+			if client != nil || !errors.Is(err, want) {
+				t.Fatalf("New = %v, %v; want %v", client, err, want)
+			}
+		})
 	}
 }
 
@@ -1591,19 +1678,20 @@ func TestNew_ChainDetectionFailure(t *testing.T) {
 	}
 	defer ec.Close()
 
-	key := testKey(t)
-	_, err = New(context.Background(),
-		WithPrivateKey(key),
-		WithEthClient(ec),
-	)
-	if err == nil {
-		t.Fatal("expected error for chain detection failure")
-	}
-	if errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("RPC failure classified as invalid argument: %v", err)
-	}
-	if cause, ok := errors.AsType[rpc.Error](err); !ok || cause.ErrorCode() != -32000 {
-		t.Fatalf("New error = %v, want original RPC error", err)
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%t", explicit), func(t *testing.T) {
+			opts := []ClientOption{WithPrivateKey(testKey(t)), WithEthClient(ec)}
+			if explicit {
+				opts = append(opts, WithChain(chain.Calibration))
+			}
+			client, err := New(t.Context(), opts...)
+			if client != nil || err == nil || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want RPC failure without ErrInvalidArgument", client, err)
+			}
+			if cause, ok := errors.AsType[rpc.Error](err); !ok || cause.ErrorCode() != -32000 {
+				t.Fatalf("New error = %v, want original RPC error", err)
+			}
+		})
 	}
 }
 
@@ -1611,12 +1699,27 @@ func TestNew_ContextCanceled(t *testing.T) {
 	srv, ec := fakeRPCServer(t, "0x4cb2f")
 	defer srv.Close()
 	defer ec.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	client, err := New(ctx, WithPrivateKey(testKey(t)), WithEthClient(ec))
-	if client != nil || !errors.Is(err, context.Canceled) || errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("New = %v, %v; want nil client and cancellation without ErrInvalidArgument", client, err)
+	for _, explicit := range []bool{false, true} {
+		for _, deadline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("explicit=%t/deadline=%t", explicit, deadline), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				want := context.Canceled
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+					want = context.DeadlineExceeded
+				}
+				cancel()
+				opts := []ClientOption{WithPrivateKey(testKey(t)), WithEthClient(ec)}
+				if explicit {
+					opts = append(opts, WithChain(chain.Calibration))
+				}
+				client, err := New(ctx, opts...)
+				if client != nil || !errors.Is(err, want) || errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("New = %v, %v; want %v without ErrInvalidArgument", client, err, want)
+				}
+			})
+		}
 	}
 }
 
@@ -1666,16 +1769,17 @@ func TestNew_ChainIDOverflow(t *testing.T) {
 	defer srv.Close()
 	defer ec.Close()
 
-	key := testKey(t)
-	_, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithEthClient(ec),
-	)
-	if err == nil {
-		t.Fatal("expected error for overflowing chain ID")
-	}
-	if !strings.Contains(err.Error(), "exceeds int64") {
-		t.Errorf("unexpected error message: %v", err)
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%t", explicit), func(t *testing.T) {
+			opts := []ClientOption{WithPrivateKey(testKey(t)), WithEthClient(ec)}
+			if explicit {
+				opts = append(opts, WithChain(chain.Calibration))
+			}
+			client, err := New(t.Context(), opts...)
+			if client != nil || err == nil || !strings.Contains(err.Error(), "exceeds int64") || errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("New = %v, %v; want range error without ErrInvalidArgument", client, err)
+			}
+		})
 	}
 }
 
@@ -1763,49 +1867,6 @@ func TestNew_WithLoggerAndHTTPClient_FilBeam(t *testing.T) {
 	}
 	if client.Storage() == nil {
 		t.Error("Storage() returned nil")
-	}
-}
-
-func TestNew_ZeroAddressChain(t *testing.T) {
-	// Provide a chain with zero addresses via WithChain to trigger address validation error.
-	srv, ec := fakeRPCServer(t, "0x4cb2f")
-	defer srv.Close()
-	defer ec.Close()
-
-	key := testKey(t)
-	bogus := chain.Chain(255) // out of range → all zero addresses
-	_, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithEthClient(ec),
-		WithChain(bogus),
-	)
-	if err == nil {
-		t.Fatal("expected error for zero-address chain")
-	}
-	if !strings.Contains(err.Error(), "address") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_ZeroAddressChain_OwnedClient(t *testing.T) {
-	// Same as above but with owned client (WithRPCURL) to cover ownsClient cleanup.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req jsonRPCReq
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x4cb2f"}`, req.ID)
-	}))
-	defer srv.Close()
-
-	key := testKey(t)
-	bogus := chain.Chain(255)
-	_, err := New(context.Background(),
-		WithPrivateKey(key),
-		WithRPCURL(srv.URL),
-		WithChain(bogus),
-	)
-	if err == nil {
-		t.Fatal("expected error for zero-address chain")
 	}
 }
 

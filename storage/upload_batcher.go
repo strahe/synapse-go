@@ -65,10 +65,11 @@ func WithoutUploadIdleWait() UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) { cfg.idleWaitEnabled = false }
 }
 
-// WithUploadMaxWait submits a batch at most wait after its first piece is
-// ready, even while other uploads to the same target are in progress. Zero
-// submits every piece immediately and requires a zero or disabled idle wait.
-// There is no maximum wait by default.
+// WithUploadMaxWait ends batch formation at most wait after its first piece is
+// ready, even while other uploads to the same target are in progress. The batch
+// then queues for submission; signing, provider requests, and confirmation are
+// outside this limit. Zero queues each piece immediately and requires a zero
+// or disabled idle wait. There is no maximum wait by default.
 func WithUploadMaxWait(wait time.Duration) UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) {
 		cfg.maxWait = wait
@@ -233,14 +234,15 @@ type uploadBatchTask struct {
 }
 
 type uploadBatchFlight struct {
-	seq            uint64
-	minReservation uint64
-	key            string
-	target         StorageContext
-	ref            *DataSetRef
-	slots          []*uploadBatchSlot
-	done           chan struct{}
-	err            error
+	seq                 uint64
+	minReservation      uint64
+	key                 string
+	target              StorageContext
+	ref                 *DataSetRef
+	slots               []*uploadBatchSlot
+	done                chan struct{}
+	err                 error
+	submissionPublished bool // guarded by batcher.mu
 }
 
 // uploadBatchFailure is the Flush-visible remainder of a finished error.
@@ -899,14 +901,27 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 		err = b.ctx.Err()
 	}
 	var submission *CommitSubmission
+	var registrationErr error
+	registerSubmission := func(submitted CommitSubmission) {
+		if registrationErr == nil {
+			registrationErr = b.publishSubmission(flight, pieces, submitted)
+		}
+	}
 	if err == nil {
 		submission, err = target.submitCommit(b.ctx, commitRequest{
 			CommitRequest: CommitRequest{
-				Pieces:    pieces,
-				ExtraData: extraData,
+				Pieces:      pieces,
+				ExtraData:   extraData,
+				OnSubmitted: registerSubmission,
 			},
 			clientDataSetID: copyBigIntPtr(clientDataSetID),
 		})
+	}
+	if submission != nil {
+		registerSubmission(*submission)
+	}
+	if registrationErr != nil {
+		err = registrationErr
 	}
 	if create != nil && err == nil {
 		b.markSharedCreateSubmitted(create.state)
@@ -925,10 +940,6 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 	if submission == nil {
 		return nil, errors.New("storage.UploadBatcher: submit commit returned nil submission")
 	}
-	if err := validateUploadBatchSubmissionPieces(pieces, submission.PieceCIDs); err != nil {
-		return nil, err
-	}
-	b.publishSubmission(flight, *submission)
 	result, err := target.waitForCommit(b.ctx, *submission)
 	err = uploadBatchContextError(b.ctx, err)
 	if err == nil {
@@ -1221,13 +1232,19 @@ func (b *UploadBatcher) finishFlight(flight *uploadBatchFlight, result *CommitRe
 	b.mu.Unlock()
 }
 
-// publishSubmission sends the accepted submission to the flight's waiters. The
-// done check and the send share one lock hold, or a concurrent Close queues its
-// terminal event first and the waiter stops there without reading the
-// submission behind it. Slot buffers hold both events, so the send cannot block.
-func (b *UploadBatcher) publishSubmission(flight *uploadBatchFlight, submission CommitSubmission) {
+// publishSubmission registers a validated handle before Close can publish its
+// terminal event. A flight publishes at most one handle, so slot buffers hold
+// both the submission and terminal event without blocking.
+func (b *UploadBatcher) publishSubmission(flight *uploadBatchFlight, pieces []PieceInput, submission CommitSubmission) error {
+	if err := validateUploadBatchSubmissionPieces(pieces, submission.PieceCIDs); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed || flight.submissionPublished {
+		return nil
+	}
+	flight.submissionPublished = true
 	for _, slot := range flight.slots {
 		if slot.done {
 			continue
@@ -1235,6 +1252,7 @@ func (b *UploadBatcher) publishSubmission(flight *uploadBatchFlight, submission 
 		copySubmission := copyCommitSubmission(submission)
 		slot.events <- uploadBatchEvent{submission: &copySubmission}
 	}
+	return nil
 }
 
 func (b *UploadBatcher) observeSlot(slot *uploadBatchSlot) {
@@ -1260,8 +1278,8 @@ func (b *UploadBatcher) observeSlot(slot *uploadBatchSlot) {
 }
 
 // wait returns the commit outcome and the submission the batch published. The
-// submission is set once the provider accepted it, even if the wait then fails,
-// and nil when cancellation or Close releases the waiter first.
+// submission is set once its validated handle is registered, even if the wait
+// then fails. Nil means the handle was unknown when this waiter returned.
 func (task *uploadBatchTask) wait(ctx context.Context, onSubmitted func(string)) (*CommitResult, *CommitSubmission, error) {
 	if task == nil || task.slot == nil {
 		return nil, nil, fmt.Errorf("storage.UploadBatcher.wait: %w: nil task", ErrInvalidArgument)

@@ -7,8 +7,10 @@ import (
 	sdktypes "github.com/strahe/synapse-go/types"
 )
 
-// AccountState mirrors FilPay.accounts(token, owner).
-// All values are in base units of the payment token.
+// AccountState is an account query result. Amounts are in token base units.
+// Default JSON encoding preserves only exported fields, not the available
+// balance observed by [Service.AccountInfo]. Use [AccountSummary] for a USDFC
+// account snapshot.
 type AccountState struct {
 	Funds               *big.Int
 	LockupCurrent       *big.Int
@@ -75,8 +77,11 @@ type AccountSummary struct {
 	CurrentEpoch *big.Int
 }
 
-// AvailableFunds returns Funds - LockupCurrent (never negative). A nil
-// AccountState returns nil.
+// AvailableFunds returns a copy of the balance observed by AccountInfo.
+// It is not refreshed after the query or when exported fields change.
+// Without an observed balance, including for manually constructed or JSON-decoded
+// values, it returns max(Funds - LockupCurrent, 0). A nil receiver or missing
+// Funds or LockupCurrent without an observed balance returns nil.
 func (a *AccountState) AvailableFunds() *big.Int {
 	if a == nil {
 		return nil
