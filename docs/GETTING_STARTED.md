@@ -10,7 +10,7 @@ contracts, standalone service wiring, and edge cases are in the
 go get github.com/strahe/synapse-go
 ```
 
-Requires Go 1.26.3+.
+Requires Go 1.26.9+.
 
 ## Client
 
