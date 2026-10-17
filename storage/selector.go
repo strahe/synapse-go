@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -1211,15 +1212,7 @@ func buildProvider(provider spregistry.PDPProvider) Provider {
 }
 
 func metadataMatches(dataSetMetadata, requestedMetadata map[string]string) bool {
-	if len(dataSetMetadata) != len(requestedMetadata) {
-		return false
-	}
-	for key, value := range requestedMetadata {
-		if dataSetMetadata[key] != value {
-			return false
-		}
-	}
-	return true
+	return maps.Equal(dataSetMetadata, requestedMetadata)
 }
 
 func dataSetMetadataFromOptions(opts SelectUploadContextsOptions) map[string]string {

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,85 @@ func newTrackingMetadataResolver(t *testing.T, fixture serviceResolverFixture, c
 		t.Fatalf("NewServiceResolver: %v", err)
 	}
 	return resolver
+}
+
+func TestServiceResolverSelectUploadContexts_ExactMetadata(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		includeMatchingSet bool
+	}{
+		{name: "reuses exact match over active mismatched set", includeMatchingSet: true},
+		{name: "returns unbound context without an exact match"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			providerID := testID(1)
+			dataSets := []*warmstorage.EnhancedDataSetInfo{{
+				DataSetInfo: warmstorage.DataSetInfo{
+					DataSetID:       testID(11),
+					ClientDataSetID: testID(101),
+					ProviderID:      providerID,
+					Payer:           testPayer(),
+				},
+				IsLive:          true,
+				IsManaged:       true,
+				HasActivePieces: true,
+				Metadata:        map[string]string{"emptyFlag": ""},
+			}}
+			if tt.includeMatchingSet {
+				dataSets = append(dataSets, &warmstorage.EnhancedDataSetInfo{
+					DataSetInfo: warmstorage.DataSetInfo{
+						DataSetID:       testID(12),
+						ClientDataSetID: testID(102),
+						ProviderID:      providerID,
+						Payer:           testPayer(),
+					},
+					IsLive:    true,
+					IsManaged: true,
+					Metadata:  map[string]string{"withCDN": ""},
+				})
+			}
+			resolver := newTestServiceResolver(t, serviceResolverFixture{
+				approvedProviderIDs: []types.BigInt{providerID},
+				endorsedProviderIDs: []types.BigInt{providerID},
+				endorsementsSet:     true,
+				activeProviders:     []spregistry.PDPProvider{testPDPProvider(providerID, "https://sp1.example.com")},
+				detailedDataSets:    dataSets,
+				providerPing:        healthyProviderPing,
+			})
+
+			withCDN := true
+			selection, err := resolver.SelectUploadContexts(t.Context(), SelectUploadContextsOptions{
+				Copies:  1,
+				WithCDN: &withCDN,
+			})
+			if err != nil {
+				t.Fatalf("SelectUploadContexts: %v", err)
+			}
+			if selection == nil || len(selection.Contexts) != 1 {
+				t.Fatalf("selection=%+v want one context", selection)
+			}
+			selected := selection.Contexts[0]
+			if !selected.ProviderID().Equal(providerID) {
+				t.Fatalf("provider=%s want %s", selected.ProviderID(), providerID)
+			}
+			ref, bound := selected.DataSetRef()
+			if tt.includeMatchingSet {
+				if !bound || !ref.DataSetID().Equal(testID(12)) || !ref.ClientDataSetID().Equal(testID(102)) {
+					t.Fatalf("dataset=%s clientDataSetID=%s bound=%v want dataset=12 clientDataSetID=102", ref.DataSetID(), ref.ClientDataSetID(), bound)
+				}
+			} else {
+				if bound {
+					t.Fatalf("dataset=%s want an unbound context", ref.DataSetID())
+				}
+				if _, ok := selected.(*ProviderContext); !ok {
+					t.Fatalf("context type=%T want *ProviderContext", selected)
+				}
+			}
+			if metadata := selected.DataSetMetadata(); !maps.Equal(metadata, map[string]string{"withCDN": ""}) {
+				t.Fatalf("metadata=%v want exactly withCDN with an empty value", metadata)
+			}
+		})
+	}
 }
 
 func TestServiceResolver_MetadataFetchStopsAtFirstWritableMatch(t *testing.T) {
