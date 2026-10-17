@@ -12,9 +12,42 @@ on:
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   check:
-    name: build / vet / lint / test
+    name: build / vet / test (Go ${{ matrix.go-version }})
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.26.9', '1.27.x']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          check-latest: true
+          cache: true
+
+      - name: Go version
+        run: go version
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  lint:
+    name: lint
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
       - name: Checkout
@@ -23,24 +56,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '>=1.26.3 <1.27.0'
+          go-version: '1.26.9'
           check-latest: true
           cache: true
 
-      - name: Build
-        run: go build ./...
-
-      - name: Vet
-        run: go vet ./...
+      - name: Go version
+        run: go version
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
           args: --timeout=5m
-
-      - name: Test
-        run: go test ./...
 
   vuln:
     name: govulncheck
@@ -52,9 +79,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '>=1.26.3 <1.27.0'
+          go-version: '1.27.x'
           check-latest: true
           cache: true
+
+      - name: Go version
+        run: go version
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

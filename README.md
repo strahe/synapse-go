@@ -5,7 +5,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/strahe/synapse-go.svg)](https://pkg.go.dev/github.com/strahe/synapse-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/strahe/synapse-go)](https://goreportcard.com/report/github.com/strahe/synapse-go)
 [![License](https://img.shields.io/github/license/strahe/synapse-go)](LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.26.3%2B-00ADD8)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.26.9%2B-00ADD8)](go.mod)
 
 Go SDK for Filecoin Onchain Cloud (FOC).
 
@@ -21,7 +21,7 @@ Go SDK for Filecoin Onchain Cloud (FOC).
 go get github.com/strahe/synapse-go
 ```
 
-Requires Go 1.26.3+.
+Requires Go 1.26.9+.
 
 ## Quick Start
 
