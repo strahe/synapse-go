@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -34,6 +35,7 @@ import (
 	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/sessionkey"
+	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
@@ -468,13 +470,15 @@ func TestIntegration(t *testing.T) {
 
 	// Shared state across subtests.
 	var (
-		uploadedCID       cid.Cid
-		uploadedURL       string
-		testData          []byte
-		uploadedDataSetID types.BigInt
-		uploadedRailID    types.BigInt
+		uploadedCID        cid.Cid
+		uploadedURL        string
+		testData           []byte
+		uploadedDataSetID  types.BigInt
+		uploadedProviderID types.BigInt
+		uploadedRailID     types.BigInt
 	)
 	run := fmt.Sprintf("storage-http-%d", time.Now().UnixNano())
+	uploadMetadata := map[string]string{"run": run, "emptyFlag": ""}
 	dataSetTerminated := make(map[string]bool)
 	suite := t
 
@@ -695,7 +699,8 @@ func TestIntegration(t *testing.T) {
 		t.Log("start Upload Storage.Upload")
 		result, err := client.Storage().Upload(cctx, bytes.NewReader(testData), tracedUploadOptions(t, "Upload", &storage.UploadOptions{
 			Copies:          1,
-			DataSetMetadata: map[string]string{"run": run},
+			DataSetMetadata: maps.Clone(uploadMetadata),
+			WithCDN:         new(false),
 		}))
 		t.Logf("done Upload Storage.Upload elapsed=%s", time.Since(start).Round(time.Second))
 		if err != nil {
@@ -768,6 +773,7 @@ func TestIntegration(t *testing.T) {
 		uploadedCID = result.PieceCID
 		uploadedURL = result.Copies[0].RetrievalURL
 		uploadedDataSetID = result.Copies[0].DataSetID
+		uploadedProviderID = result.Copies[0].ProviderID
 		t.Logf("uploaded: cid=%s, size=%d, copies=%d, url=%s, dataSet=%s",
 			result.PieceCID, result.Size, len(result.Copies), uploadedURL, uploadedDataSetID)
 
@@ -786,6 +792,104 @@ func TestIntegration(t *testing.T) {
 				t.Logf("  failed attempt: provider=%s, role=%s, stage=%s, err=%v",
 					fa.ProviderID, fa.Role, fa.Stage, fa.Err)
 			}
+		}
+	})
+
+	t.Run("MetadataSelection", func(t *testing.T) {
+		if uploadedDataSetID.IsZero() || uploadedProviderID.IsZero() {
+			t.Fatal("Upload did not produce a data set and provider; metadata selection cannot be verified")
+		}
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+
+		dataSet, err := retryIntegrationRead(cctx, func(ctx context.Context) (*warmstorage.DataSetInfo, error) {
+			return client.WarmStorage().GetDataSet(ctx, uploadedDataSetID)
+		})
+		if err != nil {
+			t.Fatalf("GetDataSet(%s): %v", uploadedDataSetID, err)
+		}
+		if dataSet == nil || !dataSet.DataSetID.Equal(uploadedDataSetID) || dataSet.Payer != addr || !dataSet.ProviderID.Equal(uploadedProviderID) {
+			t.Fatalf("uploaded data set identity = %+v, want dataSet=%s payer=%s provider=%s", dataSet, uploadedDataSetID, addr, uploadedProviderID)
+		}
+		metadata, err := retryIntegrationRead(cctx, func(ctx context.Context) (map[string]string, error) {
+			return client.WarmStorage().GetAllDataSetMetadata(ctx, uploadedDataSetID)
+		})
+		if err != nil || !maps.Equal(metadata, uploadMetadata) {
+			t.Fatalf("uploaded metadata = %v, want %v: %v", metadata, uploadMetadata, err)
+		}
+		providers, err := retryIntegrationRead(cctx, func(ctx context.Context) ([]spregistry.PDPProvider, error) {
+			return client.SPRegistry().SelectActivePDPProviders(ctx, spregistry.ProviderFilter{})
+		})
+		if err != nil {
+			t.Fatalf("SelectActivePDPProviders: %v", err)
+		}
+		var excluded []types.BigInt
+		for _, provider := range providers {
+			if !provider.Info.ID.Equal(uploadedProviderID) {
+				excluded = append(excluded, provider.Info.ID)
+			}
+		}
+		selectTarget := func(t *testing.T, ctx context.Context, requested map[string]string, withCDN bool) storage.StorageContext {
+			t.Helper()
+			selection, err := retryIntegrationRead(ctx, func(ctx context.Context) (*storage.UploadContextSelection, error) {
+				return client.Storage().SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{
+					Copies:                 1,
+					DataSetMetadata:        maps.Clone(requested),
+					ExcludeProviderIDs:     excluded,
+					AllowUnendorsedPrimary: true,
+					WithCDN:                &withCDN,
+				})
+			})
+			if err != nil || selection == nil || !selection.Complete || len(selection.Contexts) != 1 || selection.Contexts[0] == nil {
+				t.Fatalf("SelectUploadContexts(metadata=%v, withCDN=%t) = %+v: %v", requested, withCDN, selection, err)
+			}
+			target := selection.Contexts[0]
+			expected := maps.Clone(requested)
+			if withCDN {
+				expected["withCDN"] = ""
+			}
+			if !target.ProviderID().Equal(uploadedProviderID) || target.CDNEnabled() != withCDN || !maps.Equal(target.DataSetMetadata(), expected) {
+				t.Fatalf("selected provider=%s CDN=%t metadata=%v, want provider=%s CDN=%t metadata=%v", target.ProviderID(), target.CDNEnabled(), target.DataSetMetadata(), uploadedProviderID, withCDN, expected)
+			}
+			return target
+		}
+
+		matchCtx, cancelMatch := context.WithTimeout(cctx, 60*time.Second)
+		defer cancelMatch()
+		for {
+			target := selectTarget(t, matchCtx, uploadMetadata, false)
+			if ref, bound := target.DataSetRef(); bound {
+				if !ref.DataSetID().Equal(uploadedDataSetID) {
+					t.Fatalf("matching metadata selected data set %s, want %s", ref.DataSetID(), uploadedDataSetID)
+				}
+				break
+			}
+			select {
+			case <-matchCtx.Done():
+				t.Fatalf("uploaded data set %s was not selected within 60 seconds: %v", uploadedDataSetID, matchCtx.Err())
+			case <-time.After(2 * time.Second):
+			}
+		}
+
+		for _, tc := range []struct {
+			name    string
+			key     string
+			withCDN bool
+		}{
+			{name: "DifferentEmptyKey", key: "otherEmpty"},
+			{name: "CDNRequiresMatchingKey", withCDN: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				requested := maps.Clone(uploadMetadata)
+				delete(requested, "emptyFlag")
+				if tc.key != "" {
+					requested[tc.key] = ""
+				}
+				target := selectTarget(t, cctx, requested, tc.withCDN)
+				if ref, bound := target.DataSetRef(); bound {
+					t.Fatalf("nonmatching metadata reused data set %s, want an unbound provider context", ref.DataSetID())
+				}
+			})
 		}
 	})
 

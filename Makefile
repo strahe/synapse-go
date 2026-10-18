@@ -71,7 +71,7 @@ test-integration-fast: test-integration-readonly
 
 # Run only the cross-package integration flows under tests/integration.
 test-integration-cross:
-	go test -tags=integration -run '^TestIntegration$$' -count=1 -v -timeout 20m ./tests/integration
+	go test -tags=integration -run '^TestIntegration' -count=1 -v -timeout 90m ./tests/integration
 
 # Run linter
 lint:

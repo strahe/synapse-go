@@ -73,13 +73,13 @@ Integration tests require `INTEGRATION_PRIVATE_KEY` in `.env` (needs **tFIL** fo
 
 `INTEGRATION_RPC_URL` is optional.
 
-Approximate local runtimes on Calibration:
+Local test commands (integration targets use Calibration):
 
 ```bash
 make test                      # seconds; normal development loop
 make test-integration-readonly # 30-60s; read-only Calibration checks
 make test-integration-fast     # 5-10m; upload/download smoke with cleanup
-make test-integration-cross    # 15-20m; full cross-package flow
+make test-integration-cross    # all cross-package integration tests; 90m timeout
 make test-integration          # ~30m; final validation before merge
 ```
 

@@ -1601,6 +1601,10 @@ func TestMetadataMatches(t *testing.T) {
 	}{
 		{"both empty", nil, nil, true},
 		{"both empty maps", map[string]string{}, map[string]string{}, true},
+		{"nil dataset and empty requested", nil, map[string]string{}, true},
+		{"empty dataset and nil requested", map[string]string{}, nil, true},
+		{"same empty-valued key", map[string]string{"withCDN": ""}, map[string]string{"withCDN": ""}, true},
+		{"different empty-valued keys", map[string]string{"emptyFlag": ""}, map[string]string{"withCDN": ""}, false},
 		{"equal", map[string]string{"a": "1"}, map[string]string{"a": "1"}, true},
 		{"different lengths", map[string]string{"a": "1"}, map[string]string{"a": "1", "b": "2"}, false},
 		{"different values", map[string]string{"a": "1"}, map[string]string{"a": "2"}, false},
