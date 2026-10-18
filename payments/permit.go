@@ -108,7 +108,7 @@ func readPermitInput(bound *bind.BoundContract, call *bind.CallOpts, method stri
 // attaching an ERC-2612 permit signature. No prior ERC20 approval is
 // required.
 //
-// `to` is the credited depositor; when zero, defaults to the signer EOA.
+// `to` must be the signer EOA or zero; zero defaults to the signer EOA.
 // `deadline` is the permit expiry (unix seconds); when nil or non-positive, now +
 // [PermitDeadlineDuration] is used. `token` must be an ERC-2612 /
 // ERC20Permit-compliant token (e.g. USDFC).
@@ -124,7 +124,8 @@ func (s *Service) DepositWithPermit(
 // DepositWithPermitAndApproveOperator combines DepositWithPermit with a
 // SetOperatorApproval in the same transaction. Use this to onboard a new
 // client: deposit + grant WarmStorage (or another operator) the allowances
-// it needs in a single click.
+// it needs in one transaction. `to` must be the signer EOA or zero; zero
+// defaults to the signer EOA.
 func (s *Service) DepositWithPermitAndApproveOperator(
 	ctx context.Context,
 	token, to common.Address,
@@ -188,6 +189,8 @@ func (s *Service) depositWithPermit(
 	recipient := to
 	if (recipient == common.Address{}) {
 		recipient = owner
+	} else if recipient != owner {
+		return nil, fmt.Errorf("payments.%s: to must be the signer: %w", method, ErrInvalidArgument)
 	}
 
 	cfg := newWriteConfig(writeOpts)
@@ -253,6 +256,14 @@ func (s *Service) depositWithPermit(
 	})
 	release()
 	if err != nil {
+		if tx != nil {
+			confirmations := uint64(0)
+			if cfg.waitTimeout > 0 {
+				confirmations = cfg.confirmations
+			}
+			permitOwned = false
+			s.watchPermitReceiptAndRelease(tx.Hash(), confirmations, releasePermit)
+		}
 		return nil, fmt.Errorf("payments.%s: %w", method, err)
 	}
 	permitOwned = false
