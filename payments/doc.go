@@ -23,6 +23,11 @@
 // Write methods return [BroadcastError] when sending a signed transaction
 // returns an error. It preserves the original transaction and cause; a nil
 // WriteResult does not establish that the transaction was rejected.
+// Permit writes retain their token nonce lock while tracking the original
+// transaction in the background, including after a broadcast error or caller
+// cancellation. Tracking is bounded by Options.PermitReceiptWait (five minutes
+// by default); expiry releases the lock even if the transaction is unresolved.
+// Callers must resolve that transaction by hash before retrying after expiry.
 //
 // Amounts, operator allowances, and positive epochs or permit deadlines used in
 // contract calls must fit uint256. Out-of-range caller arguments return

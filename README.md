@@ -3,7 +3,6 @@
 [![CI](https://github.com/strahe/synapse-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/strahe/synapse-go/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/strahe/synapse-go)](https://github.com/strahe/synapse-go/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/strahe/synapse-go.svg)](https://pkg.go.dev/github.com/strahe/synapse-go)
-[![Go Report Card](https://goreportcard.com/badge/github.com/strahe/synapse-go)](https://goreportcard.com/report/github.com/strahe/synapse-go)
 [![License](https://img.shields.io/github/license/strahe/synapse-go)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.26.9%2B-00ADD8)](go.mod)
 
@@ -24,6 +23,9 @@ go get github.com/strahe/synapse-go
 Requires Go 1.26.9+.
 
 ## Quick Start
+
+The wallet needs FIL for gas, USDFC deposited in Filecoin Pay, and FWSS operator
+approval before uploading. See [Funding Preflight](docs/GETTING_STARTED.md#funding-preflight).
 
 ```go
 client, err := synapse.New(ctx,

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +17,142 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/strahe/synapse-go/internal/txutil"
+	"github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/signer"
 )
+
+func TestDepositWithPermit_BroadcastErrorCoordinatesNextPermit(t *testing.T) {
+	for _, firstCombined := range []bool{false, true} {
+		for _, status := range []uint64{types.ReceiptStatusSuccessful, types.ReceiptStatusFailed} {
+			t.Run(fmt.Sprintf("combined_%t/status_%d", firstCombined, status), func(t *testing.T) {
+				sg := &validationSigner{EVMSigner: newTestSigner(t)}
+				s, mb := newTestServiceWith(t, sg, func(opts *Options) { opts.PermitReceiptWait = time.Second })
+				seedPermitInputs(t, mb)
+				mb.sendErrAfterAccept = io.ErrUnexpectedEOF
+				var nonceReads atomic.Int32
+				mb.callReplyFn = func(_, method string, _ []byte) ([]byte, bool, error) {
+					if method == "nonces" {
+						nonceReads.Add(1)
+					}
+					return nil, false, nil
+				}
+				receiptReady := make(chan struct{})
+				var releaseReceipt sync.Once
+				watcherStarted := make(chan context.Context, 1)
+				var firstReceipt sync.Once
+				mb.receiptFn = func(ctx context.Context, hash common.Hash) (*types.Receipt, error) {
+					mb.mu.Lock()
+					firstHash := mb.sent[0].Hash()
+					mb.mu.Unlock()
+					if hash != firstHash {
+						return successfulReceipt(), nil
+					}
+					firstReceipt.Do(func() { watcherStarted <- ctx })
+					select {
+					case <-receiptReady:
+						if status == types.ReceiptStatusSuccessful {
+							mb.mu.Lock()
+							mb.replies[tokenAddr.Hex()+":nonces"], _ = permitERC20ABI.Methods["nonces"].Outputs.Pack(big.NewInt(1))
+							mb.mu.Unlock()
+						}
+						return &types.Receipt{Status: status, BlockNumber: big.NewInt(5)}, nil
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+				mb.blockFn = func(context.Context) (uint64, error) {
+					t.Error("confirmations without a positive WithWait must be ignored")
+					return 100, nil
+				}
+				t.Cleanup(func() {
+					releaseReceipt.Do(func() { close(receiptReady) })
+					waitForPermitLockReleased(t, s)
+				})
+				write := func(ctx context.Context, combined bool, opts ...WriteOption) error {
+					opts = append([]WriteOption{WithSkipPrecheck()}, opts...)
+					if combined {
+						_, err := s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), big.NewInt(1_000), nil,
+							operatorAddr, big.NewInt(1), big.NewInt(1), big.NewInt(1), opts...)
+						return err
+					}
+					return depositWithPermitForRaceTest(ctx, s, opts...)
+				}
+				firstCtx, cancelFirst := context.WithCancel(context.Background())
+				defer cancelFirst()
+				err := write(firstCtx, firstCombined, WithConfirmations(100))
+				broadcast, ok := errors.AsType[*BroadcastError](err)
+				if !ok || !errors.Is(err, io.ErrUnexpectedEOF) {
+					t.Fatalf("first permit write err=%v, want original broadcast error", err)
+				}
+				mb.mu.Lock()
+				firstTx := mb.sent[0]
+				mb.nonces[s.Account()] = 1
+				mb.sendErrAfterAccept = nil
+				mb.mu.Unlock()
+				if broadcast.Transaction != firstTx {
+					t.Fatal("broadcast error did not preserve the original transaction")
+				}
+				cancelFirst()
+				select {
+				case watcherCtx := <-watcherStarted:
+					if watcherCtx.Err() != nil {
+						t.Fatalf("caller cancellation canceled watcher: %v", watcherCtx.Err())
+					}
+				case <-time.After(time.Second):
+					t.Fatal("broadcast error did not start a receipt watcher")
+				}
+				blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 25*time.Millisecond)
+				defer cancelBlocked()
+				if err := write(blockedCtx, !firstCombined); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("waiting permit err=%v, want deadline while receipt is pending", err)
+				}
+				if nonceReads.Load() != 1 || sg.hashes != 1 || sg.signatures != 1 || sentCount(mb) != 1 {
+					t.Fatalf("waiting write progressed: nonce reads=%d permit signatures=%d transaction signatures=%d sent=%d",
+						nonceReads.Load(), sg.hashes, sg.signatures, sentCount(mb))
+				}
+				secondDone := make(chan error, 1)
+				secondCtx, cancelSecond := context.WithTimeout(context.Background(), time.Second)
+				defer cancelSecond()
+				go func() { secondDone <- write(secondCtx, !firstCombined, WithWait(time.Second)) }()
+				releaseReceipt.Do(func() { close(receiptReady) })
+				waitPermitWriteDone(t, secondDone)
+				mb.mu.Lock()
+				secondTx := mb.sent[1]
+				mb.mu.Unlock()
+				if firstTx.Nonce() != 0 || secondTx.Nonce() != 1 {
+					t.Fatalf("EOA transaction nonces=%d,%d, want 0,1", firstTx.Nonce(), secondTx.Nonce())
+				}
+				assertTransactionPermitNonce(t, s, mb, firstTx, 0)
+				wantNonce := int64(0)
+				if status == types.ReceiptStatusSuccessful {
+					wantNonce = 1
+				}
+				assertTransactionPermitNonce(t, s, mb, secondTx, wantNonce)
+			})
+		}
+	}
+}
+
+func assertTransactionPermitNonce(t *testing.T, s *Service, mb *mockBackend, tx *types.Transaction, nonce int64) {
+	t.Helper()
+	method, err := mb.filPayABI.MethodById(tx.Data()[:4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := method.Inputs.Unpack(tx.Data()[4:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain := typeddata.NewERC20PermitDomain(s.chainID.BigInt(), "USDFC", "1", tokenAddr)
+	sig, err := typeddata.SignERC20Permit(func(hash []byte) ([]byte, error) { return signer.SignHash(s.signer, hash) },
+		domain, s.Account(), s.filPayAddr, args[2].(*big.Int), big.NewInt(nonce), args[3].(*big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args[4] != sig.V || args[5] != sig.R || args[6] != sig.S {
+		t.Fatalf("%s transaction did not authorize permit nonce %d", method.Name, nonce)
+	}
+}
 
 func seedPermitInputs(t *testing.T, mb *mockBackend) {
 	t.Helper()
@@ -84,6 +221,18 @@ func waitPermitWriteDone(t *testing.T, done <-chan error) {
 	case <-time.After(time.Second):
 		t.Fatal("permit write did not complete")
 	}
+}
+
+func waitForPermitLockReleased(t *testing.T, s *Service) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, err := s.permits.acquire(ctx, permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()})
+	if err != nil {
+		t.Errorf("permit watcher did not finish: %v", err)
+		return
+	}
+	release()
 }
 
 func successfulReceipt() *types.Receipt {
@@ -330,124 +479,161 @@ func TestDepositWithPermit_WaitTimeoutKeepsLockWithBackgroundWatcher(t *testing.
 	waitForSentCount(t, mb, 2)
 }
 
-func TestDepositWithPermit_WaitTimeoutWatcherWaitsForConfirmations(t *testing.T) {
-	for _, status := range []uint64{types.ReceiptStatusSuccessful, types.ReceiptStatusFailed} {
-		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			s, mb := newTestService(t, func(opts *Options) {
-				opts.PermitReceiptWait = 5 * time.Second
-			})
-			seedPermitInputs(t, mb)
-			confirmed := make(chan struct{})
-			headRequested := make(chan struct{}, 1)
-			var receiptCalls atomic.Int32
-			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
-				if receiptCalls.Add(1) == 1 {
-					return nil, ethereum.NotFound
+func TestDepositWithPermit_WatcherWaitsForConfirmations(t *testing.T) {
+	for _, broadcastError := range []bool{false, true} {
+		for _, status := range []uint64{types.ReceiptStatusSuccessful, types.ReceiptStatusFailed} {
+			t.Run(fmt.Sprintf("broadcast_%t/status_%d", broadcastError, status), func(t *testing.T) {
+				s, mb := newTestService(t, func(opts *Options) {
+					opts.PermitReceiptWait = 5 * time.Second
+				})
+				seedPermitInputs(t, mb)
+				if broadcastError {
+					mb.sendErrAfterAccept = io.ErrUnexpectedEOF
 				}
-				return &types.Receipt{Status: status, BlockNumber: big.NewInt(5)}, nil
-			}
-			mb.blockFn = func(ctx context.Context) (uint64, error) {
-				headRequested <- struct{}{}
-				select {
-				case <-confirmed:
-					return 6, nil
-				case <-ctx.Done():
-					return 0, ctx.Err()
+				confirmed := make(chan struct{})
+				var releaseConfirmed sync.Once
+				t.Cleanup(func() {
+					releaseConfirmed.Do(func() { close(confirmed) })
+					waitForPermitLockReleased(t, s)
+				})
+				headRequested := make(chan struct{}, 1)
+				var receiptCalls atomic.Int32
+				mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+					if receiptCalls.Add(1) == 1 && !broadcastError {
+						return nil, ethereum.NotFound
+					}
+					return &types.Receipt{Status: status, BlockNumber: big.NewInt(5)}, nil
 				}
-			}
+				mb.blockFn = func(ctx context.Context) (uint64, error) {
+					headRequested <- struct{}{}
+					select {
+					case <-confirmed:
+						return 6, nil
+					case <-ctx.Done():
+						return 0, ctx.Err()
+					}
+				}
 
-			err := depositWithPermitForRaceTest(context.Background(), s, WithWait(25*time.Millisecond), WithConfirmations(2))
-			if !errors.Is(err, txutil.ErrReceiptTimeout) {
-				t.Fatalf("first permit write err=%v, want ErrReceiptTimeout", err)
-			}
-			select {
-			case <-headRequested:
-			case <-time.After(time.Second):
-				t.Fatal("watcher did not check confirmation depth")
-			}
-			key := permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()}
-			blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 25*time.Millisecond)
-			defer cancelBlocked()
-			if release, err := s.permits.acquire(blockedCtx, key); !errors.Is(err, context.DeadlineExceeded) {
-				if release != nil {
-					release()
+				err := depositWithPermitForRaceTest(context.Background(), s, WithWait(25*time.Millisecond), WithConfirmations(2))
+				wantErr := error(txutil.ErrReceiptTimeout)
+				if broadcastError {
+					wantErr = io.ErrUnexpectedEOF
 				}
-				t.Fatalf("permit acquire err=%v, want deadline while depth is unconfirmed", err)
-			}
-			close(confirmed)
-			acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
-			defer cancelAcquire()
-			release, err := s.permits.acquire(acquireCtx, key)
-			if err != nil {
-				t.Fatalf("permit remained locked after confirmations: %v", err)
-			}
-			release()
-		})
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("first permit write err=%v, want %v", err, wantErr)
+				}
+				select {
+				case <-headRequested:
+				case <-time.After(time.Second):
+					t.Fatal("watcher did not check confirmation depth")
+				}
+				key := permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()}
+				blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 25*time.Millisecond)
+				defer cancelBlocked()
+				if release, err := s.permits.acquire(blockedCtx, key); !errors.Is(err, context.DeadlineExceeded) {
+					if release != nil {
+						release()
+					}
+					t.Fatalf("permit acquire err=%v, want deadline while depth is unconfirmed", err)
+				}
+				releaseConfirmed.Do(func() { close(confirmed) })
+				acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
+				defer cancelAcquire()
+				release, err := s.permits.acquire(acquireCtx, key)
+				if err != nil {
+					t.Fatalf("permit remained locked after confirmations: %v", err)
+				}
+				release()
+			})
+		}
 	}
 }
 
 func TestDepositWithPermit_WatcherHoldsLockUntilTimeoutOnRPCError(t *testing.T) {
-	for _, headError := range []bool{false, true} {
-		t.Run(fmt.Sprintf("head_%v", headError), func(t *testing.T) {
-			s, mb := newTestService(t, func(opts *Options) {
-				opts.PermitReceiptWait = 150 * time.Millisecond
+	for _, broadcastError := range []bool{false, true} {
+		for _, tt := range []struct {
+			name      string
+			err       error
+			headError bool
+		}{
+			{name: "receipt not found", err: ethereum.NotFound},
+			{name: "receipt RPC error", err: errors.New("rpc unavailable")},
+			{name: "head RPC error", err: errors.New("rpc unavailable"), headError: true},
+		} {
+			t.Run(fmt.Sprintf("broadcast_%t/%s", broadcastError, tt.name), func(t *testing.T) {
+				s, mb := newTestService(t, func(opts *Options) {
+					opts.PermitReceiptWait = 150 * time.Millisecond
+				})
+				seedPermitInputs(t, mb)
+				t.Cleanup(func() { waitForPermitLockReleased(t, s) })
+				if broadcastError {
+					mb.sendErrAfterAccept = io.ErrUnexpectedEOF
+				}
+				watcherPolled := make(chan struct{})
+				var errorCalls atomic.Int32
+				rpcError := func() error {
+					calls := errorCalls.Add(1)
+					wantCalls := int32(1)
+					if tt.headError && !broadcastError {
+						wantCalls = 2
+					}
+					if calls == wantCalls {
+						close(watcherPolled)
+					}
+					return tt.err
+				}
+
+				var opts []WriteOption
+				if tt.headError {
+					mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+						return successfulReceipt(), nil
+					}
+					mb.blockFn = func(context.Context) (uint64, error) {
+						return 0, rpcError()
+					}
+					opts = []WriteOption{WithWait(time.Second), WithConfirmations(2)}
+				} else {
+					mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+						return nil, rpcError()
+					}
+				}
+				err := depositWithPermitForRaceTest(context.Background(), s, opts...)
+				switch {
+				case broadcastError:
+					if !errors.Is(err, io.ErrUnexpectedEOF) {
+						t.Fatalf("first permit write err=%v, want broadcast error", err)
+					}
+				case tt.headError:
+					if !errors.Is(err, txutil.ErrReceiptRPCFailure) {
+						t.Fatalf("first permit write err=%v, want receipt RPC failure", err)
+					}
+				case err != nil:
+					t.Fatalf("first permit write: %v", err)
+				}
+				select {
+				case <-watcherPolled:
+				case <-time.After(time.Second):
+					t.Fatal("watcher did not observe the RPC error")
+				}
+
+				key := permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()}
+				blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 25*time.Millisecond)
+				defer cancelBlocked()
+				if release, err := s.permits.acquire(blockedCtx, key); !errors.Is(err, context.DeadlineExceeded) {
+					if release != nil {
+						release()
+					}
+					t.Fatalf("permit acquire err=%v, want deadline while watcher handles RPC error", err)
+				}
+				acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
+				defer cancelAcquire()
+				release, err := s.permits.acquire(acquireCtx, key)
+				if err != nil {
+					t.Fatalf("permit remained locked after watcher timeout: %v", err)
+				}
+				release()
 			})
-			seedPermitInputs(t, mb)
-			watcherPolled := make(chan struct{})
-			var errorCalls atomic.Int32
-			rpcError := func() error {
-				calls := errorCalls.Add(1)
-				if (!headError && calls == 1) || (headError && calls == 2) {
-					close(watcherPolled)
-				}
-				return errors.New("rpc unavailable")
-			}
-
-			var opts []WriteOption
-			if headError {
-				mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
-					return successfulReceipt(), nil
-				}
-				mb.blockFn = func(context.Context) (uint64, error) {
-					return 0, rpcError()
-				}
-				opts = []WriteOption{WithWait(time.Second), WithConfirmations(2)}
-			} else {
-				mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
-					return nil, rpcError()
-				}
-			}
-			err := depositWithPermitForRaceTest(context.Background(), s, opts...)
-			if headError {
-				if !errors.Is(err, txutil.ErrReceiptRPCFailure) {
-					t.Fatalf("first permit write err=%v, want receipt RPC failure", err)
-				}
-			} else if err != nil {
-				t.Fatalf("first permit write: %v", err)
-			}
-			select {
-			case <-watcherPolled:
-			case <-time.After(time.Second):
-				t.Fatal("watcher did not observe the RPC error")
-			}
-
-			key := permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()}
-			blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 25*time.Millisecond)
-			defer cancelBlocked()
-			if release, err := s.permits.acquire(blockedCtx, key); !errors.Is(err, context.DeadlineExceeded) {
-				if release != nil {
-					release()
-				}
-				t.Fatalf("permit acquire err=%v, want deadline while watcher handles RPC error", err)
-			}
-			acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
-			defer cancelAcquire()
-			release, err := s.permits.acquire(acquireCtx, key)
-			if err != nil {
-				t.Fatalf("permit remained locked after watcher timeout: %v", err)
-			}
-			release()
-		})
+		}
 	}
 }
 
@@ -495,24 +681,31 @@ func TestDepositWithPermit_ReleasesLockOnWriteError(t *testing.T) {
 			},
 		},
 		{
-			name: "broadcast",
+			name: "gas estimate",
 			setup: func(mb *mockBackend) {
-				mb.sendErr = errors.New("send failed")
+				mb.estimateGasErr = errors.New("gas estimation failed")
 			},
 			clear: func(mb *mockBackend) {
-				mb.sendErr = nil
+				mb.estimateGasErr = nil
 			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, mb := newTestService(t)
 			seedPermitInputs(t, mb)
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				return successfulReceipt(), nil
+			}
+			t.Cleanup(func() { waitForPermitLockReleased(t, s) })
 			tt.setup(mb)
 			if err := depositWithPermitForRaceTest(context.Background(), s); err == nil {
 				t.Fatal("first permit write err=nil, want failure")
 			}
+			if sentCount(mb) != 0 {
+				t.Fatal("pre-broadcast failure sent a transaction")
+			}
 			tt.clear(mb)
-			if err := depositWithPermitForRaceTest(context.Background(), s); err != nil {
+			if err := depositWithPermitForRaceTest(context.Background(), s, WithWait(time.Second)); err != nil {
 				t.Fatalf("second permit write after failed first: %v", err)
 			}
 		})

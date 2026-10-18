@@ -42,6 +42,50 @@ func (s *validationSigner) SignHash(hash []byte) ([]byte, error) {
 	return signer.SignHash(s.EVMSigner, hash)
 }
 
+func TestPermitRejectsOtherRecipientsBeforeSigning(t *testing.T) {
+	for _, combined := range []bool{false, true} {
+		for _, skipPrecheck := range []bool{false, true} {
+			name := "deposit"
+			if combined {
+				name = "deposit and approve"
+			}
+			if skipPrecheck {
+				name += "/skip precheck"
+			}
+			t.Run(name, func(t *testing.T) {
+				sg := &validationSigner{EVMSigner: newTestSigner(t)}
+				s, backend := newTestServiceWith(t, sg)
+				nonces := &recordingNonceManager{}
+				s.nonces = nonces
+				release, err := s.permits.acquire(context.Background(), permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+				defer cancel()
+				var opts []WriteOption
+				if skipPrecheck {
+					opts = append(opts, WithSkipPrecheck())
+				}
+				var result *sdktypes.WriteResult
+				if combined {
+					result, err = s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, big.NewInt(1), nil,
+						operatorAddr, new(big.Int), new(big.Int), new(big.Int), opts...)
+				} else {
+					result, err = s.DepositWithPermit(ctx, tokenAddr, otherAddr, big.NewInt(1), nil, opts...)
+				}
+				if result != nil || !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("result=%v error=%v, want invalid recipient before waiting for the permit lock", result, err)
+				}
+				if nonces.acquired != 0 || sg.transactors != 0 || sg.signatures != 0 || sg.hashes != 0 || len(backend.sent) != 0 || len(backend.lastIn) != 0 {
+					t.Fatal("invalid recipient reached contract reads, signing, nonce acquisition, or broadcasting")
+				}
+			})
+		}
+	}
+}
+
 func TestWritesRejectUint256OverflowBeforeSigning(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -69,25 +113,25 @@ func TestWritesRejectUint256OverflowBeforeSigning(t *testing.T) {
 			return s.ApproveService(ctx, tokenAddr, operatorAddr, big.NewInt(1), big.NewInt(1), v, opts...)
 		}},
 		{name: "Permit amount", field: "amount", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermit(ctx, tokenAddr, otherAddr, v, nil, opts...)
+			return s.DepositWithPermit(ctx, tokenAddr, s.Account(), v, nil, opts...)
 		}},
 		{name: "Permit deadline", field: "deadline", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermit(ctx, tokenAddr, otherAddr, big.NewInt(1), v, opts...)
+			return s.DepositWithPermit(ctx, tokenAddr, s.Account(), big.NewInt(1), v, opts...)
 		}},
 		{name: "Combined permit amount", field: "amount", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, v, nil, operatorAddr, big.NewInt(1), big.NewInt(1), big.NewInt(1), opts...)
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), v, nil, operatorAddr, big.NewInt(1), big.NewInt(1), big.NewInt(1), opts...)
 		}},
 		{name: "Combined permit deadline", field: "deadline", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, big.NewInt(1), v, operatorAddr, big.NewInt(1), big.NewInt(1), big.NewInt(1), opts...)
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), big.NewInt(1), v, operatorAddr, big.NewInt(1), big.NewInt(1), big.NewInt(1), opts...)
 		}},
 		{name: "Combined permit rate", field: "rateAllowance", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, big.NewInt(1), nil, operatorAddr, v, big.NewInt(1), big.NewInt(1), opts...)
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), big.NewInt(1), nil, operatorAddr, v, big.NewInt(1), big.NewInt(1), opts...)
 		}},
 		{name: "Combined permit lockup", field: "lockupAllowance", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, big.NewInt(1), nil, operatorAddr, big.NewInt(1), v, big.NewInt(1), opts...)
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), big.NewInt(1), nil, operatorAddr, big.NewInt(1), v, big.NewInt(1), opts...)
 		}},
 		{name: "Combined permit period", field: "maxLockupPeriod", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, big.NewInt(1), nil, operatorAddr, big.NewInt(1), big.NewInt(1), v, opts...)
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), big.NewInt(1), nil, operatorAddr, big.NewInt(1), big.NewInt(1), v, opts...)
 		}},
 		{name: "Fund amount", field: "amount", precheck: true, call: func(s *Service, v *big.Int, opts ...WriteOption) (*sdktypes.WriteResult, error) {
 			return s.Fund(ctx, v, opts...)
@@ -166,10 +210,10 @@ func TestWritesPreserveMaximumUint256Calldata(t *testing.T) {
 			return s.ApproveService(ctx, tokenAddr, operatorAddr, v, v, v)
 		}},
 		{name: "Permit", method: "depositWithPermit", indices: []int{2, 3}, call: func(s *Service, v *big.Int) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermit(ctx, tokenAddr, otherAddr, v, v, WithSkipPrecheck(), WithWait(time.Second))
+			return s.DepositWithPermit(ctx, tokenAddr, s.Account(), v, v, WithSkipPrecheck(), WithWait(time.Second))
 		}},
 		{name: "Combined permit", method: "depositWithPermitAndApproveOperator", indices: []int{2, 3, 8, 9, 10}, call: func(s *Service, v *big.Int) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, v, v, operatorAddr, v, v, v, WithSkipPrecheck(), WithWait(time.Second))
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), v, v, operatorAddr, v, v, v, WithSkipPrecheck(), WithWait(time.Second))
 		}},
 		{name: "Fund approval only", method: "setOperatorApproval", indices: []int{3, 4, 5}, call: func(s *Service, v *big.Int) (*sdktypes.WriteResult, error) {
 			return s.Fund(ctx, new(big.Int), WithFundNeedsFwssApproval(true), WithFundApprovalLockupPeriod(v))
@@ -261,7 +305,7 @@ func TestPermitRejectsOverflowBeforeWaitingForLock(t *testing.T) {
 		{name: "deadline", amount: big.NewInt(1), deadline: limit},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := s.DepositWithPermit(ctx, tokenAddr, otherAddr, tt.amount, tt.deadline)
+			res, err := s.DepositWithPermit(ctx, tokenAddr, s.Account(), tt.amount, tt.deadline)
 			if res != nil || !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("result=%v error=%v, want invalid argument before permit-lock cancellation", res, err)
 			}
@@ -285,7 +329,7 @@ func TestPermitNonpositiveDeadlineUsesDefault(t *testing.T) {
 				return &types.Receipt{Status: types.ReceiptStatusSuccessful}, nil
 			}
 			before := time.Now().Add(PermitDeadlineDuration).Unix()
-			if _, err := s.DepositWithPermit(context.Background(), tokenAddr, otherAddr, big.NewInt(1), tt.deadline, WithSkipPrecheck(), WithWait(time.Second)); err != nil {
+			if _, err := s.DepositWithPermit(context.Background(), tokenAddr, s.Account(), big.NewInt(1), tt.deadline, WithSkipPrecheck(), WithWait(time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			after := time.Now().Add(PermitDeadlineDuration).Unix()

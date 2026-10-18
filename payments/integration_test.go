@@ -4,11 +4,13 @@ package payments_test
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"io"
 	"math/big"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,6 +178,209 @@ func TestIntegration_Payments(t *testing.T) {
 		t.Logf("FundSync tx=%s", syncRes.Hash)
 	})
 
+	t.Run("PermitBroadcastRecovery", func(t *testing.T) {
+		rpc, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(rpc.Close)
+		chainID, err := rpc.ChainID(ctx)
+		if err != nil || chainID.Cmp(big.NewInt(integrationtest.CalibrationChainID)) != 0 {
+			t.Fatalf("permit recovery RPC must be Calibration: chain=%v error=%v", chainID, err)
+		}
+		key, err := hex.DecodeString(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
+		if err != nil {
+			t.Fatal("invalid integration signing key")
+		}
+		defer clear(key)
+		sg, err := signer.NewSecp256k1SignerFromBytes(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lostResponse := &lostBroadcastResponseBackend{Backend: rpc}
+		writer, err := payments.New(payments.Options{
+			Backend: lostResponse, Signer: sg,
+			ChainID:           types.ChainID(integrationtest.CalibrationChainID),
+			FilPayAddress:     addrs.Payments,
+			PermitReceiptWait: 2 * time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		one := big.NewInt(1)
+		wallet, err := writer.WalletBalance(ctx, addrs.USDFC, client.Address())
+		if err != nil {
+			t.Fatalf("WalletBalance(before permits): %v", err)
+		}
+		if wallet == nil || wallet.Cmp(big.NewInt(2)) < 0 {
+			t.Fatalf("wallet USDFC %v is insufficient for two one atto-USDFC deposits", wallet)
+		}
+		allowance, err := writer.Allowance(ctx, addrs.USDFC, client.Address(), addrs.Payments)
+		if err != nil || allowance == nil {
+			t.Fatalf("Allowance(before permits): value=%v error=%v", allowance, err)
+		}
+		fwssBefore, err := writer.ServiceApproval(ctx, addrs.USDFC, client.Address(), addrs.FWSS)
+		if err != nil || fwssBefore == nil {
+			t.Fatalf("ServiceApproval(FWSS before): value=%v error=%v", fwssBefore, err)
+		}
+		var operator common.Address
+		if _, err := rand.Read(operator[:]); err != nil {
+			t.Fatal(err)
+		}
+		if operator == (common.Address{}) || operator == addrs.FWSS || operator == client.Address() {
+			t.Fatal("random operator must be distinct from existing test accounts")
+		}
+		isZero := func(v *big.Int) bool { return v != nil && v.Sign() == 0 }
+		hasZeroApproval := func(v *payments.OperatorApproval, approved bool) bool {
+			return v != nil && v.IsApproved == approved && isZero(v.RateAllowance) &&
+				isZero(v.LockupAllowance) && isZero(v.MaxLockupPeriod) &&
+				isZero(v.RateUsage) && isZero(v.LockupUsage)
+		}
+		approval, err := writer.ServiceApproval(ctx, addrs.USDFC, client.Address(), operator)
+		if err != nil || !hasZeroApproval(approval, false) {
+			t.Fatalf("ServiceApproval(test operator before): value=%+v error=%v", approval, err)
+		}
+		var backgroundHashes []common.Hash
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cleanupCancel()
+			cleanupCtx = context.WithValue(cleanupCtx, permitForegroundContextKey{}, true)
+			defer func() {
+				for _, hash := range backgroundHashes {
+					if err := lostResponse.waitBackgroundReceipt(cleanupCtx, hash); err != nil {
+						t.Errorf("cleanup permit receipt watcher %s: %v", hash, err)
+					}
+				}
+			}()
+			_, sent := lostResponse.snapshot()
+			for _, tx := range sent {
+				if _, err := bind.WaitMined(cleanupCtx, rpc, tx); err != nil {
+					t.Errorf("cleanup could not determine original transaction %s outcome: %v", tx.Hash(), err)
+					return
+				}
+			}
+			waitCleanupWrite := func(result *types.WriteResult, err error) bool {
+				if err == nil && result != nil && result.Receipt != nil && result.Receipt.Status == ethtypes.ReceiptStatusSuccessful {
+					return true
+				}
+				var txHash common.Hash
+				if result != nil {
+					txHash = result.Hash
+				}
+				if broadcast, ok := errors.AsType[*payments.BroadcastError](err); ok {
+					txHash = broadcast.Transaction.Hash()
+				}
+				_, submitted := lostResponse.snapshot()
+				for _, tx := range submitted {
+					if tx.Hash() != txHash {
+						continue
+					}
+					receipt, waitErr := bind.WaitMined(cleanupCtx, rpc, tx)
+					if waitErr == nil && receipt.Status == ethtypes.ReceiptStatusSuccessful {
+						return true
+					}
+					t.Errorf("cleanup transaction %s: receipt=%+v error=%v", txHash, receipt, waitErr)
+					return false
+				}
+				t.Errorf("cleanup write: result=%+v error=%v", result, err)
+				return false
+			}
+			approval, err := writer.ServiceApproval(cleanupCtx, addrs.USDFC, client.Address(), operator)
+			if err != nil || approval == nil {
+				t.Errorf("cleanup read operator approval: %v", err)
+				return
+			}
+			if approval.IsApproved && !waitCleanupWrite(writer.RevokeService(cleanupCtx, addrs.USDFC, operator, payments.WithWait(90*time.Second))) {
+				return
+			}
+			approval, err = writer.ServiceApproval(cleanupCtx, addrs.USDFC, client.Address(), operator)
+			if err != nil || !hasZeroApproval(approval, false) {
+				t.Errorf("cleanup operator approval: value=%+v error=%v", approval, err)
+			}
+			currentAllowance, err := writer.Allowance(cleanupCtx, addrs.USDFC, client.Address(), addrs.Payments)
+			if err != nil || currentAllowance == nil {
+				t.Errorf("cleanup read allowance: value=%v error=%v", currentAllowance, err)
+				return
+			}
+			if currentAllowance.Cmp(allowance) != 0 && !waitCleanupWrite(writer.Approve(cleanupCtx, addrs.USDFC, addrs.Payments, allowance, payments.WithWait(90*time.Second))) {
+				return
+			}
+			currentAllowance, err = writer.Allowance(cleanupCtx, addrs.USDFC, client.Address(), addrs.Payments)
+			if err != nil || currentAllowance == nil || currentAllowance.Cmp(allowance) != 0 {
+				t.Errorf("cleanup allowance: value=%v want=%v error=%v", currentAllowance, allowance, err)
+			}
+			fwssAfter, err := writer.ServiceApproval(cleanupCtx, addrs.USDFC, client.Address(), addrs.FWSS)
+			if err != nil || fwssAfter == nil || fwssAfter.IsApproved != fwssBefore.IsApproved ||
+				fwssAfter.RateAllowance.Cmp(fwssBefore.RateAllowance) != 0 ||
+				fwssAfter.LockupAllowance.Cmp(fwssBefore.LockupAllowance) != 0 ||
+				fwssAfter.MaxLockupPeriod.Cmp(fwssBefore.MaxLockupPeriod) != 0 {
+				t.Errorf("FWSS approval configuration changed: before=%+v after=%+v error=%v", fwssBefore, fwssAfter, err)
+			}
+		})
+
+		writeCtx := context.WithValue(ctx, permitForegroundContextKey{}, true)
+		first, err := writer.DepositWithPermit(writeCtx, addrs.USDFC, common.Address{}, one, nil)
+		broadcast, ok := errors.AsType[*payments.BroadcastError](err)
+		accepted, sent := lostResponse.snapshot()
+		if len(sent) > 0 {
+			backgroundHashes = append(backgroundHashes, sent[0].Hash())
+		}
+		if first != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || accepted == nil || len(sent) != 1 {
+			t.Fatalf("lost permit response: result=%v error=%v sends=%d", first, err, len(sent))
+		}
+		if broadcast.Transaction.Hash() != accepted.Hash() || broadcast.Transaction.Nonce() != accepted.Nonce() {
+			t.Fatal("broadcast error lost the original permit transaction identity")
+		}
+		zero := new(big.Int)
+		second, err := writer.DepositWithPermitAndApproveOperator(writeCtx, addrs.USDFC, client.Address(), one, nil,
+			operator, zero, zero, zero, payments.WithWait(90*time.Second))
+		if err != nil {
+			if broadcast, ok := errors.AsType[*payments.BroadcastError](err); ok {
+				backgroundHashes = append(backgroundHashes, broadcast.Transaction.Hash())
+			} else if second != nil && second.Receipt == nil {
+				backgroundHashes = append(backgroundHashes, second.Hash)
+			}
+		}
+		if err != nil {
+			t.Fatalf("DepositWithPermitAndApproveOperator after EOF: %v", err)
+		}
+		if second == nil || second.Receipt == nil || second.Receipt.Status != ethtypes.ReceiptStatusSuccessful {
+			t.Fatalf("second permit receipt = %+v", second)
+		}
+		receipt, err := bind.WaitMined(ctx, rpc, accepted)
+		if err != nil || receipt == nil || receipt.Status != ethtypes.ReceiptStatusSuccessful {
+			t.Fatalf("original permit receipt: value=%+v error=%v", receipt, err)
+		}
+		events, err := filpay.NewFilPayFilterer(addrs.Payments, rpc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, receipt := range []*ethtypes.Receipt{receipt, second.Receipt} {
+			deposits := 0
+			for _, log := range receipt.Logs {
+				if log.Address != addrs.Payments {
+					continue
+				}
+				event, err := events.ParseDepositRecorded(*log)
+				if err != nil {
+					continue
+				}
+				deposits++
+				if event.Token != addrs.USDFC || event.From != client.Address() || event.To != client.Address() || event.Amount == nil || event.Amount.Cmp(one) != 0 {
+					t.Fatalf("DepositRecorded = %+v, want token=%s from=%s to=%s amount=1", event, addrs.USDFC, client.Address(), client.Address())
+				}
+			}
+			if deposits != 1 {
+				t.Fatalf("permit %s DepositRecorded count = %d, want 1", receipt.TxHash, deposits)
+			}
+		}
+		approval, err = writer.ServiceApproval(ctx, addrs.USDFC, client.Address(), operator)
+		if err != nil || !hasZeroApproval(approval, true) {
+			t.Fatalf("ServiceApproval(test operator after): value=%+v error=%v", approval, err)
+		}
+		t.Logf("recovered permit %s and completed permit %s; two atto-USDFC remain in the Filecoin Pay account", accepted.Hash(), second.Hash)
+	})
+
 	for _, loseResponse := range []bool{false, true} {
 		name := "WithdrawAndRestore"
 		if loseResponse {
@@ -288,15 +493,16 @@ func TestIntegration_Payments(t *testing.T) {
 			if broadcast, ok := errors.AsType[*payments.BroadcastError](err); ok {
 				withdrawTx = broadcast.Transaction
 			}
-			if loseResponse && lostResponse.accepted != nil {
-				withdrawTx = lostResponse.accepted
-			}
 			if loseResponse {
-				broadcast, ok := errors.AsType[*payments.BroadcastError](err)
-				if withdraw != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || lostResponse.accepted == nil || lostResponse.sends != 1 {
-					t.Fatalf("lost response result=%v error=%v sends=%d", withdraw, err, lostResponse.sends)
+				accepted, sent := lostResponse.snapshot()
+				if accepted != nil {
+					withdrawTx = accepted
 				}
-				if broadcast.Transaction.Hash() != lostResponse.accepted.Hash() || broadcast.Transaction.Nonce() != lostResponse.accepted.Nonce() {
+				broadcast, ok := errors.AsType[*payments.BroadcastError](err)
+				if withdraw != nil || !ok || !errors.Is(err, io.ErrUnexpectedEOF) || accepted == nil || len(sent) != 1 {
+					t.Fatalf("lost response result=%v error=%v sends=%d", withdraw, err, len(sent))
+				}
+				if broadcast.Transaction.Hash() != accepted.Hash() || broadcast.Transaction.Nonce() != accepted.Nonce() {
 					t.Fatal("broadcast error lost the accepted transaction identity")
 				}
 				recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 90*time.Second)
@@ -387,15 +593,70 @@ func TestIntegration_Payments(t *testing.T) {
 
 type lostBroadcastResponseBackend struct {
 	payments.Backend
-	accepted *ethtypes.Transaction
-	sends    int
+	mu                sync.Mutex
+	accepted          *ethtypes.Transaction
+	sent              []*ethtypes.Transaction
+	backgroundStarted map[common.Hash]chan struct{}
+	backgroundDone    map[common.Hash]<-chan struct{}
 }
 
+type permitForegroundContextKey struct{}
+
 func (b *lostBroadcastResponseBackend) SendTransaction(ctx context.Context, tx *ethtypes.Transaction) error {
-	b.sends++
+	b.mu.Lock()
+	b.sent = append(b.sent, tx)
+	if b.backgroundStarted == nil {
+		b.backgroundStarted = make(map[common.Hash]chan struct{})
+		b.backgroundDone = make(map[common.Hash]<-chan struct{})
+	}
+	if b.backgroundStarted[tx.Hash()] == nil {
+		b.backgroundStarted[tx.Hash()] = make(chan struct{})
+	}
+	b.mu.Unlock()
 	if err := b.Backend.SendTransaction(ctx, tx); err != nil {
 		return err
 	}
-	b.accepted = tx
-	return io.ErrUnexpectedEOF
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.accepted == nil {
+		b.accepted = tx
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+func (b *lostBroadcastResponseBackend) TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error) {
+	b.mu.Lock()
+	if ctx.Value(permitForegroundContextKey{}) == nil && b.backgroundStarted[txHash] != nil && b.backgroundDone[txHash] == nil {
+		b.backgroundDone[txHash] = ctx.Done()
+		close(b.backgroundStarted[txHash])
+	}
+	b.mu.Unlock()
+	return b.Backend.TransactionReceipt(ctx, txHash)
+}
+
+func (b *lostBroadcastResponseBackend) snapshot() (*ethtypes.Transaction, []*ethtypes.Transaction) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.accepted, append([]*ethtypes.Transaction(nil), b.sent...)
+}
+
+func (b *lostBroadcastResponseBackend) waitBackgroundReceipt(ctx context.Context, hash common.Hash) error {
+	b.mu.Lock()
+	started := b.backgroundStarted[hash]
+	b.mu.Unlock()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	b.mu.Lock()
+	done := b.backgroundDone[hash]
+	b.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

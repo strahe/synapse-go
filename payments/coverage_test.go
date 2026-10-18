@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 
 	filpaybind "github.com/strahe/synapse-go/internal/contracts/filpay"
 	sdktypes "github.com/strahe/synapse-go/types"
@@ -387,46 +390,33 @@ func TestIsFwssMaxApproved_MaxLockupPeriodTooShort(t *testing.T) {
 // ------------------------------------------------------------------
 
 func TestDepositWithPermit_HappyPath(t *testing.T) {
-	s, mb := newTestService(t)
-	// seed token metadata for permit signing + wallet precheck.
-	owner := s.signer.EVMAddress()
-	mb.balances[owner] = new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18))
-	mb.setERC20Reply(t, tokenAddr, "balanceOf", new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18)))
-	// name / version / nonces are read via permitERC20ABI on the token
-	// contract; we must pack using that ABI's Outputs, not erc20ABI, since
-	// erc20 bindings don't include name/version/nonces explicitly.
-	for _, m := range []struct {
-		name string
-		v    any
-	}{
-		{"name", "USDFC"},
-		{"version", "1"},
-		{"nonces", big.NewInt(0)},
-	} {
-		mth, ok := permitERC20ABI.Methods[m.name]
-		if !ok {
-			t.Fatalf("permit ABI missing %s", m.name)
-		}
-		b, err := mth.Outputs.Pack(m.v)
-		if err != nil {
-			t.Fatalf("pack %s: %v", m.name, err)
-		}
-		mb.replies[tokenAddr.Hex()+":"+m.name] = b
-	}
-
-	_, err := s.DepositWithPermit(
-		context.Background(),
-		tokenAddr,
-		common.Address{}, // credits signer
-		big.NewInt(1_000),
-		nil, // default deadline
-		WithSkipPrecheck(),
-	)
-	if err != nil {
-		t.Fatalf("DepositWithPermit: %v", err)
-	}
-	if len(mb.sent) != 1 {
-		t.Fatalf("sent = %d, want 1", len(mb.sent))
+	for _, explicitOwner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit owner=%t", explicitOwner), func(t *testing.T) {
+			s, mb := newTestService(t)
+			seedPermitInputs(t, mb)
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				return successfulReceipt(), nil
+			}
+			to := common.Address{}
+			if explicitOwner {
+				to = s.Account()
+			}
+			_, err := s.DepositWithPermit(context.Background(), tokenAddr, to,
+				big.NewInt(1_000), nil, WithSkipPrecheck(), WithWait(time.Second))
+			if err != nil {
+				t.Fatalf("DepositWithPermit: %v", err)
+			}
+			if len(mb.sent) != 1 {
+				t.Fatalf("sent = %d, want 1", len(mb.sent))
+			}
+			args, err := mb.filPayABI.Methods["depositWithPermit"].Inputs.Unpack(mb.sent[0].Data()[4:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if args[1].(common.Address) != s.Account() {
+				t.Fatalf("recipient = %s, want %s", args[1], s.Account())
+			}
+		})
 	}
 }
 
@@ -456,78 +446,57 @@ func TestDepositWithPermitAndApproveOperator_ZeroOperatorRejected(t *testing.T) 
 	}
 }
 
-// TestDepositWithPermitAndApproveOperator_HappyPath exercises the full
-// combined-tx path (deposit + operator approval in a single on-chain call)
-// so that any regression in argument ordering or composition is caught at
-// the calldata layer, not just at the surface-validation layer.
 func TestDepositWithPermitAndApproveOperator_HappyPath(t *testing.T) {
-	s, mb := newTestService(t)
-	owner := s.signer.EVMAddress()
-	mb.balances[owner] = new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18))
-	mb.setERC20Reply(t, tokenAddr, "balanceOf", new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18)))
-	for _, m := range []struct {
-		name string
-		v    any
-	}{
-		{"name", "USDFC"},
-		{"version", "1"},
-		{"nonces", big.NewInt(0)},
-	} {
-		mth, ok := permitERC20ABI.Methods[m.name]
-		if !ok {
-			t.Fatalf("permit ABI missing %s", m.name)
-		}
-		b, err := mth.Outputs.Pack(m.v)
-		if err != nil {
-			t.Fatalf("pack %s: %v", m.name, err)
-		}
-		mb.replies[tokenAddr.Hex()+":"+m.name] = b
-	}
-
-	amount := big.NewInt(1_000)
-	rate := big.NewInt(42)
-	lockup := big.NewInt(43)
-	maxPeriod := big.NewInt(44)
-	_, err := s.DepositWithPermitAndApproveOperator(
-		context.Background(),
-		tokenAddr,
-		common.Address{}, // credits signer
-		amount,
-		nil, // default deadline
-		operatorAddr,
-		rate, lockup, maxPeriod,
-		WithSkipPrecheck(),
-	)
-	if err != nil {
-		t.Fatalf("DepositWithPermitAndApproveOperator: %v", err)
-	}
-	if len(mb.sent) != 1 {
-		t.Fatalf("sent = %d, want 1 (combined deposit+approve tx)", len(mb.sent))
-	}
-	args, err := mb.filPayABI.Methods["depositWithPermitAndApproveOperator"].Inputs.Unpack(mb.sent[0].Data()[4:])
-	if err != nil {
-		t.Fatalf("unpack depositWithPermitAndApproveOperator: %v", err)
-	}
-	if args[0].(common.Address) != tokenAddr {
-		t.Errorf("token arg = %s, want %s", args[0], tokenAddr)
-	}
-	if args[1].(common.Address) != owner {
-		t.Errorf("recipient arg = %s, want %s (zero→signer)", args[1], owner)
-	}
-	if got := args[2].(*big.Int); got.Cmp(amount) != 0 {
-		t.Errorf("amount arg = %s, want %s", got, amount)
-	}
-	if args[7].(common.Address) != operatorAddr {
-		t.Errorf("operator arg = %s, want %s", args[7], operatorAddr)
-	}
-	if got := args[8].(*big.Int); got.Cmp(rate) != 0 {
-		t.Errorf("rateAllowance arg = %s, want %s", got, rate)
-	}
-	if got := args[9].(*big.Int); got.Cmp(lockup) != 0 {
-		t.Errorf("lockupAllowance arg = %s, want %s", got, lockup)
-	}
-	if got := args[10].(*big.Int); got.Cmp(maxPeriod) != 0 {
-		t.Errorf("maxLockupPeriod arg = %s, want %s", got, maxPeriod)
+	for _, explicitOwner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit owner=%t", explicitOwner), func(t *testing.T) {
+			s, mb := newTestService(t)
+			seedPermitInputs(t, mb)
+			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
+				return successfulReceipt(), nil
+			}
+			to := common.Address{}
+			if explicitOwner {
+				to = s.Account()
+			}
+			amount := big.NewInt(1_000)
+			rate := big.NewInt(42)
+			lockup := big.NewInt(43)
+			maxPeriod := big.NewInt(44)
+			_, err := s.DepositWithPermitAndApproveOperator(context.Background(), tokenAddr,
+				to, amount, nil, operatorAddr, rate, lockup, maxPeriod,
+				WithSkipPrecheck(), WithWait(time.Second))
+			if err != nil {
+				t.Fatalf("DepositWithPermitAndApproveOperator: %v", err)
+			}
+			if len(mb.sent) != 1 {
+				t.Fatalf("sent = %d, want 1", len(mb.sent))
+			}
+			args, err := mb.filPayABI.Methods["depositWithPermitAndApproveOperator"].Inputs.Unpack(mb.sent[0].Data()[4:])
+			if err != nil {
+				t.Fatalf("unpack depositWithPermitAndApproveOperator: %v", err)
+			}
+			if args[0].(common.Address) != tokenAddr {
+				t.Errorf("token arg = %s, want %s", args[0], tokenAddr)
+			}
+			if args[1].(common.Address) != s.Account() {
+				t.Errorf("recipient arg = %s, want %s", args[1], s.Account())
+			}
+			if got := args[2].(*big.Int); got.Cmp(amount) != 0 {
+				t.Errorf("amount arg = %s, want %s", got, amount)
+			}
+			if args[7].(common.Address) != operatorAddr {
+				t.Errorf("operator arg = %s, want %s", args[7], operatorAddr)
+			}
+			if got := args[8].(*big.Int); got.Cmp(rate) != 0 {
+				t.Errorf("rateAllowance arg = %s, want %s", got, rate)
+			}
+			if got := args[9].(*big.Int); got.Cmp(lockup) != 0 {
+				t.Errorf("lockupAllowance arg = %s, want %s", got, lockup)
+			}
+			if got := args[10].(*big.Int); got.Cmp(maxPeriod) != 0 {
+				t.Errorf("maxLockupPeriod arg = %s, want %s", got, maxPeriod)
+			}
+		})
 	}
 }
 

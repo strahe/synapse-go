@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1818,10 +1819,10 @@ func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
 			return s.RevokeService(ctx, tokenAddr, operatorAddr, WithWait(time.Second))
 		}},
 		{"DepositWithPermit", func(s *Service) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermit(ctx, tokenAddr, otherAddr, one, nil, WithSkipPrecheck(), WithWait(time.Second))
+			return s.DepositWithPermit(ctx, tokenAddr, s.Account(), one, nil, WithSkipPrecheck(), WithWait(time.Second))
 		}},
 		{"DepositWithPermitAndApproveOperator", func(s *Service) (*sdktypes.WriteResult, error) {
-			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, otherAddr, one, nil, operatorAddr, one, one, one, WithSkipPrecheck(), WithWait(time.Second))
+			return s.DepositWithPermitAndApproveOperator(ctx, tokenAddr, s.Account(), one, nil, operatorAddr, one, one, one, WithSkipPrecheck(), WithWait(time.Second))
 		}},
 		{"Settle", func(s *Service) (*sdktypes.WriteResult, error) {
 			return s.Settle(ctx, sdktypes.NewBigInt(1), one, WithWait(time.Second))
@@ -1841,9 +1842,17 @@ func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
 			s.usdfcToken, s.warmStorage = tokenAddr, operatorAddr
 			seedPermitInputs(t, mb)
 			mb.sendErrAfterAccept = io.ErrUnexpectedEOF
+			watchPermit := strings.HasPrefix(tt.name, "DepositWithPermit") || tt.name == "Fund" || tt.name == "FundSync"
+			if watchPermit {
+				t.Cleanup(func() { waitForPermitLockReleased(t, s) })
+			}
+			var receiptCalls atomic.Int32
 			mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
-				t.Error("broadcast error entered receipt polling")
-				return nil, ethereum.NotFound
+				receiptCalls.Add(1)
+				if !watchPermit {
+					t.Error("ordinary write broadcast error entered receipt polling")
+				}
+				return successfulReceipt(), nil
 			}
 			res, err := tt.write(s)
 			broadcast, ok := errors.AsType[*BroadcastError](err)
@@ -1856,6 +1865,12 @@ func TestWriteMethods_BroadcastErrorPreservesTransaction(t *testing.T) {
 			sender, err := types.Sender(types.LatestSignerForChainID(broadcast.Transaction.ChainId()), broadcast.Transaction)
 			if err != nil || sender != s.Account() {
 				t.Fatalf("recovered sender=%s error=%v", sender, err)
+			}
+			if watchPermit {
+				waitForPermitLockReleased(t, s)
+				if receiptCalls.Load() != 1 {
+					t.Fatalf("permit broadcast error receipt calls=%d, want 1", receiptCalls.Load())
+				}
 			}
 		})
 	}
