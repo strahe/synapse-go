@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -97,7 +97,7 @@ func (c *Client) mapTerminateServiceError(err error, body []byte) error {
 	case http.StatusConflict:
 		var conflict terminateConflictWire
 		if jsonErr := json.Unmarshal(body, &conflict); jsonErr != nil {
-			return fmt.Errorf("pdp.TerminateService: decode conflict: %w", jsonErr)
+			return fmt.Errorf("pdp.TerminateService: decode conflict: %w", boundedJSONError(jsonErr))
 		}
 		switch conflict.Code {
 		case 0:
@@ -251,9 +251,17 @@ func epochFromJSONNumber(v *json.Number) (types.Epoch, error) {
 	if v == nil {
 		return 0, fmt.Errorf("missing epoch")
 	}
-	i, ok := new(big.Int).SetString(v.String(), 10)
-	if !ok || i.Sign() < 0 || !i.IsUint64() {
-		return 0, fmt.Errorf("invalid epoch %q", v.String())
+	raw := v.String()
+	if raw == "-0" {
+		return 0, nil
 	}
-	return types.Epoch(i.Uint64()), nil
+	epoch, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		const maxInputBytes = 32
+		if len(raw) > maxInputBytes {
+			raw = fmt.Sprintf("%s... (%d bytes)", raw[:maxInputBytes], len(raw))
+		}
+		return 0, fmt.Errorf("invalid epoch %q", raw)
+	}
+	return types.Epoch(epoch), nil
 }

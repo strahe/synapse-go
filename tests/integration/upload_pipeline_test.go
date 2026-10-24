@@ -6,22 +6,30 @@ import (
 	"bytes"
 	"context"
 	crypto_rand "crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/internal/integrationtest"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/pdp"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
 
 type pipelineGateTransport struct {
@@ -308,4 +316,247 @@ func uploadPipelineWithGate(t *testing.T, ctx context.Context, client *synapse.C
 		t.Fatalf("%s confirmations: %v", stage, ctx.Err())
 		return nil
 	}
+}
+
+type commitTimeoutTransport struct {
+	base             http.RoundTripper
+	mu               sync.Mutex
+	endpoint         string
+	statusURL        string
+	hold             bool
+	submissions      int
+	pendingResponses int
+}
+
+func (tr *commitTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tr.mu.Lock()
+	submission := req.Method == http.MethodPost && req.URL.String() == tr.endpoint
+	if submission {
+		tr.submissions++
+	}
+	tr.mu.Unlock()
+	resp, err := tr.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	tr.mu.Lock()
+	if submission && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusAccepted) {
+		if location := resp.Header.Get("Location"); location != "" {
+			if statusURL, err := req.URL.Parse(location); err == nil && statusURL.Scheme == req.URL.Scheme && statusURL.Host == req.URL.Host {
+				tr.statusURL = statusURL.String()
+			}
+		}
+	}
+	hold := tr.hold && req.Method == http.MethodGet && req.URL.String() == tr.statusURL
+	tr.mu.Unlock()
+	if !hold || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted) {
+		return resp, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, pdp.MaxControlResponseBytes+1))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) == nil {
+		var status, hash string
+		_ = json.Unmarshal(fields["txStatus"], &status)
+		_ = json.Unmarshal(fields["createMessageHash"], &hash)
+		if (status == "pending" || status == "confirmed") && common.IsHexHash(hash) && common.HexToHash(hash) != (common.Hash{}) {
+			fields["txStatus"] = json.RawMessage(`"pending"`)
+			fields["dataSetCreated"] = json.RawMessage(`false`)
+			delete(fields, "dataSetId")
+			delete(fields, "ok")
+			delete(fields, "confirmedTxHash")
+			if pending, err := json.Marshal(fields); err == nil {
+				body = pending
+				tr.mu.Lock()
+				tr.pendingResponses++
+				tr.mu.Unlock()
+			}
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	return resp, nil
+}
+
+func (tr *commitTimeoutTransport) restore() {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.hold = false
+}
+
+func (tr *commitTimeoutTransport) snapshot() (string, int, int) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.statusURL, tr.submissions, tr.pendingResponses
+}
+
+func TestIntegration_UploadCommitTimeoutRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Minute)
+	defer cancel()
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = nil
+	t.Cleanup(base.CloseIdleConnections)
+	transport := &commitTimeoutTransport{base: base, hold: true}
+	httpClient := &http.Client{Transport: transport, Timeout: 2 * time.Minute}
+	client := integrationtest.NewDefaultClient(t, ctx,
+		synapse.WithHTTPClient(httpClient),
+		synapse.WithUploadBatching(storage.WithUploadIdleWait(0), storage.WithUploadCommitTimeout(15*time.Second)),
+	)
+	if client.Chain().ChainID() != calibrationChainID {
+		t.Fatal("upload commit timeout acceptance requires Calibration")
+	}
+	run := fmt.Sprintf("commit-timeout-%d", time.Now().UnixNano())
+	metadata := map[string]string{"source": "integration-commit-timeout", "run": run}
+	var target *storage.ProviderContext
+	var createdID types.BigInt
+	t.Cleanup(func() {
+		transport.restore()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cleanupCancel()
+		flushCtx, flushCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
+		if err := client.Storage().Flush(flushCtx); err != nil {
+			t.Logf("commit timeout cleanup Flush: %v", err)
+		}
+		flushCancel()
+		statusURL, submissions, _ := transport.snapshot()
+		if createdID.IsZero() && target != nil && statusURL != "" {
+			provider, err := pdp.New(target.ServiceURL(), pdp.WithHTTPClient(httpClient))
+			if err != nil {
+				t.Errorf("commit timeout cleanup client: %v", err)
+			} else {
+				statusCtx, statusCancel := context.WithTimeout(cleanupCtx, 2*time.Minute)
+				status, err := provider.WaitForDataSetCreated(statusCtx, statusURL, 4*time.Second)
+				statusCancel()
+				if err == nil && status != nil && status.DataSetID != nil {
+					createdID = *status.DataSetID
+				} else {
+					t.Logf("commit timeout cleanup creation status: %v", err)
+				}
+			}
+		}
+		if createdID.IsZero() && submissions > 0 {
+			discoveryCtx, discoveryCancel := context.WithTimeout(cleanupCtx, 2*time.Minute)
+			defer discoveryCancel()
+			for createdID.IsZero() && discoveryCtx.Err() == nil {
+				dataSets, err := client.Storage().FindDataSets(discoveryCtx, &storage.FindDataSetsOptions{Payer: client.Address(), OnlyManaged: true})
+				if err != nil {
+					t.Logf("commit timeout cleanup discovery: %v", err)
+				}
+				for _, ds := range dataSets {
+					if ds != nil && ds.Payer == client.Address() && ds.Metadata["run"] == run && ds.Metadata["source"] == metadata["source"] {
+						createdID = ds.DataSetID
+						break
+					}
+				}
+				if createdID.IsZero() {
+					select {
+					case <-time.After(4 * time.Second):
+					case <-discoveryCtx.Done():
+					}
+				}
+			}
+			if createdID.IsZero() {
+				t.Error("commit timeout cleanup could not reconcile the submitted data set")
+				return
+			}
+		}
+		if createdID.IsZero() {
+			return
+		}
+		info, err := retryIntegrationRead(cleanupCtx, func(ctx context.Context) (*warmstorage.DataSetInfo, error) {
+			return client.WarmStorage().GetDataSet(ctx, createdID)
+		})
+		if err != nil || info == nil || info.Payer != client.Address() {
+			t.Errorf("commit timeout cleanup ownership: dataSet=%s info=%+v err=%v", createdID, info, err)
+			return
+		}
+		meta, err := retryIntegrationRead(cleanupCtx, func(ctx context.Context) (map[string]string, error) {
+			return client.WarmStorage().GetAllDataSetMetadata(ctx, createdID)
+		})
+		if err != nil || meta["run"] != run || meta["source"] != metadata["source"] {
+			t.Errorf("commit timeout cleanup metadata mismatch: dataSet=%s err=%v", createdID, err)
+			return
+		}
+		if info.PDPEndEpoch != 0 {
+			return
+		}
+		res, err := client.WarmStorage().TerminateDataSet(cleanupCtx, createdID, warmstorage.WithWait(txWaitTimeout))
+		if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+			t.Errorf("commit timeout cleanup termination: result=%+v err=%v", res, err)
+		}
+	})
+	var err error
+	target, err = client.Storage().SelectProviderContext(ctx, storage.SelectProviderContextOptions{DataSetMetadata: metadata})
+	if err != nil {
+		t.Fatalf("SelectProviderContext: %v", err)
+	}
+	endpoint, err := url.JoinPath(target.ServiceURL(), "pdp/data-sets/create-and-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	transport.endpoint = endpoint
+	transport.mu.Unlock()
+	payload := make([]byte, 128*1024)
+	if _, err := crypto_rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	pieceInfo, err := piece.CalculateFromBytes(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
+		Contexts: []storage.StorageContext{target}, PieceSizes: []uint64{uint64(len(payload))},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if prep.Transaction != nil {
+		res, err := prep.Transaction.Execute(ctx, payments.WithWait(txWaitTimeout))
+		if err != nil || res == nil || res.Receipt == nil || res.Receipt.Status != 1 {
+			t.Fatalf("Prepare.Execute: result=%+v err=%v", res, err)
+		}
+	}
+	result, err := target.Upload(ctx, bytes.NewReader(payload), nil)
+	timeout, ok := errors.AsType[*storage.UploadCommitTimeoutError](err)
+	if !ok || result != nil || !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("Upload result=%+v err=%v callerErr=%v, want recoverable commit timeout", result, err, ctx.Err())
+	}
+	transport.restore()
+	submission := timeout.Submission
+	statusURL, submissions, pendingResponses := transport.snapshot()
+	parsedStatus, parseErr := url.Parse(submission.StatusURL)
+	if submission.Kind != storage.CommitKindCreateAndAdd || submission.StatusURL != statusURL || parseErr != nil ||
+		!common.IsHexHash(submission.TransactionID) || common.HexToHash(submission.TransactionID) != common.HexToHash(path.Base(parsedStatus.Path)) ||
+		!submission.ProviderID.Equal(target.ProviderID()) || submission.Identity.Payer != client.Address() ||
+		submission.Identity.ChainID != types.ChainID(calibrationChainID) || submission.Identity.RecordKeeper != client.ResolvedAddresses().FWSS ||
+		submission.DataSet != nil ||
+		submission.ClientDataSetID == nil || submission.ClientDataSetID.IsZero() ||
+		len(submission.PieceCIDs) != 1 || !submission.PieceCIDs[0].Equals(pieceInfo.CIDv2) {
+		t.Fatalf("incomplete timeout submission: %+v", submission)
+	}
+	if submissions != 1 || pendingResponses == 0 {
+		t.Fatalf("submissions=%d pending responses=%d, want one real submission with pending confirmation", submissions, pendingResponses)
+	}
+	recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer recoveryCancel()
+	recovered, err := target.WaitForCreateAndAdd(recoveryCtx, submission.StatusURL, *submission.ClientDataSetID)
+	if err != nil || recovered == nil {
+		t.Fatalf("WaitForCreateAndAdd: result=%+v err=%v", recovered, err)
+	}
+	createdID = recovered.DataSet.DataSetID()
+	if recovered.TransactionID != submission.TransactionID || !recovered.DataSet.ProviderID().Equal(submission.ProviderID) ||
+		!recovered.DataSet.ClientDataSetID().Equal(*submission.ClientDataSetID) || len(recovered.PieceIDs) != 1 {
+		t.Fatalf("recovered result=%+v does not match original submission=%+v", recovered, submission)
+	}
+	if _, got, _ := transport.snapshot(); got != 1 {
+		t.Fatalf("create-and-add submissions=%d after recovery, want one", got)
+	}
+	t.Logf("commit timeout recovered: provider=%s dataSet=%s tx=%s", submission.ProviderID, createdID, submission.TransactionID)
 }

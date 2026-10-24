@@ -23,6 +23,7 @@ import (
 const (
 	defaultUploadIdleWait                 = 3 * time.Second
 	defaultUploadMaxConcurrentSubmissions = 4
+	defaultUploadCommitTimeout            = 5 * time.Minute
 	defaultSharedDataSetPollInterval      = 4 * time.Second
 	defaultSharedDataSetVisibleTimeout    = 5 * time.Minute
 )
@@ -41,6 +42,8 @@ type uploadBatcherConfig struct {
 	maxWait                  time.Duration
 	maxWaitEnabled           bool
 	maxConcurrentSubmissions int
+	commitTimeout            time.Duration
+	commitTimeoutEnabled     bool
 	clock                    uploadBatchClock
 	dataSetPollInterval      time.Duration
 	dataSetVisibleTimeout    time.Duration
@@ -86,6 +89,21 @@ func WithoutUploadMaxWait() UploadBatcherOption {
 // submissions. Confirmation waits do not consume this limit.
 func WithUploadMaxConcurrentSubmissions(max int) UploadBatcherOption {
 	return func(cfg *uploadBatcherConfig) { cfg.maxConcurrentSubmissions = max }
+}
+
+// WithUploadCommitTimeout limits confirmation waiting after a successful
+// provider submission. The default is five minutes. timeout must be positive;
+// it excludes batch formation, queueing, signing, and submission.
+func WithUploadCommitTimeout(timeout time.Duration) UploadBatcherOption {
+	return func(cfg *uploadBatcherConfig) {
+		cfg.commitTimeout = timeout
+		cfg.commitTimeoutEnabled = true
+	}
+}
+
+// WithoutUploadCommitTimeout lets confirmations wait until completion or Close.
+func WithoutUploadCommitTimeout() UploadBatcherOption {
+	return func(cfg *uploadBatcherConfig) { cfg.commitTimeoutEnabled = false }
 }
 
 type uploadBatchClock interface {
@@ -281,9 +299,12 @@ type uploadBatchTransfer struct {
 
 // NewUploadBatcher creates an independent batching coordinator. By default, a
 // batch is submitted three seconds after its last new piece once no other
-// upload to the same target is in progress, with no maximum wait, and up to
-// four batches may be signed and submitted concurrently. When options of the
-// same kind are repeated, the last one takes effect.
+// upload to the same target is in progress, with no maximum batch formation
+// wait, and up to four batches may be signed and submitted concurrently.
+// Each successful provider submission has a five-minute confirmation limit;
+// [WithUploadCommitTimeout] changes it and [WithoutUploadCommitTimeout] disables
+// it. [UploadCommitTimeoutError] retains the submission for continued confirmation.
+// When options of the same kind are repeated, the last one takes effect.
 func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption) (*UploadBatcher, error) {
 	const op = "storage.NewUploadBatcher"
 	storageSigner := normalizeOptional(opts.Signer)
@@ -300,6 +321,8 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 		idleWait:                 defaultUploadIdleWait,
 		idleWaitEnabled:          true,
 		maxConcurrentSubmissions: defaultUploadMaxConcurrentSubmissions,
+		commitTimeout:            defaultUploadCommitTimeout,
+		commitTimeoutEnabled:     true,
 		clock:                    systemUploadBatchClock{},
 		dataSetPollInterval:      defaultSharedDataSetPollInterval,
 		dataSetVisibleTimeout:    defaultSharedDataSetVisibleTimeout,
@@ -323,6 +346,9 @@ func NewUploadBatcher(opts UploadBatcherOptions, options ...UploadBatcherOption)
 	}
 	if cfg.maxConcurrentSubmissions < 1 {
 		return nil, fmt.Errorf("%s: %w: max concurrent submissions must be positive", op, ErrInvalidArgument)
+	}
+	if cfg.commitTimeoutEnabled && cfg.commitTimeout <= 0 {
+		return nil, fmt.Errorf("%s: %w: commit timeout must be positive", op, ErrInvalidArgument)
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	return &UploadBatcher{
@@ -486,6 +512,9 @@ func (b *UploadBatcher) bindContext(parent context.Context) (context.Context, fu
 func uploadBatchContextError(ctx context.Context, fallback error) error {
 	if errors.Is(fallback, ErrClosed) {
 		return ErrClosed
+	}
+	if _, ok := errors.AsType[*UploadCommitTimeoutError](fallback); ok {
+		return fallback
 	}
 	if fallback != nil && !isContextError(fallback) {
 		return fallback
@@ -901,10 +930,15 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 		err = b.ctx.Err()
 	}
 	var submission *CommitSubmission
+	var registeredSubmission *CommitSubmission
 	var registrationErr error
 	registerSubmission := func(submitted CommitSubmission) {
 		if registrationErr == nil {
 			registrationErr = b.publishSubmission(flight, pieces, submitted)
+			if registrationErr == nil && registeredSubmission == nil {
+				copySubmission := copyCommitSubmission(submitted)
+				registeredSubmission = &copySubmission
+			}
 		}
 	}
 	if err == nil {
@@ -940,7 +974,16 @@ func (b *UploadBatcher) commitFlight(flight *uploadBatchFlight, pieces []PieceIn
 	if submission == nil {
 		return nil, errors.New("storage.UploadBatcher: submit commit returned nil submission")
 	}
-	result, err := target.waitForCommit(b.ctx, *submission)
+	waitCtx := b.ctx
+	if b.config.commitTimeoutEnabled {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(b.ctx, b.config.commitTimeout)
+		defer cancel()
+	}
+	result, err := target.waitForCommit(waitCtx, *registeredSubmission)
+	if isContextError(err) && waitCtx.Err() == context.DeadlineExceeded && b.ctx.Err() == nil {
+		err = &UploadCommitTimeoutError{Submission: copyCommitSubmission(*registeredSubmission)}
+	}
 	err = uploadBatchContextError(b.ctx, err)
 	if err == nil {
 		if result == nil {

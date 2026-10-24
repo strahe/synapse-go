@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -85,10 +86,44 @@ func TestWithLogger_Nil(t *testing.T) {
 // ---------- HTTPError tests ----------
 
 func TestHTTPError_WithBody(t *testing.T) {
-	e := &HTTPError{Method: "GET", URL: "http://x/path", StatusCode: 500, Body: "server error"}
-	got := e.Error()
-	if !strings.Contains(got, "500") || !strings.Contains(got, "server error") {
-		t.Errorf("Error() = %q", got)
+	for _, tt := range []struct{ name, body string }{
+		{name: "plain text", body: "server error"},
+		{name: "exact limit", body: strings.Repeat("x", 4<<10)},
+		{name: "over limit", body: strings.Repeat("x", (4<<10)+1)},
+		{name: "control characters", body: "server\nforged\x1b[31m"},
+		{name: "escaped expansion", body: strings.Repeat("\x00", (4<<10)+1)},
+		{name: "split UTF-8", body: strings.Repeat("x", (4<<10)-1) + "€"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "http://x/path", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := newHTTPError(req, &http.Response{StatusCode: 500}, []byte(tt.body))
+			got := e.Error()
+			if !strings.Contains(got, "500") {
+				t.Fatalf("missing HTTP status: %q", got)
+			}
+			if e.Body != tt.body {
+				t.Fatal("HTTPError.Body changed")
+			}
+			if len(got) > 4*(4<<10)+256 {
+				t.Fatalf("error contains %d bytes", len(got))
+			}
+			if strings.ContainsAny(got, "\n\r\t\x1b\x00") || !utf8.ValidString(got) {
+				t.Fatal("error contains unescaped controls or invalid UTF-8")
+			}
+			if omitted := len(tt.body) - (4 << 10); omitted > 0 {
+				if !strings.Contains(got, fmt.Sprintf("%d bytes omitted", omitted)) {
+					t.Fatal("error does not report the omitted length")
+				}
+			} else if strings.Contains(got, "bytes omitted") {
+				t.Fatal("error reports truncation below the limit")
+			}
+			if tt.name == "plain text" && !strings.Contains(got, tt.body) {
+				t.Fatal("plain error detail changed")
+			}
+		})
 	}
 }
 
@@ -487,6 +522,12 @@ func TestSchedulePieceDeletions_HTTP429Classification(t *testing.T) {
 			wantRetryAfter: 30 * time.Second,
 		},
 		{
+			name:           "queue marker after display limit",
+			body:           strings.Repeat("x", 8<<10) + " scheduled removals queued",
+			wantQueueFull:  true,
+			wantRetryAfter: 30 * time.Second,
+		},
+		{
 			name:           "IP throttled",
 			body:           "too many requests",
 			wantRetryAfter: 30 * time.Second,
@@ -513,6 +554,12 @@ func TestSchedulePieceDeletions_HTTP429Classification(t *testing.T) {
 			}
 			if httpErr.StatusCode != http.StatusTooManyRequests || httpErr.RetryAfter != tt.wantRetryAfter {
 				t.Fatalf("HTTPError=%+v", httpErr)
+			}
+			if httpErr.Body != tt.body {
+				t.Fatal("HTTPError.Body did not preserve the full response")
+			}
+			if len(err.Error()) > 4*(4<<10)+512 {
+				t.Fatalf("error contains %d bytes", len(err.Error()))
 			}
 		})
 	}
@@ -560,24 +607,44 @@ func TestGetAddPiecesStatus_BadJSON(t *testing.T) {
 }
 
 func TestGetAddPiecesStatus_BadDataSetID(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":1.5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`)
-	}))
-	_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
-	if err == nil || !strings.Contains(err.Error(), "bad dataSetId") {
-		t.Errorf("want bad dataSetId error, got %v", err)
+	for _, tt := range []struct{ name, raw string }{
+		{name: "fraction", raw: "1.5"},
+		{name: "oversized", raw: strings.Repeat("9", 1<<20)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":%s,"pieceCount":1,"addMessageOk":true,"piecesAdded":true}`, testTxOne, tt.raw)
+			}))
+			_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
+			if err == nil || !strings.Contains(err.Error(), "bad dataSetId") {
+				t.Fatalf("want bad dataSetId error, got %v", err)
+			}
+			if len(err.Error()) > 256 {
+				t.Fatalf("error contains %d bytes for an invalid dataSetId", len(err.Error()))
+			}
+		})
 	}
 }
 
 func TestGetAddPiecesStatus_BadConfirmedPieceID(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"txHash":"0x0000000000000000000000000000000000000000000000000000000000000001","txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[1.5]}`)
-	}))
-	_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
-	if err == nil || !strings.Contains(err.Error(), "bad confirmedPieceId") {
-		t.Errorf("want bad confirmedPieceId error, got %v", err)
+	for _, tt := range []struct{ name, raw string }{
+		{name: "fraction", raw: "1.5"},
+		{name: "oversized", raw: strings.Repeat("9", 1<<20)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"txHash":%q,"txStatus":"confirmed","dataSetId":5,"pieceCount":1,"addMessageOk":true,"piecesAdded":true,"confirmedPieceIds":[%s]}`, testTxOne, tt.raw)
+			}))
+			_, err := c.GetAddPiecesStatus(context.Background(), c.BaseURL().String()+"status/"+testTxOne)
+			if err == nil || !strings.Contains(err.Error(), "bad confirmedPieceId") {
+				t.Fatalf("want bad confirmedPieceId error, got %v", err)
+			}
+			if len(err.Error()) > 256 {
+				t.Fatalf("error contains %d bytes for an invalid confirmedPieceId", len(err.Error()))
+			}
+		})
 	}
 }
 

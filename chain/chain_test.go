@@ -304,11 +304,8 @@ func TestSizes(t *testing.T) {
 	if GiB != 1024*1024*1024 {
 		t.Errorf("GiB = %d, want %d", GiB, 1024*1024*1024)
 	}
-	if MaxUploadSize <= 0 {
-		t.Error("MaxUploadSize should be positive")
-	}
-	if MaxUploadSize >= GiB {
-		t.Error("MaxUploadSize should be less than 1 GiB due to fr32 padding")
+	if got, want := uint64(MaxUploadSize), uint64(68_182_605_824); got != want {
+		t.Errorf("MaxUploadSize = %d, want %d", got, want)
 	}
 	if MinUploadSize != 127 {
 		t.Errorf("MinUploadSize = %d, want 127", MinUploadSize)

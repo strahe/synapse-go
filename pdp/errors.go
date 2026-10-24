@@ -1,6 +1,7 @@
 package pdp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -15,9 +16,57 @@ import (
 	"github.com/strahe/synapse-go/types"
 )
 
+const (
+	// maxErrorDetailBytes limits provider text before escaping.
+	maxErrorDetailBytes     = 4 << 10
+	maxJSONNumberErrorBytes = 32
+)
+
+func providerErrorText(value string) string {
+	end := min(len(value), maxErrorDetailBytes)
+	quoted := strconv.Quote(value[:end])
+	text := quoted[1 : len(quoted)-1]
+	if end < len(value) {
+		text += fmt.Sprintf("... (%d bytes omitted)", len(value)-end)
+	}
+	return text
+}
+
+type boundedDecodeError struct {
+	cause   error
+	message string
+}
+
+func (e *boundedDecodeError) Error() string {
+	return e.message
+}
+
+func (e *boundedDecodeError) Unwrap() error {
+	return e.cause
+}
+
+func boundedJSONError(err error) error {
+	typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err)
+	if ok {
+		number, isNumber := strings.CutPrefix(typeErr.Value, "number ")
+		if isNumber && len(number) > maxJSONNumberErrorBytes {
+			display := *typeErr
+			display.Value = fmt.Sprintf("number %s... (%d bytes omitted)", number[:maxJSONNumberErrorBytes], len(number)-maxJSONNumberErrorBytes)
+			return &boundedDecodeError{cause: err, message: display.Error()}
+		}
+	}
+	message := err.Error()
+	if len(message) > maxErrorDetailBytes {
+		return &boundedDecodeError{cause: err, message: providerErrorText(message)}
+	}
+	return err
+}
+
 // HTTPError wraps a non-success response from the PDP provider API.
 // Use errors.AsType[*pdp.HTTPError] to read StatusCode, Body, and RetryAfter
 // from wrapped errors.
+// Body retains the response text with surrounding whitespace removed.
+// Error displays at most its first 4 KiB, with control characters escaped.
 //
 // The URL field is always pre-redacted: userinfo is stripped and the values
 // of sensitive query parameters such as token, signature, or api_key are
@@ -88,7 +137,7 @@ func (e *HTTPError) Error() string {
 	if e.Body == "" {
 		return fmt.Sprintf("pdp: %s %s: HTTP %d", e.Method, e.URL, e.StatusCode)
 	}
-	return fmt.Sprintf("pdp: %s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
+	return fmt.Sprintf("pdp: %s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, providerErrorText(e.Body))
 }
 
 // ErrLocationHeader is returned when the server responds successfully but
@@ -166,7 +215,7 @@ type ServiceAlreadyTerminatedError struct {
 
 func (e *ServiceAlreadyTerminatedError) Error() string {
 	if e.Message != "" {
-		return fmt.Sprintf("pdp: service already terminated at epoch %d: %s", e.ServiceTerminationEpoch, e.Message)
+		return fmt.Sprintf("pdp: service already terminated at epoch %d: %s", e.ServiceTerminationEpoch, providerErrorText(e.Message))
 	}
 	return fmt.Sprintf("pdp: service already terminated at epoch %d", e.ServiceTerminationEpoch)
 }
@@ -179,7 +228,7 @@ type TerminateServicePendingError struct {
 
 func (e *TerminateServicePendingError) Error() string {
 	if e.Message != "" {
-		return "pdp: terminate service already pending: " + e.Message
+		return "pdp: terminate service already pending: " + providerErrorText(e.Message)
 	}
 	return "pdp: terminate service already pending"
 }
@@ -192,7 +241,7 @@ type TerminateServiceNotSupportedError struct {
 
 func (e *TerminateServiceNotSupportedError) Error() string {
 	if e.Body != "" {
-		return "pdp: terminate service not supported: " + e.Body
+		return "pdp: terminate service not supported: " + providerErrorText(e.Body)
 	}
 	return "pdp: terminate service not supported"
 }

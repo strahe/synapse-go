@@ -5,6 +5,12 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
+)
+
+const (
+	maxUint256DecimalDigits  = 78
+	maxBigIntErrorInputBytes = 32
 )
 
 var uint256Limit = new(big.Int).Lsh(big.NewInt(1), 256)
@@ -42,14 +48,31 @@ func ParseBigInt(s string) (BigInt, error) {
 	}
 	for _, ch := range s {
 		if ch < '0' || ch > '9' {
-			return BigInt{}, fmt.Errorf("bigint: invalid decimal: %q", s)
+			return BigInt{}, fmt.Errorf("bigint: invalid decimal: %q", bigIntErrorInput(s))
 		}
+	}
+	s = strings.TrimLeft(s, "0")
+	if s == "" {
+		return BigInt{}, nil
+	}
+	if len(s) > maxUint256DecimalDigits {
+		return BigInt{}, fmt.Errorf("bigint: exceeds uint256: %d decimal digits", len(s))
 	}
 	v, ok := new(big.Int).SetString(s, 10)
 	if !ok {
-		return BigInt{}, fmt.Errorf("bigint: invalid decimal: %q", s)
+		return BigInt{}, fmt.Errorf("bigint: invalid decimal: %q", bigIntErrorInput(s))
+	}
+	if v.Cmp(uint256Limit) >= 0 {
+		return BigInt{}, fmt.Errorf("bigint: exceeds uint256")
 	}
 	return BigIntFromBig(v)
+}
+
+func bigIntErrorInput(s string) string {
+	if len(s) <= maxBigIntErrorInputBytes {
+		return s
+	}
+	return fmt.Sprintf("%s... (%d bytes)", s[:maxBigIntErrorInputBytes], len(s))
 }
 
 // Big returns a defensive copy of id.

@@ -47,6 +47,9 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 				if cfg.maxConcurrentSubmissions != 4 {
 					t.Fatalf("maxConcurrentSubmissions=%d, want 4", cfg.maxConcurrentSubmissions)
 				}
+				if !cfg.commitTimeoutEnabled || cfg.commitTimeout != 5*time.Minute {
+					t.Fatalf("commit timeout=(%t,%s), want enabled 5m", cfg.commitTimeoutEnabled, cfg.commitTimeout)
+				}
 			},
 		},
 		{
@@ -124,6 +127,28 @@ func TestNewUploadBatcherOptions(t *testing.T) {
 		{name: "idle exceeds max", opts: []UploadBatcherOption{WithUploadIdleWait(time.Minute), WithUploadMaxWait(time.Second)}, wantErr: true},
 		{name: "zero max with default idle", opts: []UploadBatcherOption{WithUploadMaxWait(0)}, wantErr: true},
 		{name: "zero concurrency", opts: []UploadBatcherOption{WithUploadMaxConcurrentSubmissions(0)}, wantErr: true},
+		{name: "zero commit timeout", opts: []UploadBatcherOption{WithUploadCommitTimeout(0)}, wantErr: true},
+		{name: "negative commit timeout", opts: []UploadBatcherOption{WithUploadCommitTimeout(-time.Second)}, wantErr: true},
+		{
+			name: "commit timeout disabled",
+			opts: []UploadBatcherOption{WithUploadCommitTimeout(time.Minute), WithoutUploadCommitTimeout()},
+			check: func(t *testing.T, cfg uploadBatcherConfig) {
+				t.Helper()
+				if cfg.commitTimeoutEnabled {
+					t.Fatal("commit timeout is enabled")
+				}
+			},
+		},
+		{
+			name: "commit timeout re-enabled",
+			opts: []UploadBatcherOption{WithoutUploadCommitTimeout(), WithUploadCommitTimeout(time.Minute)},
+			check: func(t *testing.T, cfg uploadBatcherConfig) {
+				t.Helper()
+				if !cfg.commitTimeoutEnabled || cfg.commitTimeout != time.Minute {
+					t.Fatalf("commit timeout=(%t,%s), want enabled 1m", cfg.commitTimeoutEnabled, cfg.commitTimeout)
+				}
+			},
+		},
 		{
 			name: "last option wins",
 			opts: []UploadBatcherOption{WithoutUploadIdleWait(), WithUploadIdleWait(3 * time.Second)},
@@ -1751,6 +1776,10 @@ func TestUploadBatchContextErrorPreservesPublishedFailure(t *testing.T) {
 	}
 	if errors.Is(err, context.Canceled) {
 		t.Fatalf("published rejection was replaced by context.Canceled")
+	}
+	timeout := &UploadCommitTimeoutError{Submission: CommitSubmission{TransactionID: "0xtimeout"}}
+	if err := uploadBatchContextError(canceled, timeout); !errors.Is(err, timeout) {
+		t.Fatalf("published timeout=%v, want original timeout", err)
 	}
 
 	closed, closeCancel := context.WithCancelCause(context.Background())

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/strahe/synapse-go/internal/idconv"
 	"github.com/strahe/synapse-go/spregistry"
@@ -1185,36 +1186,46 @@ func TestServiceResolverResolveUploadContexts_AutoSelectReturnsDetailEnrichmentF
 }
 
 func TestServiceResolverResolveUploadContexts_RetriesTransientSelectionErrors(t *testing.T) {
-	fixture := serviceResolverFixture{
-		approvedProviderIDs: []types.BigInt{testID(1)},
-		activeProviders: []spregistry.PDPProvider{
-			testPDPProvider(testID(1), "https://sp-1.example.com"),
-		},
-	}
-	catalog := &flakyApprovedProviderCatalog{
-		fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
-	}
-	resolver, err := NewServiceResolver(ServiceResolverOptions{
-		Payer:        testPayer(),
-		SPRegistry:   &fakePDPProviderSource{fixture: fixture},
-		Endorsements: &fakeEndorsedProviderSource{fixture: fixture},
-		WarmStorage:  catalog,
-		ProviderPing: healthyProviderPing,
-		NewContext:   newResolvedTestContext,
-	})
-	if err != nil {
-		t.Fatalf("NewServiceResolver: %v", err)
-	}
-
-	contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
-	if err != nil {
-		t.Fatalf("ResolveUploadContexts: %v", err)
-	}
-	if len(contexts) != 1 {
-		t.Fatalf("contexts=%d want 1", len(contexts))
-	}
-	if attempts := catalog.attempts.Load(); attempts != 2 {
-		t.Fatalf("GetApprovedProviderIDs attempts=%d want 2", attempts)
+	for _, tc := range []struct {
+		name         string
+		err          error
+		wantAttempts int32
+	}{
+		{"EOF", fmt.Errorf("RPC: %w", errors.New("EOF")), 2},
+		{"HTTP 408", fmt.Errorf("RPC: %w", &rpc.HTTPError{StatusCode: 408}), 2},
+		{"HTTP value", fmt.Errorf("RPC: %w", rpc.HTTPError{StatusCode: 429}), 2},
+		{"HTTP pointer", fmt.Errorf("RPC: %w", &rpc.HTTPError{StatusCode: 503}), 2},
+		{"permanent HTTP", fmt.Errorf("RPC: %w", &rpc.HTTPError{StatusCode: 400, Body: []byte("timeout")}), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := serviceResolverFixture{
+				approvedProviderIDs: []types.BigInt{testID(1)},
+				activeProviders:     []spregistry.PDPProvider{testPDPProvider(testID(1), "https://sp-1.example.com")},
+			}
+			catalog := &flakyApprovedProviderCatalog{
+				fakeDataSetCatalog: fakeDataSetCatalog{fixture: fixture},
+				firstErr:           tc.err,
+			}
+			resolver, err := NewServiceResolver(ServiceResolverOptions{
+				Payer: testPayer(), SPRegistry: &fakePDPProviderSource{fixture: fixture},
+				Endorsements: &fakeEndorsedProviderSource{fixture: fixture}, WarmStorage: catalog,
+				ProviderPing: healthyProviderPing, NewContext: newResolvedTestContext,
+			})
+			if err != nil {
+				t.Fatalf("NewServiceResolver: %v", err)
+			}
+			contexts, err := resolver.ResolveUploadContexts(context.Background(), SelectUploadContextsOptions{Copies: 1})
+			if tc.wantAttempts == 1 {
+				if !errors.Is(err, tc.err) || len(contexts) != 0 {
+					t.Fatalf("contexts=%v err=%v, want original permanent error", contexts, err)
+				}
+			} else if err != nil || len(contexts) != 1 {
+				t.Fatalf("contexts=%v err=%v, want one selected context", contexts, err)
+			}
+			if attempts := catalog.attempts.Load(); attempts != tc.wantAttempts {
+				t.Fatalf("GetApprovedProviderIDs attempts=%d want %d", attempts, tc.wantAttempts)
+			}
+		})
 	}
 }
 
@@ -1391,10 +1402,14 @@ func (f *fakeEnhancedDataSetCatalog) GetClientDataSetsWithDetails(_ context.Cont
 type flakyApprovedProviderCatalog struct {
 	fakeDataSetCatalog
 	attempts atomic.Int32
+	firstErr error
 }
 
 func (f *flakyApprovedProviderCatalog) GetApprovedProviderIDs(ctx context.Context, opts types.ListOptions) ([]types.BigInt, error) {
 	if f.attempts.Add(1) == 1 {
+		if f.firstErr != nil {
+			return nil, f.firstErr
+		}
 		return nil, fmt.Errorf("Post %q: EOF", "https://api.calibration.node.glif.io/rpc/v1")
 	}
 	return f.fakeDataSetCatalog.GetApprovedProviderIDs(ctx, opts)

@@ -69,10 +69,10 @@ func isRetryableAccountRead(err error) bool {
 		return false
 	}
 	if httpErr, ok := errors.AsType[rpc.HTTPError](err); ok {
-		return retryableAccountHTTPStatus(httpErr.StatusCode)
+		return txutil.IsRetryableHTTPStatus(httpErr.StatusCode)
 	}
 	if httpErr, ok := errors.AsType[*rpc.HTTPError](err); ok {
-		return retryableAccountHTTPStatus(httpErr.StatusCode)
+		return txutil.IsRetryableHTTPStatus(httpErr.StatusCode)
 	}
 	if rpcErr, ok := errors.AsType[rpc.Error](err); ok {
 		switch rpcErr.ErrorCode() {
@@ -105,8 +105,4 @@ func isRetryableAccountRead(err error) bool {
 		return false
 	}
 	return txutil.IsRetryableRPCError(err)
-}
-
-func retryableAccountHTTPStatus(status int) bool {
-	return status == 429 || status == 502 || status == 503 || status == 504
 }

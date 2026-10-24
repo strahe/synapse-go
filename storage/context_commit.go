@@ -296,7 +296,7 @@ func validateUploadPieceCID(op string, index int, pieceCID cid.Cid) error {
 	if info.RawSize < chain.MinUploadSize || info.RawSize > chain.MaxUploadSize {
 		return fmt.Errorf(
 			"%s: %w: pieceCID at index %d has raw size %d, want %d to %d bytes",
-			op, ErrInvalidArgument, index, info.RawSize, chain.MinUploadSize, chain.MaxUploadSize,
+			op, ErrInvalidArgument, index, info.RawSize, chain.MinUploadSize, uint64(chain.MaxUploadSize),
 		)
 	}
 	return nil

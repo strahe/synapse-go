@@ -376,6 +376,7 @@ func TestAccountSummary_ReadErrorPolicy(t *testing.T) {
 		{"broken pipe", syscall.EPIPE, 3},
 		{"network timeout", &net.DNSError{Err: "read timed out", IsTimeout: true}, 3},
 		{"permanent DNS error containing timeout", &net.DNSError{Err: "no such host", Name: "timeout.example"}, 1},
+		{"HTTP 408", rpc.HTTPError{StatusCode: 408}, 3},
 		{"HTTP 429", rpc.HTTPError{StatusCode: 429}, 3},
 		{"HTTP 502", rpc.HTTPError{StatusCode: 502}, 3},
 		{"HTTP 503", &rpc.HTTPError{StatusCode: 503}, 3},

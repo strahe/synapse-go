@@ -55,7 +55,9 @@ and do not expose its signing endpoint as a general signing service.
 
 `Storage().Upload` selects providers, stores the primary copy, has secondary
 providers pull it, and commits each copy on-chain. Payloads must be between 127
-bytes and `chain.MaxUploadSize` (about 1 GiB).
+bytes and `chain.MaxUploadSize` (63.5 GiB raw, 64 GiB padded).
+Providers may impose a smaller size limit. Use a streaming reader and allow
+enough time in the context for large transfers.
 
 ```go
 withCDN := true
@@ -121,7 +123,7 @@ fmt.Println("downloaded bytes:", len(data))
 ```
 
 The reader verifies the PieceCID when it reaches EOF, so always check the final
-`Read` or `io.ReadAll` error.
+`Read` or `io.ReadAll` error. For large pieces, stream the reader to a file.
 
 To download from one of your data sets, set `DataSetID` instead of `URL`. If
 the data set has CDN enabled, the SDK tries CDN first, which works even when
@@ -153,10 +155,18 @@ client, err := synapse.New(ctx,
 )
 ```
 
-`WithUploadMaxWait` limits the time spent forming a batch; submission and
-confirmation can take longer. Pass `storage.WithoutUploadIdleWait()` and
+Batch formation has no maximum wait by default; `WithUploadMaxWait` limits it.
+Pass `storage.WithoutUploadIdleWait()` and
 `storage.WithUploadMaxWait(0)` to queue each piece immediately, or use
 `synapse.WithoutUploadBatching()` to commit each upload on its own.
+
+After each successful provider submission, confirmation has a five-minute limit.
+Pass `storage.WithUploadCommitTimeout(...)` or
+`storage.WithoutUploadCommitTimeout()` through `WithUploadBatching` to change or
+disable it. An `*storage.UploadCommitTimeoutError` matches
+`context.DeadlineExceeded` and retains `Submission`; the SDK does not resubmit.
+Use that handle to continue with `DataSetContext.WaitForCommit` or
+`ProviderContext.WaitForCreateAndAdd`; see [Recovering Submissions](#recovering-submissions).
 
 Once a piece joins a batch, canceling its `Upload` context stops only that
 call's wait; the piece may still be committed. Check provider or chain state

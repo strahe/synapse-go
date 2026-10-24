@@ -116,7 +116,7 @@ func classifyCreateDataSetStatus(op string, status *CreateDataSetStatus) (transa
 		}
 		return transactionPending, nil
 	default:
-		return transactionPending, invalidStatusf(op, "unknown txStatus %q", status.TxStatus)
+		return transactionPending, invalidStatusf(op, `unknown txStatus "%s"`, providerErrorText(status.TxStatus))
 	}
 }
 
@@ -181,7 +181,7 @@ func classifyAddPiecesStatus(op string, status *AddPiecesStatus) (transactionSta
 		}
 		return transactionPending, nil
 	default:
-		return transactionPending, invalidStatusf(op, "unknown txStatus %q", status.TxStatus)
+		return transactionPending, invalidStatusf(op, `unknown txStatus "%s"`, providerErrorText(status.TxStatus))
 	}
 }
 

@@ -47,6 +47,52 @@ func TestBigIntFromBigValidation(t *testing.T) {
 	}
 }
 
+func TestParseBigIntUint256Bounds(t *testing.T) {
+	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)).String()
+	for _, tt := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "zero", raw: "0", want: "0"},
+		{name: "zero with padding", raw: strings.Repeat("0", 100), want: "0"},
+		{name: "leading zeros", raw: "00005", want: "5"},
+		{name: "maximum", raw: max, want: max},
+		{name: "maximum with padding", raw: strings.Repeat("0", 100) + max, want: max},
+		{name: "uint256 overflow", raw: new(big.Int).Lsh(big.NewInt(1), 256).String()},
+		{name: "too many significant digits", raw: strings.Repeat("9", 79)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseBigInt(tt.raw)
+			if tt.want == "" {
+				if err == nil {
+					t.Fatal("expected uint256 range error")
+				}
+				if strings.Contains(err.Error(), tt.raw) {
+					t.Fatal("range error contains the complete input")
+				}
+				return
+			}
+			if err != nil || got.String() != tt.want {
+				t.Fatalf("ParseBigInt = %s, %v; want %s", got.String(), err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseBigIntBoundsUntrustedInputErrors(t *testing.T) {
+	digits := strings.Repeat("9", 1<<20)
+	for _, raw := range []string{digits, digits + "x"} {
+		_, err := ParseBigInt(raw)
+		if err == nil {
+			t.Fatal("expected invalid uint256 error")
+		}
+		if len(err.Error()) > 256 {
+			t.Fatalf("error contains %d bytes for an invalid input", len(err.Error()))
+		}
+	}
+}
+
 func TestBigIntDefensiveCopy(t *testing.T) {
 	src := big.NewInt(42)
 	id, err := BigIntFromBig(src)
@@ -160,7 +206,7 @@ func TestBigIntBytes32(t *testing.T) {
 	if got[31] != 1 {
 		t.Fatalf("one Bytes32=%x", got)
 	}
-	for i := 0; i < 31; i++ {
+	for i := range 31 {
 		if got[i] != 0 {
 			t.Fatalf("one Bytes32 not left-padded: %x", got)
 		}
@@ -226,7 +272,7 @@ func TestBigIntTextAndJSON(t *testing.T) {
 }
 
 func TestBigIntRejectsNonDecimalInput(t *testing.T) {
-	for _, raw := range []string{"", " 1", "1 ", "+1", "-1", "0x10", "1.0"} {
+	for _, raw := range []string{"", " 1", "1 ", "+1", "-1", "-0", "0x10", "1.0", "1e0", "１"} {
 		if _, err := ParseBigInt(raw); err == nil {
 			t.Fatalf("ParseBigInt(%q) should fail", raw)
 		}

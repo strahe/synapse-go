@@ -36,7 +36,7 @@ client, err := synapse.New(ctx,
 if err != nil { return err }
 defer client.Close()
 
-// file is an io.Reader with 127 bytes to about 1 GiB of data.
+// file is an io.Reader with at least 127 bytes of data.
 upload, err := client.Storage().Upload(ctx, file, &storage.UploadOptions{Copies: 2})
 if err != nil { return err }
 

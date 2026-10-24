@@ -73,7 +73,7 @@ func (c *Client) UploadPieceStreaming(
 		return nil, errors.New("pdp.UploadPieceStreaming: nil data reader")
 	}
 	if opts.Size > 0 && opts.Size > chain.MaxUploadSize {
-		return nil, fmt.Errorf("pdp.UploadPieceStreaming: payload size %d exceeds maximum %d bytes", opts.Size, chain.MaxUploadSize)
+		return nil, fmt.Errorf("pdp.UploadPieceStreaming: payload size %d exceeds maximum %d bytes", opts.Size, uint64(chain.MaxUploadSize))
 	}
 	if opts.PieceCID.Defined() {
 		if err := validatePieceCIDV2("pdp.UploadPieceStreaming", opts.PieceCID); err != nil {
@@ -97,7 +97,7 @@ func (c *Client) UploadPieceStreaming(
 	loc := createResp.Header.Get("Location")
 	uploadUUID := lastPathSegment(loc)
 	if loc == "" || uploadUUID == "" {
-		return nil, fmt.Errorf("%w: Location=%q body=%q", ErrLocationHeader, loc, string(createBody))
+		return nil, fmt.Errorf(`%w: Location="%s" body="%s"`, ErrLocationHeader, providerErrorText(loc), providerErrorText(string(createBody)))
 	}
 
 	// Step 2: streaming PUT with optional inline commP computation.

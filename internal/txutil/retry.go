@@ -3,7 +3,10 @@ package txutil
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // IsRetryableRPCError reports whether err is a transient RPC condition that
@@ -16,6 +19,12 @@ func IsRetryableRPCError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	if httpErr, ok := errors.AsType[rpc.HTTPError](err); ok {
+		return IsRetryableHTTPStatus(httpErr.StatusCode)
+	}
+	if httpErr, ok := errors.AsType[*rpc.HTTPError](err); ok && httpErr != nil {
+		return IsRetryableHTTPStatus(httpErr.StatusCode)
+	}
 	s := strings.ToLower(err.Error())
 	for _, m := range retryableMarkers {
 		if strings.Contains(s, m) {
@@ -23,6 +32,13 @@ func IsRetryableRPCError(err error) bool {
 		}
 	}
 	return false
+}
+
+// IsRetryableHTTPStatus reports whether an RPC HTTP response indicates a
+// transient request timeout, rate limit, or gateway failure.
+func IsRetryableHTTPStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
 var retryableMarkers = []string{
