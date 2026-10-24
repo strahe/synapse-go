@@ -11,9 +11,9 @@ const (
 
 // Upload size limits and leaf geometry.
 const (
-	// MaxUploadSize is the maximum data size for a single upload,
+	// MaxUploadSize is the maximum raw payload for a 64 GiB padded piece,
 	// accounting for fr32 padding (127 usable bytes per 128 bytes).
-	MaxUploadSize = GiB * 127 / 128
+	MaxUploadSize = 64 * GiB * 127 / 128
 
 	// MinUploadSize is the minimum data size for a single upload.
 	MinUploadSize = 127

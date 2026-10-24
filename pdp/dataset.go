@@ -110,7 +110,7 @@ func (c *Client) GetDataSetCreationStatus(ctx context.Context, statusURL string)
 	}
 	var raw rawCreateDataSetStatus
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: decode: %w", err)
+		return nil, fmt.Errorf("pdp.GetDataSetCreationStatus: decode: %w", boundedJSONError(err))
 	}
 	createMessageHash, err := parseRequiredStatusHash("pdp.GetDataSetCreationStatus", "createMessageHash", raw.CreateMessageHash)
 	if err != nil {

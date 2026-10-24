@@ -64,7 +64,7 @@ func validatePieceSizes(pieceSizes []uint64) error {
 		if size < chain.MinUploadSize || size > chain.MaxUploadSize {
 			return fmt.Errorf(
 				"%w: pieceSizes[%d] must be between %d and %d bytes",
-				ErrInvalidArgument, i, chain.MinUploadSize, chain.MaxUploadSize,
+				ErrInvalidArgument, i, chain.MinUploadSize, uint64(chain.MaxUploadSize),
 			)
 		}
 	}

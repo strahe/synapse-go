@@ -195,6 +195,23 @@ func TestLeafConversionHelpersMatchUploadCosts(t *testing.T) {
 	}
 }
 
+func TestLeafConversionMaximumPiece(t *testing.T) {
+	leaves, err := PieceSizesToLeafCount([]uint64{chain.MaxUploadSize})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := bi(1 << 31); leaves.Cmp(want) != 0 {
+		t.Fatalf("maximum piece leaves=%s want %s", leaves, want)
+	}
+	bytes, err := LeafCountToBillableBytes(leaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := bi(68_182_605_824); bytes.Cmp(want) != 0 {
+		t.Fatalf("maximum piece billable bytes=%s want %s", bytes, want)
+	}
+}
+
 func TestLeafConversionHelpersValidateInputs(t *testing.T) {
 	for _, sizes := range [][]uint64{nil, {}, {chain.MinUploadSize - 1}, {chain.MaxUploadSize + 1}} {
 		if got, err := PieceSizesToLeafCount(sizes); !errors.Is(err, ErrInvalidArgument) || got != nil {

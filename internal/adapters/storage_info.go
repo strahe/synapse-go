@@ -15,9 +15,10 @@ import (
 	"github.com/strahe/synapse-go/warmstorage"
 )
 
-// storageInfoReader assembles the TS-parity StorageInfo view by
-// parallel-fetching pricing, approved providers, client allowances and
-// the PDPConfig.
+const storageInfoProviderConcurrency = 10
+
+// storageInfoReader assembles pricing, approved providers, allowances, and
+// service parameters.
 type storageInfoReader struct {
 	ws         *warmstorage.Service
 	sp         *spregistry.Service
@@ -73,21 +74,43 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 		}
 		fetched := make([]*spregistry.PDPProvider, len(ids))
 		var providerWG sync.WaitGroup
-		providerWG.Add(len(ids))
-		for i, id := range ids {
-			go func(i int, id types.BigInt) {
-				defer providerWG.Done()
-				p, err := a.sp.GetPDPProvider(ctx, id)
-				if err != nil {
-					if errors.Is(err, spregistry.ErrNotFound) {
+		jobs := make(chan int)
+		var cancellation sync.Once
+		recordCancellation := func() {
+			cancellation.Do(func() { appendErr(fmt.Errorf("GetPDPProviders: %w", ctx.Err())) })
+		}
+		for range min(storageInfoProviderConcurrency, len(ids)) {
+			providerWG.Go(func() {
+				for i := range jobs {
+					if ctx.Err() != nil {
+						recordCancellation()
 						return
 					}
-					appendErr(fmt.Errorf("GetPDPProvider(%s): %w", id.String(), err))
-					return
+					p, err := a.sp.GetPDPProvider(ctx, ids[i])
+					if err != nil {
+						if !errors.Is(err, spregistry.ErrNotFound) {
+							appendErr(fmt.Errorf("GetPDPProvider(%s): %w", ids[i].String(), err))
+						}
+						continue
+					}
+					fetched[i] = p
 				}
-				fetched[i] = p
-			}(i, id)
+			})
 		}
+	dispatch:
+		for i := range ids {
+			if ctx.Err() != nil {
+				recordCancellation()
+				break
+			}
+			select {
+			case jobs <- i:
+			case <-ctx.Done():
+				recordCancellation()
+				break dispatch
+			}
+		}
+		close(jobs)
 		providerWG.Wait()
 		collected := make([]spregistry.PDPProvider, 0, len(fetched))
 		for _, p := range fetched {
@@ -103,19 +126,16 @@ func (a *storageInfoReader) GetStorageInfo(ctx context.Context, client common.Ad
 	}()
 
 	if client != (common.Address{}) && a.pay != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ap, err := a.pay.ServiceApproval(ctx, a.usdfcToken, client, a.fwss)
 			if err != nil {
-				// Approval lookup is best-effort: keep allowances=nil
-				// instead of aborting the whole StorageInfo call.
+				// Approval lookup is best-effort; unavailable allowances stay nil.
 				return
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			approval = ap
-		}()
+		})
 	}
 
 	wg.Wait()

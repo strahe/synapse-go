@@ -1711,6 +1711,8 @@ func TestContextRejectsPieceCIDsOutsideUploadBounds(t *testing.T) {
 		{name: "PieceCIDv1", pieceCID: info.CIDv1, wantErr: true},
 		{name: "below minimum", pieceCID: withRawSize(chain.MinUploadSize - 1), wantErr: true},
 		{name: "minimum", pieceCID: withRawSize(chain.MinUploadSize)},
+		{name: "above one GiB padded", pieceCID: withRawSize(1_065_353_217)},
+		{name: "two GiB raw", pieceCID: withRawSize(2 << 30)},
 		{name: "maximum", pieceCID: withRawSize(chain.MaxUploadSize)},
 		{name: "above maximum", pieceCID: withRawSize(chain.MaxUploadSize + 1), wantErr: true},
 	}

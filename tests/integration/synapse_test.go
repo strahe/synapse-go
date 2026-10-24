@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -441,6 +442,173 @@ func TestIntegration_CDNContextDownload(t *testing.T) {
 		return
 	}
 	t.Fatalf("CDN context download did not complete through FilBeam: %v", lastErr)
+}
+
+func TestIntegration_LargePieceStreaming(t *testing.T) {
+	const rawSize int64 = 2 << 30
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Minute)
+	defer cancel()
+	client := integrationtest.NewDefaultClient(t, ctx)
+	if client.Chain().ChainID() != calibrationChainID {
+		t.Fatal("large-piece acceptance requires calibration")
+	}
+
+	eligible, err := client.SPRegistry().SelectActivePDPProviders(ctx, spregistry.ProviderFilter{
+		PieceSizeBytes: big.NewInt(rawSize),
+	})
+	if err != nil {
+		t.Fatalf("read providers accepting %d bytes: %v", rawSize, err)
+	}
+	if len(eligible) < 2 {
+		t.Fatalf("large-piece acceptance requires two providers offering %d bytes; found %d", rawSize, len(eligible))
+	}
+	eligibleIDs := make(map[string]struct{}, len(eligible))
+	for _, provider := range eligible {
+		eligibleIDs[idconv.Key(provider.Info.ID)] = struct{}{}
+	}
+	providers, err := client.SPRegistry().SelectActivePDPProviders(ctx, spregistry.ProviderFilter{})
+	if err != nil {
+		t.Fatalf("read active providers: %v", err)
+	}
+	var excluded []types.BigInt
+	for _, provider := range providers {
+		if _, ok := eligibleIDs[idconv.Key(provider.Info.ID)]; !ok {
+			excluded = append(excluded, provider.Info.ID)
+		}
+	}
+	run := fmt.Sprintf("large-piece-%d", time.Now().UnixNano())
+	withCDN := false
+	selection, err := client.Storage().SelectUploadContexts(ctx, storage.SelectUploadContextsOptions{
+		Copies:             2,
+		DataSetMetadata:    map[string]string{"run": run},
+		ExcludeProviderIDs: excluded,
+		WithCDN:            &withCDN,
+	})
+	if err != nil {
+		t.Fatalf("large-piece acceptance requires two approved, healthy providers and an endorsed primary: %v", err)
+	}
+	if selection == nil || !selection.Complete || len(selection.Contexts) != 2 {
+		t.Fatalf("large-piece selection=%+v, want two complete contexts", selection)
+	}
+	for _, target := range selection.Contexts {
+		if _, ok := eligibleIDs[idconv.Key(target.ProviderID())]; !ok {
+			t.Fatalf("selected provider %s does not offer %d bytes", target.ProviderID(), rawSize)
+		}
+		if _, bound := target.DataSetRef(); bound {
+			t.Fatal("unique large-piece metadata unexpectedly reused a data set")
+		}
+		t.Logf("large-piece provider=%s endpoint=%s", target.ProviderID(), target.ServiceURL())
+	}
+
+	created := make(map[string]types.BigInt)
+	t.Cleanup(func() {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), time.Minute)
+		if err := client.Storage().Flush(flushCtx); err != nil {
+			t.Logf("large-piece cleanup Flush: %v", err)
+		}
+		flushCancel()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cleanupCancel()
+		if len(created) < 2 {
+			dataSets, err := client.Storage().FindDataSets(cleanupCtx, &storage.FindDataSetsOptions{OnlyManaged: true})
+			if err != nil {
+				t.Errorf("reconcile large-piece data sets: %v", err)
+			}
+			for _, dataSet := range dataSets {
+				if dataSet == nil {
+					continue
+				}
+				metadata, err := client.WarmStorage().GetAllDataSetMetadata(cleanupCtx, dataSet.DataSetID)
+				if err == nil && metadata["run"] == run {
+					created[dataSet.DataSetID.String()] = dataSet.DataSetID
+				}
+			}
+		}
+		for _, id := range created {
+			dataSet, err := client.WarmStorage().GetDataSet(cleanupCtx, id)
+			if err != nil {
+				t.Errorf("read large-piece cleanup data set %s: %v", id, err)
+				continue
+			}
+			metadata, err := client.WarmStorage().GetAllDataSetMetadata(cleanupCtx, id)
+			if err != nil || dataSet.Payer != client.Address() || metadata["run"] != run {
+				t.Errorf("cannot verify ownership of large-piece cleanup data set %s: %v", id, err)
+				continue
+			}
+			result, err := client.WarmStorage().TerminateDataSet(cleanupCtx, id, warmstorage.WithWait(txWaitTimeout))
+			if err != nil || result == nil || result.Receipt == nil || result.Receipt.Status != 1 {
+				t.Errorf("terminate large-piece data set %s: result=%+v error=%v", id, result, err)
+			}
+		}
+	})
+
+	file, err := os.CreateTemp(t.TempDir(), "large-piece-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := file.Truncate(rawSize); err != nil {
+		t.Fatalf("create sparse upload file: %v", err)
+	}
+	var prefix [4096]byte
+	if _, err := crypto_rand.Read(prefix[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt(prefix[:], 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	prep, err := client.Storage().Prepare(ctx, &storage.PrepareOptions{
+		Contexts:          selection.Contexts,
+		PieceSizes:        []uint64{uint64(rawSize)},
+		ExtraRunwayEpochs: integrationtest.FundingExtraRunwayEpochs,
+		BufferEpochs:      new(int64(integrationtest.FundingBufferEpochs)),
+	})
+	if err != nil || prep == nil {
+		t.Fatalf("prepare large-piece upload: result=%+v error=%v", prep, err)
+	}
+	if prep.Transaction != nil {
+		result, err := prep.Transaction.Execute(ctx, payments.WithWait(txWaitTimeout))
+		if err != nil || result == nil || result.Receipt == nil || result.Receipt.Status != 1 {
+			t.Fatalf("fund large-piece upload: result=%+v error=%v", result, err)
+		}
+	}
+	start := time.Now()
+	result, err := client.Storage().UploadToContexts(ctx, file, selection.Contexts, nil)
+	if result != nil {
+		for _, copy := range result.Copies {
+			if copy.IsNewDataSet && !copy.DataSetID.IsZero() {
+				created[copy.DataSetID.String()] = copy.DataSetID
+			}
+		}
+	}
+	if err != nil {
+		t.Fatalf("upload large piece: %v", err)
+	}
+	if result == nil || !result.Complete || result.Size != rawSize || len(result.Copies) != 2 {
+		t.Fatalf("large-piece upload=%+v, want %d bytes and two complete copies", result, rawSize)
+	}
+	info, err := piece.ParseV2(result.PieceCID)
+	if err != nil || info.RawSize != uint64(rawSize) {
+		t.Fatalf("large-piece CID info=%+v error=%v", info, err)
+	}
+	for _, copy := range result.Copies {
+		if !copy.IsNewDataSet || copy.DataSetID.IsZero() {
+			t.Fatalf("large-piece copy=%+v, want a new data set", copy)
+		}
+		body, err := client.Storage().Download(ctx, result.PieceCID, &storage.DownloadOptions{URL: copy.RetrievalURL})
+		if err != nil {
+			t.Fatalf("download large piece from provider %s: %v", copy.ProviderID, err)
+		}
+		count, readErr := io.Copy(io.Discard, body)
+		closeErr := body.Close()
+		if readErr != nil || closeErr != nil || count != rawSize {
+			t.Fatalf("provider %s large-piece download bytes=%d read=%v close=%v", copy.ProviderID, count, readErr, closeErr)
+		}
+	}
+	t.Logf("verified large-piece upload and both downloads: cid=%s rawBytes=%d elapsed=%s", result.PieceCID, rawSize, time.Since(start).Round(time.Second))
 }
 
 // TestIntegration classifies network coverage as follows: service and context

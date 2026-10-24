@@ -18,6 +18,7 @@ import (
 var ErrPrivateNetwork = errors.New("storage: private / local network address disallowed")
 
 var forbiddenFetchPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("192.0.0.0/29"),
@@ -36,6 +37,7 @@ var forbiddenFetchPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("3fff::/20"),
 	netip.MustParsePrefix("5f00::/16"),
+	netip.MustParsePrefix("fec0::/10"),
 }
 
 var nat64WellKnownPrefix = netip.MustParsePrefix("64:ff9b::/96")

@@ -529,16 +529,36 @@ func TestUploadPieceStreaming_FinalizeFailure(t *testing.T) {
 }
 
 func TestUploadPieceStreaming_CreateMissingLocation(t *testing.T) {
-	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/pdp/piece/uploads" {
-			w.WriteHeader(http.StatusCreated)
-			return
-		}
-		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
-	}))
-	_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("x")), UploadPieceStreamingOptions{})
-	if !errors.Is(err, ErrLocationHeader) {
-		t.Fatalf("want ErrLocationHeader, got %v", err)
+	for _, tt := range []struct{ name, location, body string }{
+		{name: "empty"},
+		{name: "large body", body: "server\nforged\x1b[31m" + strings.Repeat("x", 2<<20)},
+		{name: "large invalid Location", location: strings.Repeat("/", 8<<10)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/pdp/piece/uploads" {
+					t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+				if tt.location != "" {
+					w.Header().Set("Location", tt.location)
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			_, err := c.UploadPieceStreaming(context.Background(), bytes.NewReader([]byte("x")), UploadPieceStreamingOptions{})
+			if !errors.Is(err, ErrLocationHeader) {
+				t.Fatalf("want ErrLocationHeader, got %v", err)
+			}
+			if len(err.Error()) > 2*4*(4<<10)+256 {
+				t.Fatalf("error contains %d bytes", len(err.Error()))
+			}
+			if strings.ContainsAny(err.Error(), "\n\r\t\x1b") {
+				t.Fatal("error contains unescaped controls")
+			}
+			if tt.name != "empty" && !strings.Contains(err.Error(), "bytes omitted") {
+				t.Fatal("error does not report truncation")
+			}
+		})
 	}
 }
 
@@ -1146,6 +1166,81 @@ func TestAddPiecesRejectsDuplicateCIDBeforeRequest(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("requests=%d want 0", requests)
+	}
+}
+
+func TestPieceRequestsAcceptExpandedSizeRange(t *testing.T) {
+	info := testPieceInfoV2(t)
+	for _, size := range []uint64{chain.GiB*127/128 + 1, 2 << 30, chain.MaxUploadSize} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			pc := testutil.PieceCIDv2WithRawSize(t, info.CIDv1, size)
+			var requests atomic.Int32
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.URL.Path == "/pdp/piece/pull" {
+					_, _ = fmt.Fprintf(w, `{"status":"complete","pieces":[{"pieceCid":%q,"status":"complete"}]}`, pc.String())
+					return
+				}
+				w.Header().Set("Location", "/pdp/data-sets/created/"+testTxOne)
+				w.WriteHeader(http.StatusCreated)
+			}))
+			pieces := []AddPieceInput{{PieceCID: pc}}
+			if _, err := c.AddPieces(context.Background(), types.NewBigInt(5), pieces, []byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			recordKeeper := common.HexToAddress("0x1")
+			if _, err := c.CreateDataSetAndAddPieces(context.Background(), recordKeeper, pieces, []byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.PullPieces(context.Background(), PullRequest{
+				RecordKeeper: recordKeeper, ExtraData: []byte{1},
+				Pieces: []PullPieceInput{{PieceCID: pc, SourceURL: "https://source.example.com/piece"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := requests.Load(); got != 3 {
+				t.Fatalf("provider received %d requests, want three", got)
+			}
+		})
+	}
+}
+
+func TestUploadPieceStreamingLargeContentLength(t *testing.T) {
+	info := testPieceInfoV2(t)
+	for _, size := range []uint64{2 << 30, chain.MaxUploadSize} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			inspected := errors.New("streaming headers inspected")
+			puts := 0
+			client, err := New("https://provider.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodPut {
+					puts++
+					if req.ContentLength != int64(size) {
+						t.Errorf("Content-Length=%d, want %d", req.ContentLength, size)
+					}
+					return nil, inspected
+				}
+				return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Location": {"/pdp/piece/uploads/large"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pc := testutil.PieceCIDv2WithRawSize(t, info.CIDv1, size)
+			_, err = client.UploadPieceStreaming(context.Background(), bytes.NewReader(nil), UploadPieceStreamingOptions{Size: int64(size), PieceCID: pc})
+			if puts != 1 || !errors.Is(err, inspected) {
+				t.Fatalf("PUTs=%d error=%v, want inspected streaming request", puts, err)
+			}
+		})
+	}
+}
+
+func TestCountingReaderMaximumPieceBoundary(t *testing.T) {
+	reader := &countingReader{r: strings.NewReader("xx"), max: chain.MaxUploadSize, n: chain.MaxUploadSize - 1}
+	var buf [1]byte
+	if n, err := reader.Read(buf[:]); n != 1 || err != nil {
+		t.Fatalf("last allowed byte: n=%d error=%v", n, err)
+	}
+	if n, err := reader.Read(buf[:]); n != 0 || err == nil {
+		t.Fatalf("first excessive byte: n=%d error=%v", n, err)
 	}
 }
 

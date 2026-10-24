@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/internal/contracts/filpay"
@@ -160,9 +162,36 @@ func TestIntegration_Payments(t *testing.T) {
 	})
 
 	t.Run("FundSync", func(t *testing.T) {
-		// Deposit a trivial amount to assert the permit-based chain path.
+		rpcClient, err := ethclient.DialContext(ctx, integrationtest.RPCURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(rpcClient.Close)
+		chainID, err := rpcClient.ChainID(ctx)
+		if err != nil || chainID.Cmp(big.NewInt(integrationtest.CalibrationChainID)) != 0 {
+			t.Fatalf("funding RPC must be Calibration: chain=%v error=%v", chainID, err)
+		}
+		key, err := hex.DecodeString(strings.TrimPrefix(integrationtest.RequirePrivateKey(t), "0x"))
+		if err != nil {
+			t.Fatal("invalid integration signing key")
+		}
+		defer clear(key)
+		sg, err := signer.NewSecp256k1SignerFromBytes(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend := &transientReceiptBackend{Backend: rpcClient}
+		writer, err := payments.New(payments.Options{
+			Backend: backend, Signer: sg,
+			ChainID:       types.ChainID(integrationtest.CalibrationChainID),
+			FilPayAddress: addrs.Payments, WarmStorageAddress: addrs.FWSS,
+			USDFCTokenAddress: addrs.USDFC,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		one := big.NewInt(1)
-		syncRes, err := p.FundSync(ctx, one, payments.WithConfirmations(2))
+		syncRes, err := writer.FundSync(ctx, one, payments.WithConfirmations(2))
 		if err != nil {
 			if errors.Is(err, payments.ErrPermitUnsupported) {
 				t.Skip("needs-usdfc-permit-support: USDFC contract does not implement EIP-2612 permit")
@@ -175,7 +204,14 @@ func TestIntegration_Payments(t *testing.T) {
 		if syncRes.Receipt.Status != 1 {
 			t.Fatalf("FundSync tx failed: status=%d", syncRes.Receipt.Status)
 		}
-		t.Logf("FundSync tx=%s", syncRes.Hash)
+		if sends, polls := backend.sends.Load(), backend.polls.Load(); sends != 1 || polls < 2 {
+			t.Fatalf("FundSync sends=%d polls=%d, want one submission and receipt recovery after HTTP 429", sends, polls)
+		}
+		head := backend.head.Load()
+		if block := syncRes.Receipt.BlockNumber; block == nil || !block.IsUint64() || head <= block.Uint64() {
+			t.Fatalf("FundSync receipt block=%v head=%d, want at least two confirmations", block, head)
+		}
+		t.Logf("FundSync recovered after HTTP 429: tx=%s sends=%d polls=%d", syncRes.Hash, backend.sends.Load(), backend.polls.Load())
 	})
 
 	t.Run("PermitBroadcastRecovery", func(t *testing.T) {
@@ -589,6 +625,33 @@ func TestIntegration_Payments(t *testing.T) {
 			)
 		})
 	}
+}
+
+type transientReceiptBackend struct {
+	payments.Backend
+	sends atomic.Int32
+	polls atomic.Int32
+	head  atomic.Uint64
+}
+
+func (b *transientReceiptBackend) SendTransaction(ctx context.Context, tx *ethtypes.Transaction) error {
+	b.sends.Add(1)
+	return b.Backend.SendTransaction(ctx, tx)
+}
+
+func (b *transientReceiptBackend) TransactionReceipt(ctx context.Context, txHash common.Hash) (*ethtypes.Receipt, error) {
+	if b.polls.Add(1) == 1 {
+		return nil, rpc.HTTPError{StatusCode: 429, Status: "429 Too Many Requests"}
+	}
+	return b.Backend.TransactionReceipt(ctx, txHash)
+}
+
+func (b *transientReceiptBackend) BlockNumber(ctx context.Context) (uint64, error) {
+	head, err := b.Backend.BlockNumber(ctx)
+	if err == nil {
+		b.head.Store(head)
+	}
+	return head, err
 }
 
 type lostBroadcastResponseBackend struct {

@@ -408,7 +408,7 @@ func (c *Client) getJSON(ctx context.Context, path string, dst any) error {
 		return nil
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
-		return fmt.Errorf("pdp: decode %s: %w", path, err)
+		return fmt.Errorf("pdp: decode %s: %w", path, boundedJSONError(err))
 	}
 	return nil
 }
@@ -451,7 +451,7 @@ func (c *Client) deleteJSON(ctx context.Context, path string, payload, dst any) 
 		return nil
 	}
 	if err := json.Unmarshal(respBody, dst); err != nil {
-		return fmt.Errorf("pdp: decode %s: %w", path, err)
+		return fmt.Errorf("pdp: decode %s: %w", path, boundedJSONError(err))
 	}
 	return nil
 }

@@ -144,7 +144,7 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 
 	var out PullResult
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("pdp.PullPieces: %w: decode response: %w", ErrInvalidStatus, err)
+		return nil, fmt.Errorf("pdp.PullPieces: %w: decode response: %w", ErrInvalidStatus, boundedJSONError(err))
 	}
 	if err := validatePullResult(out); err != nil {
 		return nil, err
@@ -155,13 +155,13 @@ func (c *Client) PullPieces(ctx context.Context, req PullRequest) (*PullResult, 
 func validatePullResult(result PullResult) error {
 	const op = "pdp.PullPieces"
 	if !validPullStatus(result.Status) {
-		return invalidStatusf(op, "unknown overall status %q", result.Status)
+		return invalidStatusf(op, `unknown overall status "%s"`, providerErrorText(string(result.Status)))
 	}
 	var hasRetrying, hasInProgress, hasPending, hasComplete bool
 	failedCount := 0
 	for i, item := range result.Pieces {
 		if !validPullStatus(item.Status) {
-			return invalidStatusf(op, "piece %d has unknown status %q", i, item.Status)
+			return invalidStatusf(op, `piece %d has unknown status "%s"`, i, providerErrorText(string(item.Status)))
 		}
 		pieceCID, err := cid.Parse(item.PieceCID)
 		if err != nil {

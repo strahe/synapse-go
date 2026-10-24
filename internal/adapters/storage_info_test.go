@@ -6,7 +6,10 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -123,6 +126,123 @@ func TestStorageInfoReader_GetStorageInfo_SkipsStaleApprovedProviders(t *testing
 	}
 	if len(got.Providers) != 1 || !got.Providers[0].Info.ID.Equal(types.NewBigInt(1)) {
 		t.Fatalf("Providers = %+v, want only provider 1", got.Providers)
+	}
+}
+
+func TestStorageInfoReader_GetStorageInfo_BoundsProviderReadsAndPreservesOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ws, mc := newStorageInfoTestWarmStorage(t)
+		sp := newStorageInfoTestSPRegistry(t, mc)
+		mc.setStorageInfoPriceList(t)
+		ids := make([]*big.Int, 25)
+		for i := range ids {
+			ids[i] = big.NewInt(int64(i + 1))
+		}
+		mc.setViewReply(t, "getApprovedProviders", ids)
+		release := make(chan struct{})
+		var active, peak atomic.Int32
+		mc.setSPResponder(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+			n := active.Add(1)
+			defer active.Add(-1)
+			for old := peak.Load(); n > old; old = peak.Load() {
+				if peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			<-release
+			id := args[0].(*big.Int).Int64()
+			return mc.packSP(t, "getProviderWithProduct", storageInfoPDPProviderView(id, common.BigToAddress(big.NewInt(id))))
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			got, err := (&storageInfoReader{ws: ws, sp: sp}).GetStorageInfo(context.Background(), common.Address{})
+			if err != nil {
+				t.Errorf("GetStorageInfo: %v", err)
+				return
+			}
+			if len(got.Providers) != len(ids) {
+				t.Errorf("providers=%d, want %d", len(got.Providers), len(ids))
+				return
+			}
+			for i, provider := range got.Providers {
+				if !provider.Info.ID.Equal(types.NewBigInt(uint64(i + 1))) {
+					t.Errorf("providers[%d].ID=%s, want %d", i, provider.Info.ID.String(), i+1)
+				}
+			}
+		}()
+		synctest.Wait()
+		if got := active.Load(); got != 10 {
+			t.Errorf("concurrent provider reads=%d, want 10", got)
+		}
+		close(release)
+		<-done
+		if got := peak.Load(); got > 10 {
+			t.Errorf("peak provider reads=%d, want at most 10", got)
+		}
+	})
+}
+
+func TestStorageInfoReader_GetStorageInfo_CancellationRetainsPartialProviders(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "canceled"
+		if deadline {
+			name = "deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				wantErr := context.Canceled
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
+					wantErr = context.DeadlineExceeded
+				}
+				defer cancel()
+				ws, mc := newStorageInfoTestWarmStorage(t)
+				sp := newStorageInfoTestSPRegistry(t, mc)
+				mc.setStorageInfoPriceList(t)
+				ids := make([]*big.Int, 25)
+				for i := range ids {
+					ids[i] = big.NewInt(int64(i + 1))
+				}
+				mc.setViewReply(t, "getApprovedProviders", ids)
+				var calls atomic.Int32
+				mc.setSPResponder(t, "getProviderWithProduct", func(args []any) ([]byte, error) {
+					calls.Add(1)
+					if id := args[0].(*big.Int).Int64(); id == 1 {
+						return mc.packSP(t, "getProviderWithProduct", storageInfoPDPProviderView(id, common.HexToAddress("0x1111")))
+					}
+					<-ctx.Done()
+					return nil, ctx.Err()
+				})
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					got, err := (&storageInfoReader{ws: ws, sp: sp}).GetStorageInfo(ctx, common.Address{})
+					if !errors.Is(err, wantErr) {
+						t.Errorf("GetStorageInfo error=%v, want %v", err, wantErr)
+					}
+					if got == nil || len(got.Providers) != 1 || !got.Providers[0].Info.ID.Equal(types.NewBigInt(1)) {
+						t.Errorf("GetStorageInfo=%+v, want partial provider 1", got)
+					}
+				}()
+				synctest.Wait()
+				started := calls.Load()
+				if started != 11 {
+					t.Errorf("provider reads started=%d, want one completed and ten pending", started)
+				}
+				if deadline {
+					time.Sleep(time.Minute)
+				} else {
+					cancel()
+				}
+				<-done
+				if got := calls.Load(); got != started {
+					t.Errorf("provider reads after cancellation=%d, want %d", got, started)
+				}
+			})
+		})
 	}
 }
 

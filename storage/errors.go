@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/big"
@@ -178,6 +179,29 @@ type CommitError struct {
 type CommitRejectedError struct {
 	ProviderID types.BigInt
 	Status     CommitStatus
+}
+
+// UploadCommitTimeoutError reports an upload whose provider submission was not
+// confirmed within the batcher's confirmation deadline. The transaction may
+// still confirm. Submission retains the handle for WaitForCommit or
+// WaitForCreateAndAdd; see [FailedAttempt.Submission] for recovery limits.
+type UploadCommitTimeoutError struct {
+	Submission CommitSubmission
+}
+
+func (e *UploadCommitTimeoutError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("storage: commit confirmation timed out for provider %s", e.Submission.ProviderID.String())
+}
+
+// Unwrap makes UploadCommitTimeoutError match [context.DeadlineExceeded].
+func (e *UploadCommitTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return context.DeadlineExceeded
 }
 
 func (e *CommitRejectedError) Error() string {

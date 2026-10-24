@@ -167,7 +167,7 @@ func (c *Client) GetAddPiecesStatus(ctx context.Context, statusURL string) (*Add
 	}
 	var raw rawAddPiecesStatus
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: decode: %w", err)
+		return nil, fmt.Errorf("pdp.GetAddPiecesStatus: decode: %w", boundedJSONError(err))
 	}
 	txHash, err := parseRequiredStatusHash("pdp.GetAddPiecesStatus", "txHash", raw.TxHash)
 	if err != nil {
@@ -349,7 +349,7 @@ func validateUploadPieceCID(op string, index int, pieceCID cid.Cid) error {
 	if info.RawSize < chain.MinUploadSize || info.RawSize > chain.MaxUploadSize {
 		return fmt.Errorf(
 			"%s: pieceCID at index %d has raw size %d, want %d to %d bytes",
-			op, index, info.RawSize, chain.MinUploadSize, chain.MaxUploadSize,
+			op, index, info.RawSize, chain.MinUploadSize, uint64(chain.MaxUploadSize),
 		)
 	}
 	return nil

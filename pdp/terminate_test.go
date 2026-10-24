@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,48 @@ import (
 
 	"github.com/strahe/synapse-go/types"
 )
+
+func TestGetTerminateServiceStatusEpochBounds(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		raw     string
+		want    types.Epoch
+		wantErr bool
+	}{
+		{name: "zero", raw: "0"},
+		{name: "negative zero", raw: "-0"},
+		{name: "quoted negative zero", raw: `"-0"`},
+		{name: "maximum", raw: "18446744073709551615", want: types.Epoch(math.MaxUint64)},
+		{name: "overflow", raw: "18446744073709551616", wantErr: true},
+		{name: "negative", raw: "-1", wantErr: true},
+		{name: "fraction", raw: "1.5", wantErr: true},
+		{name: "exponent", raw: "1e0", wantErr: true},
+		{name: "missing", raw: "null", wantErr: true},
+		{name: "oversized", raw: strings.Repeat("9", 1<<20), wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprintf(w, `{"fwssTerminated":true,"serviceTerminationEpoch":%s}`, tt.raw)
+			}))
+			got, err := c.GetTerminateServiceStatus(context.Background(), types.NewBigInt(7))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected invalid epoch error")
+				}
+				if len(err.Error()) > 256 {
+					t.Fatalf("error contains %d bytes for an invalid epoch", len(err.Error()))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ServiceTerminationEpoch != tt.want {
+				t.Fatalf("epoch = %d, want %d", got.ServiceTerminationEpoch, tt.want)
+			}
+		})
+	}
+}
 
 func TestTerminateService_PostsExtraDataAndRetries429(t *testing.T) {
 	var calls int

@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 type fakeReceiptClient struct {
@@ -99,12 +100,44 @@ func TestWaitForReceipt_PollsImmediately(t *testing.T) {
 }
 
 func TestWaitForReceipt_RPCErrorsExceed(t *testing.T) {
-	c := &fakeReceiptClient{}
-	c.fn = func(int64) (*types.Receipt, error) { return nil, errors.New("connection reset") }
-	cfg := ReceiptWaitConfig{Timeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, MaxConsecutiveErrors: 3}
-	_, err := WaitForReceiptWithConfig(context.Background(), c, common.Hash{}, cfg, 0)
-	if !errors.Is(err, ErrReceiptRPCFailure) {
-		t.Fatalf("want ErrReceiptRPCFailure, got %v", err)
+	for _, cause := range []error{errors.New("connection reset"), &rpc.HTTPError{StatusCode: 429}, &rpc.HTTPError{StatusCode: 408}} {
+		t.Run(fmt.Sprintf("%T", cause), func(t *testing.T) {
+			c := &fakeReceiptClient{}
+			c.fn = func(int64) (*types.Receipt, error) { return nil, cause }
+			cfg := ReceiptWaitConfig{Timeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, MaxConsecutiveErrors: 3}
+			_, err := WaitForReceiptWithConfig(context.Background(), c, common.Hash{}, cfg, 0)
+			if !errors.Is(err, ErrReceiptRPCFailure) || !errors.Is(err, cause) || c.calls.Load() != 3 {
+				t.Fatalf("err=%v polls=%d, want RPC failure preserving cause after three polls", err, c.calls.Load())
+			}
+		})
+	}
+}
+
+func TestWaitForReceipt_RecoversFromHTTPError(t *testing.T) {
+	for _, status := range []int{408, 429, 502, 503, 504} {
+		for _, headFailure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("status=%d/head=%t", status, headFailure), func(t *testing.T) {
+				cause := fmt.Errorf("RPC: %w", &rpc.HTTPError{StatusCode: status})
+				c := &fakeReceiptClient{}
+				c.fn = func(call int64) (*types.Receipt, error) {
+					if call == 1 && !headFailure {
+						return nil, cause
+					}
+					return &types.Receipt{Status: types.ReceiptStatusSuccessful, BlockNumber: big.NewInt(10)}, nil
+				}
+				c.blockFn = func(context.Context) (uint64, error) {
+					if headFailure && c.calls.Load() == 1 {
+						return 0, cause
+					}
+					return 10, nil
+				}
+				cfg := ReceiptWaitConfig{Timeout: time.Second, PollInterval: time.Millisecond}
+				r, err := WaitForReceiptWithConfig(context.Background(), c, common.Hash{}, cfg, 1)
+				if err != nil || r == nil || c.calls.Load() != 2 {
+					t.Fatalf("receipt=%v err=%v polls=%d, want success after two polls", r, err, c.calls.Load())
+				}
+			})
+		}
 	}
 }
 

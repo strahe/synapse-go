@@ -89,6 +89,13 @@
 // before retrying. A terminal result already published when cancellation races
 // takes precedence over the context error.
 //
+// Each successful provider submission has a five-minute confirmation deadline.
+// [WithUploadCommitTimeout] changes this limit; [WithoutUploadCommitTimeout]
+// disables it. Batch formation, queueing, signing, submission, Store, and Pull
+// are outside this deadline. [UploadCommitTimeoutError] retains the submission
+// handle for continued confirmation with [DataSetContext.WaitForCommit] or
+// [ProviderContext.WaitForCreateAndAdd]. A timeout does not cancel the transaction.
+//
 // [Service.Flush] waits for uploads that began before the call to reach the
 // coordinator, submits their corresponding windows, and waits for final
 // confirmations. A later compatible upload may join one of those windows, so
