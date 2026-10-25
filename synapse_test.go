@@ -361,15 +361,16 @@ func testPDPProviderCallResult(t *testing.T, provider storage.Provider, paymentT
 }
 
 func testResolvedAddresses(c chain.Chain) ResolvedAddresses {
+	addresses := c.Addresses()
 	return ResolvedAddresses{
-		FWSS:               c.Addresses().FWSS,
+		FWSS:               addresses.FWSS,
 		PDPVerifier:        common.HexToAddress("0x1000000000000000000000000000000000000001"),
-		SPRegistry:         common.HexToAddress("0x1000000000000000000000000000000000000002"),
-		USDFC:              common.HexToAddress("0x1000000000000000000000000000000000000003"),
-		Payments:           common.HexToAddress("0x1000000000000000000000000000000000000004"),
+		SPRegistry:         addresses.SPRegistry,
+		USDFC:              addresses.USDFC,
+		Payments:           addresses.Payments,
 		ViewContract:       common.HexToAddress("0x1000000000000000000000000000000000000005"),
 		FilBeamBeneficiary: common.HexToAddress("0x1000000000000000000000000000000000000006"),
-		SessionKeyRegistry: common.HexToAddress("0x1000000000000000000000000000000000000007"),
+		SessionKeyRegistry: addresses.SessionKeyRegistry,
 	}
 }
 
@@ -384,6 +385,10 @@ func fakeRPCAddressChain(chainIDHex string) chain.Chain {
 
 func TestResolveAddresses(t *testing.T) {
 	want := testResolvedAddresses(chain.Calibration)
+	want.Payments = common.HexToAddress("0x1000000000000000000000000000000000000004")
+	want.USDFC = common.HexToAddress("0x1000000000000000000000000000000000000003")
+	want.SessionKeyRegistry = common.HexToAddress("0x1000000000000000000000000000000000000007")
+	want.SPRegistry = common.HexToAddress("0x1000000000000000000000000000000000000002")
 	srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x4cb2f", want)
 	defer srv.Close()
 	defer ec.Close()
@@ -581,6 +586,49 @@ func TestNew_WithEthClient_Calibration(t *testing.T) {
 	}
 	if got := client.SessionKey().RegistryAddress(); got != wantAddresses.SessionKeyRegistry {
 		t.Errorf("SessionKeyRegistry = %s, want %s", got, wantAddresses.SessionKeyRegistry)
+	}
+}
+
+func TestNew_RejectsContractAddressMismatch(t *testing.T) {
+	replacement := common.HexToAddress("0x000000000000000000000000000000000000dEaD")
+	fields := []struct {
+		name    string
+		address func(*ResolvedAddresses) *common.Address
+	}{
+		{name: "Payments", address: func(a *ResolvedAddresses) *common.Address { return &a.Payments }},
+		{name: "USDFC", address: func(a *ResolvedAddresses) *common.Address { return &a.USDFC }},
+		{name: "SessionKeyRegistry", address: func(a *ResolvedAddresses) *common.Address { return &a.SessionKeyRegistry }},
+		{name: "SPRegistry", address: func(a *ResolvedAddresses) *common.Address { return &a.SPRegistry }},
+	}
+	for _, network := range []chain.Chain{chain.Mainnet, chain.Calibration} {
+		for _, field := range fields {
+			t.Run(network.String()+"/"+field.name, func(t *testing.T) {
+				addresses := testResolvedAddresses(network)
+				address := field.address(&addresses)
+				expected := *address
+				*address = replacement
+				srv, ec := fakeRPCServerWithResolvedAddresses(t, hexutil.EncodeBig(network.BigChainID()), addresses)
+				defer srv.Close()
+				defer ec.Close()
+
+				client, err := New(t.Context(), WithPrivateKey(testKey(t)), WithEthClient(ec))
+				if client != nil {
+					_ = client.Close()
+					t.Fatal("New returned a client for a mismatched contract address")
+				}
+				if !errors.Is(err, ErrContractAddressMismatch) {
+					t.Fatalf("New error = %v, want ErrContractAddressMismatch", err)
+				}
+				if errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("address mismatch classified as invalid argument: %v", err)
+				}
+				for _, fragment := range []string{field.name, expected.Hex(), replacement.Hex()} {
+					if !strings.Contains(err.Error(), fragment) {
+						t.Errorf("New error = %v, want %q", err, fragment)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -1527,7 +1575,8 @@ func TestNew_WithFilBeamRetrievalDomain(t *testing.T) {
 }
 
 func TestNew_Mainnet(t *testing.T) {
-	srv, ec := fakeRPCServer(t, "0x13a") // Filecoin mainnet = 314
+	wantAddresses := testResolvedAddresses(chain.Mainnet)
+	srv, ec := fakeRPCServerWithResolvedAddresses(t, "0x13a", wantAddresses)
 	defer srv.Close()
 	defer ec.Close()
 
@@ -1543,6 +1592,9 @@ func TestNew_Mainnet(t *testing.T) {
 
 	if client.Chain() != chain.Mainnet {
 		t.Errorf("chain = %v, want Mainnet", client.Chain())
+	}
+	if got := client.ResolvedAddresses(); got != wantAddresses {
+		t.Fatalf("ResolvedAddresses = %+v, want %+v", got, wantAddresses)
 	}
 }
 
@@ -1715,8 +1767,8 @@ func TestNew_ContextCanceled(t *testing.T) {
 					opts = append(opts, WithChain(chain.Calibration))
 				}
 				client, err := New(ctx, opts...)
-				if client != nil || !errors.Is(err, want) || errors.Is(err, ErrInvalidArgument) {
-					t.Fatalf("New = %v, %v; want %v without ErrInvalidArgument", client, err, want)
+				if client != nil || !errors.Is(err, want) || errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrContractAddressMismatch) {
+					t.Fatalf("New = %v, %v; want %v without ErrInvalidArgument or ErrContractAddressMismatch", client, err, want)
 				}
 			})
 		}
@@ -1755,8 +1807,8 @@ func TestNew_AddressResolutionFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for address resolution failure")
 	}
-	if errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("address resolution failure classified as invalid argument: %v", err)
+	if errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrContractAddressMismatch) {
+		t.Fatalf("address resolution failure classified as invalid argument or address mismatch: %v", err)
 	}
 	if !strings.Contains(err.Error(), "synapse.ResolveAddresses") {
 		t.Fatalf("error = %v, want synapse.ResolveAddresses", err)

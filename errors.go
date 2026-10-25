@@ -17,6 +17,10 @@ var ErrClosed = lifecycle.ErrClosed
 // a nil, zero, or otherwise invalid caller-supplied argument.
 var ErrInvalidArgument = errors.New("synapse: invalid argument")
 
+// ErrContractAddressMismatch is returned by [New] when a successfully resolved
+// contract address differs from the selected chain's built-in deployment.
+var ErrContractAddressMismatch = errors.New("synapse: contract address mismatch")
+
 // ErrPrivateNetwork is returned when a root-managed HTTP client refuses to
 // dial a private, local, multicast, unspecified, or reserved address. The
 // Storage service exports the same sentinel as [storage.ErrPrivateNetwork].
