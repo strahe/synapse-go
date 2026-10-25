@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/strahe/synapse-go/chain"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 	"github.com/strahe/synapse-go/warmstorage"
 )
@@ -71,6 +72,7 @@ func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigI
 // PieceStatus returns the current status of pieceCID relative to this
 // context's data set and the challenge schedule. If the piece is not present
 // in the data set, Exists is false and the other fields are zero-valued.
+// pieceCID must be a PieceCIDv2; other CIDs return [ErrInvalidArgument].
 // Missing or non-live data sets return [ErrDataSetUnavailable].
 //
 // Chain state and the head epoch are read independently, not at a fixed block.
@@ -78,11 +80,14 @@ func (c *DataSetContext) GetScheduledRemovals(ctx context.Context) ([]types.BigI
 // the challenge time and remaining hours do not require that configuration.
 // Other read failures and caller cancellation return wrapped errors.
 func (c *DataSetContext) PieceStatus(ctx context.Context, pieceCID cid.Cid) (*PieceStatus, error) {
-	if c.core.pdpCaller == nil {
-		return nil, errors.New("storage.DataSetContext.PieceStatus: PDPVerifier reader not configured")
-	}
 	if !pieceCID.Defined() {
 		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w: undefined pieceCID", ErrInvalidArgument)
+	}
+	if _, err := piece.ParseV2(pieceCID); err != nil {
+		return nil, fmt.Errorf("storage.DataSetContext.PieceStatus: %w: PieceCIDv2 required: %w", ErrInvalidArgument, err)
+	}
+	if c.core.pdpCaller == nil {
+		return nil, errors.New("storage.DataSetContext.PieceStatus: PDPVerifier reader not configured")
 	}
 
 	var (

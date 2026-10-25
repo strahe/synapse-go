@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 
 	"github.com/strahe/synapse-go/chain"
 	"github.com/strahe/synapse-go/types"
@@ -72,6 +73,48 @@ func mustPieceStatusContext(t *testing.T, pdp *fakePDPReader, cfg PDPConfigReade
 		t.Fatalf("NewContext: %v", err)
 	}
 	return c
+}
+
+func invalidPieceCIDCases(t *testing.T) []struct {
+	name string
+	cid  cid.Cid
+} {
+	t.Helper()
+	hash, err := multihash.Sum([]byte("ordinary raw CID"), multihash.SHA2_256, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []struct {
+		name string
+		cid  cid.Cid
+	}{
+		{name: "undefined", cid: cid.Undef},
+		{name: "v1", cid: mustPieceInfo(t).CIDv1},
+		{name: "raw", cid: cid.NewCidV1(cid.Raw, hash)},
+	}
+}
+
+func TestContext_PieceStatus_InvalidCID(t *testing.T) {
+	for _, tc := range invalidPieceCIDCases(t) {
+		for _, configured := range []bool{true, false} {
+			name := tc.name
+			if !configured {
+				name += "/reader unset"
+			}
+			t.Run(name, func(t *testing.T) {
+				readErr := errors.New("unexpected chain read")
+				reader := &fakePDPReader{findErr: readErr, nextChallengeErr: readErr, blockNumberErr: readErr}
+				c := mustPieceStatusContext(t, reader, nil)
+				if !configured {
+					c.core.pdpCaller = nil
+				}
+				status, err := c.PieceStatus(t.Context(), tc.cid)
+				if status != nil || !errors.Is(err, ErrInvalidArgument) || errors.Is(err, readErr) {
+					t.Fatalf("PieceStatus = %+v, %v; want nil, ErrInvalidArgument before chain reads", status, err)
+				}
+			})
+		}
+	}
 }
 
 func TestContext_GetScheduledRemovals(t *testing.T) {

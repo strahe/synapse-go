@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 
 	synapse "github.com/strahe/synapse-go"
 	"github.com/strahe/synapse-go/chain"
@@ -1540,6 +1541,46 @@ func TestIntegration(t *testing.T) {
 		}
 		if !ps.Exists {
 			t.Fatal("confirmed upload is absent from PieceStatus")
+		}
+
+		pieceInfo, err := piece.ParseV2(uploadedCID)
+		if err != nil {
+			t.Fatalf("parse uploaded piece: %v", err)
+		}
+		rawHash, err := multihash.Sum([]byte("not a piece"), multihash.SHA2_256, -1)
+		if err != nil {
+			t.Fatalf("create raw CID: %v", err)
+		}
+		for _, invalid := range []struct {
+			name string
+			cid  cid.Cid
+		}{
+			{name: "Undefined", cid: cid.Undef},
+			{name: "PieceCIDv1", cid: pieceInfo.CIDv1},
+			{name: "RawCID", cid: cid.NewCidV1(cid.Raw, rawHash)},
+		} {
+			t.Run("InvalidPieceCID/"+invalid.name, func(t *testing.T) {
+				status, err := uctx.PieceStatus(cctx, invalid.cid)
+				if status != nil || !errors.Is(err, storage.ErrInvalidArgument) {
+					t.Fatalf("PieceStatus(%s) = %+v, %v; want ErrInvalidArgument", invalid.cid, status, err)
+				}
+
+				deleteCtx, cancelDelete := context.WithCancel(cctx)
+				cancelDelete()
+				result, err := uctx.DeletePiece(deleteCtx, invalid.cid)
+				if result != nil || !errors.Is(err, storage.ErrInvalidArgument) {
+					t.Fatalf("DeletePiece(%s) = %+v, %v; want ErrInvalidArgument", invalid.cid, result, err)
+				}
+				for _, inputs := range [][]cid.Cid{
+					{invalid.cid, uploadedCID},
+					{uploadedCID, invalid.cid},
+				} {
+					result, err := uctx.DeletePieces(deleteCtx, inputs)
+					if result != nil || !errors.Is(err, storage.ErrInvalidArgument) {
+						t.Fatalf("DeletePieces(%v) = %+v, %v; want ErrInvalidArgument", inputs, result, err)
+					}
+				}
+			})
 		}
 		if ps.HoursUntilNextChallenge < 0 {
 			t.Fatalf("HoursUntilNextChallenge = %v", ps.HoursUntilNextChallenge)

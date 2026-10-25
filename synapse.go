@@ -156,7 +156,8 @@ func WithUploadPullConcurrency(concurrency int) ClientOption {
 }
 
 // WithRPCURL sets the JSON-RPC endpoint URL. An ethclient is dialed
-// during [New] and closed by [Client.Close].
+// during [New] and closed by [Client.Close]. The endpoint must be trusted for
+// chain state; address validation does not authenticate RPC responses.
 func WithRPCURL(url string) ClientOption {
 	return func(cfg *clientConfig) { cfg.rpcURL = url }
 }
@@ -178,7 +179,8 @@ func WithMaxMulticallCalls(max int) ClientOption {
 
 // WithEthClient provides a pre-created [ethclient.Client].
 // When set, [WithRPCURL] is ignored and the client is NOT closed
-// by [Client.Close].
+// by [Client.Close]. The client must be trusted for chain state; see [New]
+// for address validation.
 func WithEthClient(c *ethclient.Client) ClientOption {
 	return func(cfg *clientConfig) { cfg.ethClient = c }
 }
@@ -276,6 +278,9 @@ func WithAllowPrivateNetworks(allow bool) ClientOption {
 
 // New creates a Client, connecting to the given RPC endpoint and
 // resolving the chain and contract addresses.
+// New returns [ErrContractAddressMismatch] if a resolved Payments, USDFC,
+// SessionKeyRegistry, or SPRegistry address differs from the selected chain's
+// built-in deployment. Other contract addresses use the resolved topology.
 //
 // Required options: a private key ([WithPrivateKey] or [WithPrivateKeyHex]).
 // If no RPC source is provided, the client uses the selected chain's default
@@ -461,11 +466,29 @@ func resolveChain(ctx context.Context, ec *ethclient.Client, cfg *clientConfig) 
 }
 
 func resolveAddresses(ctx context.Context, ec *ethclient.Client, c chain.Chain) (ResolvedAddresses, error) {
-	fwss := c.Addresses().FWSS
-	if fwss == (common.Address{}) {
+	expected := c.Addresses()
+	if expected.FWSS == (common.Address{}) {
 		return ResolvedAddresses{}, fmt.Errorf("no FWSS address for chain %s", c)
 	}
-	return ResolveAddresses(ctx, ec, fwss)
+	resolved, err := ResolveAddresses(ctx, ec, expected.FWSS)
+	if err != nil {
+		return ResolvedAddresses{}, err
+	}
+	for _, contract := range []struct {
+		name             string
+		expected, actual common.Address
+	}{
+		{name: "Payments", expected: expected.Payments, actual: resolved.Payments},
+		{name: "USDFC", expected: expected.USDFC, actual: resolved.USDFC},
+		{name: "SessionKeyRegistry", expected: expected.SessionKeyRegistry, actual: resolved.SessionKeyRegistry},
+		{name: "SPRegistry", expected: expected.SPRegistry, actual: resolved.SPRegistry},
+	} {
+		if contract.actual != contract.expected {
+			return ResolvedAddresses{}, fmt.Errorf("%w: %s: expected %s, got %s",
+				ErrContractAddressMismatch, contract.name, contract.expected.Hex(), contract.actual.Hex())
+		}
+	}
+	return resolved, nil
 }
 
 func newClient(cfg *clientConfig, ec *ethclient.Client, ownsClient bool, selectedChain chain.Chain, addresses ResolvedAddresses) (*Client, error) {

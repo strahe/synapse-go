@@ -30,8 +30,9 @@
 // [Client.WarmStorage], [Client.SPRegistry], [Client.Costs], [Client.FilBeam],
 // and [Client.SessionKey]. Each getter returns the service instance created by [New].
 // [Client.ResolvedAddresses] returns the address snapshot used by those
-// services. Read-only callers can use [ResolveAddresses] directly without a
-// private key.
+// services. If [New] returns [ErrContractAddressMismatch], verify the RPC
+// endpoint and update the SDK when an official deployment changes.
+// Read-only callers can use [ResolveAddresses] directly without a private key.
 //
 // # HTTP security
 //

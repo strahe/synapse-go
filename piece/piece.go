@@ -44,13 +44,11 @@ var (
 // PieceInfo holds lossless piece information at the upload/download boundary.
 //
 // CIDv1 is the standard Filecoin piece commitment (codec=0xf101,
-// multihash=sha2-256-trunc254-padded). It is the form used by smart contracts
-// and on-chain storage.
+// multihash=sha2-256-trunc254-padded). It does not encode the original raw size.
 //
 // CIDv2 is the PieceCIDv2 (codec=0x55, multihash=fr32-sha256-trunc254-padbintree),
 // which encodes the original raw (unpadded) byte count inside its multihash
-// digest. It is the form used at the storage API boundary so that RawSize
-// never needs to be recomputed from the original data.
+// digest. Use CIDv2 for storage operations and PDPVerifier piece lookups.
 //
 // RawSize is the original unpadded byte count. It is encoded losslessly inside
 // CIDv2 and is always equal to the number of bytes passed to Calculate.
@@ -73,9 +71,6 @@ const minPayloadSizeForV2 = 127
 // CIDv1 is always populated. CIDv2 is populated when RawSize >= 127 (the
 // minimum Filecoin piece payload size). For smaller inputs CIDv2 is cid.Undef
 // because the fr32 encoding standard does not define pieces below 127 bytes.
-//
-// The returned PieceInfo carries both CIDv1 (for on-chain use / smart contracts)
-// and CIDv2 (for the storage API boundary), plus the exact raw byte count.
 func Calculate(r io.Reader) (PieceInfo, error) {
 	w := NewWriter()
 	if _, err := io.Copy(w, r); err != nil {
@@ -83,7 +78,7 @@ func Calculate(r io.Reader) (PieceInfo, error) {
 	}
 	info, err := w.Sum()
 	if err != nil {
-		// Preserve the historical piece.Calculate error prefix.
+		// Empty inputs use the piece.Calculate error prefix.
 		if errors.Is(err, ErrEmptyInput) {
 			return PieceInfo{}, fmt.Errorf("piece.Calculate: %w", ErrEmptyInput)
 		}
