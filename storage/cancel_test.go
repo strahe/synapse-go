@@ -124,27 +124,14 @@ func (ctxAwarePDPConfigReader) GetPDPConfig(ctx context.Context) (*warmstorage.P
 // the parallel reads in PieceStatus surface context.Canceled.
 func TestContextPieceStatus_Cancellation(t *testing.T) {
 	c := mustPieceStatusContext(t, nil, nil)
-	// Replace pdp readers with ctx-aware blockers.
 	c.core.pdpCaller = ctxAwarePDPReader{}
 	c.core.pdpConfig = ctxAwarePDPConfigReader{}
-
-	pi, err := piecePCIDForTest()
-	if err != nil {
-		t.Fatalf("piece cid: %v", err)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = c.PieceStatus(ctx, pi)
-	if err == nil {
-		t.Fatalf("PieceStatus returned nil error; want context.Canceled")
-	}
+	_, err := c.PieceStatus(ctx, mustPieceInfo(t).CIDv2)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("PieceStatus err = %v; want errors.Is(err, context.Canceled)", err)
 	}
-}
-
-func piecePCIDForTest() (cid.Cid, error) {
-	return cid.Decode("bafkzcibcdpiwq7uxghoxc5wmpccnzqs36hyaiocy7yebbzlqcmxxljiroinwhig")
 }

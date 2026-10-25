@@ -16,7 +16,8 @@ import (
 )
 
 // DeletePiece schedules removal of the first piece matching pieceCID from
-// this context's data set.
+// this context's data set. pieceCID must be a PieceCIDv2; other CIDs return
+// [ErrInvalidArgument].
 //
 // A data set can contain multiple piece IDs with the same piece CID. This
 // method resolves pieceCID with PDPVerifier.findPieceIdsByCid using limit=1
@@ -34,7 +35,8 @@ func (c *DataSetContext) DeletePiece(ctx context.Context, pieceCID cid.Cid) (*sd
 
 // DeletePieces schedules removal of the first piece matching each CID in one
 // provider transaction. Duplicate resolved piece IDs are removed while
-// preserving their first occurrence.
+// preserving their first occurrence. Every CID must be a PieceCIDv2;
+// otherwise [ErrInvalidArgument] is returned.
 //
 // A data set can contain multiple piece IDs with the same piece CID. Use
 // [DataSetContext.DeletePiecesByID] to remove specific duplicate instances.
@@ -146,10 +148,10 @@ func normalizeDeletePieceCIDs(op string, pieceCIDs []cid.Cid) ([]normalizedDelet
 		if !pieceCID.Defined() {
 			return nil, fmt.Errorf("%s: %w: undefined pieceCID at index %d", op, ErrInvalidArgument, i)
 		}
-		key := pieceCID.KeyString()
-		if info, err := piece.ParseV2(pieceCID); err == nil {
-			key = info.CIDv1.KeyString()
+		if _, err := piece.ParseV2(pieceCID); err != nil {
+			return nil, fmt.Errorf("%s: %w: pieceCID at index %d must be PieceCIDv2: %w", op, ErrInvalidArgument, i, err)
 		}
+		key := pieceCID.KeyString()
 		if _, ok := seen[key]; ok {
 			continue
 		}

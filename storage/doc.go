@@ -154,6 +154,9 @@
 // Standalone services set Options.DataSetDownloader to their ServiceResolver
 // and provide ServiceResolverOptions.CDNRetriever for the resolver's Payer.
 //
+// DataSetContext.PieceStatus, DeletePiece, and DeletePieces require PieceCIDv2;
+// other CIDs return [ErrInvalidArgument]. DeletePieces deduplicates complete
+// PieceCIDv2 values, including their raw sizes.
 // DataSetContext.DeletePieces and DeletePiecesByID have no fixed count limit.
 // They submit one deletion request without splitting or retrying; contract,
 // gas, and transaction limits still apply. Deletion schedules removal rather

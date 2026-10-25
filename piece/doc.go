@@ -7,14 +7,11 @@
 // # CID formats
 //
 // PieceCIDv1 (codec=0xf101, multihash=sha2-256-trunc254-padded) is the
-// traditional Filecoin piece commitment. It is used by smart contracts for
-// on-chain piece verification.
+// traditional Filecoin piece commitment. It does not encode the original raw size.
 //
 // PieceCIDv2 (codec=0x55, multihash=fr32-sha256-trunc254-padbintree, per
 // FRC-0069) encodes the original raw byte count inside its multihash digest.
-// It is the format exposed at the upload/download API boundary so that the
-// exact raw size is always carried losslessly without requiring callers to
-// recompute it from the original data.
+// Storage operations and PDPVerifier piece lookups use this format.
 //
 // # PieceInfo
 //
@@ -31,8 +28,7 @@
 // # Other utilities
 //
 //   - [Validate] checks that a CID is a valid v1 piece commitment.
-//   - [ExtractRoot] extracts the 32-byte merkle root from a v1 CID; smart
-//     contracts receive this root for piece verification.
+//   - [ExtractRoot] extracts the 32-byte merkle root from a v1 CID.
 //   - [ParseV2] decodes a PieceCIDv2 back into a PieceInfo.
 //   - [PieceInfoFromV1] reconstructs a PieceInfo from a stored v1 CID and raw size.
 //   - [PaddedSize] computes the smallest power-of-two padded piece size for a

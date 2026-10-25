@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"math/big"
 	"strings"
@@ -9,9 +10,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
-	"github.com/multiformats/go-multihash"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
+	"github.com/strahe/synapse-go/piece"
 	"github.com/strahe/synapse-go/types"
 )
 
@@ -248,6 +249,43 @@ func TestContext_DeletePieces_DeduplicatesResolvedIDs(t *testing.T) {
 	}
 }
 
+func TestContext_DeletePieces_PreservesDistinctRawSizes(t *testing.T) {
+	infos := make([]piece.PieceInfo, 2)
+	for i, rawSize := range []int{128, 129} {
+		info, err := piece.CalculateFromBytes(make([]byte, rawSize))
+		if err != nil {
+			t.Fatal(err)
+		}
+		infos[i] = info
+	}
+	if !infos[0].CIDv1.Equals(infos[1].CIDv1) || infos[0].CIDv2.Equals(infos[1].CIDv2) {
+		t.Fatal("expected equal commitments with distinct PieceCIDv2 raw sizes")
+	}
+	reader := &batchCIDResultPDPReader{
+		batchResults: [][]types.BigInt{{types.NewBigInt(42)}, {types.NewBigInt(43)}},
+	}
+	var gotPieceIDs []types.BigInt
+	provider := &fakePDPProviderClient{
+		scheduleDeletionsFn: func(_ context.Context, _ types.BigInt, pieceIDs []types.BigInt, _ []byte) (common.Hash, error) {
+			gotPieceIDs = append([]types.BigInt(nil), pieceIDs...)
+			return common.HexToHash("0xabc123"), nil
+		},
+	}
+	c := mustDeleteContext(t, provider,
+		WithPayer(testPayer()), WithRecordKeeper(testRecordKeeper()),
+		WithChainID(types.ChainID(314159)), WithPDPVerifierReader(reader),
+	)
+	if _, err := c.DeletePieces(t.Context(), []cid.Cid{infos[0].CIDv2, infos[0].CIDv2, infos[1].CIDv2}); err != nil {
+		t.Fatalf("DeletePieces: %v", err)
+	}
+	if len(reader.gotPieceCIDs) != 2 || !reader.gotPieceCIDs[0].Equals(infos[0].CIDv2) || !reader.gotPieceCIDs[1].Equals(infos[1].CIDv2) {
+		t.Fatalf("resolved piece CIDs = %v, want both distinct PieceCIDv2 values", reader.gotPieceCIDs)
+	}
+	if want := []types.BigInt{types.NewBigInt(42), types.NewBigInt(43)}; !equalBigInts(gotPieceIDs, want) {
+		t.Fatalf("scheduled piece IDs = %v, want %v", gotPieceIDs, want)
+	}
+}
+
 func TestContext_DeletePieces_UsesBatchCIDResolver(t *testing.T) {
 	pieceCIDs := sequenceDeleteCIDs(t, 3)
 	reader := &batchCIDResultPDPReader{
@@ -450,12 +488,14 @@ func sequenceBigInts(count int) []types.BigInt {
 func sequenceDeleteCIDs(t *testing.T, count int) []cid.Cid {
 	t.Helper()
 	pieceCIDs := make([]cid.Cid, count)
+	data := make([]byte, 128)
 	for i := range pieceCIDs {
-		hash, err := multihash.Sum([]byte{byte(i)}, multihash.SHA2_256, -1)
+		binary.LittleEndian.PutUint64(data, uint64(i))
+		info, err := piece.CalculateFromBytes(data)
 		if err != nil {
-			t.Fatalf("create multihash %d: %v", i, err)
+			t.Fatalf("calculate piece %d: %v", i, err)
 		}
-		pieceCIDs[i] = cid.NewCidV1(cid.Raw, hash)
+		pieceCIDs[i] = info.CIDv2
 	}
 	return pieceCIDs
 }
@@ -529,15 +569,51 @@ func TestContext_DeletePiece_FindError(t *testing.T) {
 }
 
 func TestContext_DeletePiece_InvalidCID(t *testing.T) {
-	pdp := &fakePDPReader{}
-	c := mustDeleteContext(t, &fakePDPProviderClient{},
-		WithPayer(testPayer()),
-		WithRecordKeeper(testRecordKeeper()),
-		WithChainID(types.ChainID(314159)),
-		WithPDPVerifierReader(pdp),
+	type testCase struct {
+		name      string
+		pieceCIDs []cid.Cid
+		single    bool
+	}
+	var tests []testCase
+	for _, invalid := range invalidPieceCIDCases(t) {
+		tests = append(tests,
+			testCase{name: "single/" + invalid.name, pieceCIDs: []cid.Cid{invalid.cid}, single: true},
+			testCase{name: "batch/" + invalid.name, pieceCIDs: []cid.Cid{invalid.cid}},
+		)
+	}
+	info := mustPieceInfo(t)
+	tests = append(tests,
+		testCase{name: "batch/v1 before v2", pieceCIDs: []cid.Cid{info.CIDv1, info.CIDv2}},
+		testCase{name: "batch/v2 before v1", pieceCIDs: []cid.Cid{info.CIDv2, info.CIDv1}},
 	)
-	if _, err := c.DeletePiece(context.Background(), cid.Undef); err == nil {
-		t.Fatal("expected error for undefined CID")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &batchCIDResultPDPReader{batchResults: [][]types.BigInt{{types.NewBigInt(42)}}}
+			deletions := 0
+			provider := &fakePDPProviderClient{
+				scheduleDeletionsFn: func(context.Context, types.BigInt, []types.BigInt, []byte) (common.Hash, error) {
+					deletions++
+					return common.HexToHash("0xabc123"), nil
+				},
+			}
+			c := mustDeleteContext(t, provider,
+				WithPayer(testPayer()), WithRecordKeeper(testRecordKeeper()),
+				WithChainID(types.ChainID(314159)), WithPDPVerifierReader(reader),
+			)
+			var result *types.WriteResult
+			var err error
+			if tc.single {
+				result, err = c.DeletePiece(t.Context(), tc.pieceCIDs[0])
+			} else {
+				result, err = c.DeletePieces(t.Context(), tc.pieceCIDs)
+			}
+			if result != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("delete = %+v, %v; want nil, ErrInvalidArgument", result, err)
+			}
+			if reader.batchCalls != 0 || reader.singularCalls != 0 || deletions != 0 {
+				t.Fatalf("invalid input reached external calls: batch=%d singular=%d deletions=%d", reader.batchCalls, reader.singularCalls, deletions)
+			}
+		})
 	}
 }
 
