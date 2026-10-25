@@ -2,7 +2,6 @@ package warmstorage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -57,35 +56,57 @@ type PDPPaymentTerminatedEvent struct {
 	PDPRailID sdktypes.BigInt
 }
 
-// ExtractPDPPaymentTerminatedEvent extracts PDPPaymentTerminated from a
-// transaction receipt.
+// ExtractPDPPaymentTerminatedEvent extracts the first PDPPaymentTerminated
+// event without validating its contract address or data set. Use
+// [Service.PDPPaymentTerminatedEvent] to verify both.
 func ExtractPDPPaymentTerminatedEvent(receipt *ethtypes.Receipt) (*PDPPaymentTerminatedEvent, error) {
+	return extractPDPPaymentTerminatedEvent("warmstorage.ExtractPDPPaymentTerminatedEvent", receipt, nil, nil)
+}
+
+// PDPPaymentTerminatedEvent extracts the configured FWSS contract's termination
+// event for dataSetID from receipt.
+func (s *Service) PDPPaymentTerminatedEvent(receipt *ethtypes.Receipt, dataSetID sdktypes.BigInt) (*PDPPaymentTerminatedEvent, error) {
+	const op = "warmstorage.PDPPaymentTerminatedEvent"
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if dataSetID.IsZero() {
+		return nil, fmt.Errorf("%s: %w: zero dataSetID", op, ErrInvalidArgument)
+	}
+	address := s.FWSSAddress()
+	return extractPDPPaymentTerminatedEvent(op, receipt, &address, &dataSetID)
+}
+
+func extractPDPPaymentTerminatedEvent(op string, receipt *ethtypes.Receipt, address *common.Address, target *sdktypes.BigInt) (*PDPPaymentTerminatedEvent, error) {
 	if receipt == nil {
-		return nil, errors.New("warmstorage.ExtractPDPPaymentTerminatedEvent: nil receipt")
+		return nil, fmt.Errorf("%s: nil receipt", op)
 	}
 	filterer, err := fwss.NewFWSSFilterer(common.Address{}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("warmstorage.ExtractPDPPaymentTerminatedEvent: bind filterer: %w", err)
+		return nil, fmt.Errorf("%s: bind filterer: %w", op, err)
 	}
 	for _, log := range receipt.Logs {
-		if log == nil {
+		if log == nil || (address != nil && log.Address != *address) {
 			continue
 		}
 		ev, err := filterer.ParsePDPPaymentTerminated(*log)
 		if err != nil {
 			continue
 		}
+		if target != nil && ev.DataSetId.Cmp(target.Big()) != 0 {
+			continue
+		}
 		dataSetID, err := idconv.FromBig("DataSetID", ev.DataSetId)
 		if err != nil {
-			return nil, fmt.Errorf("warmstorage.ExtractPDPPaymentTerminatedEvent: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		pdpRailID, err := idconv.FromBig("PDPRailID", ev.PdpRailId)
 		if err != nil {
-			return nil, fmt.Errorf("warmstorage.ExtractPDPPaymentTerminatedEvent: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		endEpoch, err := epochFromBig("EndEpoch", ev.EndEpoch)
 		if err != nil {
-			return nil, fmt.Errorf("warmstorage.ExtractPDPPaymentTerminatedEvent: %w", err)
+			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		return &PDPPaymentTerminatedEvent{
 			DataSetID: dataSetID,
@@ -93,5 +114,5 @@ func ExtractPDPPaymentTerminatedEvent(receipt *ethtypes.Receipt) (*PDPPaymentTer
 			PDPRailID: pdpRailID,
 		}, nil
 	}
-	return nil, errors.New("warmstorage.ExtractPDPPaymentTerminatedEvent: PDPPaymentTerminated event not found")
+	return nil, fmt.Errorf("%s: PDPPaymentTerminated event not found", op)
 }

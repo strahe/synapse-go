@@ -349,9 +349,13 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer terminateCancel()
+		var terminationSubmission *storage.TerminateServiceSubmission
 		terminateResult, terminateErr := client.Storage().TerminateService(terminateCtx, cleanupDataSetID, &storage.TerminateServiceOptions{
 			SkipProvider:      true,
 			DirectWaitTimeout: delegatedTxWaitTimeout,
+			OnSubmitted: func(sub storage.TerminateServiceSubmission) {
+				terminationSubmission = &sub
+			},
 		})
 		if terminateErr != nil {
 			t.Errorf("cleanup TerminateService(dataset=%s session=%s): %v", cleanupDataSetID, delegatedAddress, terminateErr)
@@ -359,6 +363,11 @@ func TestIntegration_DelegatedStorageSigner(t *testing.T) {
 		}
 		if terminateResult == nil || !terminateResult.DataSetID.Equal(cleanupDataSetID) || terminateResult.TxHash == nil || *terminateResult.TxHash == (common.Hash{}) || terminateResult.ConfirmedTxHash == nil || *terminateResult.ConfirmedTxHash == (common.Hash{}) || terminateResult.EndEpoch == 0 {
 			t.Errorf("cleanup TerminateService(dataset=%s session=%s) result=%+v", cleanupDataSetID, delegatedAddress, terminateResult)
+			return
+		}
+		if terminationSubmission == nil || !terminationSubmission.Direct || !terminationSubmission.Accepted ||
+			!terminationSubmission.DataSetID.Equal(cleanupDataSetID) || terminationSubmission.TransactionID != terminateResult.TxHash.Hex() {
+			t.Errorf("cleanup termination submission=%+v, result=%+v", terminationSubmission, terminateResult)
 			return
 		}
 		dataSetInfo, readErr := client.WarmStorage().GetDataSet(terminateCtx, cleanupDataSetID)

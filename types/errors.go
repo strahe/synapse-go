@@ -30,6 +30,9 @@ var ErrReceiptRPCFailure = txutil.ErrReceiptRPCFailure
 // SDK-originated errors always contain Transaction and Cause. Use errors.AsType
 // to recover the original transaction for lookup or resubmission; do not retry
 // the business operation merely because its WriteResult is nil.
+// For payments, sessionkey, spregistry, and warmstorage wallet writes, sending
+// errors wrap BroadcastError; earlier failures do not. Read-only waits and
+// provider-relayed writes do not share that submission boundary.
 type BroadcastError struct {
 	Transaction *ethtypes.Transaction
 	Cause       error

@@ -25,9 +25,10 @@
 //
 // Write methods accept [WithOnSubmitted] to report successful broadcast
 // synchronously, before any receipt waiting. This notification does not indicate
-// confirmation. Waiting errors retain the submission hash in types.WriteResult.
-// Sending errors return [BroadcastError] with the original signed transaction
-// and cause; a nil result does not establish that the node rejected it.
+// confirmation. Sending errors return [BroadcastError] with the original signed
+// transaction and cause; a nil result does not establish that the node rejected
+// it. Persist the hash from the callback, the result, or that transaction, then
+// resume with [Service.WaitForTransaction].
 //
 // [Service.TopUpCDNPaymentRails] requires each amount to be within [0, 2^256-1]
 // and at least one amount to be positive. Invalid amounts return

@@ -82,7 +82,8 @@ type PDPProviderClient interface {
 	WaitForCreateDataSetAndAddPieces(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	SchedulePieceDeletions(ctx context.Context, dataSetID types.BigInt, pieceIDs []types.BigInt, extraData []byte) (common.Hash, error)
 	TerminateService(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
-	WaitForTerminateService(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
+	// Waiting errors return the last status read, if any.
+	WaitForTerminateService(context.Context, types.BigInt, time.Duration, func(common.Hash), ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error)
 }
 
 // Provider holds the on-chain identity of a storage provider.

@@ -1,10 +1,12 @@
 package pdp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -244,4 +246,181 @@ func TestGetTerminateServiceStatus_RejectsInvalidHashes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWaitForTerminateService_RecoverySnapshots(t *testing.T) {
+	a := common.HexToHash("0x1")
+	b := common.HexToHash("0x2")
+	c := common.HexToHash("0x3")
+	d := common.HexToHash("0x4")
+	zero := common.Hash{}
+	type hashPair struct {
+		original  common.Hash
+		confirmed common.Hash
+	}
+	tests := []struct {
+		name         string
+		seed         common.Hash
+		states       []hashPair
+		complete     bool
+		want         hashPair
+		wantRejected common.Hash
+		wantReported []common.Hash
+	}{
+		{name: "seed is not an observation", seed: a, wantRejected: a},
+		{name: "zero seed has no known transaction"},
+		{name: "seed is not reported again", seed: a, states: []hashPair{{a, zero}}, want: hashPair{a, zero}, wantRejected: a},
+		{name: "new hash replaces seed", seed: a, states: []hashPair{{c, zero}}, want: hashPair{c, zero}, wantRejected: c, wantReported: []common.Hash{c}},
+		{name: "tracking continues after notification", seed: a, states: []hashPair{{a, zero}, {c, zero}, {d, zero}}, want: hashPair{d, zero}, wantRejected: d, wantReported: []common.Hash{c}},
+		{name: "status without hashes keeps the known hash", seed: a, states: []hashPair{{zero, zero}}, wantRejected: a},
+		{name: "latest status is returned", states: []hashPair{{a, zero}, {a, b}}, want: hashPair{a, b}, wantRejected: a, wantReported: []common.Hash{a}},
+		{name: "success returns the final status", states: []hashPair{{a, zero}, {a, b}}, complete: true, want: hashPair{a, b}, wantReported: []common.Hash{a}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodGet {
+					t.Fatalf("method=%s, want read-only polling", req.Method)
+				}
+				index := requests
+				requests++
+				if index >= len(tt.states) {
+					return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: http.NoBody}, nil
+				}
+				pair := tt.states[index]
+				return terminateStatusResponse(t, pair.original, pair.confirmed, tt.complete && index == len(tt.states)-1), nil
+			})
+			client, err := New("https://provider.example", WithHTTPClient(&http.Client{Transport: rt}), WithMaxRetries(0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reported []common.Hash
+			status, err := client.WaitForTerminateService(context.Background(), types.NewBigInt(7), time.Nanosecond,
+				func(hash common.Hash) { reported = append(reported, hash) }, nil, WithKnownTerminationTxHash(tt.seed))
+			switch {
+			case tt.complete:
+				if err != nil || status == nil || !status.FWSSTerminated || status.ServiceTerminationEpoch != 456 {
+					t.Fatalf("status=%+v err=%v, want confirmed termination", status, err)
+				}
+			case tt.wantRejected != zero:
+				rejected, ok := errors.AsType[*WaitForTerminateServiceRejectedError](err)
+				if !ok || rejected.TxHash != tt.wantRejected {
+					t.Fatalf("err=%v, want rejection of %s", err, tt.wantRejected)
+				}
+			default:
+				if _, ok := errors.AsType[*WaitForTerminateServiceNotFoundError](err); !ok {
+					t.Fatalf("err=%v, want status not found without a known transaction", err)
+				}
+			}
+			if len(tt.states) == 0 {
+				if status != nil {
+					t.Fatalf("unobserved seed produced status=%+v", status)
+				}
+			} else {
+				if status == nil {
+					t.Fatal("wait lost its observed status")
+				}
+				var original, confirmed common.Hash
+				if status.TerminationTxHash != nil {
+					original = *status.TerminationTxHash
+				}
+				if status.ConfirmedTxHash != nil {
+					confirmed = *status.ConfirmedTxHash
+				}
+				if original != tt.want.original || confirmed != tt.want.confirmed {
+					t.Fatalf("hashes=%s/%s, want %s/%s", original, confirmed, tt.want.original, tt.want.confirmed)
+				}
+			}
+			if len(reported) != len(tt.wantReported) {
+				t.Fatalf("reported=%v, want %v", reported, tt.wantReported)
+			}
+			for i, hash := range reported {
+				if hash != tt.wantReported[i] {
+					t.Fatalf("reported=%v, want %v", reported, tt.wantReported)
+				}
+			}
+			wantRequests := len(tt.states)
+			if !tt.complete {
+				wantRequests++
+			}
+			if requests != wantRequests {
+				t.Fatalf("requests=%d, want %d", requests, wantRequests)
+			}
+		})
+	}
+}
+
+func TestWaitForTerminateService_RetainsSnapshotOnFailure(t *testing.T) {
+	original := common.HexToHash("0x1")
+	confirmed := common.HexToHash("0x2")
+	for _, tt := range []struct {
+		name    string
+		want    error
+		cancel  bool
+		invalid bool
+	}{
+		{name: "request deadline", want: context.DeadlineExceeded},
+		{name: "cancellation after observation", want: context.Canceled, cancel: true},
+		{name: "invalid later response", want: ErrInvalidStatus, invalid: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			requests := 0
+			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodGet {
+					t.Fatalf("method=%s, want GET", req.Method)
+				}
+				requests++
+				if requests == 1 {
+					return terminateStatusResponse(t, original, confirmed, false), nil
+				}
+				if tt.invalid {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(bytes.NewBufferString(`{"terminationTxHash":"0x1234"}`)),
+					}, nil
+				}
+				return nil, context.DeadlineExceeded
+			})
+			client, err := New("https://provider.example", WithHTTPClient(&http.Client{Transport: rt}), WithMaxRetries(0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := client.WaitForTerminateService(ctx, types.NewBigInt(7), time.Nanosecond, func(common.Hash) {
+				if tt.cancel {
+					cancel()
+				}
+			})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err=%v, want %v", err, tt.want)
+			}
+			if status == nil || status.TerminationTxHash == nil || status.ConfirmedTxHash == nil ||
+				*status.TerminationTxHash != original || *status.ConfirmedTxHash != confirmed {
+				t.Fatalf("status=%+v, want retained original and confirmed hashes", status)
+			}
+		})
+	}
+}
+
+func terminateStatusResponse(t *testing.T, original, confirmed common.Hash, complete bool) *http.Response {
+	t.Helper()
+	wire := terminateStatusWire{FWSSTerminated: &complete}
+	if original != (common.Hash{}) {
+		wire.TerminationTxHash = original.Hex()
+	}
+	if confirmed != (common.Hash{}) {
+		wire.ConfirmedTxHash = confirmed.Hex()
+	}
+	if complete {
+		epoch := json.Number("456")
+		wire.ServiceTerminationEpoch = &epoch
+	}
+	body, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}
 }

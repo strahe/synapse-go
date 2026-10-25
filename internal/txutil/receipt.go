@@ -57,6 +57,17 @@ func WaitForReceiptWithConfig(ctx context.Context, client ReceiptClient, txHash 
 	return waitForReceipt(ctx, client, txHash, cfg, confirmations)
 }
 
+// AwaitReceipt waits up to timeout for the requested confirmations. A
+// non-positive timeout selects the default. A receipt is returned only after it
+// reaches the requested confirmations, including alongside ErrTxFailed.
+func AwaitReceipt(ctx context.Context, client ReceiptClient, txHash common.Hash, timeout time.Duration, confirmations uint64) (*types.Receipt, error) {
+	cfg := DefaultReceiptWaitConfig()
+	if timeout > 0 {
+		cfg.Timeout = timeout
+	}
+	return waitForReceipt(ctx, client, txHash, cfg, confirmations)
+}
+
 // HasConfirmations reports whether the inclusion block has the requested depth.
 // The inclusion block counts as the first confirmation. A zero requirement does
 // not require a block number or head.

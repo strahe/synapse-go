@@ -497,11 +497,7 @@ func TestDepositWithPermit_WatcherWaitsForConfirmations(t *testing.T) {
 					waitForPermitLockReleased(t, s)
 				})
 				headRequested := make(chan struct{}, 1)
-				var receiptCalls atomic.Int32
 				mb.receiptFn = func(context.Context, common.Hash) (*types.Receipt, error) {
-					if receiptCalls.Add(1) == 1 && !broadcastError {
-						return nil, ethereum.NotFound
-					}
 					return &types.Receipt{Status: status, BlockNumber: big.NewInt(5)}, nil
 				}
 				mb.blockFn = func(ctx context.Context) (uint64, error) {
@@ -708,6 +704,67 @@ func TestDepositWithPermit_ReleasesLockOnWriteError(t *testing.T) {
 			if err := depositWithPermitForRaceTest(context.Background(), s, WithWait(time.Second)); err != nil {
 				t.Fatalf("second permit write after failed first: %v", err)
 			}
+		})
+	}
+}
+
+func TestDepositWithPermit_SubmissionPanicKeepsReceiptWatcher(t *testing.T) {
+	for _, wait := range []time.Duration{0, time.Second} {
+		t.Run(wait.String(), func(t *testing.T) {
+			s, mb := newTestService(t, func(opts *Options) { opts.PermitReceiptWait = time.Second })
+			seedPermitInputs(t, mb)
+			started := make(chan struct{})
+			receiptReady := make(chan struct{})
+			var startOnce, releaseOnce sync.Once
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(receiptReady) })
+				waitForPermitLockReleased(t, s)
+			})
+			mb.receiptFn = func(ctx context.Context, hash common.Hash) (*types.Receipt, error) {
+				startOnce.Do(func() { close(started) })
+				select {
+				case <-receiptReady:
+					return &types.Receipt{TxHash: hash, Status: types.ReceiptStatusSuccessful, BlockNumber: big.NewInt(5)}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			want := new(int)
+			var caught any
+			func() {
+				defer func() { caught = recover() }()
+				err := depositWithPermitForRaceTest(context.Background(), s, WithWait(wait), WithConfirmations(2),
+					WithOnSubmitted(func(hash common.Hash) {
+						mb.mu.Lock()
+						if len(mb.sent) != 1 || mb.sent[0].Hash() != hash {
+							t.Error("permit notification preceded broadcast")
+						}
+						mb.mu.Unlock()
+						panic(want)
+					}))
+				if err != nil {
+					t.Fatalf("failed before callback: %v", err)
+				}
+			}()
+			if caught != want {
+				t.Fatalf("panic=%v, want original callback value", caught)
+			}
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("callback panic did not start receipt watcher")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+			defer cancel()
+			release, err := s.permits.acquire(ctx, permitKey{chainID: s.chainID, token: tokenAddr, owner: s.Account()})
+			if release != nil {
+				release()
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("permit reservation released before receipt: %v", err)
+			}
+			releaseOnce.Do(func() { close(receiptReady) })
+			waitForPermitLockReleased(t, s)
 		})
 	}
 }

@@ -34,21 +34,22 @@ type PDPConfigReader interface {
 
 // FWSSTerminationOptions configures a data-set termination request.
 type FWSSTerminationOptions struct {
-	// WaitTimeout is positive and requires waiting for a receipt.
-	WaitTimeout time.Duration
-	// OnSubmitted must be called synchronously once after successful broadcast,
-	// before receipt waiting, even if that wait later fails. Setup or broadcast
-	// failures must not notify. Nil leaves notification to WriteOptions.
-	OnSubmitted func(common.Hash)
-	// WriteOptions carry additional WarmStorage write settings. WaitTimeout
-	// overrides WithWait; a non-nil OnSubmitted overrides WithOnSubmitted.
+	// WriteOptions carry WarmStorage write settings. Submission overrides
+	// WithWait and WithOnSubmitted so it only broadcasts without notification.
 	WriteOptions []warmstorage.WriteOption
 }
 
 // FWSSTerminator terminates data sets through FWSS. The root Client supplies a
-// WarmStorage adapter.
+// WarmStorage adapter. Submission errors before sending must not wrap
+// types.BroadcastError; errors from sending must wrap it. Waiting is read-only.
 type FWSSTerminator interface {
 	TerminateDataSet(ctx context.Context, dataSetID sdktypes.BigInt, opts FWSSTerminationOptions) (*sdktypes.WriteResult, error)
+	// WaitForTermination succeeds only after the requested confirmation depth,
+	// successful execution, and a termination event matching the configured
+	// FWSS address and dataSetID. A returned receipt reached that depth, even
+	// alongside an error. Timeout overrides WithWait; confirmations are preserved
+	// and submission callbacks are ignored.
+	WaitForTermination(ctx context.Context, dataSetID sdktypes.BigInt, hash common.Hash, timeout time.Duration, writeOpts []warmstorage.WriteOption) (*sdktypes.WriteResult, sdktypes.Epoch, error)
 }
 
 // DataSetValidator checks that a data set is live in PDPVerifier and managed
@@ -69,7 +70,8 @@ type DataSetDetailsCatalog interface {
 // upload paths use it to reject ended existing data sets before sending bytes
 // to a provider; ProviderContext uses it to recover creation by caller-owned
 // client data-set ID. The implementation must target the same chain and record
-// keeper configured on the context. Satisfied by *warmstorage.Service.
+// keeper configured on the context. Termination recovery also uses it to
+// reconcile provider observation failures. Satisfied by *warmstorage.Service.
 type FWSSDataSetReader interface {
 	GetDataSet(ctx context.Context, dataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)
 	FindDataSetByClientDataSetID(ctx context.Context, payer common.Address, clientDataSetID sdktypes.BigInt) (*warmstorage.DataSetInfo, error)

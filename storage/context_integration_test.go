@@ -483,9 +483,9 @@ func TestIntegration_ContextCreateDataSetStagedFlow(t *testing.T) {
 	if directTermination == nil || directTermination.Receipt == nil || directTermination.Receipt.Status != 1 {
 		t.Fatalf("primary WarmStorage.TerminateDataSet receipt = %+v", directTermination)
 	}
-	directEvent, err := warmstorage.ExtractPDPPaymentTerminatedEvent(directTermination.Receipt)
+	directEvent, err := ws.PDPPaymentTerminatedEvent(directTermination.Receipt, primaryCommit.DataSet.DataSetID())
 	if err != nil {
-		t.Fatalf("ExtractPDPPaymentTerminatedEvent(primary): %v", err)
+		t.Fatalf("PDPPaymentTerminatedEvent(primary): %v", err)
 	}
 	if !directEvent.DataSetID.Equal(primaryCommit.DataSet.DataSetID()) || !directEvent.PDPRailID.Equal(primaryInfo.PDPRailID) || directEvent.EndEpoch == 0 {
 		t.Fatalf("primary termination event = %+v, want dataSet=%s rail=%s and non-zero end epoch", directEvent, primaryCommit.DataSet.DataSetID(), primaryInfo.PDPRailID)

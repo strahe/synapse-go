@@ -29,6 +29,10 @@
 // transaction and cause. A nil WriteResult does not establish that the node
 // rejected the transaction.
 //
+// Persist the hash from [WithOnSubmitted], the result, or, after a sending
+// error, the [BroadcastError] transaction, then resume with
+// [Service.WaitForTransaction].
+//
 //   - RegisterProvider: declares the caller as a provider and, in the
 //     same transaction, registers a PDP product. Reads REGISTRATION_FEE
 //     from the contract unless WithValue overrides.

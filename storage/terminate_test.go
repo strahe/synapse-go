@@ -25,12 +25,16 @@ import (
 )
 
 type fakeFWSSTerminator struct {
-	gotDataSetID types.BigInt
-	gotOptions   FWSSTerminationOptions
-	res          *types.WriteResult
-	err          error
-	called       bool
-	terminateFn  func(context.Context, types.BigInt, FWSSTerminationOptions) (*types.WriteResult, error)
+	gotDataSetID   types.BigInt
+	gotOptions     FWSSTerminationOptions
+	gotWaitHash    common.Hash
+	gotWaitTimeout time.Duration
+	res            *types.WriteResult
+	err            error
+	called         bool
+	waitCalls      int
+	terminateFn    func(context.Context, types.BigInt, FWSSTerminationOptions) (*types.WriteResult, error)
+	waitFn         func(context.Context, types.BigInt, common.Hash, time.Duration, []warmstorage.WriteOption) (*types.WriteResult, types.Epoch, error)
 }
 
 func (f *fakeFWSSTerminator) TerminateDataSet(ctx context.Context, id types.BigInt, opts FWSSTerminationOptions) (*types.WriteResult, error) {
@@ -41,6 +45,22 @@ func (f *fakeFWSSTerminator) TerminateDataSet(ctx context.Context, id types.BigI
 		return f.terminateFn(ctx, id, opts)
 	}
 	return f.res, f.err
+}
+
+func (f *fakeFWSSTerminator) WaitForTermination(ctx context.Context, id types.BigInt, hash common.Hash, timeout time.Duration, opts []warmstorage.WriteOption) (*types.WriteResult, types.Epoch, error) {
+	f.waitCalls++
+	f.gotWaitHash, f.gotWaitTimeout = hash, timeout
+	if f.waitFn != nil {
+		return f.waitFn(ctx, id, hash, timeout, opts)
+	}
+	if f.res == nil || f.res.Receipt == nil {
+		return f.res, 0, nil
+	}
+	event, err := warmstorage.ExtractPDPPaymentTerminatedEvent(f.res.Receipt)
+	if err != nil {
+		return f.res, 0, err
+	}
+	return f.res, event.EndEpoch, nil
 }
 
 func TestContext_TerminateService_SkipProviderNotConfigured(t *testing.T) {
@@ -91,7 +111,7 @@ func TestContext_TerminateService_SkipProviderPropagatesError(t *testing.T) {
 }
 
 func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
-	broadcastErr := errors.New("broadcast rejected")
+	broadcastErr := errors.New("build failed")
 	lostResponse := &types.BroadcastError{Transaction: coretypes.NewTx(&coretypes.LegacyTx{Nonce: 7}), Cause: context.DeadlineExceeded}
 	tests := []struct {
 		name         string
@@ -100,7 +120,7 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 		cancelOnHash bool
 	}{
 		{name: "confirmed"},
-		{name: "broadcast rejected", sendErr: broadcastErr},
+		{name: "preparation failed", sendErr: broadcastErr},
 		{name: "broadcast response lost", sendErr: lostResponse},
 		{name: "receipt timeout", waitErr: context.DeadlineExceeded},
 		{name: "canceled after submission", cancelOnHash: true, waitErr: context.Canceled},
@@ -115,29 +135,26 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					callbackCalls := 0
-					broadcast := false
 					term := &fakeFWSSTerminator{
-						terminateFn: func(ctx context.Context, id types.BigInt, opts FWSSTerminationOptions) (*types.WriteResult, error) {
-							if !id.Equal(dataSetID) || opts.WaitTimeout != 3*time.Minute || opts.OnSubmitted == nil {
-								t.Fatalf("dependency arguments: id=%s wait=%s callback=%v", id, opts.WaitTimeout, opts.OnSubmitted != nil)
-							}
+						terminateFn: func(context.Context, types.BigInt, FWSSTerminationOptions) (*types.WriteResult, error) {
 							if tt.sendErr != nil {
 								return nil, tt.sendErr
 							}
-							broadcast = true
-							opts.OnSubmitted(submittedHash)
-							if callbackCalls != 1 {
-								t.Fatalf("confirmation started before submission notification: calls=%d", callbackCalls)
+							return &types.WriteResult{Hash: submittedHash}, nil
+						},
+						waitFn: func(ctx context.Context, id types.BigInt, hash common.Hash, timeout time.Duration, _ []warmstorage.WriteOption) (*types.WriteResult, types.Epoch, error) {
+							if callbackCalls != 1 || !id.Equal(dataSetID) || hash != submittedHash || timeout != 3*time.Minute {
+								t.Fatalf("waiting before notification or wrong target: calls=%d id=%s hash=%s timeout=%s", callbackCalls, id, hash, timeout)
 							}
-							res := &types.WriteResult{Hash: submittedHash}
 							if tt.cancelOnHash && !errors.Is(ctx.Err(), context.Canceled) {
-								t.Fatal("submission callback did not cancel the caller context")
+								t.Fatal("callback did not cancel wait")
 							}
+							result := &types.WriteResult{Hash: submittedHash}
 							if tt.waitErr != nil {
-								return res, tt.waitErr
+								return result, 0, tt.waitErr
 							}
-							res.Receipt = terminateReceipt(t, id, submittedHash, 456, 99)
-							return res, nil
+							result.Receipt = terminateReceipt(t, id, hash, 456, 99)
+							return result, 456, nil
 						},
 					}
 					var terminate func(context.Context, *TerminateServiceOptions) (*TerminateServiceResult, error)
@@ -147,20 +164,18 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 							return svc.TerminateService(ctx, dataSetID, opts)
 						}
 					} else {
-						c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, nil,
-							testDataSetRef(dataSetID, types.BigInt{}), WithFWSSTerminator(term))
+						c, err := NewDataSetContext(testProvider(), &fakePDPProviderClient{}, nil, testDataSetRef(dataSetID, types.BigInt{}), WithFWSSTerminator(term))
 						if err != nil {
 							t.Fatal(err)
 						}
 						terminate = c.TerminateService
 					}
 					res, err := terminate(ctx, &TerminateServiceOptions{
-						SkipProvider:      true,
-						DirectWaitTimeout: 3 * time.Minute,
-						OnSubmitted: func(hash common.Hash) {
+						SkipProvider: true, DirectWaitTimeout: 3 * time.Minute,
+						OnSubmitted: func(sub TerminateServiceSubmission) {
 							callbackCalls++
-							if !broadcast || hash != submittedHash {
-								t.Fatalf("callback before broadcast or wrong hash: %s", hash)
+							if !sub.Direct || !sub.Accepted || !sub.ProviderID.IsZero() || sub.TransactionID != submittedHash.Hex() {
+								t.Fatalf("submission=%+v", sub)
 							}
 							if tt.cancelOnHash {
 								cancel()
@@ -172,24 +187,36 @@ func TestTerminateService_DirectSubmissionNotification(t *testing.T) {
 						wantErr = tt.sendErr
 					}
 					if wantErr != nil {
-						if !errors.Is(err, wantErr) || res != nil {
-							t.Fatalf("TerminateService = %+v, %v, want nil result and %v", res, err, wantErr)
+						detail, ok := errors.AsType[*TerminateServiceError](err)
+						if !errors.Is(err, wantErr) || !ok || res != nil {
+							t.Fatalf("result=%+v err=%v", res, err)
+						}
+						switch {
+						case errors.Is(tt.sendErr, lostResponse):
+							if detail.Stage != TerminateServiceStageSubmit || detail.Submission == nil || detail.Submission.Accepted || detail.Submission.TransactionID != lostResponse.Transaction.Hash().Hex() {
+								t.Fatalf("lost broadcast facts: %+v", detail)
+							}
+							if got, ok := errors.AsType[*types.BroadcastError](err); !ok || got != lostResponse {
+								t.Fatalf("lost broadcast cause: %v", err)
+							}
+						case tt.sendErr != nil:
+							if detail.Stage != TerminateServiceStagePrepare || detail.Submission != nil {
+								t.Fatalf("preparation=%+v", detail)
+							}
+						default:
+							if detail.Stage != TerminateServiceStageWait || detail.Submission == nil || !detail.Submission.Accepted || detail.Submission.TransactionID != submittedHash.Hex() {
+								t.Fatalf("wait=%+v", detail)
+							}
 						}
 					} else if err != nil || res == nil || res.TxHash == nil || *res.TxHash != submittedHash || res.EndEpoch != 456 {
-						t.Fatalf("TerminateService = %+v, %v", res, err)
+						t.Fatalf("result=%+v err=%v", res, err)
 					}
 					wantCalls := 1
 					if tt.sendErr != nil {
 						wantCalls = 0
 					}
 					if callbackCalls != wantCalls {
-						t.Fatalf("callback calls=%d, want %d", callbackCalls, wantCalls)
-					}
-					if errors.Is(tt.sendErr, lostResponse) {
-						got, ok := errors.AsType[*types.BroadcastError](err)
-						if !ok || got != lostResponse || !errors.Is(err, context.DeadlineExceeded) {
-							t.Fatalf("direct termination lost broadcast error: %v", err)
-						}
+						t.Fatalf("callback calls=%d want=%d", callbackCalls, wantCalls)
 					}
 				})
 			}
@@ -220,14 +247,16 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 			}
 			return &pdp.TerminateServiceResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitTerminateFn: func(_ context.Context, got types.BigInt, poll time.Duration, onHash func(common.Hash)) (*pdp.TerminateServiceStatus, error) {
+		waitTerminateFn: func(_ context.Context, got types.BigInt, poll time.Duration, onHash func(common.Hash), _ ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error) {
 			if !got.Equal(dataSetID) {
 				t.Fatalf("wait DataSetID=%s want %s", got.String(), dataSetID.String())
 			}
 			if poll != time.Millisecond {
 				t.Fatalf("poll=%s want 1ms", poll)
 			}
-			onHash(txHash)
+			if onHash != nil {
+				onHash(txHash)
+			}
 			return &pdp.TerminateServiceStatus{
 				TerminationTxHash:       &txHash,
 				ConfirmedTxHash:         &confirmedTxHash,
@@ -246,18 +275,18 @@ func TestContext_TerminateService_ProviderRelay(t *testing.T) {
 		t.Fatalf("NewContext: %v", err)
 	}
 
-	var submitted common.Hash
+	var submitted TerminateServiceSubmission
 	res, err := c.TerminateService(context.Background(), &TerminateServiceOptions{
 		PollInterval: time.Millisecond,
-		OnSubmitted: func(hash common.Hash) {
-			submitted = hash
+		OnSubmitted: func(sub TerminateServiceSubmission) {
+			submitted = sub
 		},
 	})
 	if err != nil {
 		t.Fatalf("TerminateService: %v", err)
 	}
-	if submitted != txHash {
-		t.Fatalf("submitted=%s want %s", submitted, txHash)
+	if !submitted.Accepted || submitted.TransactionID != "" {
+		t.Fatalf("submitted=%+v want accepted handle before polling", submitted)
 	}
 	if res.TxHash == nil || *res.TxHash != txHash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != confirmedTxHash || res.EndEpoch != 456 {
 		t.Fatalf("result=%+v want tx hash and end epoch", res)
@@ -274,7 +303,7 @@ func TestContext_TerminateService_ProviderWaitTimeout(t *testing.T) {
 		terminateServiceFn: func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error) {
 			return &pdp.TerminateServiceResult{StatusURL: "https://sp.example.com/status"}, nil
 		},
-		waitTerminateFn: func(ctx context.Context, _ types.BigInt, _ time.Duration, _ func(common.Hash)) (*pdp.TerminateServiceStatus, error) {
+		waitTerminateFn: func(ctx context.Context, _ types.BigInt, _ time.Duration, _ func(common.Hash), _ ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -337,7 +366,7 @@ func TestContext_TerminateService_ResumesPendingRequest(t *testing.T) {
 		terminateServiceFn: func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error) {
 			return nil, &pdp.TerminateServicePendingError{Message: "queued"}
 		},
-		waitTerminateFn: func(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error) {
+		waitTerminateFn: func(context.Context, types.BigInt, time.Duration, func(common.Hash), ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error) {
 			return &pdp.TerminateServiceStatus{FWSSTerminated: true, ServiceTerminationEpoch: 99}, nil
 		},
 	}
@@ -447,8 +476,8 @@ func TestService_TerminateService_SkipProviderNeedsOnlyTerminator(t *testing.T) 
 			if err != nil {
 				t.Fatalf("TerminateService: %v", err)
 			}
-			if !term.called || !term.gotDataSetID.Equal(dataSetID) || term.gotOptions.WaitTimeout != tt.wait {
-				t.Fatalf("termination target=%s called=%v wait=%s, want %s and %s wait", term.gotDataSetID, term.called, term.gotOptions.WaitTimeout, dataSetID, tt.wait)
+			if !term.called || !term.gotDataSetID.Equal(dataSetID) || term.gotWaitTimeout != tt.wait {
+				t.Fatalf("termination target=%s called=%v wait=%s, want %s and %s wait", term.gotDataSetID, term.called, term.gotWaitTimeout, dataSetID, tt.wait)
 			}
 			if res == nil || !res.DataSetID.Equal(dataSetID) || res.EndEpoch != 456 || res.TxHash == nil || *res.TxHash != hash || res.ConfirmedTxHash == nil || *res.ConfirmedTxHash != hash {
 				t.Fatalf("TerminateService result=%+v, want confirmed data set %s with end epoch 456", res, dataSetID)
@@ -639,18 +668,18 @@ func TestService_TerminateService_ProviderRelay(t *testing.T) {
 	// the separate 30-second client rather than the long-running download client.
 	mgr.httpClient.Timeout = time.Nanosecond
 
-	var submitted common.Hash
+	var submitted TerminateServiceSubmission
 	res, err := mgr.TerminateService(context.Background(), dataSetID, &TerminateServiceOptions{
 		PollInterval: time.Nanosecond,
-		OnSubmitted: func(hash common.Hash) {
-			submitted = hash
+		OnSubmitted: func(sub TerminateServiceSubmission) {
+			submitted = sub
 		},
 	})
 	if err != nil {
 		t.Fatalf("TerminateService: %v", err)
 	}
-	if !providers.called || submitted != txHash || res == nil || res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
-		t.Fatalf("TerminateService result=%+v submitted=%s providerCalled=%v", res, submitted, providers.called)
+	if !providers.called || !submitted.Accepted || submitted.TransactionID != "" || res == nil || res.TxHash == nil || *res.TxHash != txHash || res.EndEpoch != 456 {
+		t.Fatalf("TerminateService result=%+v submitted=%+v providerCalled=%v", res, submitted, providers.called)
 	}
 	if paymentReader.owner != payer {
 		t.Fatalf("payment owner=%s want payer %s", paymentReader.owner, payer)

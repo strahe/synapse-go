@@ -23,6 +23,10 @@
 // Write methods return [BroadcastError] when sending a signed transaction
 // returns an error. It preserves the original transaction and cause; a nil
 // WriteResult does not establish that the transaction was rejected.
+// Persist the hash from [WithOnSubmitted], the result, or, after a sending
+// error, the [BroadcastError] transaction, then resume with
+// [Service.WaitForTransaction].
+//
 // Permit writes retain their token nonce lock while tracking the original
 // transaction in the background, including after a broadcast error or caller
 // cancellation. Tracking is bounded by Options.PermitReceiptWait (five minutes

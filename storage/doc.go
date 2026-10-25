@@ -311,6 +311,13 @@
 // their original request order; generic recovery validates only that the
 // provider's confirmed count matches its returned piece IDs.
 //
+// For service termination, persist the [TerminateServiceSubmission] returned by
+// SubmitTerminateService or carried by [TerminateServiceError], along with the
+// required confirmation policy. Rebuild a Service or DataSetContext on the same
+// chain and record keeper, then pass that submission to WaitForTerminateService.
+// The callback can persist a submission before confirmation starts; recovery
+// after a returned error does not require a callback.
+//
 // Pulls have no status URL. [ProviderContext.SubmitPull] and
 // [DataSetContext.SubmitPull] make one pull request and return the provider's
 // current status without waiting for the pull to finish; the provider
@@ -331,28 +338,44 @@
 //
 // # Service termination
 //
-// [Service.TerminateService] and [DataSetContext.TerminateService] wait for
-// confirmed termination and return [TerminateServiceResult]. By default the
+// [Service.SubmitTerminateService] and [DataSetContext.SubmitTerminateService]
+// submit once without waiting. Their WaitForTerminateService methods only read
+// status; TerminateService combines submission and waiting. By default the
 // provider relays an immediate termination requiring full payment-account
 // settlement. There is no automatic fallback to direct submission. Set
 // [TerminateServiceOptions.SkipProvider] to submit through FWSS without provider
-// cooperation; the service and payments continue until the returned EndEpoch.
-// Neither path waits until EndEpoch or cleans up the remaining data-set state.
+// cooperation; service and payments continue until EndEpoch. Neither path waits
+// until EndEpoch or deletes the remaining data-set state.
 //
-// Direct termination always waits for a receipt. DirectWaitTimeout controls
-// that wait and overrides WithWait in WriteOptions. OnSubmitted reports the
-// original hash synchronously after successful direct broadcast, before receipt
-// polling. Save that hash to track the transaction if waiting later fails.
-// The callback does not indicate confirmation; waiting errors still return no
-// partial high-level result and do not prove that nothing was broadcast.
-// Direct submission dependencies receive the callback and wait timeout
-// explicitly through [FWSSTerminationOptions].
+// [TerminateServiceError] reports where the call failed:
 //
-// For broadcast-only submission, raw receipts, or partial transaction results
-// returned alongside errors, use [warmstorage.Service.TerminateDataSet], available
-// through the root client's WarmStorage method. Its default and non-positive
-// WithWait values return after broadcast. A positive WithWait waits for a receipt
-// while retaining the submission hash on waiting errors and the receipt on tx failure.
+//   - Prepare: this invocation sent no termination authorization or transaction.
+//     Fix the cause and submit again.
+//   - [types.ErrTxFailed] reports failed direct execution after the requested
+//     confirmations. Inspect the data-set state before another attempt.
+//   - A relayed wait error matching [pdp.WaitForTerminateServiceNotFoundError]
+//     or [pdp.WaitForTerminateServiceRejectedError] means the provider holds no
+//     client request for the data set: it never arrived, or it failed and was
+//     discarded. If [warmstorage.Service.GetDataSet] still reports a zero
+//     PDPEndEpoch, submit again or set SkipProvider. The provider reports a
+//     request already in progress as Queued instead of starting another.
+//   - Any other submit or wait error can have an unknown outcome. Resume the
+//     retained Submission with WaitForTerminateService instead of submitting
+//     again. Accepted records that the provider or node took the submission,
+//     not that it executed; Queued records that the provider reported a
+//     termination in progress.
+//
+// OnSubmitted receives the same submission after provider acceptance or direct
+// broadcast, before waiting; it does not indicate confirmation. When a configured
+// FWSS reader reports a nonzero PDPEndEpoch after a provider error, waiting
+// succeeds even if the relay itself failed. A missing data set does not prove
+// termination.
+//
+// After an uncertain direct broadcast, do not send another direct transaction:
+// resume the submission or track the transaction retained by
+// [types.BroadcastError]. A zero PDPEndEpoch does not show that the earlier
+// transaction was dropped. A callback cannot close a crash between sending and
+// saving the submission.
 //
 // # Downloads
 //
@@ -381,7 +404,6 @@
 // and return [InsufficientUploadContextsError] with counts matching the result.
 //
 // [costs.MultiContextCosts]: https://pkg.go.dev/github.com/strahe/synapse-go/costs#MultiContextCosts
-// [warmstorage.Service.TerminateDataSet]: https://pkg.go.dev/github.com/strahe/synapse-go/warmstorage#Service.TerminateDataSet
 // [signer.StorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go/signer#StorageSigner
 // [synapse.WithStorageSigner]: https://pkg.go.dev/github.com/strahe/synapse-go#WithStorageSigner
 // [synapse.WithUploadBatching]: https://pkg.go.dev/github.com/strahe/synapse-go#WithUploadBatching

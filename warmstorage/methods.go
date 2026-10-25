@@ -25,8 +25,8 @@ import (
 // without a PDPVerifier address.
 var ErrPDPVerifierNotConfigured = errors.New("warmstorage: PDPVerifier address not configured")
 
-// ErrWriteNotConfigured is returned when a write method is called on a
-// Service that was constructed without a Backend / Signer.
+// ErrWriteNotConfigured reports a missing transaction backend, or a missing
+// signer for a write. Receipt waiting requires only the backend.
 var ErrWriteNotConfigured = errors.New("warmstorage: write backend / signer not configured")
 
 // PDPConfig contains the FWSS StateView parameters that govern proving
@@ -640,6 +640,35 @@ func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, buil
 	return tx, err
 }
 
+// WaitForTransaction waits for an existing transaction without broadcasting or
+// requiring a signer. Non-positive WithWait values select five minutes;
+// WithOnSubmitted is ignored. Errors retain the hash; Receipt is set only after
+// the requested confirmations, including for a failed transaction. A hash does
+// not prove broadcast, and a timeout does not prove that the transaction does
+// not exist.
+func (s *Service) WaitForTransaction(ctx context.Context, hash common.Hash, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, fmt.Errorf("warmstorage.WaitForTransaction: %w", err)
+	}
+	if hash == (common.Hash{}) {
+		return nil, fmt.Errorf("warmstorage.WaitForTransaction: %w: zero transaction hash", ErrInvalidArgument)
+	}
+	if s.backend == nil {
+		return nil, fmt.Errorf("warmstorage.WaitForTransaction: %w", ErrWriteNotConfigured)
+	}
+	cfg := newWriteConfig(opts)
+	if cfg.waitTimeout <= 0 {
+		cfg.waitTimeout = txutil.DefaultReceiptWaitConfig().Timeout
+	}
+	res := &sdktypes.WriteResult{Hash: hash}
+	receipt, err := txutil.AwaitReceipt(ctx, s.backend, hash, cfg.waitTimeout, cfg.confirmations)
+	res.Receipt = receipt
+	if err != nil {
+		return res, fmt.Errorf("warmstorage.WaitForTransaction: %w", err)
+	}
+	return res, nil
+}
+
 func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
@@ -649,17 +678,7 @@ func (s *Service) finalize(ctx context.Context, tx *ethtypes.Transaction, opts [
 	if cfg.waitTimeout <= 0 {
 		return res, nil
 	}
-	var (
-		receipt *ethtypes.Receipt
-		err     error
-	)
-	if cfg.confirmations > 0 {
-		waitCfg := txutil.DefaultReceiptWaitConfig()
-		waitCfg.Timeout = cfg.waitTimeout
-		receipt, err = txutil.WaitForReceiptWithConfig(ctx, s.backend, tx.Hash(), waitCfg, cfg.confirmations)
-	} else {
-		receipt, err = txutil.WaitForReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout)
-	}
+	receipt, err := txutil.AwaitReceipt(ctx, s.backend, tx.Hash(), cfg.waitTimeout, cfg.confirmations)
 	if err != nil {
 		if errors.Is(err, txutil.ErrTxFailed) {
 			res.Receipt = receipt

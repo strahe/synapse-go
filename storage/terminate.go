@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	ityped "github.com/strahe/synapse-go/internal/typeddata"
 	"github.com/strahe/synapse-go/pdp"
@@ -17,251 +18,515 @@ import (
 
 const defaultTerminateWait = 5 * time.Minute
 
-// TerminateServiceOptions configures service termination and confirmation.
+// TerminateServiceOptions configures termination submission and confirmation.
 type TerminateServiceOptions struct {
-	// SkipProvider submits directly through FWSS and waits for the receipt.
-	// Service and payments continue until the returned EndEpoch. By default,
-	// the provider relays an immediate termination that requires full settlement.
+	// SkipProvider broadcasts through FWSS. The service and its payments
+	// continue until EndEpoch. The default provider path requires settlement.
 	SkipProvider bool
-	// WriteOptions are used only when SkipProvider is true. WithWait is
-	// overridden by DirectWaitTimeout so this path always waits for confirmation.
-	// A non-nil OnSubmitted overrides WithOnSubmitted in these options.
+	// WriteOptions apply only to direct submission and receipt waiting.
+	// WithWait and WithOnSubmitted are overridden; WithConfirmations is kept.
 	WriteOptions []warmstorage.WriteOption
-	// DirectWaitTimeout is used only when SkipProvider is true. A non-positive
-	// value selects the default five-minute wait timeout.
+	// DirectWaitTimeout bounds direct receipt waiting. A non-positive value
+	// selects five minutes. SubmitTerminateService does not wait for a receipt.
 	DirectWaitTimeout time.Duration
-	// ProviderWaitTimeout bounds provider relay submission plus status polling.
-	// Zero selects the default wait timeout. Negative disables the added timeout
-	// and leaves cancellation to ctx.
+	// ProviderWaitTimeout bounds provider submission and, for TerminateService,
+	// polling and reconciliation together. Zero selects five minutes; negative
+	// adds no deadline beyond ctx.
 	ProviderWaitTimeout time.Duration
-	// PollInterval is used only for provider-relayed status polling.
+	// PollInterval applies only to provider polling, not submission.
 	PollInterval time.Duration
-	// OnSubmitted receives the original transaction hash synchronously after
-	// direct broadcast, before receipt polling, or when first reported during
-	// provider polling. It does not indicate confirmation. Callback panics
-	// propagate to the caller. A replacement hash is returned as ConfirmedTxHash.
-	OnSubmitted func(common.Hash)
+	// OnSubmitted receives an independent handle synchronously after positive
+	// acknowledgement and before waiting. It does not indicate confirmation.
+	// Errors also preserve recovery information; callback panics propagate.
+	OnSubmitted func(TerminateServiceSubmission)
 }
 
-// TerminateServiceResult is the confirmed service termination result.
+// TerminateServiceResult records an arranged service termination. It does not
+// wait for EndEpoch or for data-set cleanup. Provider reconciliation can confirm
+// the goal state without proving that the original relay transaction succeeded.
 type TerminateServiceResult struct {
-	// TxHash is the original submission hash when available.
+	// TxHash is the original transaction hash when available.
 	TxHash *common.Hash
-	// ConfirmedTxHash is the hash included on chain. It may differ from TxHash
-	// after replacement-by-fee. For explorers and receipt lookups, prefer this
-	// field when non-nil and otherwise use TxHash.
+	// ConfirmedTxHash is the observed on-chain hash after any replacement.
+	// Prefer it for receipt lookups when available; otherwise use TxHash.
 	ConfirmedTxHash *common.Hash
 	DataSetID       types.BigInt
-	// EndEpoch is when the service and its payments end, not a data deletion time.
+	// EndEpoch is when service and payments end, not a data deletion time.
 	EndEpoch types.Epoch
 }
 
-// TerminateService requests termination of this context's service and waits
-// for confirmation. By default the provider relays the termination; set
-// SkipProvider to submit directly through FWSS. Neither path waits until
-// EndEpoch or removes the remaining on-chain data-set state.
-func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
-	const op = "storage.DataSetContext.TerminateService"
-	if opts != nil && opts.SkipProvider {
-		return terminateServiceDirect(ctx, op, c.core.fwssTerminator, c.ref.DataSetID(), opts)
-	}
-	target, err := c.snapshotProviderTerminateTarget(op)
-	if err != nil {
-		return nil, err
-	}
-	if err := ensureTerminationAccountSettled(ctx, op, target.paymentReader, target.epochReader, target.paymentToken, target.payer); err != nil {
-		return nil, err
-	}
-	extraData, err := signTerminateServiceExtraData(target.signHash, target.chainID, target.recordKeeper, target.dataSetID)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	providerCtx, cancel := terminateProviderContext(ctx, opts)
-	defer cancel()
-	res, err := target.client.TerminateService(providerCtx, pdp.TerminateServiceRequest{
-		DataSetID: target.dataSetID,
-		ExtraData: extraData,
-	})
-	var pendingErr error
-	if err != nil {
-		if already, ok := errors.AsType[*pdp.ServiceAlreadyTerminatedError](err); ok {
-			return &TerminateServiceResult{DataSetID: target.dataSetID, EndEpoch: already.ServiceTerminationEpoch}, nil
-		}
-		if _, ok := errors.AsType[*pdp.TerminateServicePendingError](err); !ok {
-			return nil, fmt.Errorf("%s: %w", op, err)
-		}
-		pendingErr = err
-	} else if res == nil {
-		return nil, fmt.Errorf("%s: provider returned nil termination result", op)
-	}
-	status, err := target.client.WaitForTerminateService(providerCtx, target.dataSetID, terminatePollInterval(opts), terminateHashCallback(opts))
-	if err != nil {
-		if pendingErr != nil {
-			if _, ok := errors.AsType[*pdp.WaitForTerminateServiceNotFoundError](err); ok {
-				return nil, fmt.Errorf("%s: %w", op, pendingErr)
-			}
-		}
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	return terminateResultFromStatus(target.dataSetID, status), nil
+type terminationTarget struct {
+	dataSetID   types.BigInt
+	providerID  types.BigInt
+	direct      bool
+	client      PDPProviderClient
+	extraData   []byte
+	terminator  FWSSTerminator
+	reader      FWSSDataSetReader
+	checkClosed func() error
 }
 
-// TerminateService requests termination of an FWSS-managed service by data-set
-// ID and waits for confirmation. By default it resolves the provider and asks
-// it to relay the termination; set SkipProvider to submit directly through FWSS.
-// Neither path waits until EndEpoch or removes the remaining on-chain state.
+// SubmitTerminateService submits once without waiting for confirmation.
+// Prepare errors prove this call did not submit. Submit errors preserve a
+// handle with an unknown outcome; inspect TerminateServiceError and its cause.
+// A provider reporting that the service already ended returns
+// *pdp.ServiceAlreadyTerminatedError without a TerminateServiceError.
+func (s *Service) SubmitTerminateService(ctx context.Context, dataSetID types.BigInt, opts *TerminateServiceOptions) (*TerminateServiceSubmission, error) {
+	const op = "storage.Service.SubmitTerminateService"
+	target, err := s.prepareTermination(ctx, dataSetID, opts)
+	if err != nil {
+		return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+	}
+	return submitPreparedTermination(ctx, op, target, opts)
+}
+
+// SubmitTerminateService submits this context's termination without waiting.
+// Errors preserve the stage and any recovery handle in TerminateServiceError,
+// except *pdp.ServiceAlreadyTerminatedError when the service already ended.
+func (c *DataSetContext) SubmitTerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceSubmission, error) {
+	const op = "storage.DataSetContext.SubmitTerminateService"
+	target, err := c.prepareTermination(ctx, opts)
+	if err != nil {
+		return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+	}
+	return submitPreparedTermination(ctx, op, target, opts)
+}
+
+// TerminateService submits once and waits for an arranged termination. Wait
+// errors retain the submission and observations in TerminateServiceError.
 func (s *Service) TerminateService(ctx context.Context, dataSetID types.BigInt, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
 	const op = "storage.Service.TerminateService"
+	target, err := s.prepareTermination(ctx, dataSetID, opts)
+	if err != nil {
+		return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+	}
+	return terminatePreparedService(ctx, op, target, opts)
+}
+
+// TerminateService submits once and waits. It does not wait until EndEpoch or
+// remove remaining data-set state. Errors retain recovery facts without a callback.
+func (c *DataSetContext) TerminateService(ctx context.Context, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
+	const op = "storage.DataSetContext.TerminateService"
+	target, err := c.prepareTermination(ctx, opts)
+	if err != nil {
+		return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+	}
+	return terminatePreparedService(ctx, op, target, opts)
+}
+
+// WaitForTerminateService only observes an existing submission. Timeout includes
+// provider resolution and chain reconciliation. No signer is needed. Recovery
+// must use the original chain and record keeper. A missing reader disables chain
+// reconciliation; a missing data set does not establish successful termination.
+func (s *Service) WaitForTerminateService(ctx context.Context, sub TerminateServiceSubmission, opts *TerminateServiceWaitOptions) (*TerminateServiceResult, error) {
+	const op = "storage.Service.WaitForTerminateService"
+	work := copyTerminationSubmission(sub)
 	if err := s.checkInit(); err != nil {
-		return nil, err
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, err)
+	}
+	if err := validateTerminationSubmission(&work); err != nil {
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, err)
+	}
+	waitOpts := normalizedTerminationWaitOptions(opts)
+	waitCtx, cancel := context.WithTimeout(ctx, waitOpts.Timeout)
+	defer cancel()
+	target := terminationTarget{dataSetID: work.DataSetID, providerID: work.ProviderID, direct: work.Direct, terminator: s.terminator, reader: s.dsReader, checkClosed: s.checkInit}
+	if !work.Direct {
+		client, err := s.terminationProviderClient(waitCtx, work.ProviderID)
+		if err != nil {
+			return reconcileTermination(waitCtx, op, &work, target, err)
+		}
+		target.client = client
+	}
+	return waitPreparedTermination(waitCtx, op, target, work, waitOpts)
+}
+
+// WaitForTerminateService observes a saved handle for this data set without
+// sending a write request. Errors preserve the latest known handle and receipt.
+func (c *DataSetContext) WaitForTerminateService(ctx context.Context, sub TerminateServiceSubmission, opts *TerminateServiceWaitOptions) (*TerminateServiceResult, error) {
+	const op = "storage.DataSetContext.WaitForTerminateService"
+	work := copyTerminationSubmission(sub)
+	if c == nil || c.core == nil {
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, fmt.Errorf("%w: nil data-set context", ErrInvalidArgument))
+	}
+	if err := validateTerminationSubmission(&work); err != nil {
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, err)
+	}
+	if !work.DataSetID.Equal(c.ref.DataSetID()) || (!work.Direct && !work.ProviderID.Equal(c.core.provider.ID)) {
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, fmt.Errorf("%w: termination submission does not match context", ErrInvalidArgument))
+	}
+	waitOpts := normalizedTerminationWaitOptions(opts)
+	waitCtx, cancel := context.WithTimeout(ctx, waitOpts.Timeout)
+	defer cancel()
+	target := terminationTarget{dataSetID: work.DataSetID, providerID: work.ProviderID, direct: work.Direct, client: c.core.client, terminator: c.core.fwssTerminator, reader: c.core.dataSetReader}
+	return waitPreparedTermination(waitCtx, op, target, work, waitOpts)
+}
+
+func (s *Service) prepareTermination(ctx context.Context, dataSetID types.BigInt, opts *TerminateServiceOptions) (terminationTarget, error) {
+	if err := s.checkInit(); err != nil {
+		return terminationTarget{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return terminationTarget{}, err
 	}
 	if dataSetID.IsZero() {
-		return nil, fmt.Errorf("%s: %w: zero dataSetID", op, ErrInvalidArgument)
+		return terminationTarget{}, fmt.Errorf("%w: zero dataSetID", ErrInvalidArgument)
 	}
+	target := terminationTarget{dataSetID: copyBigInt(dataSetID), terminator: s.terminator, reader: s.dsReader, checkClosed: s.checkInit}
 	if opts != nil && opts.SkipProvider {
-		return terminateServiceDirect(ctx, op, s.terminator, dataSetID, opts)
+		target.direct = true
+		if target.terminator == nil {
+			return target, fmt.Errorf("%w: no FWSS terminator configured", ErrUninitialized)
+		}
+		return target, nil
 	}
 	if s.dsReader == nil {
-		return nil, fmt.Errorf("%s: %w: no FWSSDataSetReader configured", op, ErrUninitialized)
-	}
-	if s.providers == nil {
-		return nil, fmt.Errorf("%s: %w: no ProviderResolver configured", op, ErrUninitialized)
+		return target, fmt.Errorf("%w: no FWSSDataSetReader configured", ErrUninitialized)
 	}
 	if s.signer == nil {
-		return nil, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
+		return target, fmt.Errorf("%w: nil signer", ErrInvalidArgument)
 	}
 	if !s.chainID.IsValid() {
-		return nil, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
+		return target, fmt.Errorf("%w: invalid chainID", ErrInvalidArgument)
 	}
 	if s.recordKeeper == (common.Address{}) {
-		return nil, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
+		return target, fmt.Errorf("%w: zero recordKeeper", ErrInvalidArgument)
 	}
 	dataSet, err := s.dsReader.GetDataSet(ctx, dataSetID)
 	if err != nil {
-		return nil, fmt.Errorf("%s: GetDataSet: %w", op, err)
+		return target, fmt.Errorf("GetDataSet: %w", err)
 	}
 	if dataSet == nil {
-		return nil, fmt.Errorf("%s: GetDataSet returned nil", op)
+		return target, errors.New("GetDataSet returned nil")
 	}
 	if dataSet.Payer != s.payerAddr {
-		return nil, fmt.Errorf("%s: %w: data set payer %s does not match configured payer %s", op, ErrInvalidArgument, dataSet.Payer.Hex(), s.payerAddr.Hex())
+		return target, fmt.Errorf("%w: data set payer %s does not match configured payer %s", ErrInvalidArgument, dataSet.Payer.Hex(), s.payerAddr.Hex())
 	}
-	if err := ensureTerminationAccountSettled(ctx, op, s.payments, s.epochs, s.paymentToken, dataSet.Payer); err != nil {
-		return nil, err
+	if err := ensureTerminationAccountSettled(ctx, s.payments, s.epochs, s.paymentToken, dataSet.Payer); err != nil {
+		return target, err
 	}
-	provider, err := s.providers.ResolveProvider(ctx, dataSet.ProviderID)
+	target.providerID = copyBigInt(dataSet.ProviderID)
+	target.client, err = s.terminationProviderClient(ctx, target.providerID)
 	if err != nil {
-		return nil, fmt.Errorf("%s: ResolveProvider: %w", op, err)
+		return target, err
+	}
+	target.extraData, err = signTerminateServiceExtraData(s.signer.SignHash, s.chainID, s.recordKeeper, dataSetID)
+	return target, err
+}
+
+func (c *DataSetContext) prepareTermination(ctx context.Context, opts *TerminateServiceOptions) (terminationTarget, error) {
+	if c == nil || c.core == nil {
+		return terminationTarget{}, fmt.Errorf("%w: nil data-set context", ErrInvalidArgument)
+	}
+	if err := ctx.Err(); err != nil {
+		return terminationTarget{}, err
+	}
+	target := terminationTarget{dataSetID: c.ref.DataSetID(), providerID: c.core.provider.ID, client: c.core.client, terminator: c.core.fwssTerminator, reader: c.core.dataSetReader}
+	if opts != nil && opts.SkipProvider {
+		target.direct = true
+		target.providerID = types.BigInt{}
+		if target.terminator == nil {
+			return target, fmt.Errorf("%w: no FWSS terminator configured", ErrUninitialized)
+		}
+		return target, nil
+	}
+	if c.core.signer == nil {
+		return target, fmt.Errorf("%w: nil signer", ErrInvalidArgument)
+	}
+	if !c.core.chainID.IsValid() {
+		return target, fmt.Errorf("%w: invalid chainID", ErrInvalidArgument)
+	}
+	if c.core.recordKeeper == (common.Address{}) {
+		return target, fmt.Errorf("%w: zero recordKeeper", ErrInvalidArgument)
+	}
+	if target.client == nil {
+		return target, fmt.Errorf("%w: no PDP client configured", ErrUninitialized)
+	}
+	if err := ensureTerminationAccountSettled(ctx, c.core.paymentReader, c.core.epochReader, c.core.paymentToken, c.core.payer); err != nil {
+		return target, err
+	}
+	var err error
+	target.extraData, err = signTerminateServiceExtraData(c.core.signHashFunc(), c.core.chainID, c.core.recordKeeper, target.dataSetID)
+	return target, err
+}
+
+func (s *Service) terminationProviderClient(ctx context.Context, providerID types.BigInt) (PDPProviderClient, error) {
+	if s.providers == nil {
+		return nil, fmt.Errorf("%w: no ProviderResolver configured", ErrUninitialized)
+	}
+	provider, err := s.providers.ResolveProvider(ctx, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("ResolveProvider: %w", err)
 	}
 	client, err := pdp.New(provider.ServiceURL, pdp.WithHTTPClient(s.providerHTTPClient), pdp.WithLogger(s.logger))
 	if err != nil {
-		return nil, fmt.Errorf("%s: create PDP client: %w", op, err)
+		return nil, fmt.Errorf("create PDP client: %w", err)
 	}
-	extraData, err := signTerminateServiceExtraData(func(hash []byte) ([]byte, error) {
-		return s.signer.SignHash(hash)
-	}, s.chainID, s.recordKeeper, dataSetID)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+	return client, nil
+}
+
+func submitPreparedTermination(ctx context.Context, op string, target terminationTarget, opts *TerminateServiceOptions) (*TerminateServiceSubmission, error) {
+	if !target.direct {
+		providerCtx, cancel := terminateProviderContext(ctx, opts)
+		defer cancel()
+		ctx = providerCtx
 	}
-	providerCtx, cancel := terminateProviderContext(ctx, opts)
-	defer cancel()
-	res, err := client.TerminateService(providerCtx, pdp.TerminateServiceRequest{
-		DataSetID: dataSetID,
-		ExtraData: extraData,
-	})
-	var pendingErr error
+	return target.submit(ctx, op, opts)
+}
+
+func terminatePreparedService(ctx context.Context, op string, target terminationTarget, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
+	if !target.direct {
+		providerCtx, cancel := terminateProviderContext(ctx, opts)
+		defer cancel()
+		ctx = providerCtx
+	}
+	sub, err := target.submit(ctx, op, opts)
 	if err != nil {
 		if already, ok := errors.AsType[*pdp.ServiceAlreadyTerminatedError](err); ok {
-			return &TerminateServiceResult{DataSetID: dataSetID, EndEpoch: already.ServiceTerminationEpoch}, nil
+			return terminationResult(TerminateServiceSubmission{DataSetID: target.dataSetID}, already.ServiceTerminationEpoch), nil
 		}
-		if _, ok := errors.AsType[*pdp.TerminateServicePendingError](err); !ok {
-			return nil, fmt.Errorf("%s: %w", op, err)
-		}
-		pendingErr = err
-	} else if res == nil {
-		return nil, fmt.Errorf("%s: provider returned nil termination result", op)
+		return nil, err
 	}
-	status, err := client.WaitForTerminateService(providerCtx, dataSetID, terminatePollInterval(opts), terminateHashCallback(opts))
-	if err != nil {
-		if pendingErr != nil {
-			if _, ok := errors.AsType[*pdp.WaitForTerminateServiceNotFoundError](err); ok {
-				return nil, fmt.Errorf("%s: %w", op, pendingErr)
+	waitOpts := TerminateServiceWaitOptions{Timeout: defaultTerminateWait}
+	if opts != nil {
+		waitOpts.PollInterval = opts.PollInterval
+		waitOpts.WriteOptions = append([]warmstorage.WriteOption(nil), opts.WriteOptions...)
+		if opts.DirectWaitTimeout > 0 {
+			waitOpts.Timeout = opts.DirectWaitTimeout
+		}
+	}
+	if target.direct {
+		waitCtx, cancel := context.WithTimeout(ctx, waitOpts.Timeout)
+		defer cancel()
+		ctx = waitCtx
+	}
+	return waitPreparedTermination(ctx, op, target, *sub, waitOpts)
+}
+
+func (target terminationTarget) submit(ctx context.Context, op string, opts *TerminateServiceOptions) (*TerminateServiceSubmission, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+	}
+	sub := TerminateServiceSubmission{DataSetID: copyBigInt(target.dataSetID), Direct: target.direct, ProviderID: copyBigInt(target.providerID)}
+	if target.direct {
+		var writeOpts []warmstorage.WriteOption
+		if opts != nil {
+			writeOpts = append(writeOpts, opts.WriteOptions...)
+		}
+		res, err := target.terminator.TerminateDataSet(ctx, target.dataSetID, FWSSTerminationOptions{WriteOptions: writeOpts})
+		if err != nil {
+			if broadcast, ok := errors.AsType[*types.BroadcastError](err); ok {
+				if broadcast.Transaction != nil {
+					sub.TransactionID = broadcast.Transaction.Hash().Hex()
+				}
+				return nil, terminationError(op, TerminateServiceStageSubmit, &sub, nil, err)
+			}
+			return nil, terminationError(op, TerminateServiceStagePrepare, nil, nil, err)
+		}
+		if res == nil || res.Hash == (common.Hash{}) {
+			return nil, terminationError(op, TerminateServiceStageSubmit, &sub, nil, errors.New("direct termination returned no transaction hash"))
+		}
+		sub.TransactionID = res.Hash.Hex()
+	} else {
+		res, err := target.client.TerminateService(ctx, pdp.TerminateServiceRequest{DataSetID: target.dataSetID, ExtraData: target.extraData})
+		if err != nil {
+			if _, ok := errors.AsType[*pdp.ServiceAlreadyTerminatedError](err); ok {
+				return nil, fmt.Errorf("%s: %w", op, err)
+			}
+			if _, ok := errors.AsType[*pdp.TerminateServicePendingError](err); !ok {
+				return nil, terminationError(op, TerminateServiceStageSubmit, &sub, nil, err)
+			}
+			sub.Queued = true
+		} else if res == nil {
+			return nil, terminationError(op, TerminateServiceStageSubmit, &sub, nil, errors.New("provider returned nil termination result"))
+		}
+	}
+	sub.Accepted = true
+	if opts != nil && opts.OnSubmitted != nil {
+		opts.OnSubmitted(copyTerminationSubmission(sub))
+	}
+	out := copyTerminationSubmission(sub)
+	return &out, nil
+}
+
+func waitPreparedTermination(ctx context.Context, op string, target terminationTarget, work TerminateServiceSubmission, opts TerminateServiceWaitOptions) (*TerminateServiceResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, terminationError(op, TerminateServiceStageWait, &work, nil, err)
+	}
+	if target.checkClosed != nil {
+		if err := target.checkClosed(); err != nil {
+			return nil, terminationError(op, TerminateServiceStageWait, &work, nil, err)
+		}
+	}
+	if target.direct {
+		if target.terminator == nil {
+			return nil, terminationError(op, TerminateServiceStageWait, &work, nil, fmt.Errorf("%w: no FWSS terminator configured", ErrUninitialized))
+		}
+		hash := common.HexToHash(work.TransactionID)
+		if work.ConfirmedTransactionID != "" {
+			hash = common.HexToHash(work.ConfirmedTransactionID)
+		}
+		res, endEpoch, err := target.terminator.WaitForTermination(ctx, work.DataSetID, hash, opts.Timeout, opts.WriteOptions)
+		var receipt *ethtypes.Receipt
+		if res != nil {
+			receipt = res.Receipt
+			if receipt != nil {
+				work.Accepted = true
+				confirmed := receipt.TxHash
+				if confirmed == (common.Hash{}) {
+					confirmed = hash
+				}
+				work.ConfirmedTransactionID = confirmed.Hex()
 			}
 		}
-		return nil, fmt.Errorf("%s: %w", op, err)
+		if err != nil {
+			return nil, terminationError(op, TerminateServiceStageWait, &work, receipt, err)
+		}
+		if receipt == nil {
+			return nil, terminationError(op, TerminateServiceStageWait, &work, nil, errors.New("direct termination returned no receipt"))
+		}
+		return terminationResult(work, endEpoch), nil
 	}
-	return terminateResultFromStatus(dataSetID, status), nil
-}
-
-type providerTerminateTarget struct {
-	dataSetID     types.BigInt
-	client        PDPProviderClient
-	signHash      func([]byte) ([]byte, error)
-	chainID       types.ChainID
-	recordKeeper  common.Address
-	payer         common.Address
-	paymentReader PaymentStateReader
-	epochReader   EpochReader
-	paymentToken  common.Address
-}
-
-func (c *DataSetContext) snapshotProviderTerminateTarget(op string) (providerTerminateTarget, error) {
-	if c.core.signer == nil {
-		return providerTerminateTarget{}, fmt.Errorf("%s: %w: nil signer", op, ErrInvalidArgument)
+	if target.client == nil {
+		return reconcileTermination(ctx, op, &work, target, fmt.Errorf("%w: no PDP client configured", ErrUninitialized))
 	}
-	if !c.core.chainID.IsValid() {
-		return providerTerminateTarget{}, fmt.Errorf("%s: %w: invalid chainID", op, ErrInvalidArgument)
+	var pollOpts []pdp.WaitForTerminateServiceOption
+	knownHash := work.TransactionID
+	if knownHash == "" {
+		knownHash = work.ConfirmedTransactionID
 	}
-	if c.core.recordKeeper == (common.Address{}) {
-		return providerTerminateTarget{}, fmt.Errorf("%s: %w: zero recordKeeper", op, ErrInvalidArgument)
+	if knownHash != "" {
+		pollOpts = append(pollOpts, pdp.WithKnownTerminationTxHash(common.HexToHash(knownHash)))
 	}
-	return providerTerminateTarget{
-		dataSetID:     c.ref.DataSetID(),
-		client:        c.core.client,
-		signHash:      c.core.signHashFunc(),
-		chainID:       c.core.chainID,
-		recordKeeper:  c.core.recordKeeper,
-		payer:         c.core.payer,
-		paymentReader: c.core.paymentReader,
-		epochReader:   c.core.epochReader,
-		paymentToken:  c.core.paymentToken,
-	}, nil
-}
-
-func terminateServiceDirect(ctx context.Context, op string, terminator FWSSTerminator, dataSetID types.BigInt, opts *TerminateServiceOptions) (*TerminateServiceResult, error) {
-	if terminator == nil {
-		return nil, fmt.Errorf("%s: %w: no FWSS terminator configured", op, ErrUninitialized)
+	status, err := target.client.WaitForTerminateService(ctx, work.DataSetID, opts.PollInterval, nil, pollOpts...)
+	if status != nil {
+		applyTerminationStatus(&work, status)
 	}
-	terminationOpts := FWSSTerminationOptions{WaitTimeout: defaultTerminateWait}
-	if opts != nil {
-		terminationOpts.WriteOptions = append([]warmstorage.WriteOption(nil), opts.WriteOptions...)
-		terminationOpts.OnSubmitted = opts.OnSubmitted
-		if opts.DirectWaitTimeout > 0 {
-			terminationOpts.WaitTimeout = opts.DirectWaitTimeout
+	if err == nil {
+		if status != nil && status.FWSSTerminated {
+			return terminationResult(work, status.ServiceTerminationEpoch), nil
+		}
+		err = errors.New("provider returned no confirmed termination status")
+	}
+	if work.Queued {
+		if _, ok := errors.AsType[*pdp.WaitForTerminateServiceNotFoundError](err); ok {
+			err = errors.Join(&pdp.TerminateServicePendingError{}, err)
 		}
 	}
-	res, err := terminator.TerminateDataSet(ctx, dataSetID, terminationOpts)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+	return reconcileTermination(ctx, op, &work, target, err)
+}
+
+func reconcileTermination(ctx context.Context, op string, work *TerminateServiceSubmission, target terminationTarget, cause error) (*TerminateServiceResult, error) {
+	if errors.Is(cause, ErrClosed) {
+		return nil, terminationError(op, TerminateServiceStageWait, work, nil, cause)
 	}
-	if res == nil || res.Receipt == nil {
-		return nil, fmt.Errorf("%s: direct termination did not return a receipt", op)
+	if err := ctx.Err(); err != nil {
+		return nil, terminationError(op, TerminateServiceStageWait, work, nil, errors.Join(cause, err))
 	}
-	confirmedHash := res.Receipt.TxHash
-	if confirmedHash == (common.Hash{}) {
-		confirmedHash = res.Hash
+	if target.checkClosed != nil {
+		if err := target.checkClosed(); err != nil {
+			return nil, terminationError(op, TerminateServiceStageWait, work, nil, errors.Join(cause, err))
+		}
 	}
-	ev, err := warmstorage.ExtractPDPPaymentTerminatedEvent(res.Receipt)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+	if target.reader != nil {
+		info, err := target.reader.GetDataSet(ctx, work.DataSetID)
+		switch {
+		case err != nil:
+			cause = errors.Join(cause, fmt.Errorf("GetDataSet: %w", err))
+		case ctx.Err() != nil:
+			return nil, terminationError(op, TerminateServiceStageWait, work, nil, errors.Join(cause, ctx.Err()))
+		case info == nil:
+			cause = errors.Join(cause, errors.New("GetDataSet returned nil"))
+		case info.PDPEndEpoch != 0:
+			return terminationResult(*work, info.PDPEndEpoch), nil
+		}
 	}
-	submittedHash := res.Hash
-	return &TerminateServiceResult{
-		TxHash:          &submittedHash,
-		ConfirmedTxHash: &confirmedHash,
-		DataSetID:       dataSetID,
-		EndEpoch:        ev.EndEpoch,
-	}, nil
+	if err := ctx.Err(); err != nil {
+		cause = errors.Join(cause, err)
+	}
+	return nil, terminationError(op, TerminateServiceStageWait, work, nil, cause)
+}
+
+func validateTerminationSubmission(sub *TerminateServiceSubmission) error {
+	if sub.DataSetID.IsZero() {
+		return fmt.Errorf("%w: zero dataSetID", ErrInvalidArgument)
+	}
+	if sub.Direct {
+		if !sub.ProviderID.IsZero() || sub.Queued {
+			return fmt.Errorf("%w: direct submission contains provider relay fields", ErrInvalidArgument)
+		}
+		if sub.TransactionID == "" {
+			return fmt.Errorf("%w: direct submission requires a transaction hash", ErrInvalidArgument)
+		}
+	} else if sub.ProviderID.IsZero() {
+		return fmt.Errorf("%w: zero providerID", ErrInvalidArgument)
+	}
+	for _, value := range []*string{&sub.TransactionID, &sub.ConfirmedTransactionID} {
+		if *value == "" {
+			continue
+		}
+		if !common.IsHexHash(*value) || common.HexToHash(*value) == (common.Hash{}) {
+			return fmt.Errorf("%w: invalid termination transaction hash", ErrInvalidArgument)
+		}
+		*value = common.HexToHash(*value).Hex()
+	}
+	return nil
+}
+
+// applyTerminationStatus records a provider status. A status reporting any hash
+// replaces both hashes, so they always come from the same response.
+func applyTerminationStatus(work *TerminateServiceSubmission, status *pdp.TerminateServiceStatus) {
+	work.Accepted = true
+	var original, confirmed string
+	if status.TerminationTxHash != nil && *status.TerminationTxHash != (common.Hash{}) {
+		original = status.TerminationTxHash.Hex()
+	}
+	if status.ConfirmedTxHash != nil && *status.ConfirmedTxHash != (common.Hash{}) {
+		confirmed = status.ConfirmedTxHash.Hex()
+	}
+	if original != "" || confirmed != "" {
+		work.TransactionID, work.ConfirmedTransactionID = original, confirmed
+	}
+}
+
+func copyTerminationSubmission(sub TerminateServiceSubmission) TerminateServiceSubmission {
+	sub.DataSetID = copyBigInt(sub.DataSetID)
+	sub.ProviderID = copyBigInt(sub.ProviderID)
+	return sub
+}
+
+func terminationError(op string, stage TerminateServiceStage, sub *TerminateServiceSubmission, receipt *ethtypes.Receipt, cause error) error {
+	var saved *TerminateServiceSubmission
+	if sub != nil {
+		copied := copyTerminationSubmission(*sub)
+		saved = &copied
+	}
+	return fmt.Errorf("%s: %w", op, &TerminateServiceError{Stage: stage, Submission: saved, Receipt: receipt, Cause: cause})
+}
+
+func terminationResult(sub TerminateServiceSubmission, endEpoch types.Epoch) *TerminateServiceResult {
+	out := &TerminateServiceResult{DataSetID: copyBigInt(sub.DataSetID), EndEpoch: endEpoch}
+	if sub.TransactionID != "" {
+		hash := common.HexToHash(sub.TransactionID)
+		out.TxHash = &hash
+	}
+	if sub.ConfirmedTransactionID != "" {
+		hash := common.HexToHash(sub.ConfirmedTransactionID)
+		out.ConfirmedTxHash = &hash
+	}
+	return out
+}
+
+func normalizedTerminationWaitOptions(opts *TerminateServiceWaitOptions) TerminateServiceWaitOptions {
+	out := TerminateServiceWaitOptions{Timeout: defaultTerminateWait}
+	if opts != nil {
+		out = *opts
+		out.WriteOptions = append([]warmstorage.WriteOption(nil), opts.WriteOptions...)
+	}
+	if out.Timeout <= 0 {
+		out.Timeout = defaultTerminateWait
+	}
+	return out
 }
 
 func signTerminateServiceExtraData(signHash func([]byte) ([]byte, error), chainID types.ChainID, recordKeeper common.Address, dataSetID types.BigInt) ([]byte, error) {
@@ -277,42 +542,35 @@ func signTerminateServiceExtraData(signHash func([]byte) ([]byte, error), chainI
 	return extraData, nil
 }
 
-func ensureTerminationAccountSettled(ctx context.Context, op string, pay PaymentStateReader, epochs EpochReader, token, payer common.Address) error {
+func ensureTerminationAccountSettled(ctx context.Context, pay PaymentStateReader, epochs EpochReader, token, payer common.Address) error {
 	if pay == nil {
-		return fmt.Errorf("%s: %w: no PaymentStateReader configured", op, ErrUninitialized)
+		return fmt.Errorf("%w: no PaymentStateReader configured", ErrUninitialized)
 	}
 	if epochs == nil {
-		return fmt.Errorf("%s: %w: no EpochReader configured", op, ErrUninitialized)
+		return fmt.Errorf("%w: no EpochReader configured", ErrUninitialized)
 	}
 	if token == (common.Address{}) {
-		return fmt.Errorf("%s: %w: zero payment token", op, ErrInvalidArgument)
+		return fmt.Errorf("%w: zero payment token", ErrInvalidArgument)
 	}
 	if payer == (common.Address{}) {
-		return fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
+		return fmt.Errorf("%w: zero payer", ErrInvalidArgument)
 	}
 	block, err := epochs.BlockNumber(ctx)
 	if err != nil {
-		return fmt.Errorf("%s: BlockNumber: %w", op, err)
+		return fmt.Errorf("BlockNumber: %w", err)
 	}
 	account, err := pay.AccountInfo(ctx, token, payer)
 	if err != nil {
-		return fmt.Errorf("%s: AccountInfo: %w", op, err)
+		return fmt.Errorf("AccountInfo: %w", err)
 	}
 	if account == nil {
-		return fmt.Errorf("%s: AccountInfo returned nil", op)
+		return errors.New("AccountInfo returned nil")
 	}
 	debt := account.DebtAt(new(big.Int).SetUint64(block))
 	if debt.Sign() > 0 {
 		return &TerminateServiceDebtError{Shortfall: debt}
 	}
 	return nil
-}
-
-func terminatePollInterval(opts *TerminateServiceOptions) time.Duration {
-	if opts != nil && opts.PollInterval > 0 {
-		return opts.PollInterval
-	}
-	return 0
 }
 
 func terminateProviderContext(ctx context.Context, opts *TerminateServiceOptions) (context.Context, context.CancelFunc) {
@@ -324,28 +582,4 @@ func terminateProviderContext(ctx context.Context, opts *TerminateServiceOptions
 		wait = opts.ProviderWaitTimeout
 	}
 	return context.WithTimeout(ctx, wait)
-}
-
-func terminateHashCallback(opts *TerminateServiceOptions) func(common.Hash) {
-	if opts == nil {
-		return nil
-	}
-	return opts.OnSubmitted
-}
-
-func terminateResultFromStatus(dataSetID types.BigInt, status *pdp.TerminateServiceStatus) *TerminateServiceResult {
-	out := &TerminateServiceResult{DataSetID: dataSetID}
-	if status == nil {
-		return out
-	}
-	if status.TerminationTxHash != nil {
-		h := *status.TerminationTxHash
-		out.TxHash = &h
-	}
-	if status.ConfirmedTxHash != nil {
-		h := *status.ConfirmedTxHash
-		out.ConfirmedTxHash = &h
-	}
-	out.EndEpoch = status.ServiceTerminationEpoch
-	return out
 }

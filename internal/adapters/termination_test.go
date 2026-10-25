@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	coretypes "github.com/ethereum/go-ethereum/core/types"
 
+	"github.com/strahe/synapse-go/internal/contracts/fwss"
 	"github.com/strahe/synapse-go/signer"
 	"github.com/strahe/synapse-go/storage"
 	"github.com/strahe/synapse-go/types"
@@ -73,94 +75,123 @@ func newDirectTerminationTestService(t *testing.T, backend *directTerminationBac
 	return svc
 }
 
-func TestFWSSTerminator_SubmissionAndWaitOptions(t *testing.T) {
-	broadcastErr := errors.New("broadcast rejected")
+func TestFWSSTerminator_SubmitsWithoutWaiting(t *testing.T) {
+	for _, sendErr := range []error{nil, errors.New("broadcast rejected")} {
+		t.Run(fmt.Sprint(sendErr), func(t *testing.T) {
+			backend := &directTerminationBackend{sendErr: sendErr}
+			backend.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
+				t.Fatal("submission started receipt polling")
+				return nil, nil
+			}
+			term := NewFWSSTerminator(newDirectTerminationTestService(t, backend))
+			res, err := term.TerminateDataSet(context.Background(), types.NewBigInt(7), storage.FWSSTerminationOptions{
+				WriteOptions: []warmstorage.WriteOption{
+					warmstorage.WithWait(time.Second),
+					warmstorage.WithOnSubmitted(func(common.Hash) { t.Fatal("submission invoked write-option callback") }),
+				},
+			})
+			if sendErr != nil {
+				if res != nil || !errors.Is(err, sendErr) {
+					t.Fatalf("TerminateDataSet = %+v, %v, want broadcast error", res, err)
+				}
+				return
+			}
+			if err != nil || res == nil || res.Receipt != nil || backend.submitted == nil || res.Hash != backend.submitted.Hash() {
+				t.Fatalf("TerminateDataSet = %+v, %v, want broadcast-only result", res, err)
+			}
+		})
+	}
+}
+
+func (b *directTerminationBackend) BlockNumber(context.Context) (uint64, error) {
+	return 1, nil
+}
+
+func TestFWSSTerminator_WaitForTermination(t *testing.T) {
 	tests := []struct {
 		name          string
-		sendErr       error
+		address       common.Address
+		dataSetID     types.BigInt
+		status        uint64
 		pending       bool
-		cancelOnHash  bool
-		writeHookOnly bool
-		noHook        bool
-		receiptStatus uint64
+		cancel        bool
+		confirmations uint64
 		wantErr       error
 	}{
-		{name: "explicit notification overrides write option", receiptStatus: coretypes.ReceiptStatusSuccessful},
-		{name: "write-option notification", writeHookOnly: true, receiptStatus: coretypes.ReceiptStatusSuccessful},
-		{name: "no notification", noHook: true, receiptStatus: coretypes.ReceiptStatusSuccessful},
-		{name: "broadcast rejected", sendErr: broadcastErr, wantErr: broadcastErr},
-		{name: "receipt timeout", pending: true, wantErr: context.DeadlineExceeded},
-		{name: "canceled after submission", cancelOnHash: true, wantErr: context.Canceled},
-		{name: "reverted transaction", receiptStatus: coretypes.ReceiptStatusFailed, wantErr: types.ErrTxFailed},
+		{name: "confirmed", address: common.HexToAddress("0x1111"), dataSetID: types.NewBigInt(7), status: coretypes.ReceiptStatusSuccessful},
+		{name: "wrong contract", address: common.HexToAddress("0x9999"), dataSetID: types.NewBigInt(7), status: coretypes.ReceiptStatusSuccessful},
+		{name: "wrong data set", address: common.HexToAddress("0x1111"), dataSetID: types.NewBigInt(99), status: coretypes.ReceiptStatusSuccessful},
+		{name: "failed transaction", status: coretypes.ReceiptStatusFailed, wantErr: types.ErrTxFailed},
+		{name: "receipt timeout", pending: true, wantErr: types.ErrReceiptTimeout},
+		{name: "canceled", cancel: true, wantErr: context.Canceled},
+		{name: "unconfirmed receipt is not returned", address: common.HexToAddress("0x1111"), dataSetID: types.NewBigInt(7), status: coretypes.ReceiptStatusSuccessful, confirmations: 3, wantErr: types.ErrReceiptTimeout},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			backend := &directTerminationBackend{sendErr: tt.sendErr}
-			callbackCalls := 0
-			var submitted common.Hash
-			backend.receiptFn = func(ctx context.Context, hash common.Hash) (*coretypes.Receipt, error) {
-				if !tt.noHook && (callbackCalls != 1 || submitted != hash) {
-					t.Fatalf("receipt polling before notification: calls=%d hash=%s submitted=%s", callbackCalls, hash, submitted)
-				}
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
+			if tt.cancel {
+				cancel()
+			}
+			hash := common.HexToHash("0x1234")
+			backend := &directTerminationBackend{}
+			backend.receiptFn = func(context.Context, common.Hash) (*coretypes.Receipt, error) {
 				if tt.pending {
 					return nil, ethereum.NotFound
 				}
-				return &coretypes.Receipt{TxHash: hash, Status: tt.receiptStatus}, nil
+				receipt := terminationTestReceipt(t, tt.address, tt.dataSetID, hash)
+				receipt.Status = tt.status
+				return receipt, nil
 			}
 			term := NewFWSSTerminator(newDirectTerminationTestService(t, backend))
-			onSubmitted := func(hash common.Hash) {
-				callbackCalls++
-				if backend.submitted == nil || hash != backend.submitted.Hash() {
-					t.Fatalf("callback before successful broadcast: hash=%s tx=%v", hash, backend.submitted)
-				}
-				submitted = hash
-				if tt.cancelOnHash {
-					cancel()
-				}
+			res, epoch, err := term.WaitForTermination(ctx, types.NewBigInt(7), hash, 25*time.Millisecond, []warmstorage.WriteOption{
+				warmstorage.WithWait(0),
+				warmstorage.WithConfirmations(tt.confirmations),
+				warmstorage.WithOnSubmitted(func(common.Hash) { t.Fatal("waiting invoked submission callback") }),
+			})
+			if backend.submitted != nil {
+				t.Fatal("waiting submitted a transaction")
 			}
-			opts := storage.FWSSTerminationOptions{
-				WaitTimeout: 25 * time.Millisecond,
-				WriteOptions: []warmstorage.WriteOption{
-					warmstorage.WithWait(0),
-					warmstorage.WithOnSubmitted(func(common.Hash) { t.Fatal("explicit callback did not override write option") }),
-				},
-				OnSubmitted: onSubmitted,
+			if res == nil || res.Hash != hash {
+				t.Fatalf("WaitForTermination lost hash: %+v, %v", res, err)
 			}
-			if tt.writeHookOnly {
-				opts.OnSubmitted = nil
-				opts.WriteOptions = []warmstorage.WriteOption{warmstorage.WithWait(0), warmstorage.WithOnSubmitted(onSubmitted)}
-			}
-			if tt.noHook {
-				opts.OnSubmitted = nil
-				opts.WriteOptions = []warmstorage.WriteOption{warmstorage.WithWait(0)}
-			}
-			res, err := term.TerminateDataSet(ctx, types.NewBigInt(7), opts)
 			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("TerminateDataSet error=%v, want %v", err, tt.wantErr)
+				if !errors.Is(err, tt.wantErr) || epoch != 0 {
+					t.Fatalf("WaitForTermination = %+v, %d, %v, want %v", res, epoch, err, tt.wantErr)
 				}
-				if tt.sendErr != nil {
-					if res != nil {
-						t.Fatalf("broadcast failure returned result: %+v", res)
-					}
-				} else if res == nil || res.Hash != submitted {
-					t.Fatalf("waiting failure lost submitted hash: result=%+v hash=%s", res, submitted)
+				if wantReceipt := errors.Is(tt.wantErr, types.ErrTxFailed); (res.Receipt != nil) != wantReceipt {
+					t.Fatalf("receipt=%v, want a receipt only for a confirmed failure", res.Receipt)
 				}
-			} else if err != nil || res == nil || res.Receipt == nil {
-				t.Fatalf("TerminateDataSet = %+v, %v, want confirmed receipt despite WithWait(0)", res, err)
+				return
 			}
-			wantCalls := 1
-			if tt.sendErr != nil || tt.noHook {
-				wantCalls = 0
+			if tt.name != "confirmed" {
+				if err == nil || epoch != 0 || res.Receipt == nil {
+					t.Fatalf("unmatched event = %+v, %d, %v", res, epoch, err)
+				}
+				return
 			}
-			if callbackCalls != wantCalls {
-				t.Fatalf("callback calls=%d, want %d", callbackCalls, wantCalls)
+			if err != nil || epoch != 456 || res.Receipt == nil {
+				t.Fatalf("WaitForTermination = %+v, %d, %v", res, epoch, err)
 			}
 		})
+	}
+}
+
+func terminationTestReceipt(t *testing.T, address common.Address, id types.BigInt, hash common.Hash) *coretypes.Receipt {
+	t.Helper()
+	contractABI, err := fwss.FWSSMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := contractABI.Events["PDPPaymentTerminated"]
+	data, err := event.Inputs.NonIndexed().Pack(big.NewInt(456), big.NewInt(99))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &coretypes.Receipt{
+		Status:      coretypes.ReceiptStatusSuccessful,
+		TxHash:      hash,
+		BlockNumber: big.NewInt(1),
+		Logs:        []*coretypes.Log{{Address: address, Topics: []common.Hash{event.ID, common.BigToHash(id.Big())}, Data: data}},
 	}
 }
