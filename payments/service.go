@@ -585,9 +585,38 @@ func (s *Service) signAndSend(ctx context.Context, opts *bind.TransactOpts, buil
 	return tx, err
 }
 
+// WaitForTransaction waits for an existing transaction without broadcasting or
+// requiring a signer. Non-positive WithWait values select five minutes;
+// WithOnSubmitted is ignored. Errors retain the hash; Receipt is set only after
+// the requested confirmations, including for a failed transaction. A hash does
+// not prove broadcast, and a timeout does not prove that the transaction does
+// not exist.
+func (s *Service) WaitForTransaction(ctx context.Context, hash common.Hash, opts ...WriteOption) (*sdktypes.WriteResult, error) {
+	if err := s.checkInit(); err != nil {
+		return nil, fmt.Errorf("payments.WaitForTransaction: %w", err)
+	}
+	if hash == (common.Hash{}) {
+		return nil, fmt.Errorf("payments.WaitForTransaction: %w: zero transaction hash", ErrInvalidArgument)
+	}
+	cfg := newWriteConfig(opts)
+	if cfg.waitTimeout <= 0 {
+		cfg.waitTimeout = txutil.DefaultReceiptWaitConfig().Timeout
+	}
+	res := &sdktypes.WriteResult{Hash: hash}
+	receipt, err := txutil.AwaitReceipt(ctx, s.backend, hash, cfg.waitTimeout, cfg.confirmations)
+	res.Receipt = receipt
+	if err != nil {
+		return res, fmt.Errorf("payments.WaitForTransaction: %w", err)
+	}
+	return res, nil
+}
+
 func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []WriteOption) (*sdktypes.WriteResult, error) {
 	cfg := newWriteConfig(opts)
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
+	if cfg.onSubmitted != nil {
+		cfg.onSubmitted(res.Hash)
+	}
 	if cfg.waitTimeout <= 0 {
 		return res, nil
 	}
@@ -602,16 +631,8 @@ func (s *Service) finalize(ctx context.Context, tx *types.Transaction, opts []Wr
 	return res, nil
 }
 
-// waitForWriteReceipt centralizes WithWait and WithConfirmations polling so
-// permit writes can reuse the same wait semantics while managing permit lock
-// ownership separately.
 func (s *Service) waitForWriteReceipt(ctx context.Context, txHash common.Hash, cfg writeConfig) (*types.Receipt, error) {
-	if cfg.confirmations > 0 {
-		waitCfg := txutil.DefaultReceiptWaitConfig()
-		waitCfg.Timeout = cfg.waitTimeout
-		return txutil.WaitForReceiptWithConfig(ctx, s.backend, txHash, waitCfg, cfg.confirmations)
-	}
-	return txutil.WaitForReceipt(ctx, s.backend, txHash, cfg.waitTimeout)
+	return txutil.AwaitReceipt(ctx, s.backend, txHash, cfg.waitTimeout, cfg.confirmations)
 }
 
 func copyBig(v *big.Int) *big.Int {

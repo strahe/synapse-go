@@ -11,6 +11,10 @@
 // preserves the original signed transaction and cause; a nil WriteResult
 // does not establish that the node rejected the transaction.
 //
+// Persist the hash from [WithOnSubmitted], the result, or, after a sending
+// error, the [BroadcastError] transaction, then resume with
+// [Service.WaitForTransaction].
+//
 // This is separate from the signer package because session keys represent
 // a higher-level authorization concept, not just a signing primitive.
 //

@@ -38,6 +38,21 @@ type TerminateServiceStatus struct {
 	ServiceTerminationEpoch types.Epoch
 }
 
+// WaitForTerminateServiceOption configures termination status polling.
+type WaitForTerminateServiceOption func(*terminateServiceWaitConfig)
+
+type terminateServiceWaitConfig struct {
+	knownHash common.Hash
+}
+
+// WithKnownTerminationTxHash supplies a previously observed transaction hash, so
+// a missing status reports [WaitForTerminateServiceRejectedError]. It does not
+// establish provider acceptance or trigger the hash callback. A zero hash means
+// no known hash.
+func WithKnownTerminationTxHash(hash common.Hash) WaitForTerminateServiceOption {
+	return func(cfg *terminateServiceWaitConfig) { cfg.knownHash = hash }
+}
+
 type terminateServiceWire struct {
 	ExtraData string `json:"extraData"`
 }
@@ -165,34 +180,56 @@ func parseTerminateStatus(wire terminateStatusWire) (*TerminateServiceStatus, er
 }
 
 // WaitForTerminateService polls termination status until FWSS termination is
-// confirmed.
+// confirmed. Waiting errors return the last successfully read status.
+//
+// onHash runs synchronously at most once for an original hash newly observed
+// during this wait. A hash supplied by WithKnownTerminationTxHash is not
+// notified. Callback panics propagate to the caller.
 func (c *Client) WaitForTerminateService(
 	ctx context.Context,
 	dataSetID types.BigInt,
 	pollInterval time.Duration,
 	onHash func(common.Hash),
+	opts ...WaitForTerminateServiceOption,
 ) (*TerminateServiceStatus, error) {
 	if pollInterval <= 0 {
 		pollInterval = 4 * time.Second
 	}
-	var seenHash *common.Hash
+	var cfg terminateServiceWaitConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	seenHash := cfg.knownHash
+	var lastStatus *TerminateServiceStatus
+	notified := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return lastStatus, err
+		}
 		status, err := c.GetTerminateServiceStatus(ctx, dataSetID)
 		if err != nil {
 			httpErr, ok := errors.AsType[*HTTPError](err)
 			if ok && httpErr.StatusCode == http.StatusNotFound {
-				if seenHash == nil {
-					return nil, &WaitForTerminateServiceNotFoundError{}
+				if seenHash == (common.Hash{}) {
+					return lastStatus, &WaitForTerminateServiceNotFoundError{}
 				}
-				return nil, &WaitForTerminateServiceRejectedError{TxHash: *seenHash}
+				return lastStatus, &WaitForTerminateServiceRejectedError{TxHash: seenHash}
 			}
-			return nil, fmt.Errorf("pdp.WaitForTerminateService: %w", err)
+			return lastStatus, fmt.Errorf("pdp.WaitForTerminateService: %w", err)
 		}
-		if status.TerminationTxHash != nil && seenHash == nil {
-			h := *status.TerminationTxHash
-			seenHash = &h
+		lastStatus = status
+		switch {
+		case status.TerminationTxHash != nil:
+			seenHash = *status.TerminationTxHash
+		case status.ConfirmedTxHash != nil:
+			seenHash = *status.ConfirmedTxHash
+		}
+		if status.TerminationTxHash != nil && !notified && *status.TerminationTxHash != cfg.knownHash {
+			notified = true
 			if onHash != nil {
-				onHash(h)
+				onHash(*status.TerminationTxHash)
 			}
 		}
 		if status.FWSSTerminated {
@@ -200,7 +237,7 @@ func (c *Client) WaitForTerminateService(
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return lastStatus, ctx.Err()
 		case <-time.After(pollInterval):
 		}
 	}

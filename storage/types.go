@@ -1,11 +1,51 @@
 package storage
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/types"
+	"github.com/strahe/synapse-go/warmstorage"
 )
+
+// TerminateServiceSubmission identifies a termination for read-only recovery.
+// Restore it with a client for the original chain and record keeper. Hashes
+// identify transactions; Accepted records positive acknowledgement separately.
+type TerminateServiceSubmission struct {
+	DataSetID              types.BigInt `json:"dataSetId"`
+	Direct                 bool         `json:"direct"`
+	ProviderID             types.BigInt `json:"providerId"`
+	Accepted               bool         `json:"accepted"`
+	Queued                 bool         `json:"queued"`
+	TransactionID          string       `json:"transactionId"`
+	ConfirmedTransactionID string       `json:"confirmedTransactionId"`
+}
+
+// TerminateServiceStage identifies where a termination call failed. A wait
+// failure does not establish that the original submission was acknowledged.
+type TerminateServiceStage string
+
+const (
+	// TerminateServiceStagePrepare guarantees this submission did not send a
+	// termination authorization or transaction. Preparation can perform reads.
+	TerminateServiceStagePrepare TerminateServiceStage = "prepare"
+	TerminateServiceStageSubmit  TerminateServiceStage = "submit"
+	TerminateServiceStageWait    TerminateServiceStage = "wait"
+)
+
+// TerminateServiceWaitOptions configures read-only termination confirmation.
+type TerminateServiceWaitOptions struct {
+	// Timeout bounds observation, including provider resolution and any chain
+	// reconciliation. A non-positive value selects five minutes.
+	Timeout time.Duration
+	// PollInterval applies only to provider-relayed status polling.
+	PollInterval time.Duration
+	// WriteOptions apply only to direct receipt waiting. Timeout overrides
+	// WithWait, and WithOnSubmitted is ignored. WithConfirmations is preserved.
+	WriteOptions []warmstorage.WriteOption
+}
 
 // CopyRole identifies the role a provider plays in a multi-copy upload.
 type CopyRole string

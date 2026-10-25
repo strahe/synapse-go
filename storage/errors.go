@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ipfs/go-cid"
 
 	"github.com/strahe/synapse-go/internal/lifecycle"
@@ -118,6 +119,32 @@ func (e *DataSetPDPPaymentTerminatedError) Error() string {
 // when the payer account already has debt.
 type TerminateServiceDebtError struct {
 	Shortfall *big.Int
+}
+
+// TerminateServiceError preserves the last known termination facts on failure.
+// Prepare failures have no Submission. Submit and wait failures retain a
+// recovery handle when available. Receipt is a confirmed direct receipt whose
+// transaction failed or lacked a matching termination event.
+type TerminateServiceError struct {
+	Stage      TerminateServiceStage
+	Submission *TerminateServiceSubmission
+	Receipt    *ethtypes.Receipt
+	Cause      error
+}
+
+func (e *TerminateServiceError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("storage: service termination %s: %v", e.Stage, e.Cause)
+}
+
+// Unwrap preserves the underlying submission or observation error.
+func (e *TerminateServiceError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 func (e *TerminateServiceDebtError) Error() string {

@@ -210,7 +210,7 @@ type fakePDPProviderClient struct {
 	waitForCreateAndAddFn func(context.Context, string, time.Duration) (*pdp.AddPiecesStatus, error)
 	scheduleDeletionsFn   func(context.Context, types.BigInt, []types.BigInt, []byte) (common.Hash, error)
 	terminateServiceFn    func(context.Context, pdp.TerminateServiceRequest) (*pdp.TerminateServiceResult, error)
-	waitTerminateFn       func(context.Context, types.BigInt, time.Duration, func(common.Hash)) (*pdp.TerminateServiceStatus, error)
+	waitTerminateFn       func(context.Context, types.BigInt, time.Duration, func(common.Hash), ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error)
 }
 
 func (f *fakePDPProviderClient) UploadPieceStreaming(ctx context.Context, r io.Reader, opts pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
@@ -378,11 +378,11 @@ func (f *fakePDPProviderClient) TerminateService(ctx context.Context, req pdp.Te
 	return f.terminateServiceFn(ctx, req)
 }
 
-func (f *fakePDPProviderClient) WaitForTerminateService(ctx context.Context, dataSetID types.BigInt, pollInterval time.Duration, onHash func(common.Hash)) (*pdp.TerminateServiceStatus, error) {
+func (f *fakePDPProviderClient) WaitForTerminateService(ctx context.Context, dataSetID types.BigInt, pollInterval time.Duration, onHash func(common.Hash), opts ...pdp.WaitForTerminateServiceOption) (*pdp.TerminateServiceStatus, error) {
 	if f.waitTerminateFn == nil {
 		return nil, errors.New("unexpected WaitForTerminateService")
 	}
-	return f.waitTerminateFn(ctx, dataSetID, pollInterval, onHash)
+	return f.waitTerminateFn(ctx, dataSetID, pollInterval, onHash, opts...)
 }
 
 func TestDataSetContextConstructionAndDefensiveCopies(t *testing.T) {

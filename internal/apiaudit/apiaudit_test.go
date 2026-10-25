@@ -111,6 +111,7 @@ import (
 	"github.com/strahe/synapse-go/costs"
 	"github.com/strahe/synapse-go/filbeam"
 	"github.com/strahe/synapse-go/payments"
+	"github.com/strahe/synapse-go/pdp"
 	"github.com/strahe/synapse-go/sessionkey"
 	"github.com/strahe/synapse-go/spregistry"
 	"github.com/strahe/synapse-go/storage"
@@ -214,6 +215,22 @@ var (
 	_ = filbeam.Options{Lifecycle: sharedLifecycle}
 	_ = storage.Options{Lifecycle: sharedLifecycle, DataSetTerminator: sharedTerminator}
 	_ = storage.WithFWSSTerminator(sharedTerminator)
+	_ = storage.FWSSTerminationOptions{WriteOptions: []warmstorage.WriteOption{warmstorage.WithConfirmations(2)}}
+	_ = storage.TerminateServiceOptions{OnSubmitted: func(storage.TerminateServiceSubmission) {}}
+	_ = storage.TerminateServiceWaitOptions{Timeout: time.Minute}
+	_ = pdp.WithKnownTerminationTxHash(common.Hash{})
+	_ func(*storage.Service, context.Context, types.BigInt, *storage.TerminateServiceOptions) (*storage.TerminateServiceSubmission, error) = (*storage.Service).SubmitTerminateService
+	_ func(*storage.DataSetContext, context.Context, *storage.TerminateServiceOptions) (*storage.TerminateServiceSubmission, error) = (*storage.DataSetContext).SubmitTerminateService
+	_ func(*storage.Service, context.Context, storage.TerminateServiceSubmission, *storage.TerminateServiceWaitOptions) (*storage.TerminateServiceResult, error) = (*storage.Service).WaitForTerminateService
+	_ func(*storage.DataSetContext, context.Context, storage.TerminateServiceSubmission, *storage.TerminateServiceWaitOptions) (*storage.TerminateServiceResult, error) = (*storage.DataSetContext).WaitForTerminateService
+	_ func(storage.FWSSTerminator, context.Context, types.BigInt, common.Hash, time.Duration, []warmstorage.WriteOption) (*types.WriteResult, types.Epoch, error) = storage.FWSSTerminator.WaitForTermination
+	_ func(*payments.Service, context.Context, common.Hash, ...payments.WriteOption) (*types.WriteResult, error) = (*payments.Service).WaitForTransaction
+	_ func(*sessionkey.Service, context.Context, common.Hash, ...sessionkey.WriteOption) (*types.WriteResult, error) = (*sessionkey.Service).WaitForTransaction
+	_ func(*spregistry.Service, context.Context, common.Hash, ...spregistry.WriteOption) (*types.WriteResult, error) = (*spregistry.Service).WaitForTransaction
+	_ func(*warmstorage.Service, context.Context, common.Hash, ...warmstorage.WriteOption) (*types.WriteResult, error) = (*warmstorage.Service).WaitForTransaction
+	_ = payments.WithOnSubmitted(func(common.Hash) {})
+	_ = sessionkey.WithOnSubmitted(func(common.Hash) {})
+	_ = spregistry.WithOnSubmitted(func(common.Hash) {})
 	_ storage.EndorsedProviderSource = endorsedProviderSource{}
 	_ = storage.ServiceResolverOptions{Endorsements: endorsedProviderSource{}}
 	_ = storage.UploadOptions{AllowUnendorsedPrimary: true}

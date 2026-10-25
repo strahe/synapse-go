@@ -277,6 +277,22 @@ func (s *Service) finalizePermitWrite(
 	releasePermit func(),
 ) (*sdktypes.WriteResult, error) {
 	res := &sdktypes.WriteResult{Hash: tx.Hash()}
+	if cfg.onSubmitted != nil {
+		func() {
+			returned := false
+			defer func() {
+				if !returned {
+					confirmations := uint64(0)
+					if cfg.waitTimeout > 0 {
+						confirmations = cfg.confirmations
+					}
+					s.watchPermitReceiptAndRelease(tx.Hash(), confirmations, releasePermit)
+				}
+			}()
+			cfg.onSubmitted(res.Hash)
+			returned = true
+		}()
+	}
 	if cfg.waitTimeout <= 0 {
 		s.watchPermitReceiptAndRelease(tx.Hash(), 0, releasePermit)
 		return res, nil

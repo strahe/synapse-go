@@ -480,3 +480,37 @@ func TestWaitForReceipt_TerminalReceiptSurvivesConcurrentCancellation(t *testing
 		})
 	}
 }
+
+func TestAwaitReceipt_AppliesTimeoutAndConfirmations(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		timeout       time.Duration
+		confirmations uint64
+		status        uint64
+		wantDeadline  time.Duration
+		wantErr       error
+		wantReceipt   bool
+	}{
+		{name: "default timeout", status: types.ReceiptStatusSuccessful, wantDeadline: 5 * time.Minute, wantReceipt: true},
+		{name: "negative timeout", timeout: -time.Second, status: types.ReceiptStatusSuccessful, wantDeadline: 5 * time.Minute, wantReceipt: true},
+		{name: "confirmed failure", timeout: time.Minute, confirmations: 2, status: types.ReceiptStatusFailed, wantDeadline: time.Minute, wantErr: ErrTxFailed, wantReceipt: true},
+		{name: "unconfirmed failure", timeout: 20 * time.Millisecond, confirmations: 3, status: types.ReceiptStatusFailed, wantErr: ErrReceiptTimeout},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &fakeReceiptClient{contextFn: func(ctx context.Context) (*types.Receipt, error) {
+				if tt.wantDeadline > 0 {
+					deadline, ok := ctx.Deadline()
+					if remaining := time.Until(deadline); !ok || remaining > tt.wantDeadline || remaining < tt.wantDeadline-time.Minute/2 {
+						t.Fatalf("deadline in %s, want about %s", remaining, tt.wantDeadline)
+					}
+				}
+				return &types.Receipt{Status: tt.status, BlockNumber: big.NewInt(9)}, nil
+			}}
+			c.block.Store(10)
+			r, err := AwaitReceipt(context.Background(), c, common.HexToHash("0x1234"), tt.timeout, tt.confirmations)
+			if !errors.Is(err, tt.wantErr) || (r != nil) != tt.wantReceipt {
+				t.Fatalf("receipt=%v error=%v, want receipt=%v error=%v", r, err, tt.wantReceipt, tt.wantErr)
+			}
+		})
+	}
+}

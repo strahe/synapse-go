@@ -814,16 +814,21 @@ func TestIntegration(t *testing.T) {
 		}
 
 		t.Log("start Payments Deposit")
+		var submitted common.Hash
 		res, err := client.Payments().Deposit(cctx, usdfc, addr, depositAmount,
-			payments.WithWait(txWaitTimeout))
+			payments.WithOnSubmitted(func(hash common.Hash) { submitted = hash }))
 		if err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
-		if res == nil || res.Receipt == nil {
-			t.Fatal("Deposit returned no transaction receipt")
+		if res == nil || res.Receipt != nil || submitted == (common.Hash{}) || res.Hash != submitted {
+			t.Fatalf("Deposit submission = %+v, callback=%s", res, submitted)
 		}
-		if res.Receipt.Status != 1 {
-			t.Fatalf("Deposit tx failed: status=%d", res.Receipt.Status)
+		res, err = client.Payments().WaitForTransaction(cctx, submitted, payments.WithWait(txWaitTimeout))
+		if err != nil {
+			t.Fatalf("WaitForTransaction(Deposit): %v", err)
+		}
+		if res == nil || res.Receipt == nil || res.Hash != submitted || res.Receipt.TxHash != submitted || res.Receipt.Status != 1 {
+			t.Fatalf("Deposit confirmation = %+v, want successful receipt for %s", res, submitted)
 		}
 		t.Logf("deposited %s USDFC, tx=%s", depositAmount, res.Hash)
 
@@ -2413,26 +2418,33 @@ func TestIntegration(t *testing.T) {
 		// matching TS behaviour; the server schedules the removal.
 		t.Logf("DeletePiece tx=%s", delRes.Hash)
 
-		t.Log("start StorageLifecycle TerminateService")
-		var submitted common.Hash
-		termRes, err := client.Storage().TerminateService(cctx, uploadedDataSetID, &storage.TerminateServiceOptions{
+		t.Log("start StorageLifecycle SubmitTerminateService")
+		var notified *storage.TerminateServiceSubmission
+		submission, err := client.Storage().SubmitTerminateService(cctx, uploadedDataSetID, &storage.TerminateServiceOptions{
 			ProviderWaitTimeout: 5 * time.Minute,
-			PollInterval:        2 * time.Second,
-			OnSubmitted: func(hash common.Hash) {
-				submitted = hash
-				t.Logf("TerminateService submitted tx=%s", hash)
+			OnSubmitted: func(sub storage.TerminateServiceSubmission) {
+				notified = &sub
+				t.Logf("TerminateService accepted provider=%s dataset=%s", sub.ProviderID, sub.DataSetID)
 			},
 		})
 		if err != nil {
-			t.Fatalf("TerminateService: %v", err)
+			t.Fatalf("SubmitTerminateService: %v", err)
 		}
-		if termRes == nil || termRes.EndEpoch == 0 {
+		if submission == nil || submission.Direct || !submission.Accepted || submission.ProviderID.IsZero() ||
+			!submission.DataSetID.Equal(uploadedDataSetID) || notified == nil || !notified.DataSetID.Equal(submission.DataSetID) {
+			t.Fatalf("SubmitTerminateService submission=%+v callback=%+v", submission, notified)
+		}
+		termRes, err := client.Storage().WaitForTerminateService(cctx, *submission, &storage.TerminateServiceWaitOptions{
+			Timeout:      5 * time.Minute,
+			PollInterval: 2 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("WaitForTerminateService: %v", err)
+		}
+		if termRes == nil || !termRes.DataSetID.Equal(uploadedDataSetID) || termRes.EndEpoch == 0 {
 			t.Fatalf("TerminateService result=%+v, want a confirmed termination epoch", termRes)
 		}
 		dataSetTerminated[uploadedDataSetID.String()] = true
-		if termRes.TxHash == nil && submitted == (common.Hash{}) {
-			t.Errorf("TerminateService returned no tx hash")
-		}
 		t.Logf("TerminateService result tx=%v endEpoch=%d", termRes.TxHash, termRes.EndEpoch)
 	})
 
