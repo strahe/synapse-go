@@ -114,9 +114,14 @@ func (m *mockCaller) CallContract(ctx context.Context, call ethereum.CallMsg, _ 
 
 func (m *mockCaller) handleContractCall(data []byte) ([]byte, error) {
 	selector := [4]byte{data[0], data[1], data[2], data[3]}
+	// The FWSS ABI also contains the StateView read methods under the same
+	// names, so a reply registered for a view method can match here.
 	for name, method := range m.fwssABI.Methods {
 		if [4]byte(method.ID) == selector {
 			m.lastIn[name] = data
+			if handler, ok := m.handlers[name]; ok {
+				return handler(data)
+			}
 			if err, ok := m.errs[name]; ok {
 				return nil, err
 			}
