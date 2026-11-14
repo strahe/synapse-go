@@ -294,6 +294,14 @@
 // WaitForCreateAndAdd on ProviderContext, or SubmitCommit followed by
 // WaitForCommit on DataSetContext.
 //
+// The status URL is answered by the provider. To learn the outcome when the
+// provider cannot report it, also persist [CommitSubmission.Nonce] and the
+// number of submitted pieces, and call
+// [warmstorage.Service.FindAddedPiecesByNonce] with the payer. It reads the
+// record the contract keeps for that nonce and returns the data set and the
+// piece IDs in submission order. A missing record means only that none is
+// visible in the queried chain state.
+//
 // GetCreateAndAddStatus and GetCommitStatus perform one logical status check
 // and return [CommitStatePending], [CommitStateConfirmed], or
 // [CommitStateRejected]. A rejected status is returned without an error;

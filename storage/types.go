@@ -180,9 +180,10 @@ type CreateAndAddRequest struct {
 	ClientDataSetID *types.BigInt
 	// OnSubmitted is invoked with an independent runtime snapshot immediately
 	// after the provider returns a valid handle, before confirmation. For restart
-	// recovery, persist StatusURL and the original ClientDataSetID; do not treat
-	// the complete CommitSubmission as a persistence schema. It may be nil.
-	// Direct calls do not recover callback panics.
+	// recovery, persist StatusURL and the original ClientDataSetID, and Nonce
+	// with the number of pieces for an on-chain lookup; do not treat the complete
+	// CommitSubmission as a persistence schema. It may be nil. Direct calls do
+	// not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -195,9 +196,10 @@ type CommitRequest struct {
 	ExtraData []byte
 	// OnSubmitted is invoked with an independent runtime snapshot immediately
 	// after the provider returns a valid handle, before confirmation. For restart
-	// recovery, persist StatusURL together with the target DataSetRef; do not treat
-	// the complete CommitSubmission as a persistence schema. It may be nil.
-	// Direct calls do not recover callback panics.
+	// recovery, persist StatusURL together with the target DataSetRef, and Nonce
+	// with the number of pieces for an on-chain lookup; do not treat the complete
+	// CommitSubmission as a persistence schema. It may be nil. Direct calls do
+	// not recover callback panics.
 	OnSubmitted func(CommitSubmission)
 }
 
@@ -228,6 +230,11 @@ const (
 // runtime result for callbacks and diagnostics, not a durable recovery record.
 // Persist StatusURL to resume add-pieces. Create-and-add recovery also requires
 // the original ClientDataSetID.
+//
+// Nonce is the add-pieces nonce signed into the request. Persist it with the
+// number of pieces to look the result up on-chain with
+// [warmstorage.Service.FindAddedPiecesByNonce] when the provider cannot report
+// it. It is nil when a caller-supplied ExtraData payload does not decode.
 type CommitSubmission struct {
 	Kind            CommitKind      `json:"kind"`
 	TransactionID   string          `json:"transactionId"`
@@ -237,6 +244,7 @@ type CommitSubmission struct {
 	DataSet         *DataSetRef     `json:"dataSet"`
 	ClientDataSetID *types.BigInt   `json:"clientDataSetId"`
 	PieceCIDs       []cid.Cid       `json:"pieceCids"`
+	Nonce           *types.BigInt   `json:"nonce"`
 }
 
 // CommitStatus is one logical status snapshot for a submission.

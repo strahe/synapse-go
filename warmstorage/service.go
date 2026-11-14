@@ -403,6 +403,71 @@ func (s *Service) FindDataSetByClientDataSetID(
 	return s.confirmDataSetCorrelation(ctx, payer, clientDataSetID, dataSetID)
 }
 
+// AddedPieces is the on-chain record of one add-pieces submission.
+type AddedPieces struct {
+	DataSetID types.BigInt
+	// PieceIDs lists the assigned piece IDs in submission order.
+	PieceIDs []types.BigInt
+}
+
+// FindAddedPiecesByNonce resolves an add-pieces nonce to the data set and
+// piece IDs recorded on-chain for that submission. The nonce of a
+// create-and-add submission is the one in its add-pieces payload, not its
+// client data-set ID. pieceCount is the number of pieces the nonce authorized;
+// the record stores only the next piece ID.
+//
+// ErrNotFound means no record is visible in the queried chain state. It does
+// not establish that the submission was rejected or that it cannot still be
+// included. A successful result reports current chain visibility only and does
+// not establish transaction finality.
+func (s *Service) FindAddedPiecesByNonce(
+	ctx context.Context,
+	payer common.Address,
+	nonce types.BigInt,
+	pieceCount int,
+) (*AddedPieces, error) {
+	const op = "warmstorage.FindAddedPiecesByNonce"
+	if err := s.checkInit(); err != nil {
+		return nil, err
+	}
+	if payer == (common.Address{}) {
+		return nil, fmt.Errorf("%s: %w: zero payer", op, ErrInvalidArgument)
+	}
+	if pieceCount < 1 {
+		return nil, fmt.Errorf("%s: %w: pieceCount must be positive, got %d", op, ErrInvalidArgument, pieceCount)
+	}
+
+	raw, err := s.viewBind.ClientNonces(&bind.CallOpts{Context: ctx}, payer, nonce.Big())
+	if err != nil {
+		return nil, fmt.Errorf("%s: read client nonce: %w", op, err)
+	}
+	dataSetID, consumed, err := dataSetIDFromClientNonce(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if !consumed {
+		return nil, fmt.Errorf("%s: %w", op, ErrNotFound)
+	}
+
+	// The upper 128 bits hold the piece ID following the last one added. A
+	// create-data-set record leaves them zero.
+	next := new(big.Int).Rsh(raw, 128)
+	count := big.NewInt(int64(pieceCount))
+	if next.Cmp(count) < 0 {
+		return nil, fmt.Errorf("%s: recorded next piece ID %s is below piece count %d", op, next.String(), pieceCount)
+	}
+	first := new(big.Int).Sub(next, count)
+	pieceIDs := make([]types.BigInt, pieceCount)
+	for i := range pieceIDs {
+		id, err := idconv.FromBig("PieceID", new(big.Int).Add(first, big.NewInt(int64(i))))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		pieceIDs[i] = id
+	}
+	return &AddedPieces{DataSetID: dataSetID, PieceIDs: pieceIDs}, nil
+}
+
 func (s *Service) clientNonceValue(
 	ctx context.Context,
 	payer common.Address,

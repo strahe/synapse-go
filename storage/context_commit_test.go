@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math/big"
@@ -1151,5 +1152,136 @@ func TestProviderContextUploadCommitFailureKeepsSubmission(t *testing.T) {
 	}
 	if !result.DataSet.DataSetID().Equal(types.NewBigInt(55)) || len(result.PieceIDs) != 1 || !result.PieceIDs[0].Equal(types.NewBigInt(77)) {
 		t.Fatalf("resumed result=%+v, want data set 55 with piece 77", result)
+	}
+}
+
+// signedAddPiecesNonce reads the nonce from an add-pieces payload, or from the
+// add-pieces half of a create-and-add payload.
+func signedAddPiecesNonce(t *testing.T, createAndAdd bool, extraData []byte) *big.Int {
+	t.Helper()
+	addPayload := extraData
+	if createAndAdd {
+		outer, err := createAndAddArgs.Unpack(extraData)
+		if err != nil {
+			t.Fatalf("unpack create-and-add extraData: %v", err)
+		}
+		addPayload = outer[1].([]byte)
+	}
+	values, err := addPiecesArgs.Unpack(addPayload)
+	if err != nil {
+		t.Fatalf("unpack add-pieces extraData: %v", err)
+	}
+	return values[0].(*big.Int)
+}
+
+func TestCommitSubmissionReportsSignedNonce(t *testing.T) {
+	pieces := []PieceInput{{PieceCID: mustPieceInfo(t).CIDv2}}
+	ref := testDataSetRef(types.NewBigInt(42), types.NewBigInt(7))
+	clientDataSetID := types.NewBigInt(5)
+	createPayload, err := encodeCreateDataSetExtraData(testPayer(), clientDataSetID.Big(), nil, make([]byte, 65))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addPayload, err := encodeAddPiecesExtraData(big.NewInt(1234), [][]ityped.MetadataEntry{{}}, make([]byte, 65))
+	if err != nil {
+		t.Fatal(err)
+	}
+	suppliedCreateAndAdd, err := encodeCreateAndAddExtraData(createPayload, addPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		createAndAdd bool
+		extraData    []byte
+		wantNoNonce  bool
+	}{
+		{name: "signed add pieces"},
+		{name: "signed create and add", createAndAdd: true},
+		{name: "caller-supplied create and add", createAndAdd: true, extraData: suppliedCreateAndAdd},
+		{name: "caller-supplied add pieces", extraData: addPayload},
+		{name: "caller-supplied payload that does not decode", extraData: []byte{0x01, 0x02, 0x03}, wantNoNonce: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent []byte
+			client := &fakePDPProviderClient{
+				addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+					sent = bytes.Clone(extraData)
+					return &pdp.AddPiecesResult{TxHash: common.HexToHash("0x11"), StatusURL: "https://sp.example.com/status/add"}, nil
+				},
+				createAndAddFn: func(_ context.Context, _ common.Address, _ []pdp.AddPieceInput, extraData []byte) (*pdp.CreateDataSetResult, error) {
+					sent = bytes.Clone(extraData)
+					return &pdp.CreateDataSetResult{TxHash: common.HexToHash("0x22"), StatusURL: "https://sp.example.com/status/create"}, nil
+				},
+			}
+
+			var submission *CommitSubmission
+			var err error
+			if tc.createAndAdd {
+				submission, err = mustWritableProviderContext(t, client).SubmitCreateAndAdd(
+					context.Background(),
+					CreateAndAddRequest{Pieces: pieces, ExtraData: tc.extraData},
+				)
+			} else {
+				submission, err = mustWritableDataSetContext(t, client, ref).SubmitCommit(
+					context.Background(),
+					CommitRequest{Pieces: pieces, ExtraData: tc.extraData},
+				)
+			}
+			if err != nil {
+				t.Fatalf("submit: %v", err)
+			}
+			if tc.wantNoNonce {
+				if submission.Nonce != nil {
+					t.Fatalf("Nonce=%s, want nil", submission.Nonce)
+				}
+				return
+			}
+			want := signedAddPiecesNonce(t, tc.createAndAdd, sent)
+			if submission.Nonce == nil || submission.Nonce.Big().Cmp(want) != 0 {
+				t.Fatalf("Nonce=%v, want %s from the submitted extraData", submission.Nonce, want)
+			}
+		})
+	}
+}
+
+func TestCommitSubmissionJSONKeepsNonce(t *testing.T) {
+	nonce := types.NewBigInt(1234)
+	submission := CommitSubmission{
+		Kind:          CommitKindAddPieces,
+		TransactionID: common.HexToHash("0x11").Hex(),
+		StatusURL:     "https://sp.example.com/status/add",
+		PieceCIDs:     []cid.Cid{mustPieceInfo(t).CIDv2},
+		Nonce:         &nonce,
+	}
+	encoded, err := json.Marshal(submission)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded CommitSubmission
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Nonce == nil || !decoded.Nonce.Equal(nonce) {
+		t.Fatalf("Nonce=%v, want %s", decoded.Nonce, nonce)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("Unmarshal fields: %v", err)
+	}
+	delete(fields, "nonce")
+	withoutNonce, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("Marshal without nonce: %v", err)
+	}
+	var legacy CommitSubmission
+	if err := json.Unmarshal(withoutNonce, &legacy); err != nil {
+		t.Fatalf("Unmarshal without nonce: %v", err)
+	}
+	if legacy.Nonce != nil || legacy.TransactionID != submission.TransactionID {
+		t.Fatalf("decoded=%+v, want nil Nonce and transaction %s", legacy, submission.TransactionID)
 	}
 }
