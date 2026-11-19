@@ -181,7 +181,7 @@ type CreateAndAddRequest struct {
 	// OnSubmitted is invoked with an independent runtime snapshot immediately
 	// after the provider returns a valid handle, before confirmation. For restart
 	// recovery, persist StatusURL and the original ClientDataSetID, and Nonce
-	// with the number of pieces for an on-chain lookup; do not treat the complete
+	// with len(PieceCIDs) for an on-chain lookup; do not treat the complete
 	// CommitSubmission as a persistence schema. It may be nil. Direct calls do
 	// not recover callback panics.
 	OnSubmitted func(CommitSubmission)
@@ -197,7 +197,7 @@ type CommitRequest struct {
 	// OnSubmitted is invoked with an independent runtime snapshot immediately
 	// after the provider returns a valid handle, before confirmation. For restart
 	// recovery, persist StatusURL together with the target DataSetRef, and Nonce
-	// with the number of pieces for an on-chain lookup; do not treat the complete
+	// with len(PieceCIDs) for an on-chain lookup; do not treat the complete
 	// CommitSubmission as a persistence schema. It may be nil. Direct calls do
 	// not recover callback panics.
 	OnSubmitted func(CommitSubmission)
@@ -231,8 +231,8 @@ const (
 // Persist StatusURL to resume add-pieces. Create-and-add recovery also requires
 // the original ClientDataSetID.
 //
-// Nonce is the add-pieces nonce signed into the request. Persist it with the
-// number of pieces to look the result up on-chain with
+// Nonce is the add-pieces nonce signed into the request. Persist it with
+// len(PieceCIDs) to look the result up on-chain with
 // [warmstorage.Service.FindAddedPiecesByNonce] when the provider cannot report
 // it. It is nil when a caller-supplied ExtraData payload does not decode.
 type CommitSubmission struct {

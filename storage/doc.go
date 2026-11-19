@@ -296,7 +296,7 @@
 //
 // The status URL is answered by the provider. To learn the outcome when the
 // provider cannot report it, also persist [CommitSubmission.Nonce] and the
-// number of submitted pieces, and call
+// length of that submission's PieceCIDs, and call
 // [warmstorage.Service.FindAddedPiecesByNonce] with the payer. It reads the
 // record the contract keeps for that nonce and returns the data set and the
 // piece IDs in submission order. A missing record means only that none is
