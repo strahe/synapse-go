@@ -410,6 +410,10 @@ func TestCreateAndAddExternalExtraDataExtractsIdentityBeforeNetwork(t *testing.T
 				t.Fatal("callback client data-set ID is nil")
 			}
 			*got.ClientDataSetID = types.NewBigInt(99)
+			if got.Nonce == nil {
+				t.Fatal("callback nonce is nil")
+			}
+			*got.Nonce = types.NewBigInt(99)
 		},
 	})
 	if err != nil {
@@ -417,6 +421,9 @@ func TestCreateAndAddExternalExtraDataExtractsIdentityBeforeNetwork(t *testing.T
 	}
 	if submission.ClientDataSetID == nil || !submission.ClientDataSetID.IsZero() {
 		t.Fatalf("clientDataSetID=%v want explicit zero", submission.ClientDataSetID)
+	}
+	if submission.Nonce == nil || !submission.Nonce.Equal(types.NewBigInt(1)) {
+		t.Fatalf("nonce=%v want 1 from the submitted extraData", submission.Nonce)
 	}
 	if submission.DataSet != nil || submission.Kind != CommitKindCreateAndAdd {
 		t.Fatalf("submission=%+v", submission)

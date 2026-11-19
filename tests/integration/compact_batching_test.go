@@ -223,14 +223,6 @@ func TestIntegration_CompactDataSetBatching(t *testing.T) {
 		t.Fatalf("new data set %s is not compact", created.DataSet.DataSetID())
 	}
 	t.Logf("compact create: dataset=%s pieces=81 tx=%s", created.DataSet.DataSetID(), created.TransactionID)
-	if submission.Nonce == nil {
-		t.Fatal("compact create submission has no nonce")
-	}
-	recorded, err := client.WarmStorage().FindAddedPiecesByNonce(ctx, client.Address(), *submission.Nonce, len(pieces))
-	if err != nil || !recorded.DataSetID.Equal(created.DataSet.DataSetID()) ||
-		!slices.EqualFunc(recorded.PieceIDs, created.PieceIDs, func(a, b types.BigInt) bool { return a.Equal(b) }) {
-		t.Fatalf("on-chain record=%+v err=%v, want data set %s and piece IDs %v", recorded, err, created.DataSet.DataSetID(), created.PieceIDs)
-	}
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
@@ -241,6 +233,14 @@ func TestIntegration_CompactDataSetBatching(t *testing.T) {
 		}
 		t.Logf("compact cleanup confirmed: dataset=%s tx=%s", created.DataSet.DataSetID(), res.Hash)
 	})
+	if submission.Nonce == nil {
+		t.Fatal("compact create submission has no nonce")
+	}
+	recorded, err := client.WarmStorage().FindAddedPiecesByNonce(ctx, client.Address(), *submission.Nonce, len(pieces))
+	if err != nil || !recorded.DataSetID.Equal(created.DataSet.DataSetID()) ||
+		!slices.EqualFunc(recorded.PieceIDs, created.PieceIDs, func(a, b types.BigInt) bool { return a.Equal(b) }) {
+		t.Fatalf("on-chain record=%+v err=%v, want data set %s and piece IDs %v", recorded, err, created.DataSet.DataSetID(), created.PieceIDs)
+	}
 	compact, err := client.Storage().NewDataSetContext(ctx, created.DataSet.DataSetID(), storage.NewDataSetContextOptions{})
 	if err != nil {
 		t.Fatal(err)
