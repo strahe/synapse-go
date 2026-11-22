@@ -834,6 +834,81 @@ func TestFindDataSetByClientDataSetIDHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestFindAddedPiecesByNonce(t *testing.T) {
+	payer := common.HexToAddress("0x33")
+	nonce := types.NewBigInt(99)
+	packed := func(nextPieceID, dataSetID int64) *big.Int {
+		v := new(big.Int).Lsh(big.NewInt(nextPieceID), 128)
+		return v.Or(v, big.NewInt(dataSetID))
+	}
+	readErr := errors.New("rpc unavailable")
+	tests := []struct {
+		name         string
+		payer        common.Address
+		pieceCount   int
+		record       *big.Int
+		readErr      error
+		wantPieceIDs []uint64
+		wantErr      error
+		wantFailure  bool
+		wantNoRead   bool
+	}{
+		{name: "single piece", payer: payer, pieceCount: 1, record: packed(5, 42), wantPieceIDs: []uint64{4}},
+		{name: "several pieces", payer: payer, pieceCount: 3, record: packed(10, 42), wantPieceIDs: []uint64{7, 8, 9}},
+		{name: "first pieces of a data set", payer: payer, pieceCount: 2, record: packed(2, 42), wantPieceIDs: []uint64{0, 1}},
+		{name: "no record", payer: payer, pieceCount: 1, record: big.NewInt(0), wantErr: ErrNotFound},
+		{name: "create-data-set record", payer: payer, pieceCount: 1, record: big.NewInt(42), wantFailure: true},
+		{name: "piece count above recorded next ID", payer: payer, pieceCount: 3, record: packed(2, 42), wantFailure: true},
+		{name: "read error", payer: payer, pieceCount: 1, readErr: readErr, wantErr: readErr},
+		{name: "zero payer", pieceCount: 1, wantErr: ErrInvalidArgument, wantNoRead: true},
+		{name: "zero piece count", payer: payer, wantErr: ErrInvalidArgument, wantNoRead: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, mc := newTestService(t)
+			if tc.record != nil {
+				mc.setViewReply(t, "clientNonces", tc.record)
+			}
+			if tc.readErr != nil {
+				mc.errs["clientNonces"] = tc.readErr
+			}
+
+			got, err := s.FindAddedPiecesByNonce(context.Background(), tc.payer, nonce, tc.pieceCount)
+			callData, read := mc.lastIn["clientNonces"]
+			if read == tc.wantNoRead {
+				t.Fatalf("contract read=%v, want %v", read, !tc.wantNoRead)
+			}
+			if tc.wantErr != nil || tc.wantFailure {
+				if err == nil || got != nil || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) {
+					t.Fatalf("result=%+v error=%v, want error %v", got, err, tc.wantErr)
+				}
+				if tc.wantFailure && errors.Is(err, ErrNotFound) {
+					t.Fatalf("error=%v must not match ErrNotFound", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FindAddedPiecesByNonce: %v", err)
+			}
+			if !got.DataSetID.Equal(types.NewBigInt(42)) || len(got.PieceIDs) != len(tc.wantPieceIDs) {
+				t.Fatalf("result=%+v, want data set 42 and piece IDs %v", got, tc.wantPieceIDs)
+			}
+			for i, want := range tc.wantPieceIDs {
+				if !got.PieceIDs[i].Equal(types.NewBigInt(want)) {
+					t.Fatalf("piece IDs=%v, want %v", got.PieceIDs, tc.wantPieceIDs)
+				}
+			}
+			inputs, err := mc.viewABI.Methods["clientNonces"].Inputs.Unpack(callData[4:])
+			if err != nil {
+				t.Fatalf("unpack clientNonces input: %v", err)
+			}
+			if inputs[0].(common.Address) != payer || inputs[1].(*big.Int).Cmp(nonce.Big()) != 0 {
+				t.Fatalf("clientNonces inputs=%v", inputs)
+			}
+		})
+	}
+}
+
 func TestGetClientDataSets(t *testing.T) {
 	s, mc := newTestService(t)
 	mc.setViewReply(t, "getClientDataSets0", []fwssviewbind.FilecoinWarmStorageServiceDataSetInfoView{

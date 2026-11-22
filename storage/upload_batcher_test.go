@@ -1860,6 +1860,7 @@ func TestDataSetContextUploadKeepsBatchedCommitRejectionWhenCallerCancelsAfterSu
 	waitStarted := make(chan struct{})
 	releaseWait := make(chan struct{})
 	var startOnce sync.Once
+	sentExtraData := make(chan []byte, 1)
 	client := &fakePDPProviderClient{
 		uploadStreamingFn: func(_ context.Context, r io.Reader, _ pdp.UploadPieceStreamingOptions) (*pdp.UploadStreamingResult, error) {
 			if _, err := io.Copy(io.Discard, r); err != nil {
@@ -1868,7 +1869,8 @@ func TestDataSetContextUploadKeepsBatchedCommitRejectionWhenCallerCancelsAfterSu
 			return &pdp.UploadStreamingResult{PieceCID: info.CIDv2, Size: int64(len(data))}, nil
 		},
 		waitForPieceFn: func(context.Context, cid.Cid, time.Duration) error { return nil },
-		addPiecesFn: func(context.Context, types.BigInt, []pdp.AddPieceInput, []byte) (*pdp.AddPiecesResult, error) {
+		addPiecesFn: func(_ context.Context, _ types.BigInt, _ []pdp.AddPieceInput, extraData []byte) (*pdp.AddPiecesResult, error) {
+			sentExtraData <- bytes.Clone(extraData)
 			return &pdp.AddPiecesResult{
 				TxHash:    originalTx,
 				StatusURL: "https://sp.example.com/status/add",
@@ -1915,8 +1917,13 @@ func TestDataSetContextUploadKeepsBatchedCommitRejectionWhenCallerCancelsAfterSu
 	if !ok || len(commitErr.FailedAttempts) != 1 {
 		t.Fatalf("Upload error=%#v, want CommitError with one failed attempt", err)
 	}
-	if got := commitErr.FailedAttempts[0].Submission; got == nil || got.TransactionID != originalTx.Hex() {
+	got := commitErr.FailedAttempts[0].Submission
+	if got == nil || got.TransactionID != originalTx.Hex() {
 		t.Fatalf("Submission=%+v, want the batched submission %s", got, originalTx.Hex())
+	}
+	wantNonce := signedAddPiecesNonce(t, false, <-sentExtraData)
+	if got.Nonce == nil || got.Nonce.Big().Cmp(wantNonce) != 0 {
+		t.Fatalf("Nonce=%v, want %s from the batched extraData", got.Nonce, wantNonce)
 	}
 }
 

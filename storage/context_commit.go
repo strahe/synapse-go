@@ -222,6 +222,7 @@ func (c *contextCore) submitCommit(
 		ProviderID: copyBigInt(c.provider.ID),
 		Identity:   c.identity(),
 		PieceCIDs:  append([]cid.Cid(nil), pieceCIDs...),
+		Nonce:      decodeAddPiecesNonce(ref == nil, extraData),
 	}
 	if ref != nil {
 		submission.Kind = CommitKindAddPieces
@@ -347,6 +348,37 @@ func decodeCreateAndAddIdentity(op string, extraData []byte, payer common.Addres
 		return nil, fmt.Errorf("%s: %w: invalid clientDataSetID in extraData", op, ErrInvalidArgument)
 	}
 	return copyBigIntPtr(&clientDataSetID), nil
+}
+
+// decodeAddPiecesNonce returns the add-pieces nonce signed into extraData. It
+// returns nil for a payload that does not decode; such a payload can only be
+// caller-supplied, and the provider or contract decides whether it is valid.
+func decodeAddPiecesNonce(createAndAdd bool, extraData []byte) *types.BigInt {
+	addPayload := extraData
+	if createAndAdd {
+		outer, err := createAndAddArgs.Unpack(extraData)
+		if err != nil || len(outer) != 2 {
+			return nil
+		}
+		payload, ok := outer[1].([]byte)
+		if !ok {
+			return nil
+		}
+		addPayload = payload
+	}
+	values, err := addPiecesArgs.Unpack(addPayload)
+	if err != nil || len(values) == 0 {
+		return nil
+	}
+	raw, ok := values[0].(*big.Int)
+	if !ok || raw == nil {
+		return nil
+	}
+	nonce, err := types.BigIntFromBig(raw)
+	if err != nil {
+		return nil
+	}
+	return &nonce
 }
 
 func (c *contextCore) getCommitStatus(
@@ -707,6 +739,7 @@ func copyCommitSubmission(in CommitSubmission) CommitSubmission {
 	out.DataSet = copyDataSetRefPtr(in.DataSet)
 	out.ClientDataSetID = copyBigIntPtr(in.ClientDataSetID)
 	out.PieceCIDs = append([]cid.Cid(nil), in.PieceCIDs...)
+	out.Nonce = copyBigIntPtr(in.Nonce)
 	return out
 }
 
